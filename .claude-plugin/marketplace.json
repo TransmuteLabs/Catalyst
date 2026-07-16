@@ -1,0 +1,14 @@
+{
+  "name": "catalyst",
+  "description": "Catalyst — disciplined agentic development: SDD pipeline, decision-boundary tiering, spec hardening, premortem gates, handoffs",
+  "owner": {
+    "name": "TransmuteLabs"
+  },
+  "plugins": [
+    {
+      "name": "catalyst",
+      "source": "./",
+      "description": "Catalyst skills family: subagent-driven development pipeline with decision-boundary model tiering, file handoffs, and goal-backward verification"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "catalyst",
+  "description": "Catalyst skills family: subagent-driven development pipeline with decision-boundary model tiering, file handoffs, and goal-backward verification",
+  "version": "0.1.0",
+  "author": {
+    "name": "Marat Karimov"
+  },
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "sdd",
+    "subagents",
+    "planning",
+    "verification",
+    "workflows"
+  ]
+}

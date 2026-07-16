@@ -1,0 +1,38 @@
+---
+name: bootup
+description: Use at the start of work on a new or unfamiliar project - assess agent-readiness, fill tooling gaps, and route to the right Catalyst skill. Triggers - "let's start the project", fresh clone, no build/test/lint commands known.
+---
+
+# Bootup — project readiness and routing
+
+## Overview
+
+The entry dispatcher: assess the project's agent-readiness, close mechanical gaps, route to the right family skill. **You are a dispatcher: you do not read files, edit code, or run tests yourself** — you ask questions, dispatch scouts/executors on briefs, and route. Core: ContinuousClaude bootup, adapted to Catalyst tiering and routing.
+
+## Steps
+
+**1. Two user questions** (one at a time, crucible rule): new project or existing codebase? which stack (language/framework)?
+
+**2. Readiness assessment.**
+- If ContinuousClaude's readiness tooling is available — verify by actually running `cc readiness --help` (or `cc --version`) and checking the output identifies ContinuousClaude; the bare name `cc` on PATH proves nothing, it collides with the system C compiler on every Unix machine. If confirmed, an executor runs on a brief: `readiness` → `readiness-fix` → `readiness` again; report: level before/after, files created, failing criteria. The dispatcher receives numbers, not contents.
+- Otherwise — a scout gathers facts against the checklist (facts only, file:line): build command known and working? test command + current baseline (`N passed; 0 failed`)? linter/formatter/type-checker configured? `.gitignore` covers artifacts? README with build/run? pre-commit hooks? one-command dev setup?
+- Mechanical gaps (linter/formatter configs, .gitignore, Makefile targets) are closed by an executor on an exact brief (paths scope: configs only, **source code untouched**). Semantic gaps (README, test scaffolding) — a separate brief, also without touching sources.
+
+**3. Readiness verdict to the user:** level/gaps in one table. Raw project (no build/tests) → propose a readiness pass as separate work before features; the user decides.
+
+**4. Routing** — ask the user "what are we kicking off?" and hand over:
+
+| Intent | Skill |
+|---|---|
+| Explore/understand, answer unknown | catalyst:research |
+| Large foggy effort (> one session) | catalyst:starchart |
+| Feature/decision — needs a spec | catalyst:crucible |
+| Spec exists — plan and execute | catalyst:arcane-mode |
+| Review existing code/PR | catalyst:review |
+| Continue a previous session | catalyst:handoff (resume) |
+
+## Red Flags — STOP
+
+- The dispatcher opened source files "to understand the project" — that's scout work; readiness scripts detect the stack without reading code.
+- Readiness fixes touched source code rather than configs.
+- Routing chosen for the user when the intent was ambiguous.

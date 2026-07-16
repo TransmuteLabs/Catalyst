@@ -1,0 +1,53 @@
+# Knowledge loop — optional bloks integration
+
+Activates only when `bloks` responds on this machine (verify by running `bloks --version` or `bloks context .` and checking the output — a name on PATH proves nothing; `cc` famously collides with the system C compiler). Without bloks, the loop degrades to what the pipeline already does: lessons distill to persistent memory and the ledger. Nothing else in the pipeline changes.
+
+## PREPARE — front-load cards into briefs
+
+Before dispatching an implementer whose task touches a library with cards:
+
+```
+bloks context .                      → project rules, tastes, corrections
+bloks recipe {lib} {keywords}        → task-specific API docs + recipes
+bloks card {lib} {symbol}            → symbol-level signatures + gotchas
+```
+
+Paste the output **verbatim** into the brief's context section, each block with its card id (`card:{lib}:{module}`, `deck:{lib}`, `symbol:{lib}:{symbol}`, or a learned-card slug). Do not summarize or rewrite — the cards are already compressed. bloks returned nothing for a lib → skip it; never fill the section manually.
+
+This does not relax the readiness test: cards are grounding material inside a complete brief, not a substitute for it.
+
+## Reports — three extra fields
+
+When cards were injected, the implementer/critic report gains:
+
+- `bloks_used`: per card — `{id, helpful: true|false, reason}` (only cards actually referenced).
+- `corrections`: a card said X, reality is Y — with evidence.
+- `discoveries`: non-obvious facts about a library learned the hard way this task.
+
+## DISTILL — after the task (or at branch convergence)
+
+For every card injected this task:
+- referenced and correct → `bloks ack {card-id}`
+- found wrong/outdated → `bloks nack {card-id}` + `bloks report {lib} {error_type} "{description}"`
+- never referenced → skip (no signal).
+
+Discoveries → `bloks learn {lib} "{finding}"` — **one finding = one card**; five discoveries = five calls. Atomic cards compose; monoliths rot.
+
+## Enforcement ladder for distilled conventions
+
+A recurring convention/correction (seen in ~3+ reports) gets promoted to the **highest enforcement tier that can express it** — prose is the last resort, not the first:
+
+```
+lint rule (eslint/ruff/clippy) > type system (tsconfig/mypy) > formatter
+> pre-commit hook > CI check > CLAUDE.md / memory (only when no tool can express it)
+```
+
+Recommendations that change shared config go to the user as one batched question — never applied silently.
+
+## Red Flags — STOP
+
+- A card summary retold in a brief instead of the verbatim block ("I compressed it further").
+- `bloks learn` with a batched multi-finding card.
+- ack/nack skipped after a task whose brief carried cards ("no time") — the loop is the point; skipping it means the project doesn't learn.
+- A convention written into CLAUDE.md/memory when a lint rule could enforce it.
+- Presence of the tooling assumed from a name on PATH without a responding subcommand.
