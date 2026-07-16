@@ -20,7 +20,7 @@ The entry dispatcher: assess the project's agent-readiness, close mechanical gap
 
 **3. Readiness verdict to the user:** level/gaps in one table. Raw project (no build/tests) → propose a readiness pass as separate work before features; the user decides.
 
-**4. Routing** — first check for an active campaign: `ls .catalyst/campaign/*/ROADMAP.md` (a scout/executor runs it, you read the result). An ACTIVE one exists (skip campaigns whose PROGRAM.md carries `status: complete`) → offer it as the default route ("campaign <name> is active — continue it?") before the open question; several active → list them, the user picks. Otherwise ask the user "what are we kicking off?" and hand over:
+**4. Routing** — first check for an active campaign: the scout runs `ls .catalyst/campaign/*/ROADMAP.md` AND returns each found campaign's PROGRAM.md `status:` line (and, when the user's intent points at an existing spec, that spec's `status:` marker) — the dispatcher routes on returned facts, never on its own file reads. An ACTIVE campaign exists (skip `status: complete`) → offer it as the default route ("campaign <name> is active — continue it?") before the open question; several active → list them, the user picks. Otherwise ask the user "what are we kicking off?" and hand over:
 
 | Intent | Skill |
 |---|---|

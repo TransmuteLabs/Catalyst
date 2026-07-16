@@ -17,7 +17,7 @@ The gate has ONE sanctioned exception: a **throwaway prototype answering a named
 - The user asks to discuss / grill / stress-test an idea.
 - Before catalyst:arcane-mode when no approved spec exists.
 
-**When NOT to use:** the decision is trivial and the user already named it exactly; the effort is so large and foggy that questions can't be phrased yet — catalyst:starchart first.
+**When NOT to use:** the decision is trivial and the user already named it exactly; the effort is so large and foggy that questions can't be phrased yet — catalyst:starchart first; a READY plan/spec needing failure projection before execution — that's catalyst:premortem (stress-testing an unfinished idea ≠ premortem of a finished plan: the interview re-opens decisions, the premortem attacks their consequences).
 
 ## Interview technique
 
