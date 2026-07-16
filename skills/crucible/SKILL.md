@@ -25,7 +25,10 @@ The gate has ONE sanctioned exception: a **throwaway prototype answering a named
 2. **Every question carries your recommended answer** (plus 1-2 alternatives where they are real). A recommendation is input for the user's decision, not the decision itself: **never count your own recommendation as the answer**, even if it seems obvious, even if the user replies slowly. No answer — the question stays open, the interview waits.
 3. **Facts are yours, decisions are the user's.** Anything discoverable from the environment (files, code, tools, docs) you look up yourself and never ask. Every *decision* goes to the user, one at a time.
 4. **Walk the decision tree in dependency order:** decisions that others depend on come first; a branch closed by the user's answer is not reopened.
-5. **Stop gate:** do not act (code, plan, dispatches) until the user confirms shared understanding is reached. Confirmation is explicit, never inferred from silence.
+5. **Topology before depth.** When the subject has several components, lock the component list with the user FIRST (including what's explicitly deferred), then interrogate — always aiming at the currently weakest component: deep clarity on one component must not mask fog in its siblings.
+6. **Stop gate:** do not act (code, plan, dispatches) until the user confirms shared understanding is reached. Confirmation is explicit, never inferred from silence.
+
+**Stuck-interview levers** (each used at most once, then back to normal questioning): the interview circles without closing branches → a contrarian question ("what if the opposite is true — does this constraint actually exist?"); the scope keeps growing → a simplifier question ("what is the simplest version that is still valuable?"); the core entities keep being renamed round after round → an ontology question ("what IS this thing, really — which entity is the core and which are supporting?").
 
 ## Coverage net
 

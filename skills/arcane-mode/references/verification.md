@@ -9,6 +9,7 @@ Approved is not accepted mechanically. Orchestrator checklist per critic report:
 3. Cross-task / cross-program consistency.
 4. "What was lost silently" — behavior that existed before the diff and is mentioned in neither the report nor the review.
 5. The critic's adjudication requests — re-read all of them.
+6. Every severity recalibration in the report carries its "Mitigated by:" rationale — a downgrade without one is re-evaluated from scratch; data-loss/security/financial findings are never accepted downgraded.
 
 Critics are strong at directed verification and weak at: semantic drift against intent, undirected search, severity calibration, asking the right questions. Those four layers are the orchestrator's — via authored questions in the dispatch and adjudication afterwards.
 

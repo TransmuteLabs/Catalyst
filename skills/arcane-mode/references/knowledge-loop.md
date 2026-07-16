@@ -31,7 +31,7 @@ For every card injected this task:
 - found wrong/outdated → `bloks nack {card-id}` + `bloks report {lib} {error_type} "{description}"`
 - never referenced → skip (no signal).
 
-Discoveries → `bloks learn {lib} "{finding}"` — **one finding = one card**; five discoveries = five calls. Atomic cards compose; monoliths rot.
+Discoveries → `bloks learn {lib} "{finding}"` — **one finding = one card**; five discoveries = five calls. Atomic cards compose; monoliths rot. A card records the outcome, not the process: "X returns null on empty input", never "investigated X's behavior" — and each fact stands alone, no pronouns pointing at a conversation that will be gone.
 
 **Spikes and research dives** get wrapped up, not abandoned: if the outcome contains repeatable guidance (how to evaluate X, a pattern, a library's gotchas), it becomes bloks cards — or a project-local skill via catalyst:forge-skill when the guidance is a procedure. If the outcome was a one-off decision ("we chose Y, end of story"), it goes to the decision log / memory instead — not every spike deserves a skill.
 

@@ -61,6 +61,8 @@ findings:             # tiered
   fyi: [...]
 
 worked: [{approaches that worked}]
+investigated: [{examined and ruled out/confirmed WITHOUT a failure — so the
+  next instance doesn't re-explore the same ground}]
 failed:
   - attempted: {...}
     root_cause: {...}
@@ -78,7 +80,7 @@ hypotheses:           # REQUIRED when status: partial|blocked
 
 blockers: [...]
 questions: [...]
-next:
+next:                 # the current trajectory, not a wishlist of future work
   - {a concrete step with file:line and function names}
 
 # ── NEXT SESSION PROMPT (REQUIRED) ──

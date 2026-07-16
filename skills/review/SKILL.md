@@ -43,6 +43,14 @@ The critic rules from arcane-mode/references/dispatch-templates.md apply here to
 
 Follow-up: blocking findings → fix through arcane-mode (fix plan + critic + re-review), never "I'll just patch it in this same review" — a reviewer who edits code stops being a reviewer.
 
+## Deslop mode — cleaning up agent-generated slop
+
+When the request is "clean this up / remove the AI slop" rather than a verdict, run a deletion-first cleanup pass:
+
+1. **Classify before editing.** Sweep the scope and tag findings by slop class: duplication (the same logic re-implemented instead of reused), dead code (unreachable, unused exports, commented-out blocks), needless abstraction (a layer with one caller and no second use in sight), boundary violations (imports against the architecture's direction), missing tests on changed behavior, defaulted UI styling (framework-default colors/shadows/grids kept where a design exists).
+2. **Lock behavior first.** Before touching code, add the narrowest regression test over the affected behavior (or record the verification command when a test seam doesn't exist).
+3. **One slop class per pass**, ordered safest-first: dead code → duplication → naming/errors → tests. Re-run the covering tests after each pass; never bundle unrelated cleanup into one diff. Deletion beats addition — measure the pass by lines removed, not rewritten.
+
 ## Red Flags — STOP
 
 - A verdict issued without reading the actual code around the findings (tool facts ≠ a review).

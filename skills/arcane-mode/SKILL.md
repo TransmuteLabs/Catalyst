@@ -39,6 +39,8 @@ Subagent-driven development pipeline: spec → plan → execution by fresh subag
 
 Current tier mapping: top = fable, standard = opus, executor = sonnet. Haiku — never. The model is named explicitly in every dispatch. Turn count beats token price: a cheap model taking 2-3× the turns on multi-step work costs more overall — the floor for reviewers and prose-brief implementers is "standard".
 
+Effort is a second dial, set per dispatch independently of tier; budget pressure collapses the agent fleet, never planning or the review floor; model availability is discovered from failed spawns, not assumed: `references/economics.md`.
+
 ## Iron rules
 
 - A found defect gets fixed completely, never legitimized (no "accept the limitation", no DEFERRED, no self-initiated stubs).
