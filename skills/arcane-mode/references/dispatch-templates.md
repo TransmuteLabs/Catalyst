@@ -34,7 +34,7 @@ The implementer WILL find work outside the plan. Rules:
 
 Priority: Rule 4 → stop; Rules 1-3 → fix; in doubt → Rule 4.
 
-**Scope boundary:** auto-fixes only for problems directly caused by the current task's changes. Pre-existing warnings and failures in unrelated files — flag in the report, don't fix. **Limit:** 3 auto-fixes per task, then stop, document the rest in the report; don't keep digging and don't re-run the build hunting for more.
+**Scope boundary:** Rules 1-3 apply to code the current task CREATES or DIRECTLY TOUCHES — a new endpoint's missing validation is this task's correctness requirement (Rule 2), not a pre-existing condition. Pre-existing warnings and failures in files the task doesn't touch — flag in the report, don't fix. **Limit:** 3 auto-fixes per task, then stop, document the rest in the report; don't keep digging and don't re-run the build hunting for more.
 
 ### Git safety (embed in the brief when working in a worktree)
 

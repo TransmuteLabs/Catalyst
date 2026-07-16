@@ -14,7 +14,7 @@ Reviewing existing code/diff/PR outside the arcane-mode pipeline, with the same 
 Determine the scope: `git diff --stat` (uncommitted / `--staged` / against a base ref via `git diff <base-ref>...HEAD` / PR via `gh pr diff`). No changes — stop.
 
 - If `tldr`/`bugbot` are on PATH — parallel agents run them (`bugbot check`, `impact`/`whatbreaks` on changed functions, `smells`/`complexity`, with a security focus — `secure`/`taint`) and return JSON verbatim, no retelling.
-- Otherwise — scouts gather: the full diff to a file (`mkdir -p .catalyst/sdd && [ -f .catalyst/sdd/.gitignore ] || printf '*\n' > .catalyst/sdd/.gitignore; git diff -U10 > .catalyst/sdd/review-standalone.diff` — the workspace self-ignores even when the arcane scripts never ran), the changed functions and their callers (grep), the test baseline BEFORE/AFTER (`N passed; 0 failed; K ignored`), new skips/ignores.
+- Otherwise — scouts gather: the full diff to a file (`mkdir -p .catalyst/sdd && [ -f .catalyst/sdd/.gitignore ] || printf '*\n' > .catalyst/sdd/.gitignore; git diff -U10 <scope args from above> > .catalyst/sdd/review-standalone.diff` — the SAME scope determined in the first line (`--staged` / `<base-ref>...HEAD` / for a PR use `gh pr diff`), and the workspace self-ignores even when the arcane scripts never ran), the changed functions and their callers (grep), the test baseline BEFORE/AFTER (`N passed; 0 failed; K ignored`), new skips/ignores.
 
 Diff >500 lines — focus on the files with the highest density of phase-1 findings.
 

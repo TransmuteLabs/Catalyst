@@ -31,7 +31,7 @@ Arcane-mode executes one plan; a campaign is the umbrella above many of them: a 
 ## Parked          — phases deferred by an explicit user decision (with the reason)
 ```
 
-Rules: PROGRAM.md and ROADMAP.md are **committed to the repo** — they are the program's memory for weeks and must survive `git clean`, clones, and machine changes. State commits go to the campaign's BASE branch (the branch phases fork from), never onto a phase work branch — a discarded phase branch must not carry the program's memory away with it. **The session that produces the evidence flips the status and commits immediately** — not at handoff time (the Session-end check is a safety net, not the flip point). ROADMAP is an index — details live in the linked specs/ledgers. Status changes only with evidence (a spec file exists → specced; the premortem gate returned PASS or WARN — BLOCK bars it — and the plan is written → planned; ledger shows tasks closing → executing; arcane verification converged → verified; user accepted → done). Roadmap edits that change scope (add/remove/reorder phases) are user decisions, logged in the Decision log — never silent.
+Rules: PROGRAM.md and ROADMAP.md are **committed to the repo** — they are the program's memory for weeks and must survive `git clean`, clones, and machine changes. State commits go to the campaign's BASE branch (the branch phases fork from), never onto a phase work branch — a discarded phase branch must not carry the program's memory away with it. Mechanics: phases run in worktrees/branches off the base, so the base checkout stays available — **the session that produces the evidence flips the status in the BASE checkout and commits there immediately** — not at handoff time (the Session-end check is a safety net, not the flip point). ROADMAP is an index — details live in the linked specs/ledgers. Status changes only with evidence (a spec file exists → specced; the premortem gate returned PASS or WARN — BLOCK bars it — and the plan is written → planned; ledger shows tasks closing → executing; arcane verification converged → verified; user accepted → done). Roadmap edits that change scope (add/remove/reorder phases) are user decisions, logged in the Decision log — never silent.
 
 ## Router — every campaign session starts here
 
@@ -53,7 +53,7 @@ One session advances ONE phase's state as far as it honestly goes; parallel phas
 
 1. Intent and milestones — through catalyst:crucible (the intent is a decision, not a transcription); starchart's finished map converts naturally: destination → Intent, closed decisions → Decision log, remaining work clusters → phases.
 2. Slice phases tracer-first (each phase leaves the system demonstrably better/shippable), 3-9 phases per milestone; a phase should fit one arcane-mode plan (a few tasks) — a bigger chunk splits into more phases; a milestone is a set of phases, never one oversized phase.
-3. Write both files, get the user's approval of the roadmap as ONE question, set every phase `pending`.
+3. Write both files, get the user's approval of the roadmap as ONE question, set every milestone `status: open` and every phase `pending`.
 
 ## Milestone audit — against intent, not the checklist
 
@@ -61,7 +61,7 @@ When a milestone's phases are all `done`: goal-backward audit of the MILESTONE a
 
 ## Session end
 
-Campaign sessions end through catalyst:handoff; the handoff carries the campaign path so the next session's router starts warm. Update ROADMAP.md links/status BEFORE the handoff — the roadmap, not the handoff, is the program's memory.
+Campaign sessions end through catalyst:handoff; the handoff carries the campaign path so the next session's router starts warm. Before the handoff, VERIFY the roadmap is already current — statuses flipped when their evidence appeared, links laid; a missed flip found here is fixed now, but session end is the safety net, not the flip point. The roadmap, not the handoff, is the program's memory.
 
 ## Red Flags — STOP
 

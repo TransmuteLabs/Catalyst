@@ -24,9 +24,9 @@ Subagent-driven development pipeline: spec → plan → execution by fresh subag
 ## Pipeline
 
 1. **Plan** — per `references/plan-standard.md` (tracer-first, must_haves, No Placeholders, Interfaces, context budget). Before Task 1: a pre-flight scan of the plan for internal contradictions — everything found goes to the user as ONE batched question; then the catalyst:premortem gate (any tiger blocks Task 1 until its mitigation lands as plan tasks and the gate re-runs).
-2. **Execution** — per task: `scripts/task-brief` → dispatch implementer → `scripts/review-package BASE HEAD` (BASE recorded before dispatch, never `HEAD~1`) → dispatch critic → adjudicate every verdict → fix wave on Critical/Important → re-review → one ledger line. Templates and rules: `references/dispatch-templates.md`. If `bloks` responds on this machine, briefs carry verbatim knowledge cards and reports feed back ack/nack/learn: `references/knowledge-loop.md`.
+2. **Execution** — per task: `scripts/task-brief` → dispatch implementer → `scripts/review-package BASE HEAD` (BASE recorded before dispatch, never `HEAD~1`) → dispatch critic → adjudicate every verdict → fix wave on Critical/Important → re-review → one ledger line. Templates and rules: `references/dispatch-templates.md`; the adjudication checklist, ledger mechanics, and gate discipline: `references/verification.md`. If `bloks` responds on this machine, briefs carry verbatim knowledge cards and reports feed back ack/nack/learn: `references/knowledge-loop.md`.
 3. **Verification** — goal-backward against must_haves + final whole-branch review read personally + iterative fresh-eyes rounds until 2 consecutive clean. For user-facing behavior, offer a conversational UAT pass after the code-side gates (protocol in `references/verification.md`). After convergence: distill session lessons — recurring conventions go to the highest enforcement tier that can express them (lint > types > formatter > pre-commit > CI > prose; see `references/knowledge-loop.md`), the rest into persistent memory (what worked, what failed and why) — knowledge must outlive the session.
-4. **Branch finish** — after convergence, never stop silently and never integrate silently: verify the suite is green on the final HEAD, then present ONE question — merge into the base branch locally / push and open a PR / keep the branch as-is / discard — and execute the choice. Cleanup (worktree, temp branches) only after the choice lands.
+4. **Branch finish** — after convergence, never stop silently and never integrate silently: verify the suite is green on the final HEAD, then present ONE question — merge into the base branch locally / push and open a PR / keep the branch as-is / discard — and execute the choice. Cleanup (worktree, temp branches) only after the choice lands. **Under a campaign, control returns to the campaign router at convergence:** the phase acceptance (campaign's `verified` row) happens BEFORE this question — acceptance decides whether the branch integrates at all.
 
 ## Tiering by decision boundary
 
@@ -46,7 +46,7 @@ Effort is a second dial, set per dispatch independently of tier; budget pressure
 - A found defect gets fixed completely, never legitimized (no "accept the limitation", no DEFERRED, no self-initiated stubs).
 - An implementer brief passes the readiness test: the task can be done without opening a single file "to scout" and without asking a single question.
 - A gate is confirmed only by an honest exit-code form (`set -o pipefail` or no pipe at all) and an exact test baseline (`N passed; 0 failed; K ignored`) — never a bare "EXIT 0".
-- After compaction trust the ledger `.catalyst/sdd/progress.md` and `git log`, not memory.
+- After compaction trust the ledger `.catalyst/sdd/progress.md` and `git log`, not memory. At skill start, run the ledger identity check (no ledger yet → create it with the identity line): `references/verification.md`.
 
 ## Orchestrator Red Flags — STOP
 
