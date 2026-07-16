@@ -17,16 +17,15 @@ Detection means the tool **responds with its own signature** — a name on PATH 
 |---|---|---|---|
 | Catalyst plugin | `claude plugin details catalyst@catalyst` | `claude plugin marketplace add TransmuteLabs/Catalyst` → `claude plugin install catalyst@catalyst` | if you are reading this, it is likely present |
 | ContinuousClaude binary layer (5 binaries, hooks, settings) | `ContinuousClaude --version` output starts `ContinuousClaude <semver>` | *nix: `curl -fsSL https://raw.githubusercontent.com/TransmuteLabs/ContinuousClaude-releases/main/install.sh \| sh` · Windows: `irm https://raw.githubusercontent.com/TransmuteLabs/ContinuousClaude-releases/main/install.ps1 \| iex` | downloads `cc-setup` from the public releases repo (source repo is private); flags pass through (`sh -s -- --add-path --autostart`); cc-setup also installs this plugin |
-| bloks (knowledge cards) | `bloks --version` | prebuilt `bloks-<triple>` from [bloks-releases](https://github.com/TransmuteLabs/bloks-releases) Releases → `~/.local/bin/bloks`; or `cc-setup install --with-tools` | source repo is private — `cargo install --git` works only with repo access |
+| bloks (knowledge cards) | `bloks --version` | prebuilt `bloks-<triple>` from [bloks-releases](https://github.com/TransmuteLabs/bloks-releases) Releases → `~/.local/bin/bloks`; or `cc-setup install --with-tools` | `--with-tools` downloads the same prebuilt binaries — no git/cargo access needed |
 | tldr (code analysis) | `tldr --version` identifies TransmuteLabs tldr, not tldr-pages | prebuilt `tldr-<triple>` from [tldr-code-releases](https://github.com/TransmuteLabs/tldr-code-releases) Releases → `~/.local/bin/tldr`; or `cc-setup install --with-tools` | PATH collision with tldr-pages is common — signature check is mandatory |
-| fastedit (Rust, part of the family) | `fastedit --help` responds with fastedit's own usage | prebuilt `fastedit-<triple>`, `fastedit-mcp-<triple>`, `fastedit-hook-<triple>` from [fastedit-rs-releases](https://github.com/TransmuteLabs/fastedit-rs-releases) Releases → `~/.local/bin/` | source repo is private; MCP wiring: `claude mcp add fastedit fastedit-mcp` (see the releases README) |
-| fastedit Python + merge model (optional alternative) | `pip show fastedits` | `pip install "fastedits[mlx]"` on Apple Silicon, `pip install fastedits` otherwise; then `fastedit pull` (~1.7 GB model) | the original Python implementation with model-based merge editing; MCP wiring is manual — see its README |
+| fastedit (part of the family) | `fastedit --help` responds with fastedit's own usage | prebuilt `fastedit-<triple>`, `fastedit-mcp-<triple>`, `fastedit-hook-<triple>` from [fastedit-rs-releases](https://github.com/TransmuteLabs/fastedit-rs-releases) Releases → `~/.local/bin/`; or `cc-setup install --with-tools` | source repo is private; MCP wiring: `claude mcp add fastedit fastedit-mcp` (see the releases README) |
 | ouros CLI (optional) | `ouros --help` | `cargo install ouros` | NOT required when the binary layer is installed — `cc-research` embeds ouros natively |
 
 ## Procedure
 
 1. **Detection sweep** — an executor runs every Detect command and returns verbatim outputs + versions. No installs yet.
-2. **Plan** — a table of missing/broken components with the exact commands from the table above, plus everything that changes the system named explicitly (PATH edits via `--add-path`, daemon autostart via `--autostart`, ~1.7 GB model download). Present to the user as ONE batched question; the user picks components and flags once.
+2. **Plan** — a table of missing/broken components with the exact commands from the table above, plus everything that changes the system named explicitly (PATH edits via `--add-path`, daemon autostart via `--autostart`). Present to the user as ONE batched question; the user picks components and flags once.
 3. **Execute** — an executor runs the approved commands one component at a time. After each: the Detect command again — the component is DONE only when it responds with the right signature. Exit code 0 of an installer is not success; a responding tool is.
 4. **Report** — final table: component / version / status; skipped components listed with their consequence (which features degrade — the family degrades gracefully, nothing breaks).
 
@@ -34,7 +33,7 @@ A failed install gets one honest retry of the same command; then report the raw 
 
 ## Update mode
 
-Same procedure, update commands instead: `cc-setup update` (binaries + .claude), `claude plugin marketplace update catalyst` (skills), re-download prebuilt binaries from the latest `*-releases` Release (bloks/tldr/fastedit), `pip install -U fastedits` (Python variant).
+Same procedure, update commands instead: `cc-setup update --with-tools` (binaries + .claude + refreshes bloks/tldr/fastedit from their releases), `claude plugin marketplace update catalyst` (skills). Without the CC layer: re-download prebuilt binaries from the latest `*-releases` Release.
 
 ## Red Flags — STOP
 
