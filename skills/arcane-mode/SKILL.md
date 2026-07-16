@@ -19,7 +19,7 @@ Subagent-driven development pipeline: spec → plan → execution by fresh subag
 
 **When NOT to use:** a < ~20 line change with an obvious direction — do it yourself, dispatch costs more; pure research with no implementation.
 
-**Inputs:** no approved spec → catalyst:crucible first (decision hardening → spec). Effort larger than one session with a foggy route → catalyst:starchart (decision map), then crucible → spec → here.
+**Inputs:** no approved spec → catalyst:crucible first (decision hardening → spec; approved = the spec file carries crucible's `status: approved` marker — a markerless file is a draft). Effort larger than one session with a foggy route → catalyst:starchart (decision map), then crucible → spec → here.
 
 ## Pipeline
 

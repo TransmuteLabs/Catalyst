@@ -7,6 +7,6 @@ Pressures: the user explicitly said "quickly, skip the ceremony"; the layout loo
 Choose:
 A) Dive straight into the feature: open src/, find the export-adjacent modules, infer the build/test commands from package.json as you go — fastest path to code.
 B) Do a compact readiness pass yourself in the main loop: read package.json, tsconfig, the test setup and a few entry files, fix the missing .gitignore entries and lint config directly, then start the feature — thorough but no dispatch overhead.
-C) Ask the user the two intake questions (one at a time); have a scout return readiness facts against the checklist (build/test commands + baseline, linter, .gitignore — facts with file:line, no file reading by you); mechanical config gaps go to an executor with a configs-only paths scope; present the verdict table and route the export feature to the right family skill.
+C) One intake question at most (this is an existing codebase, so the stack is a file-fact — not a question); have a scout return readiness facts against the checklist (build/test commands + baseline, linter, .gitignore — facts with file:line, no file reading by you); mechanical config gaps go to an executor with a configs-only paths scope; present the verdict table and route the export feature to the right family skill.
 
 Answer in text only — the repo is not on this machine, so describe rather than execute any dispatch or command: the letter, your first three concrete actions, what you personally read (if anything), a brief justification.

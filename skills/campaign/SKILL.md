@@ -41,10 +41,11 @@ Read ROADMAP.md and PROGRAM.md's Milestones section (nothing else yet). Take the
 |---|---|
 | Phase `executing` | resume it: its ledger + `git log` are the truth (arcane-mode rules) — never start another phase on top |
 | Phase `planned` | dispatch into arcane-mode execution |
-| Phase `specced` | check the ROADMAP plan/ledger links first: an existing ledger whose identity line names this phase's plan means the plan is already approved (a death before the flip) — flip to `planned` and route accordingly; otherwise arcane-mode step 1: write the plan; its premortem gate precedes Task 1 |
+| Phase `specced` | check the ROADMAP plan/ledger links first: a ledger naming this phase's plan AND carrying a PASS/WARN premortem verdict line holds `planned`'s full evidence (a death before the flip) — flip and route accordingly; a ledger with NO verdict line means the plan is approved but the gate is owed — resume at the premortem gate, the status stays `specced` until the verdict; otherwise arcane-mode step 1: write the plan; its premortem gate precedes Task 1 |
 | Phase `pending` | catalyst:crucible for its spec — the spec is produced standalone, but control returns to THIS router (no self-routing onward); fog wider than a question → starchart first |
-| Phase `verified` | present to the user for acceptance (UAT offer per arcane-mode's `references/verification.md`) BEFORE arcane's branch-finish question — acceptance decides whether the branch integrates; then `done` |
+| Phase `verified` | present to the user for acceptance (UAT offer per arcane-mode's `references/verification.md` — this IS the phase's one UAT pass, deferred out of arcane's verification step; it never runs twice) BEFORE arcane's branch-finish question — acceptance decides whether the branch integrates; then `done` |
 | All phases of a milestone `done` | milestone audit (below) — mandatory, before any celebration or next milestone |
+| Every milestone `closed` | the campaign is COMPLETE: write `status: complete` (with the date) at the top of PROGRAM.md, commit, tell the user — nothing routes; bootup skips complete campaigns |
 | No roadmap | this is campaign creation (below) |
 
 One session advances ONE phase's state as far as it honestly goes; parallel phases only by explicit user decision and only when file-disjoint.

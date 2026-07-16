@@ -54,9 +54,13 @@ premortem:
     - risk: "..."
       why_avoided: "..."
       true_impact: "..."
+  accepted_risks:        # only by explicit user decision — see the BLOCK rule
+    - risk: "..."
+      accepted_by: user, YYYY-MM-DD
+      consequence_accepted: "..."
 ```
 
-- **BLOCK** — at least one tiger: Task 1 is not dispatched until every tiger's mitigation lands in the plan as concrete tasks/verify steps (in must_haves), then the gate re-runs on the reworked plan. A tiger with NO viable mitigation path is the user's decision: accept explicitly or rework the scope — never proceed silently.
+- **BLOCK** — at least one tiger: Task 1 is not dispatched until every tiger's mitigation lands in the plan as concrete tasks/verify steps (in must_haves), then the gate re-runs on the reworked plan. A tiger with NO viable mitigation path is the user's decision: accept explicitly or rework the scope — never proceed silently. An explicit user acceptance is a RECORDED state change, not a mental note: the tiger moves to `accepted_risks:` in the yaml (`accepted_by: user`, the date, the consequence accepted) and the verdict recomputes without it (no other tigers → WARN); the ledger verdict line names it (`WARN — tiger <X> accepted by user <date>`), so no resumed session re-blocks on a decision already made.
 - **WARN** — no tigers; paper tigers and/or elephants present: proceed with documented awareness; every elephant gets an owner-decision (a task or the user's explicit acceptance).
 - **PASS** — no findings in any class.
 
