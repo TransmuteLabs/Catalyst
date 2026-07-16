@@ -13,7 +13,7 @@ Random fixes waste time and mask real defects. This skill is the family's debugg
 
 ## Debug state survives the session
 
-Non-trivial investigations outlive context windows. Keep the state in `.catalyst/debug/<slug>.md` from the start (on first creation write a `.catalyst/debug/.gitignore` containing `*` — the workspace is ephemeral and self-ignores):
+Non-trivial investigations outlive context windows. Keep the state in `.catalyst/debug/<slug>.md` from the start (on first creation write a `.catalyst/debug/.gitignore` containing `*` — the workspace is ephemeral and self-ignores; the path anchors to the repo root — `git rev-parse --show-toplevel` — never the cwd, or a resumed session in a subdirectory misses the state file):
 
 ```markdown
 # <slug> — <symptom, one line>

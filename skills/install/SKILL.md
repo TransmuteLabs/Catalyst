@@ -15,7 +15,7 @@ Detection means the tool **responds with its own signature** — a name on PATH 
 
 | Component | Detect (must respond) | Install | Notes |
 |---|---|---|---|
-| Catalyst plugin | `claude plugin details catalyst@catalyst` | `claude plugin marketplace add TransmuteLabs/Catalyst` → `claude plugin install catalyst@catalyst` | if you are reading this, it is likely present |
+| Catalyst plugin | `claude plugin list` shows `catalyst@catalyst` enabled + its version — the INSTALLED instance (`claude plugin details` answers from the marketplace CATALOG, which can be newer than what sessions actually load — a stale install still looks current there) | `claude plugin marketplace add TransmuteLabs/Catalyst` → `claude plugin install catalyst@catalyst` | if you are reading this, it is likely present |
 | ContinuousClaude binary layer (5 binaries, hooks, settings) | `ContinuousClaude --version` output starts `ContinuousClaude <semver>` | *nix: `curl -fsSL https://raw.githubusercontent.com/TransmuteLabs/ContinuousClaude-releases/main/install.sh \| sh` · Windows: `irm https://raw.githubusercontent.com/TransmuteLabs/ContinuousClaude-releases/main/install.ps1 \| iex` | downloads `cc-setup` from the public releases repo (source repo is private); flags pass through (`sh -s -- --add-path --autostart`); cc-setup also installs this plugin |
 | bloks (knowledge cards) | `bloks --version` | prebuilt `bloks-<triple>` from [bloks-releases](https://github.com/TransmuteLabs/bloks-releases) Releases → `~/.local/bin/bloks`; or `cc-setup install --with-tools` | `--with-tools` downloads the same prebuilt binaries — no git/cargo access needed |
 | tldr (code analysis) | `tldr --version` identifies TransmuteLabs tldr, not tldr-pages | prebuilt `tldr-<triple>` from [tldr-code-releases](https://github.com/TransmuteLabs/tldr-code-releases) Releases → `~/.local/bin/tldr`; or `cc-setup install --with-tools` | PATH collision with tldr-pages is common — signature check is mandatory |
@@ -33,7 +33,7 @@ A failed install gets one honest retry of the same command; then report the raw 
 
 ## Update mode
 
-Same procedure, update commands instead: `cc-setup update --with-tools` (binaries + .claude + refreshes bloks/tldr/fastedit from their releases), `claude plugin marketplace update catalyst` (skills). Without the CC layer: re-download prebuilt binaries from the latest `*-releases` Release.
+Same procedure, update commands instead: `cc-setup update --with-tools` (binaries + .claude + refreshes bloks/tldr/fastedit from their releases). The plugin updates in TWO steps — installed plugins are version-pinned copies: `claude plugin marketplace update catalyst` refreshes only the catalog clone (it exits 0 while sessions keep loading the old pinned skills), then `claude plugin update catalyst@catalyst` moves the installed copy (restart required); verify with `claude plugin list` showing the new version — the marketplace step alone never changes what `plugin list` reports. Without the CC layer: re-download prebuilt binaries from the latest `*-releases` Release.
 
 ## Red Flags — STOP
 

@@ -54,9 +54,10 @@ premortem:
     - risk: "..."
       why_avoided: "..."
       true_impact: "..."
-  mitigated:             # tigers whose mitigation LANDED as plan tasks — moved here by the re-run
+  mitigated:             # tigers whose mitigation LANDED — moved here by the re-run
     - risk: "..."
-      mitigation_tasks: "task refs in the plan"
+      mitigation_tasks: "task refs in the plan; at a spec-gate run, the spec
+                         must_haves/decisions the mitigation landed as"
   accepted_risks:        # only by explicit user decision — see the BLOCK rule
     - risk: "..."
       accepted_by: user, YYYY-MM-DD
@@ -64,10 +65,10 @@ premortem:
 ```
 
 - **BLOCK** — at least one tiger in `tigers:`: Task 1 is not dispatched until every tiger's mitigation lands in the plan as concrete tasks/verify steps (in must_haves), then the gate re-runs on the reworked plan — the re-run moves each tiger whose mitigation landed to `mitigated:` (BLOCK counts only `tigers:`; a mitigated risk never re-blocks). A tiger with NO viable mitigation path is the user's decision: accept explicitly or rework the scope — never proceed silently. An explicit user acceptance is a RECORDED state change, not a mental note: the tiger moves to `accepted_risks:` in the yaml (`accepted_by: user`, the date, the consequence accepted) and the verdict recomputes without it (no other tigers → WARN); the ledger verdict line names it (`WARN — tiger <X> accepted by user <date>`), so no resumed session re-blocks on a decision already made. Every gate RE-RUN reads the existing yaml first: risks in `accepted_risks` stay there — they are never re-listed as tigers and never demand mitigation again; the yaml is the source of the acceptance, the ledger line its cache (a death between the recompute and the ledger write heals from the yaml).
-- **WARN** — no unmitigated, unaccepted tigers; paper tigers, elephants and/or accepted risks present: proceed with documented awareness; every elephant gets an owner-decision (a task or the user's explicit acceptance).
+- **WARN** — no unmitigated, unaccepted tigers; paper tigers, elephants, accepted risks and/or `mitigated` entries present: proceed with documented awareness; every elephant gets an owner-decision (a task or the user's explicit acceptance). A yaml holding ONLY mitigated entries — the standard post-BLOCK re-run outcome — is a WARN, not a PASS: the risks were real, and their mitigations are now plan tasks that still have to execute.
 - **PASS** — no findings in any class.
 
-Accepting a tiger without mitigation is only ever the user's explicit decision — never self-initiated (that's a form of "accepting the limitation"). File next to the plan: `<plan>.premortem.yaml`; a verdict line goes into the ledger (arcane-mode's `.catalyst/sdd/progress.md` — mechanics in its `references/verification.md`). A sanctioned PRE-PLAN run (large/risky spec) gates the spec instead: mitigations land as spec must_haves / decisions, the file is `<spec>.premortem.yaml`, and the verdict is recorded in the spec's open/deferred section (no plan, no ledger exists yet) — and the plan-gate run still happens after the plan is written. The plan-gate run BRIDGES the spec run: it reads `<spec>.premortem.yaml` first and carries its `accepted_risks` (and still-valid `mitigated` entries) into `<plan>.premortem.yaml` with their acceptance records — a decision accepted at the spec gate is never re-asked at the plan gate.
+Accepting a tiger without mitigation is only ever the user's explicit decision — never self-initiated (that's a form of "accepting the limitation"). File next to the plan: `<plan>.premortem.yaml`; a verdict line goes into the ledger (arcane-mode's `.catalyst/sdd/progress.md` — mechanics in its `references/verification.md`). A sanctioned PRE-PLAN run (large/risky spec) gates the spec instead: mitigations land as spec must_haves / decisions, the file is `<spec>.premortem.yaml`, and the verdict is recorded in the spec's open/deferred section (no plan, no ledger exists yet) — and the plan-gate run still happens after the plan is written. The plan-gate run BRIDGES the spec run: it reads `<spec>.premortem.yaml` first and carries its `accepted_risks` (and still-valid `mitigated` entries — still-valid means the plan actually carries the spec must_have/decision the mitigation landed as; one the plan dropped returns to `tigers:` at the plan gate) into `<plan>.premortem.yaml` with their acceptance records — a decision accepted at the spec gate is never re-asked at the plan gate.
 
 ## Red Flags — STOP
 

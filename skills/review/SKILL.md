@@ -18,7 +18,7 @@ Determine the scope: `git diff --stat` (uncommitted / `--staged` / against a bas
 
 Diff >500 lines — focus on the files with the highest density of phase-1 findings.
 
-The `.catalyst/sdd` workspace is single-writer — one arcane/review session per checkout (arcane-mode `references/verification.md`); a live arcane effort in this checkout means the review runs from its own worktree.
+The `.catalyst/sdd` workspace is single-writer — one arcane/review session per checkout (arcane-mode `references/verification.md`); a live arcane effort in this checkout means the review runs from its own worktree. All `.catalyst/` paths anchor to the repo root (`git rev-parse --show-toplevel`), never the cwd — a session opened in a subdirectory that creates `<subdir>/.catalyst/sdd/` escapes the single-writer rule as an invisible sibling.
 
 ## Phase 2 — semantics (you, under arcane-mode discipline)
 
