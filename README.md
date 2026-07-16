@@ -35,7 +35,7 @@ Thin role definitions in `agents/` (the dispatch prompt always overrides): `cata
 
 ## ContinuousClaude binary layer
 
-The family is the mandatory skill layer of a ContinuousClaude install and fully replaces its markdown skills (bootup, research, autonomous, premortem, review, handoffs, upgrade-harness — all absorbed or superseded; `/autonomous`'s pipeline is superseded by `arcane-mode`, its knowledge loop lives in `arcane-mode/references/knowledge-loop.md`, its looping research in `research`'s deep mode). Binary-dependent features (bloks cards, ouros sandbox, `cc readiness`, `cc-research`) activate only when the tool actually responds on the machine — never assumed from a name on PATH — and degrade gracefully to memory/scouts/web when absent.
+The family is the mandatory skill layer of a ContinuousClaude install and fully replaces its markdown skills (bootup, research, autonomous, premortem, review, handoffs, upgrade-harness — all absorbed or superseded; `/autonomous`'s pipeline is superseded by `arcane-mode`, its knowledge loop lives in `arcane-mode/references/knowledge-loop.md`, its looping research in `research`'s deep mode). Binary-dependent features (bloks cards, ouros sandbox, `ContinuousClaude readiness`, `cc-research`) activate only when the tool actually responds on the machine — never assumed from a name on PATH — and degrade gracefully to memory/scouts/web when absent.
 
 ## Layout
 

@@ -1,6 +1,6 @@
 # Knowledge loop — optional bloks integration
 
-Activates only when `bloks` responds on this machine (verify by running `bloks --version` or `bloks context .` and checking the output — a name on PATH proves nothing; `cc` famously collides with the system C compiler). Without bloks, the loop degrades to what the pipeline already does: lessons distill to persistent memory and the ledger. Nothing else in the pipeline changes.
+Activates only when `bloks` responds on this machine (verify by running `bloks --version` or `bloks context .` and checking the output — a name on PATH proves nothing; ContinuousClaude's multitool was once named `cc` and collided with the system C compiler on every Unix machine, which is why it's now `ContinuousClaude`). Without bloks, the loop degrades to what the pipeline already does: lessons distill to persistent memory and the ledger. Nothing else in the pipeline changes.
 
 ## PREPARE — front-load cards into briefs
 
