@@ -20,12 +20,13 @@ The entry dispatcher: assess the project's agent-readiness, close mechanical gap
 
 **3. Readiness verdict to the user:** level/gaps in one table. Raw project (no build/tests) → propose a readiness pass as separate work before features; the user decides.
 
-**4. Routing** — ask the user "what are we kicking off?" and hand over:
+**4. Routing** — first check for an active campaign: `ls .catalyst/campaign/*/ROADMAP.md` (a scout/executor runs it, you read the result). One exists → offer it as the default route ("campaign <name> is active — continue it?") before the open question. Otherwise ask the user "what are we kicking off?" and hand over:
 
 | Intent | Skill |
 |---|---|
 | Explore/understand, answer unknown | catalyst:research |
 | Large foggy effort (> one session) | catalyst:starchart |
+| Multi-phase program toward a milestone | catalyst:campaign |
 | Feature/decision — needs a spec | catalyst:crucible |
 | Spec exists — plan and execute | catalyst:arcane-mode |
 | Review existing code/PR | catalyst:review |

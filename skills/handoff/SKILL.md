@@ -28,6 +28,7 @@ outcome: SUCCEEDED|PARTIAL_PLUS|PARTIAL_MINUS|FAILED
 goal: {what this session accomplished}
 now: {what the next session should do first}
 test: {verification command, e.g. pytest tests/test_foo.py}
+campaign: {.catalyst/campaign/<name>/ — only when the session ran under a campaign}
 
 # ── MENTAL MODEL (REQUIRED) ──
 mental_model: |

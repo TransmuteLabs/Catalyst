@@ -1,5 +1,5 @@
 ---
-name: catalyst-critic
+name: critic
 description: Reviews one arcane-mode pipeline task - spec compliance and code quality as two verdicts, adjudication requests as a separate list. Directed verification against the brief, report, and review package.
 tools: Read, Grep, Glob, Bash
 model: opus

@@ -16,3 +16,5 @@ bootup-dispatcher-v2	opus	skills/bootup/SKILL.md
 install-verify	opus	skills/install/SKILL.md
 debug-rootcause	opus	skills/debug/SKILL.md
 forge-red-first	opus	skills/forge-skill/SKILL.md
+campaign-one-phase	opus	skills/campaign/SKILL.md
+campaign-milestone-intent	opus	skills/campaign/SKILL.md

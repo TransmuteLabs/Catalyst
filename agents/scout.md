@@ -1,5 +1,5 @@
 ---
-name: catalyst-scout
+name: scout
 description: Fact reconnaissance - find/list/measure/quote/cross-check with file:line. No conclusions, evaluations, or recommendations; the orchestrator chooses.
 tools: Read, Grep, Glob, Bash
 model: sonnet

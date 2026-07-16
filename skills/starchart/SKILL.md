@@ -48,7 +48,7 @@ The map is deliberately incomplete. The "fog or ticket" test: **can you phrase t
 
 **Working the map:** load MAP.md (the map is an index: read only the ticket you take) → take ONE ticket from the frontier → resolve it by its type → write the Resolution and a line in Decisions so far → new questions: into tickets or into the fog; matured fog — into tickets → **stop**. **Never more than one ticket per session** (exception — research tickets: they may be burned down in a batch by parallel scouts). A ticket's resolution spawns the next session, not a continuation of this one: fresh context per decision is the whole point of the map.
 
-**Done:** Not yet specified is empty and the frontier is empty → the map is charted → catalyst:crucible for final hardening → spec → catalyst:arcane-mode. If the effort turned out small — straight to the spec.
+**Done:** Not yet specified is empty and the frontier is empty → the map is charted. Exit routes (the user picks): the remaining work fits one spec → catalyst:crucible for final hardening → spec → catalyst:arcane-mode; the work clusters into several phases toward a milestone → convert the map into a catalyst:campaign (destination → Intent, Decisions so far → Decision log, work clusters → phases). If the effort turned out small — straight to the spec.
 
 ## Red Flags — STOP
 

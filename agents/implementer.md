@@ -1,5 +1,5 @@
 ---
-name: catalyst-implementer
+name: implementer
 description: Executes ONE arcane-mode pipeline task from a complete brief - implementation, tests, atomic commits, honest report. Does not analyze and does not make decisions.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: sonnet
