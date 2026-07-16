@@ -34,6 +34,10 @@ All tasks done ≠ goal achieved. Against the plan's `must_haves`:
 
 **Grounding for doc/synthesis claims:** every claim is checked against the deepest source (code, not a retelling); separately check the connectives and quantifiers added during compression ("when", "always", "after", "therefore", "most") — distortions are born in the connective tissue absent from the source. Derived-vs-derived checks don't count.
 
+## Conversational UAT (user-facing behavior)
+
+Code-side gates prove the code matches the plan; they do not prove the feature works from the user's seat. After goal-backward passes, for user-visible behavior offer a UAT pass: one scenario at a time ("do X — what do you see?"), the user answers in plain text, each result recorded (`uat:` lines in the ledger). A reported gap is a finding like any other — diagnose, fix through the pipeline (fix wave + critic), re-test that scenario. Never interrogate with a batch of ten questions, and never mark UAT passed on the user's silence.
+
 ## Final whole-branch review
 
 The orchestrator reads the branch review package PERSONALLY (`scripts/review-package MERGE_BASE HEAD`, MERGE_BASE = `git merge-base main HEAD`). Exception — a package >~150KB: a fresh-eyes subagent on the same top tier with clean context; the orchestrator adjudicates its verdict. The final review receives the ledger's Minor list and triages what must be fixed before merge. Final findings → one fix wave with the complete list → re-review.

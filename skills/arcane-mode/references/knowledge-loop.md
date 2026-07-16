@@ -33,6 +33,8 @@ For every card injected this task:
 
 Discoveries → `bloks learn {lib} "{finding}"` — **one finding = one card**; five discoveries = five calls. Atomic cards compose; monoliths rot.
 
+**Spikes and research dives** get wrapped up, not abandoned: if the outcome contains repeatable guidance (how to evaluate X, a pattern, a library's gotchas), it becomes bloks cards — or a project-local skill via catalyst:forge-skill when the guidance is a procedure. If the outcome was a one-off decision ("we chose Y, end of story"), it goes to the decision log / memory instead — not every spike deserves a skill.
+
 ## Enforcement ladder for distilled conventions
 
 A recurring convention/correction (seen in ~3+ reports) gets promoted to the **highest enforcement tier that can express it** — prose is the last resort, not the first:

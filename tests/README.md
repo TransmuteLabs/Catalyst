@@ -35,3 +35,9 @@ Regression suite for skill hardening (superpowers:writing-skills methodology —
 - `premortem-tiger-accept`, `handoff-mental-model`, `review-fixing`, `research-grounding`: baseline already compliant — insurance rules; GREEN clean with rule citations.
 - The first bootup GREEN run also surfaced a real skill bug, fixed: "`cc` on PATH" is a false positive everywhere (`/usr/bin/cc` is the system C compiler) — detection now requires the tool to actually respond as ContinuousClaude. Upstream later renamed the multitool binary `cc` → `ContinuousClaude` for the same reason; the skill now checks `ContinuousClaude --version`.
 - `install-verify` (added with catalyst:install, 0.2.0): baseline already compliant — insurance rule; GREEN clean (verify-by-response vs exit-0/PATH-name proxies, tldr-pages collision named). Compliant letter: C.
+
+## Known results (debug / forge-skill, added 0.3.0)
+
+- `debug-rootcause`: baseline compliant at BOTH tiers (opus and a manual sonnet run chose C) — the headline "root cause before fix" discipline is model-default now; insurance rule. The skill's real payload is the family mechanics baselines cannot know: the `.catalyst/debug/<slug>.md` state file, the counted 3-fix rule, honest-gate forms. GREEN clean with skill-grounded reasoning. Compliant letter: C.
+- `forge-red-first`: baseline (opus) compliant — insurance rule; first GREEN run was INVALID (the agent reported it could not read files and answered from priors — treat "no file access" replies as a broken run, re-run, never score them); re-run GREEN clean (letter C, "a test written after the code passes by construction"). Compliant letter: C.
+- The 0.3.0 edits to arcane-mode SKILL.md / verification.md / knowledge-loop.md / catalyst-implementer.md were gated by a GREEN re-run of all five arcane scenarios — all clean (stop-rule C, critic-form C + form check passed, convergence B, plan-lexicon B, adjudication B).
