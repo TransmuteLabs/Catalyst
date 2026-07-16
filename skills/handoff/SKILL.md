@@ -98,7 +98,7 @@ files:
 
 ## RESUME mode
 
-1. Path given → read the document completely (no limit/offset), plus linked research/plans. Multiple files → the most recent by timestamp. No parameters → ask which one.
+1. Path given → read the document completely (no limit/offset), plus linked research/plans. Multiple files → the most recent by timestamp; a torn newest file (its required trailing sections — `next_session_prompt`, `files` — missing) means the writer died mid-CREATE: fall back to the previous complete handoff and flag the tear to the user. No parameters → ask which one.
 2. **Campaign pointer first:** the handoff carries `campaign:` → run the campaign router before anything else (read ROADMAP.md; catalyst:campaign rules). The handoff supplies the mental model; the roadmap decides what happens next — a next_session_prompt executes only if the router lands on the same work, on divergence the roadmap wins.
 3. **next_session_prompt priority:** if present — present it to the user directly: "The previous session left a prompt: {…}. Proceed or adjust?" Approved → execute as-is; the rest of the handoff is context.
 4. No prompt → full analysis: verify the current state against the handoff (scouts under arcane-mode rules), read the critical files from findings, present a synthesis: tasks → status then/now, learnings validity (file:line), recommended actions, conflicts.

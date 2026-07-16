@@ -7,7 +7,7 @@ description: Use when facing a bug, test failure, performance regression, or une
 
 ## Overview
 
-Random fixes waste time and mask real defects. This skill is the family's debugging discipline: build a feedback loop that goes red on the bug, prove the cause against it, fix at the source — never patch the symptom. Debugging is analysis: under the family tiering it never runs on the executor tier; a dispatched debugger is "standard" minimum, and the verdict on the cause is adjudicated by the orchestrator.
+Random fixes waste time and mask real defects. This skill is the family's debugging discipline: build a feedback loop that goes red on the bug, prove the cause against it, fix at the source — never patch the symptom. Debugging is analysis: under the family tiering (the tier→model mapping lives in arcane-mode's Tiering table) it never runs on the executor tier; a dispatched debugger is "standard" minimum, and the verdict on the cause is adjudicated by the orchestrator.
 
 **Iron Law: NO FIX WITHOUT A PROVEN ROOT CAUSE. NO HYPOTHESIS WITHOUT A RED LOOP.**
 
@@ -52,7 +52,7 @@ Regression test at a **correct seam** — one that exercises the real bug patter
 
 ## The 3-fix rule
 
-Count `fixes-tried` — record the attempt in the state file BEFORE running the fix (count first, then try: a session dying mid-attempt must not undercount). After the 3rd failed fix, STOP: each failed fix surfacing a new symptom elsewhere is evidence of a wrong pattern, not bad luck. Take the evidence trail to the user and question the design — do not attempt fix #4 silently.
+Count `fixes-tried` — record the attempt in the state file BEFORE running the fix (count first, then try: a session dying mid-attempt must not undercount). A resumed session finding a counted attempt with no recorded result determines that attempt's outcome FIRST — re-run the loop on the current state, record it — the rule counts failures, not intentions. After the 3rd failed fix, STOP: each failed fix surfacing a new symptom elsewhere is evidence of a wrong pattern, not bad luck. Take the evidence trail to the user and question the design — do not attempt fix #4 silently.
 
 ## Inside vs outside the pipeline
 

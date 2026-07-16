@@ -34,7 +34,7 @@ The implementer WILL find work outside the plan. Rules:
 
 Priority: Rule 4 → stop; Rules 1-3 → fix; in doubt → Rule 4.
 
-**Scope boundary:** Rules 1-3 apply to code the current task CREATES or DIRECTLY TOUCHES — a new endpoint's missing validation is this task's correctness requirement (Rule 2), not a pre-existing condition. Pre-existing warnings and failures in files the task doesn't touch — flag in the report, don't fix. **Flagging governs the CODE (don't touch it), never the STATUS:** an UNEXPECTED red discovered during the task — in or out of scope — still routes through the stop rule below (one repro attempt → BLOCKED, raw output, no diagnosis); "my own subtask is green, so DONE + a flag" is exactly the hedged-diagnosis pattern the stop rule forbids. **Limit:** 3 auto-fixes per task, then stop, document the rest in the report; don't keep digging and don't re-run the build hunting for more.
+**Scope boundary:** Rules 1-3 apply to code the current task CREATES or DIRECTLY TOUCHES — a new endpoint's missing validation is this task's correctness requirement (Rule 2), not a pre-existing condition. Pre-existing warnings and failures in files the task doesn't touch — flag in the report, don't fix. **The tiebreak between Rules 1-3 and the stop rule is comprehension, not scope:** a red whose cause is evident in code your task creates or touches is a Rule 1-3 deviation — fix it inline, within the auto-fix limit. A red you cannot explain without diagnosis — in or out of scope — is UNEXPECTED and routes through the stop rule below (one repro attempt → BLOCKED, raw output, no diagnosis). **Flagging governs the CODE (don't touch it), never the STATUS:** while an unexpected red stands unresolved, the report status is `BLOCKED (own diff green; unexpected red in <path>)` — that exact form. It does not claim your work failed; it says the pipeline cannot proceed to review without an orchestrator decision. `DONE`/`DONE_WITH_CONCERNS` with the red as a flag is the hedged-diagnosis pattern the stop rule forbids, however honest the flag reads. **Limit:** 3 auto-fixes per task, then stop, document the rest in the report; don't keep digging and don't re-run the build hunting for more.
 
 ### Git safety (embed in the brief when working in a worktree)
 
@@ -44,7 +44,7 @@ Priority: Rule 4 → stop; Rules 1-3 → fix; in doubt → Rule 4.
 
 Unexpected failure or divergence from the brief → one honest reproduction attempt → status BLOCKED with the raw output, NO deep diagnosis. Hedged diagnosis in an implementer report = automatic escalation of the task to the "standard" tier.
 
-The rule applies even when your own subtask is green and the red is out of scope ("I'm not blocked, my part is DONE" does not cancel it). Allowed in concerns: raw output, the reproducibility fact, a file pointer, and a one-line "unverified hypothesis: <where>" — with no justification. A multi-line root-cause analysis or a proposed fix is the same hedged diagnosis, even under the pretext of "saving the next agent time" or "the N minutes of digging shouldn't go to waste": an unverified diagnosis presented convincingly costs more than the lost minutes, because the consumer will take it for a fact.
+The rule applies even when your own subtask is green and the red is out of scope ("I'm not blocked, my part is DONE" does not cancel it) — the sanctioned status form is `BLOCKED (own diff green; unexpected red in <path>)`: it reports your own work truthfully while routing the red to the orchestrator; DONE with the red as a flag is not an honest-report alternative, it is the violation. Allowed in concerns: raw output, the reproducibility fact, a file pointer, and a one-line "unverified hypothesis: <where>" — with no justification. A multi-line root-cause analysis or a proposed fix is the same hedged diagnosis, even under the pretext of "saving the next agent time" or "the N minutes of digging shouldn't go to waste": an unverified diagnosis presented convincingly costs more than the lost minutes, because the consumer will take it for a fact.
 
 ### Statuses and the orchestrator's response
 
@@ -53,7 +53,7 @@ The rule applies even when your own subtask is green and the red is out of scope
 | DONE | review-package → critic |
 | DONE_WITH_CONCERNS | read the concerns before review; correctness/scope concerns get resolved before review |
 | NEEDS_CONTEXT | supply the context, re-dispatch the same agent |
-| BLOCKED | context problem → supply and re-dispatch; needs more reasoning → tier up; task too big → split; plan wrong → user. Never: the same model unchanged |
+| BLOCKED | context problem → supply and re-dispatch; needs more reasoning → tier up; task too big → split; unexpected red (own diff may be green) → the diagnosis is the orchestrator's (catalyst:debug), then a fix task; plan wrong → user. Never: the same model unchanged |
 
 ### Report self-check section (mandatory)
 

@@ -60,7 +60,7 @@ premortem:
 - **WARN** — no tigers; paper tigers and/or elephants present: proceed with documented awareness; every elephant gets an owner-decision (a task or the user's explicit acceptance).
 - **PASS** — no findings in any class.
 
-Accepting a tiger without mitigation is only ever the user's explicit decision — never self-initiated (that's a form of "accepting the limitation"). File next to the plan: `<plan>.premortem.yaml`; a verdict line goes into the ledger. A sanctioned PRE-PLAN run (large/risky spec) gates the spec instead: mitigations land as spec must_haves / decisions, the file is `<spec>.premortem.yaml`, and the verdict is recorded in the spec's open/deferred section (no plan, no ledger exists yet) — and the plan-gate run still happens after the plan is written.
+Accepting a tiger without mitigation is only ever the user's explicit decision — never self-initiated (that's a form of "accepting the limitation"). File next to the plan: `<plan>.premortem.yaml`; a verdict line goes into the ledger (arcane-mode's `.catalyst/sdd/progress.md` — mechanics in its `references/verification.md`). A sanctioned PRE-PLAN run (large/risky spec) gates the spec instead: mitigations land as spec must_haves / decisions, the file is `<spec>.premortem.yaml`, and the verdict is recorded in the spec's open/deferred section (no plan, no ledger exists yet) — and the plan-gate run still happens after the plan is written.
 
 ## Red Flags — STOP
 

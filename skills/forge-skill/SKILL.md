@@ -30,7 +30,7 @@ A scenario is a real work situation, not a quiz about the rules:
 
 ## Family harness (this repo)
 
-`tests/pressure/`: one scenario file in `scenarios/<name>.md`, one line in `map.tsv` (`name<TAB>model<TAB>skill-file[<TAB>reference-file...]`). `run-baseline.sh [name...]` = RED, `run-green.sh [name...]` = GREEN; both run each scenario in a neutral cwd (agents started inside the harness find the scenario files and analyze the test instead of playing the role). Score per `tests/README.md`. Editing an existing family skill → re-run the scenarios whose mapped files you touched, not just new ones.
+`tests/pressure/`: one scenario file in `scenarios/<name>.md`, one line in `map.tsv` (`name<TAB>model<TAB>skill-file[<TAB>reference-file...]`). `run-baseline.sh [name...]` = RED, `run-green.sh [name...]` = GREEN; both run each scenario in a neutral cwd (agents started inside the harness find the scenario files and analyze the test instead of playing the role). Score per `tests/README.md`. Editing an existing family skill → re-run the scenarios whose mapped files you touched, not just new ones. The edit stays UNCOMMITTED until its GREEN run passes — an uncommitted skill edit found at session start IS the durable "gate owed" marker (check `tests/pressure/out/` for a scored run newer than the edit before trusting it as gated).
 
 ## Frontmatter doctor
 
