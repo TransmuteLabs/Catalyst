@@ -13,7 +13,7 @@ Division of labor with the arcane-mode ledger: the **ledger** tracks pipeline ta
 
 ## CREATE mode
 
-Determine the session: `ls -td .catalyst/handoffs/*/ 2>/dev/null | head -1` (or `thoughts/shared/handoffs/` if the project already uses the ContinuousClaude tree — don't grow a second one). File: `.catalyst/handoffs/{session}/YYYY-MM-DD_HH-MM_<kebab-description>.yaml`.
+Determine the session: `ls -td .catalyst/handoffs/*/ 2>/dev/null | head -1` resumes the current effort's directory (or `thoughts/shared/handoffs/` if the project already uses the ContinuousClaude tree — don't grow a second one). No directory yet, or this session started a NEW effort → create `.catalyst/handoffs/<effort-kebab>/` (name it after the effort, not the date; on first creation write a `.catalyst/handoffs/.gitignore` containing `*` — the workspace is ephemeral and self-ignores). File: `.catalyst/handoffs/{session}/YYYY-MM-DD_HH-MM_<kebab-description>.yaml`.
 
 Format (required sections marked):
 
@@ -23,12 +23,13 @@ session: {name}
 date: YYYY-MM-DD
 status: complete|partial|blocked
 outcome: SUCCEEDED|PARTIAL_PLUS|PARTIAL_MINUS|FAILED
+        # PARTIAL_PLUS = partial, path forward clear; PARTIAL_MINUS = partial, path blocked/unclear
 ---
-# ── STATUSLINE (REQUIRED — parsed by hooks) ──
+# ── STATUSLINE (goal:/now: REQUIRED — parsed by hooks) ──
 goal: {what this session accomplished}
 now: {what the next session should do first}
 test: {verification command, e.g. pytest tests/test_foo.py}
-campaign: {.catalyst/campaign/<name>/ — only when the session ran under a campaign}
+campaign: {.catalyst/campaign/<name>/ — OPTIONAL, only when the session ran under a campaign; omit otherwise}
 
 # ── MENTAL MODEL (REQUIRED) ──
 mental_model: |
@@ -98,10 +99,11 @@ files:
 ## RESUME mode
 
 1. Path given → read the document completely (no limit/offset), plus linked research/plans. Multiple files → the most recent by timestamp. No parameters → ask which one.
-2. **next_session_prompt priority:** if present — present it to the user directly: "The previous session left a prompt: {…}. Proceed or adjust?" Approved → execute as-is; the rest of the handoff is context.
-3. No prompt → full analysis: verify the current state against the handoff (scouts under arcane-mode rules), read the critical files from findings, present a synthesis: tasks → status then/now, learnings validity (file:line), recommended actions, conflicts.
-4. **Never assume the state matches the handoff.** Scenarios: clean continuation → proceed; diverged codebase → reconcile and adapt the plan; incomplete work → finish it first; stale handoff → re-evaluate the strategy.
-5. If an arcane-mode ledger exists — it is the source of truth for pipeline tasks; the handoff is the source of truth for the mental model.
+2. **Campaign pointer first:** the handoff carries `campaign:` → run the campaign router before anything else (read ROADMAP.md; catalyst:campaign rules). The handoff supplies the mental model; the roadmap decides what happens next — a next_session_prompt executes only if the router lands on the same work, on divergence the roadmap wins.
+3. **next_session_prompt priority:** if present — present it to the user directly: "The previous session left a prompt: {…}. Proceed or adjust?" Approved → execute as-is; the rest of the handoff is context.
+4. No prompt → full analysis: verify the current state against the handoff (scouts under arcane-mode rules), read the critical files from findings, present a synthesis: tasks → status then/now, learnings validity (file:line), recommended actions, conflicts.
+5. **Never assume the state matches the handoff.** Scenarios: clean continuation → proceed; diverged codebase → reconcile and adapt the plan; incomplete work → finish it first; stale handoff → re-evaluate the strategy.
+6. If an arcane-mode ledger exists — it is the source of truth for pipeline tasks; the handoff is the source of truth for the mental model.
 
 ## Red Flags — STOP
 

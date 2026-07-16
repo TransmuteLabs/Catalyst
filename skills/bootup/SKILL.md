@@ -11,7 +11,7 @@ The entry dispatcher: assess the project's agent-readiness, close mechanical gap
 
 ## Steps
 
-**1. Two user questions** (one at a time, crucible rule): new project or existing codebase? which stack (language/framework)?
+**1. User questions** (one at a time, crucible rule): new project or existing codebase? For a NEW project — which stack (language/framework)? For an existing codebase the stack is a file-fact: the scout determines it in step 2, don't ask.
 
 **2. Readiness assessment.**
 - If ContinuousClaude's readiness tooling is available — verify by actually running `ContinuousClaude --version` and checking the output starts with `ContinuousClaude <semver>` (a name on PATH alone proves nothing — the historical `cc` name collided with the system C compiler, which is why the binary was renamed). If confirmed, an executor runs on a brief: `ContinuousClaude readiness` → `ContinuousClaude readiness-fix` → `readiness` again; report: level before/after, files created, failing criteria. The dispatcher receives numbers, not contents.

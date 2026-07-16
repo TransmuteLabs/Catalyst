@@ -1,6 +1,6 @@
 ---
 name: arcane-mode
-description: Use when executing a spec or multi-task implementation plan through subagents, when writing such a plan, or when verifying a completed branch against its original goal. Triggers - implementation plan exists or is requested, work spans 3+ tasks, subagent dispatch is available.
+description: Use when executing a spec or multi-task implementation plan through subagents, when writing such a plan, or when verifying a completed branch against its original goal. Triggers - implementation plan exists or is requested, work spans multiple tasks, subagent dispatch is available.
 ---
 
 # Arcane Mode — SDD pipeline
@@ -13,7 +13,7 @@ Subagent-driven development pipeline: spec → plan → execution by fresh subag
 
 ## When to use
 
-- A spec or a 3+ task plan exists and subagent dispatch is available.
+- A spec or a multi-task (2+) plan exists and subagent dispatch is available.
 - Asked to write an implementation plan for subagent execution.
 - A branch/phase is finished — verify against the goal, not against the task list.
 
@@ -33,7 +33,7 @@ Subagent-driven development pipeline: spec → plan → execution by fresh subag
 | Role | Tier | Rule |
 |---|---|---|
 | Orchestrator | top | architecture, briefs, adjudication, final verdict, personal read of critical-mechanism cores |
-| Analysis / debugging / root-cause / critics | standard minimum | never the "executor" tier |
+| Analysis / debugging / root-cause / critics | standard minimum | never the "executor" tier (sole exception: the availability fallback in `references/economics.md` — always flagged to the user, never silent) |
 | Implementation from a complete brief, fix waves with exact direction | executor | the brief must contain zero open questions |
 | Scouts | executor allowed | find/list/measure/quote only — no conclusions |
 

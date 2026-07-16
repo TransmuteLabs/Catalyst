@@ -30,17 +30,17 @@ Arcane-mode executes one plan; a campaign is the umbrella above many of them: a 
 ## Parked          — phases deferred by an explicit user decision (with the reason)
 ```
 
-Rules: ROADMAP is an index — details live in the linked specs/ledgers. Status changes only with evidence (a spec file exists → specced; premortem passed + plan written → planned; ledger shows tasks closing → executing; arcane verification converged → verified; user accepted → done). Roadmap edits that change scope (add/remove/reorder phases) are user decisions, logged in the Decision log — never silent.
+Rules: PROGRAM.md and ROADMAP.md are **committed to the repo** — they are the program's memory for weeks and must survive `git clean`, clones, and machine changes (commit after every status change; unlike the ephemeral self-ignored `.catalyst/` workspaces). ROADMAP is an index — details live in the linked specs/ledgers. Status changes only with evidence (a spec file exists → specced; premortem passed + plan written → planned; ledger shows tasks closing → executing; arcane verification converged → verified; user accepted → done). Roadmap edits that change scope (add/remove/reorder phases) are user decisions, logged in the Decision log — never silent.
 
 ## Router — every campaign session starts here
 
-Read ROADMAP.md (and nothing else yet), find the first phase whose status is not `done`, route:
+Read ROADMAP.md (and nothing else yet). Take the first milestone not yet closed in PROGRAM.md: if ALL its phases are `done`, the route is its milestone audit — a later milestone's pending phases never skip an unclosed earlier one past its audit. Otherwise route by that milestone's first phase whose status is not `done`:
 
 | State found | Route |
 |---|---|
 | Phase `executing` | resume it: its ledger + `git log` are the truth (arcane-mode rules) — never start another phase on top |
 | Phase `planned` | dispatch into arcane-mode execution |
-| Phase `specced` | catalyst:premortem → plan (arcane-mode step 1) |
+| Phase `specced` | arcane-mode step 1: write the plan; its premortem gate precedes Task 1 |
 | Phase `pending` | catalyst:crucible for its spec (fog wider than a question → starchart first) |
 | Phase `verified` | present to the user for acceptance (UAT offer per verification.md), then `done` |
 | All phases of a milestone `done` | milestone audit (below) — mandatory, before any celebration or next milestone |

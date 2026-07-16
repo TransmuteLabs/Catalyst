@@ -16,7 +16,7 @@ Planning an effort that doesn't fit one session, via a shared map of **decision 
 
 ## Artifacts (local tracker)
 
-`<repo>/.catalyst/map/MAP.md` — the map (one per effort); tickets — `<repo>/.catalyst/map/tickets/NNN-<slug>.md`. If the project has an issue tracker and the user prefers it — the same structure lives there (map issue + child issues), same format.
+`<repo>/.catalyst/map/MAP.md` — the map (one per effort); tickets — `<repo>/.catalyst/map/tickets/NNN-<slug>.md`. The map directory is **committed to the repo** (multi-session memory — it must survive `git clean` and clones, unlike the ephemeral self-ignored `.catalyst/` workspaces). If the project has an issue tracker and the user prefers it — the same structure lives there (map issue + child issues), same format.
 
 ```markdown
 # MAP: <effort>
@@ -48,7 +48,7 @@ The map is deliberately incomplete. The "fog or ticket" test: **can you phrase t
 
 **Working the map:** load MAP.md (the map is an index: read only the ticket you take) → take ONE ticket from the frontier → resolve it by its type → write the Resolution and a line in Decisions so far → new questions: into tickets or into the fog; matured fog — into tickets → **stop**. **Never more than one ticket per session** (exception — research tickets: they may be burned down in a batch by parallel scouts). A ticket's resolution spawns the next session, not a continuation of this one: fresh context per decision is the whole point of the map.
 
-**Done:** Not yet specified is empty and the frontier is empty → the map is charted. Exit routes (the user picks): the remaining work fits one spec → catalyst:crucible for final hardening → spec → catalyst:arcane-mode; the work clusters into several phases toward a milestone → convert the map into a catalyst:campaign (destination → Intent, Decisions so far → Decision log, work clusters → phases). If the effort turned out small — straight to the spec.
+**Done:** Not yet specified is empty, the frontier is empty, AND no open tickets remain. An empty frontier with open tickets is a blocked-by cycle, not a charted map — break it with the user (merge the tickets into one decision, or close one on an explicitly recorded assumption). When truly charted: Exit routes (the user picks): the remaining work fits one spec → catalyst:crucible for final hardening → spec → catalyst:arcane-mode; the work clusters into several phases toward a milestone → convert the map into a catalyst:campaign (destination → Intent, Decisions so far → Decision log, work clusters → phases). If the effort turned out small — straight to the spec.
 
 ## Red Flags — STOP
 

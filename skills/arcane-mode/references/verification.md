@@ -41,7 +41,7 @@ Code-side gates prove the code matches the plan; they do not prove the feature w
 
 ## Final whole-branch review
 
-The orchestrator reads the branch review package PERSONALLY (`scripts/review-package MERGE_BASE HEAD`, MERGE_BASE = `git merge-base main HEAD`). Exception — a package >~150KB: a fresh-eyes subagent on the same top tier with clean context; the orchestrator adjudicates its verdict. The final review receives the ledger's Minor list and triages what must be fixed before merge. Final findings → one fix wave with the complete list → re-review.
+The orchestrator reads the branch review package PERSONALLY (`scripts/review-package MERGE_BASE HEAD`, MERGE_BASE = `git merge-base <base-ref> HEAD` where `<base-ref>` is the branch this effort forked from — never assume `main`). Exception — a package >~150KB: a fresh-eyes subagent on the same top tier with clean context; the orchestrator adjudicates its verdict. The final review receives the ledger's Minor list and triages what must be fixed before merge. Final findings → one fix wave with the complete list → re-review.
 
 ## Fresh-eyes convergence (after the final review, iterative)
 
@@ -60,6 +60,7 @@ Rules:
 
 `<repo>/.catalyst/sdd/progress.md` (the workspace self-ignores in git; `git clean -fdx` destroys it — recover from `git log`).
 
-- Skill start: read the ledger; tasks marked complete are DONE — no re-dispatch; resume at the first unmarked task.
+- **The ledger belongs to ONE plan.** Its first line is the plan identity: `Plan: <plan file path> (<branch>)`. Skill start: read the ledger and compare its identity line against the current plan — a mismatch (new plan, new campaign phase) means the ledger is a previous effort's: archive it (`mv progress.md archive/<plan-slug>-progress.md`) and start a fresh one with the new identity line. Completion marks are only ever trusted for the plan named in the identity line — never carried across plans.
+- Same plan: tasks marked complete are DONE — no re-dispatch; resume at the first unmarked task.
 - After a task's clean review — one line: `Task N: complete (commits <base7>..<head7>, review clean)`; Minor findings — same file, prefixed `minor:`.
 - The ledger stays current after every task — it is the recovery map after compaction; after compaction trust the ledger and `git log`, not conversation memory.

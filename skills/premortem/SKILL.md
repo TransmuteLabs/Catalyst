@@ -56,9 +56,9 @@ premortem:
       true_impact: "..."
 ```
 
-- **BLOCK** — a tiger with no mitigation path: the plan gets reworked (mitigations become concrete tasks/verify steps that land in must_haves); Task 1 is not dispatched.
-- **WARN** — only paper tigers and elephants: proceed with documented awareness; every elephant gets an owner-decision (a task or the user's explicit acceptance).
-- **PASS** — no significant risks.
+- **BLOCK** — at least one tiger: Task 1 is not dispatched until every tiger's mitigation lands in the plan as concrete tasks/verify steps (in must_haves), then the gate re-runs on the reworked plan. A tiger with NO viable mitigation path is the user's decision: accept explicitly or rework the scope — never proceed silently.
+- **WARN** — no tigers; paper tigers and/or elephants present: proceed with documented awareness; every elephant gets an owner-decision (a task or the user's explicit acceptance).
+- **PASS** — no findings in any class.
 
 Accepting a tiger without mitigation is only ever the user's explicit decision — never self-initiated (that's a form of "accepting the limitation"). File next to the plan: `<plan>.premortem.yaml`; a verdict line goes into the ledger.
 

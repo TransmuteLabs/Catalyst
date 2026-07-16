@@ -41,7 +41,7 @@ The critic rules from arcane-mode/references/dispatch-templates.md apply here to
 ### Summary                — 2-3 sentences in plain language
 ```
 
-Follow-up: blocking findings → fix through arcane-mode (fix plan + critic + re-review), never "I'll just patch it in this same review" — a reviewer who edits code stops being a reviewer.
+Follow-up: findings are fixed outside the open review, never woven into it — a reviewer who edits code mid-review stops being a reviewer. Task-sized findings → arcane-mode (fix plan + critic + re-review). A small obvious fix (< ~20 lines, arcane's own do-it-yourself threshold) → apply it AFTER the verdict is delivered, then re-run phases 1-2 on the new diff; the ban is on editing while the review is open, not on fixing after the verdict.
 
 ## Deslop mode — cleaning up agent-generated slop
 
@@ -55,6 +55,6 @@ When the request is "clean this up / remove the AI slop" rather than a verdict, 
 
 - A verdict issued without reading the actual code around the findings (tool facts ≠ a review).
 - Severity copied from the linter without judging actual risk.
-- The reviewer started fixing findings themselves in the same session.
+- The reviewer started fixing findings while the review was still open (post-verdict small fixes and a requested deslop pass are separate engagements, not this).
 - The test baseline not compared BEFORE/AFTER ("tests look green").
 - The diff built as `HEAD~1` on a multi-commit branch — early commits are lost; only merge-base/an explicit BASE.

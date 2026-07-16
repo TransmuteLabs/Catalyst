@@ -13,7 +13,7 @@ Random fixes waste time and mask real defects. This skill is the family's debugg
 
 ## Debug state survives the session
 
-Non-trivial investigations outlive context windows. Keep the state in `.catalyst/debug/<slug>.md` from the start:
+Non-trivial investigations outlive context windows. Keep the state in `.catalyst/debug/<slug>.md` from the start (on first creation write a `.catalyst/debug/.gitignore` containing `*` — the workspace is ephemeral and self-ignores):
 
 ```markdown
 # <slug> — <symptom, one line>
@@ -42,7 +42,7 @@ Run the loop, watch it go red, confirm it is the USER'S failure mode (a nearby d
 
 3-5 **ranked, falsifiable** hypotheses before testing any (a single hypothesis anchors on the first plausible idea). Format: "if X is the cause, changing Y makes the loop green / Z makes it worse" — no stated prediction means it's a vibe, sharpen or discard. One of the candidates is always **"the measurement is wrong, not the system"** — the loop itself, the query, the fixture, or a premise (one key applied across distinct entities, a filter not matching the data's grain) may be the defect; audit the premise before escalating a strange result to a system bug. Show the ranking to the user — they often re-rank instantly ("we just deployed #3") — but don't block on them.
 
-Rank by evidence strength, not by plausibility: controlled reproduction > primary artifacts (logs, traces, git history, file:line behavior) > independent sources converging > single-source code-path inference > circumstantial (timing, naming, resemblance to past bugs) > intuition. A hypothesis resting on lower tiers is down-ranked when a rival holds stronger tiers; each top hypothesis must also carry evidence AGAINST itself and name the **cheapest probe that discriminates it from the next-best** — that probe runs first. Two "different" hypotheses that reduce to the same mechanism are merged, not counted as convergence.
+Rank by evidence strength, not by plausibility: controlled reproduction > primary artifacts (logs, traces, git history, file:line behavior) > independent sources converging > single-source code-path inference > circumstantial (timing, naming, resemblance to past bugs) > intuition. A hypothesis resting on lower tiers is down-ranked when a rival holds stronger tiers; each top hypothesis must also carry evidence AGAINST itself and name the **cheapest probe that discriminates it from the next-best**; the discriminating probe between the top TWO hypotheses runs first. Two "different" hypotheses that reduce to the same mechanism are merged, not counted as convergence.
 
 Probe one variable at a time, each probe mapped to a prediction: debugger/REPL breakpoint first, targeted logs at hypothesis-separating boundaries second — every log tagged with one prefix (`[DBG-<slug>]`) so cleanup is a single grep; never "log everything and grep". Performance regressions: logs lie — take a baseline measurement (profiler, timing harness, query plan), then bisect; measure first, fix second.
 

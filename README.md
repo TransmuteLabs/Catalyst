@@ -31,11 +31,11 @@ A skills family for disciplined agentic development. Form factor — superpowers
 | `catalyst:forge-skill` | TDD for skills: RED baseline → write → GREEN pressure run → close loopholes (wires tests/pressure) |
 | `catalyst:campaign` | Program layer above arcane-mode: PROGRAM/ROADMAP state, phase router, milestone audit against intent |
 
-Flow: fog bigger than a session → `starchart` → `crucible` → spec → `premortem` → `arcane-mode`. A well-scoped feature goes straight to `crucible` → `premortem` → `arcane-mode`. A multi-phase program toward a milestone — `campaign` (each phase still runs the flow above). Entry from scratch — `bootup`.
+Flow: fog bigger than a session → `starchart` → `crucible` → spec → `arcane-mode` (plan → `premortem` gate → execution). A well-scoped feature goes straight to `crucible` → spec → `arcane-mode`. A multi-phase program toward a milestone — `campaign` (each phase still runs the flow above). Entry from scratch — `bootup`.
 
 ## Agents
 
-Thin role definitions in `agents/` (the dispatch prompt always overrides): `catalyst:implementer` (sonnet, executes one task from a complete brief), `catalyst:critic` (opus, two verdicts + adjudication requests), `catalyst:scout` (sonnet, codebase facts only), `catalyst:researcher` (opus, external research with sources/confidence/inversion; ouros sandbox when present, clone/web otherwise), `catalyst:auditor` (opus, fresh-eyes convergence lens).
+Thin role definitions in `agents/` (the dispatch prompt always overrides): `catalyst:implementer` (sonnet, executes one task from a complete brief), `catalyst:critic` (opus, two verdicts + adjudication requests), `catalyst:scout` (sonnet, codebase facts only), `catalyst:researcher` (opus, external research with sources/confidence/inversion; ouros sandbox when present, clone/web otherwise), `catalyst:auditor` (model set per dispatch — top tier for mechanism-probing/milestone lenses, opus for claim-truth/conformance; fresh-eyes convergence lens).
 
 ## ContinuousClaude binary layer
 
@@ -52,4 +52,4 @@ agents/             # thin agent role definitions
 tests/pressure/     # pressure-test regression suite (see tests/README.md)
 ```
 
-Pipeline working artifacts (briefs, reports, review packages, ledger) live in `<repo>/.catalyst/` — self-ignored in git. Skill changes are gated by the pressure suite: `tests/pressure/run-green.sh`.
+Working artifacts live in `<repo>/.catalyst/` with a durability split: **ephemeral** workspaces (`sdd/`, `debug/`, `research/`, `handoffs/`) self-ignore in git — the skill that creates one writes a `*` .gitignore inside it; **program memory** (`campaign/`, `map/`) is committed — it must survive `git clean`, clones, and machine changes. Skill changes are gated by the pressure suite: `tests/pressure/run-green.sh`.
