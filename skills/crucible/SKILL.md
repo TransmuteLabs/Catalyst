@@ -44,7 +44,7 @@ Fast path: when the conversation ALREADY contains the decisions (a long design d
 
 When the decision tree is closed, write the spec **section by section, with user approval after each section**: goal and non-goals → decisions made (D-01, D-02, … with "what was decided and why") → must_haves (truths / artifacts / key_links — the seed for arcane-mode's goal-backward verification) → open/deferred. Save to `docs/specs/YYYY-MM-DD-<topic>-spec.md`. Deferred ideas are recorded in the spec explicitly — they do NOT slip into the plan silently.
 
-Standalone terminal state: approved spec → catalyst:arcane-mode (which writes the plan; its premortem gate runs after the plan, before Task 1). If the interview reveals fog wider than one session — hand off to catalyst:starchart. **When another skill invokes crucible for a named decision artifact** — a starchart ticket's Resolution, a MAP Destination, a campaign Intent/milestones — the interview rules apply unchanged, but the output is the caller's artifact and control returns to the caller: no spec file, no onward routing.
+Standalone terminal state: approved spec → catalyst:arcane-mode (which writes the plan; its premortem gate runs after the plan, before Task 1). If the interview reveals fog wider than one session — hand off to catalyst:starchart. **When another skill invokes crucible, control returns to the caller — no onward routing.** For a named decision artifact (a starchart ticket's Resolution, a MAP Destination, a campaign Intent/milestones) the output is that artifact, no spec file. For a campaign PHASE SPEC the output IS a spec (standalone rules apply), but it goes back to the campaign router, which owns what happens next.
 
 ## Red Flags — STOP
 
@@ -54,3 +54,4 @@ Standalone terminal state: approved spec → catalyst:arcane-mode (which writes 
 - Asked the user about a fact that lives in files/code.
 - Retold the whole spec at the end instead of section-by-section approval.
 - The interview turned into a lecture: your messages grow, questions disappear from them.
+- Invoked by another skill for its artifact, but wrote a spec file or routed onward anyway — the caller owns the next step.

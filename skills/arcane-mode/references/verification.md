@@ -60,7 +60,7 @@ Rules:
 
 `<repo>/.catalyst/sdd/progress.md` (the workspace self-ignores in git; `git clean -fdx` destroys it — recover from `git log`).
 
-- **The ledger belongs to ONE plan.** Its first line is the plan identity: `Plan: <plan file path> (<branch>)`. Skill start: read the ledger and compare its identity line against the current plan — a mismatch (new plan, new campaign phase) means the ledger is a previous effort's: archive it (`mv progress.md archive/<plan-slug>-progress.md`) and start a fresh one with the new identity line. Completion marks are only ever trusted for the plan named in the identity line — never carried across plans.
+- **The ledger belongs to ONE plan.** Its first line is the plan identity: `Plan: <plan file path> (<branch>)`. Skill start: read the ledger and compare its identity line against the current plan — a mismatch (new plan, new campaign phase) means the ledger is a previous effort's: archive it (`mv progress.md archive/<plan-slug>-progress.md`) and start a fresh one with the new identity line. Exception — the mismatch is merely a renamed/moved plan FILE of the same effort (same branch, same must_haves): update the identity line in place; archiving live completion marks would re-dispatch finished tasks. Completion marks are only ever trusted for the plan named in the identity line — never carried across plans.
 - Same plan: tasks marked complete are DONE — no re-dispatch; resume at the first unmarked task.
 - After a task's clean review — one line: `Task N: complete (commits <base7>..<head7>, review clean)`; Minor findings — same file, prefixed `minor:`.
 - The ledger stays current after every task — it is the recovery map after compaction; after compaction trust the ledger and `git log`, not conversation memory.

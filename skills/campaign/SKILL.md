@@ -21,6 +21,7 @@ Arcane-mode executes one plan; a campaign is the umbrella above many of them: a 
                      audit runs against THIS text, not against the phase list
 ## Non-goals       — what it deliberately won't do
 ## Milestones      — M1, M2… each with its own must_haves (truths/artifacts/key_links)
+                     and a `status: open|closed` line — closed ONLY by a clean intent audit
 ## Decision log    — D-01… one line per program-level decision + why
 
 # ROADMAP.md
@@ -30,19 +31,19 @@ Arcane-mode executes one plan; a campaign is the umbrella above many of them: a 
 ## Parked          — phases deferred by an explicit user decision (with the reason)
 ```
 
-Rules: PROGRAM.md and ROADMAP.md are **committed to the repo** — they are the program's memory for weeks and must survive `git clean`, clones, and machine changes (commit after every status change; unlike the ephemeral self-ignored `.catalyst/` workspaces). ROADMAP is an index — details live in the linked specs/ledgers. Status changes only with evidence (a spec file exists → specced; premortem passed + plan written → planned; ledger shows tasks closing → executing; arcane verification converged → verified; user accepted → done). Roadmap edits that change scope (add/remove/reorder phases) are user decisions, logged in the Decision log — never silent.
+Rules: PROGRAM.md and ROADMAP.md are **committed to the repo** — they are the program's memory for weeks and must survive `git clean`, clones, and machine changes. State commits go to the campaign's BASE branch (the branch phases fork from), never onto a phase work branch — a discarded phase branch must not carry the program's memory away with it. **The session that produces the evidence flips the status and commits immediately** — not at handoff time (the Session-end check is a safety net, not the flip point). ROADMAP is an index — details live in the linked specs/ledgers. Status changes only with evidence (a spec file exists → specced; the premortem gate returned PASS or WARN — BLOCK bars it — and the plan is written → planned; ledger shows tasks closing → executing; arcane verification converged → verified; user accepted → done). Roadmap edits that change scope (add/remove/reorder phases) are user decisions, logged in the Decision log — never silent.
 
 ## Router — every campaign session starts here
 
-Read ROADMAP.md (and nothing else yet). Take the first milestone not yet closed in PROGRAM.md: if ALL its phases are `done`, the route is its milestone audit — a later milestone's pending phases never skip an unclosed earlier one past its audit. Otherwise route by that milestone's first phase whose status is not `done`:
+Read ROADMAP.md and PROGRAM.md's Milestones section (nothing else yet). Take the first milestone whose `status:` is not `closed`: if ALL its phases are `done`, the route is its milestone audit — a later milestone's pending phases never skip an unclosed earlier one past its audit. Otherwise route by that milestone's first phase whose status is not `done`. Before dispatching into the route, warm up: if `.catalyst/handoffs/` holds a handoff carrying this campaign's pointer, read the latest one — the roadmap decides WHAT happens next, the handoff's mental model saves re-discovering HOW things work.
 
 | State found | Route |
 |---|---|
 | Phase `executing` | resume it: its ledger + `git log` are the truth (arcane-mode rules) — never start another phase on top |
 | Phase `planned` | dispatch into arcane-mode execution |
 | Phase `specced` | arcane-mode step 1: write the plan; its premortem gate precedes Task 1 |
-| Phase `pending` | catalyst:crucible for its spec (fog wider than a question → starchart first) |
-| Phase `verified` | present to the user for acceptance (UAT offer per verification.md), then `done` |
+| Phase `pending` | catalyst:crucible for its spec — the spec is produced standalone, but control returns to THIS router (no self-routing onward); fog wider than a question → starchart first |
+| Phase `verified` | present to the user for acceptance (UAT offer per verification.md) BEFORE arcane's branch-finish question — acceptance decides whether the branch integrates; then `done` |
 | All phases of a milestone `done` | milestone audit (below) — mandatory, before any celebration or next milestone |
 | No roadmap | this is campaign creation (below) |
 
@@ -51,7 +52,7 @@ One session advances ONE phase's state as far as it honestly goes; parallel phas
 ## Creating a campaign
 
 1. Intent and milestones — through catalyst:crucible (the intent is a decision, not a transcription); starchart's finished map converts naturally: destination → Intent, closed decisions → Decision log, remaining work clusters → phases.
-2. Slice phases tracer-first (each phase leaves the system demonstrably better/shippable), 3-9 phases per milestone; a phase should fit one arcane-mode plan (2-3 tasks) — bigger means it's a milestone, not a phase.
+2. Slice phases tracer-first (each phase leaves the system demonstrably better/shippable), 3-9 phases per milestone; a phase should fit one arcane-mode plan (a few tasks) — a bigger chunk splits into more phases; a milestone is a set of phases, never one oversized phase.
 3. Write both files, get the user's approval of the roadmap as ONE question, set every phase `pending`.
 
 ## Milestone audit — against intent, not the checklist
@@ -71,3 +72,4 @@ Campaign sessions end through catalyst:handoff; the handoff carries the campaign
 - Milestone declared done from the phase checklist without the intent audit.
 - Program details accumulating in ROADMAP.md instead of the linked artifacts — the index rots into a monolith.
 - A campaign created for a single-feature effort — that's crucible → arcane-mode, the umbrella adds only weight.
+- Campaign state uncommitted at session end, or committed onto a phase work branch instead of the base branch.

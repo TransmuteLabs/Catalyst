@@ -13,7 +13,7 @@ Division of labor with the arcane-mode ledger: the **ledger** tracks pipeline ta
 
 ## CREATE mode
 
-Determine the session: `ls -td .catalyst/handoffs/*/ 2>/dev/null | head -1` resumes the current effort's directory (or `thoughts/shared/handoffs/` if the project already uses the ContinuousClaude tree — don't grow a second one). No directory yet, or this session started a NEW effort → create `.catalyst/handoffs/<effort-kebab>/` (name it after the effort, not the date; on first creation write a `.catalyst/handoffs/.gitignore` containing `*` — the workspace is ephemeral and self-ignores). File: `.catalyst/handoffs/{session}/YYYY-MM-DD_HH-MM_<kebab-description>.yaml`.
+Determine the session: `ls -td .catalyst/handoffs/*/ 2>/dev/null | head -1` surfaces the most recent directory — verify it belongs to THIS effort (interleaved efforts: returning to an older one means using ITS directory, not the newest) (or `thoughts/shared/handoffs/` if the project already uses the ContinuousClaude tree — don't grow a second one). No directory yet, or this session started a NEW effort → create `.catalyst/handoffs/<effort-kebab>/` (name it after the effort, not the date; on first creation write a `.catalyst/handoffs/.gitignore` containing `*` — the workspace is ephemeral and self-ignores). File: `.catalyst/handoffs/{session}/YYYY-MM-DD_HH-MM_<kebab-description>.yaml`.
 
 Format (required sections marked):
 
@@ -112,3 +112,4 @@ files:
 - Resume started working before verifying the state ("the handoff is fresh anyway").
 - A next_session_prompt that requires clarifying questions — it isn't ready.
 - Renamed goal:/now: fields — the statusline hook parsing breaks.
+- Executed a next_session_prompt under a campaign without running the campaign router first.

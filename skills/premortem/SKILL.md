@@ -60,7 +60,7 @@ premortem:
 - **WARN** — no tigers; paper tigers and/or elephants present: proceed with documented awareness; every elephant gets an owner-decision (a task or the user's explicit acceptance).
 - **PASS** — no findings in any class.
 
-Accepting a tiger without mitigation is only ever the user's explicit decision — never self-initiated (that's a form of "accepting the limitation"). File next to the plan: `<plan>.premortem.yaml`; a verdict line goes into the ledger.
+Accepting a tiger without mitigation is only ever the user's explicit decision — never self-initiated (that's a form of "accepting the limitation"). File next to the plan: `<plan>.premortem.yaml`; a verdict line goes into the ledger. A sanctioned PRE-PLAN run (large/risky spec) gates the spec instead: mitigations land as spec must_haves / decisions, the file is `<spec>.premortem.yaml` — and the plan-gate run still happens after the plan is written.
 
 ## Red Flags — STOP
 
@@ -68,4 +68,5 @@ Accepting a tiger without mitigation is only ever the user's explicit decision �
 - A risk without a falsifiable_test landed in tigers.
 - An elephant recorded and silently ignored (no task, no user decision).
 - A mitigation reading "we'll handle it during implementation" — not a plan task = not a mitigation.
+- Mitigation tasks added but Task 1 dispatched without re-running the gate on the reworked plan.
 - All risks came out as paper tigers on a first large project — an overconfidence signal; walk lenses 5-6 again.

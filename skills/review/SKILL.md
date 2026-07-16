@@ -7,14 +7,14 @@ description: Use for standalone code review outside the arcane-mode pipeline - "
 
 ## Overview
 
-Reviewing existing code/diff/PR outside the arcane-mode pipeline, with the same discipline: structural facts are gathered by agents, semantic reasoning happens on top of facts, the verdict comes after adjudication. Inside the pipeline this skill isn't needed — that's the arcane-mode critic layer.
+Reviewing existing code/diff/PR outside the arcane-mode pipeline, with the same discipline: structural facts are gathered by agents, semantic reasoning happens on top of facts, the verdict comes after adjudication. Inside the pipeline this skill isn't needed — that's the arcane-mode critic layer. "Something broke and the cause is unknown" is not a review either — that's catalyst:debug; review judges a diff, it doesn't root-cause failures.
 
 ## Phase 1 — structural facts (agents, not you)
 
-Determine the scope: `git diff --stat` (uncommitted / `--staged` / `--base-ref <ref>` / PR via `gh pr diff`). No changes — stop.
+Determine the scope: `git diff --stat` (uncommitted / `--staged` / against a base ref via `git diff <base-ref>...HEAD` / PR via `gh pr diff`). No changes — stop.
 
 - If `tldr`/`bugbot` are on PATH — parallel agents run them (`bugbot check`, `impact`/`whatbreaks` on changed functions, `smells`/`complexity`, with a security focus — `secure`/`taint`) and return JSON verbatim, no retelling.
-- Otherwise — scouts gather: the full diff to a file (`git diff -U10 > .catalyst/sdd/review-standalone.diff`), the changed functions and their callers (grep), the test baseline BEFORE/AFTER (`N passed; 0 failed; K ignored`), new skips/ignores.
+- Otherwise — scouts gather: the full diff to a file (`mkdir -p .catalyst/sdd && [ -f .catalyst/sdd/.gitignore ] || printf '*\n' > .catalyst/sdd/.gitignore; git diff -U10 > .catalyst/sdd/review-standalone.diff` — the workspace self-ignores even when the arcane scripts never ran), the changed functions and their callers (grep), the test baseline BEFORE/AFTER (`N passed; 0 failed; K ignored`), new skips/ignores.
 
 Diff >500 lines — focus on the files with the highest density of phase-1 findings.
 
