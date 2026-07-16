@@ -26,6 +26,7 @@ A skills family for disciplined agentic development. Form factor — superpowers
 | `catalyst:review` | Standalone code/PR review outside the pipeline, same critic discipline |
 | `catalyst:handoff` | Session transfer: mental-model handoff create/resume (ContinuousClaude-hook compatible) |
 | `catalyst:upgrade-harness` | Extend the ouros sandbox with new external functions (requires the ContinuousClaude binary layer) |
+| `catalyst:install` | Toolchain setup and doctor: detect-by-response, one batched consent, verify every component |
 
 Flow: fog bigger than a session → `starchart` → `crucible` → spec → `premortem` → `arcane-mode`. A well-scoped feature goes straight to `crucible` → `premortem` → `arcane-mode`. Entry from scratch — `bootup`.
 
