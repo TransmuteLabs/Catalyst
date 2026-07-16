@@ -52,7 +52,7 @@ Regression test at a **correct seam** — one that exercises the real bug patter
 
 ## The 3-fix rule
 
-Count `fixes-tried`. After the 3rd failed fix, STOP: each failed fix surfacing a new symptom elsewhere is evidence of a wrong pattern, not bad luck. Take the evidence trail to the user and question the design — do not attempt fix #4 silently.
+Count `fixes-tried` — record the attempt in the state file BEFORE running the fix (count first, then try: a session dying mid-attempt must not undercount). After the 3rd failed fix, STOP: each failed fix surfacing a new symptom elsewhere is evidence of a wrong pattern, not bad luck. Take the evidence trail to the user and question the design — do not attempt fix #4 silently.
 
 ## Inside vs outside the pipeline
 

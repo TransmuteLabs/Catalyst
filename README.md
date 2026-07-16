@@ -35,7 +35,7 @@ Flow: fog bigger than a session → `starchart` → `crucible` → spec → `arc
 
 ## Agents
 
-Thin role definitions in `agents/` (the dispatch prompt always overrides): `catalyst:implementer` (sonnet, executes one task from a complete brief), `catalyst:critic` (opus, two verdicts + adjudication requests), `catalyst:scout` (sonnet, codebase facts only), `catalyst:researcher` (opus, external research with sources/confidence/inversion; ouros sandbox when present, clone/web otherwise), `catalyst:auditor` (model set per dispatch — top tier for mechanism-probing/milestone lenses, opus for claim-truth/conformance; fresh-eyes convergence lens).
+Thin role definitions in `agents/` (the dispatch prompt overrides scope and focus; each agent's safety core — stop rule, grounding, severity independence — is non-overridable, see the agent files): `catalyst:implementer` (sonnet, executes one task from a complete brief), `catalyst:critic` (opus, two verdicts + adjudication requests), `catalyst:scout` (sonnet, codebase facts only), `catalyst:researcher` (opus, external research with sources/confidence/inversion; ouros sandbox when present, clone/web otherwise), `catalyst:auditor` (model set per dispatch — top tier for mechanism-probing/milestone lenses, opus for claim-truth/conformance; fresh-eyes convergence lens).
 
 ## ContinuousClaude binary layer
 

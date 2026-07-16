@@ -46,7 +46,7 @@ Effort is a second dial, set per dispatch independently of tier; budget pressure
 - A found defect gets fixed completely, never legitimized (no "accept the limitation", no DEFERRED, no self-initiated stubs).
 - An implementer brief passes the readiness test: the task can be done without opening a single file "to scout" and without asking a single question.
 - A gate is confirmed only by an honest exit-code form (`set -o pipefail` or no pipe at all) and an exact test baseline (`N passed; 0 failed; K ignored`) — never a bare "EXIT 0".
-- After compaction trust the ledger `.catalyst/sdd/progress.md` and `git log`, not memory. At skill start, run the ledger identity check (no ledger yet → create it with the identity line): `references/verification.md`.
+- After compaction trust the ledger `.catalyst/sdd/progress.md` and `git log`, not memory. At execution start, run the ledger identity check (created at plan approval; none for plan-writing sessions): `references/verification.md`.
 
 ## Orchestrator Red Flags — STOP
 
