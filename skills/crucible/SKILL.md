@@ -25,6 +25,14 @@ A relentless interview that drives an idea/plan/decision to shared understanding
 4. **Walk the decision tree in dependency order:** decisions that others depend on come first; a branch closed by the user's answer is not reopened.
 5. **Stop gate:** do not act (code, plan, dispatches) until the user confirms shared understanding is reached. Confirmation is explicit, never inferred from silence.
 
+## Coverage net
+
+The interview follows the decision tree, not a questionnaire — but before declaring the tree closed, sweep the domains that get forgotten systematically. For each: either it produced decisions, or you consciously mark it not-applicable — never silently skipped.
+
+Problem & goals · users & journey · **data & state** (ownership, lifecycle, migrations) · technical landscape (what exists, what it constrains) · scale & performance · integrations & dependencies · **security & access** · **deployment & operations** (rollout, rollback, observability).
+
+A domain that is relevant but produced zero decisions means the tree is not closed.
+
 ## Output — the spec
 
 When the decision tree is closed, write the spec **section by section, with user approval after each section**: goal and non-goals → decisions made (D-01, D-02, … with "what was decided and why") → must_haves (truths / artifacts / key_links — the seed for arcane-mode's goal-backward verification) → open/deferred. Save to `docs/specs/YYYY-MM-DD-<topic>-spec.md`. Deferred ideas are recorded in the spec explicitly — they do NOT slip into the plan silently.

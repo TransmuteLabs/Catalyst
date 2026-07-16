@@ -107,6 +107,7 @@ A plan completes within ~50% of the executing session's context (not 80%): no co
 2. **Placeholder scan:** grep the plan for the patterns from "No Placeholders" and "Ban on simplification language". Found → fix.
 3. **Type consistency:** do signatures/names in later tasks match those defined in earlier ones? `clearLayers()` in Task 3 and `clearFullLayers()` in Task 7 is a plan bug.
 4. **must_haves derivable:** every truth is reachable by composing the tasks; every key_link is actually laid by someone.
+5. **No time estimates:** a plan names tasks and dependencies, never durations ("2-3 weeks", "quick") — estimates are noise that reads as commitment; effort is expressed only through the split signals above.
 
 ## Pre-flight (orchestrator, before Task 1)
 
