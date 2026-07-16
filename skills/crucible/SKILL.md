@@ -9,6 +9,8 @@ description: Use when a feature idea, architectural decision, or spec needs hard
 
 A relentless interview that drives an idea/plan/decision to shared understanding, from which a spec is born. Core: the grilling technique (Matt Pocock, MIT) + the superpowers brainstorming hard gate: **no code, no scaffolding, no "quick drafts" before the spec is approved**. This applies to every project regardless of perceived simplicity.
 
+The gate has ONE sanctioned exception: a **throwaway prototype answering a named design question** the interview cannot settle on paper ("does this state model feel right?"). Marked throwaway, no polish, no persistence, state surfaced after every action; the validated ANSWER feeds the interview and the spec — the prototype code never graduates into the implementation (park it out of main with a pointer).
+
 ## When to use
 
 - A new feature, an architectural decision, a change of approach — before writing a plan.
@@ -34,6 +36,8 @@ Problem & goals · users & journey · **data & state** (ownership, lifecycle, mi
 A domain that is relevant but produced zero decisions means the tree is not closed.
 
 ## Output — the spec
+
+Fast path: when the conversation ALREADY contains the decisions (a long design discussion just happened), don't re-interview — synthesize the spec directly from what was decided, marking anything you had to assume as an open question. Section-by-section approval still applies.
 
 When the decision tree is closed, write the spec **section by section, with user approval after each section**: goal and non-goals → decisions made (D-01, D-02, … with "what was decided and why") → must_haves (truths / artifacts / key_links — the seed for arcane-mode's goal-backward verification) → open/deferred. Save to `docs/specs/YYYY-MM-DD-<topic>-spec.md`. Deferred ideas are recorded in the spec explicitly — they do NOT slip into the plan silently.
 

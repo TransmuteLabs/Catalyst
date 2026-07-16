@@ -41,6 +41,17 @@ Before shipping, check the four defects that kill discovery:
 - No echoed or truncated trigger lists copy-pasted from another skill.
 - Body rules are behavioral ("do X before Y", red flags with rationalization counters) — anything expressible as a lint/validation belongs in tooling, not prose.
 
+## Craft — what makes a skill predictable
+
+A skill exists to wrangle determinism out of a stochastic system; predictability of PROCESS (same steps every run) is the root virtue. The levers:
+
+- **No-op test, per sentence:** does this line change behavior versus the agent's default? "Be thorough" fails it; delete failing sentences whole, don't trim them. Every surviving line pays context rent.
+- **Leading words:** one pretrained concept ("tight" loop, loop goes "red", "tracer" task) anchors a whole region of behavior in one token — hunt for triads of adjectives and collapse them into a single strong word. A weak word's fix is a stronger word ("relentless"), not more prose.
+- **Prompt the positive:** prohibition names the elephant ("don't think of X" makes X more available). State the target behavior; keep a prohibition only as a hard guardrail you can't phrase positively, paired with what to do instead.
+- **Completion criteria, checkable and exhaustive:** each step ends on a condition the agent can verify ("every modified file accounted for", not "produce a list") — a fuzzy criterion invites premature completion.
+- **Progressive disclosure by branches:** inline what every run needs; push what only some branches reach into a linked reference file. Cure sprawl with the ladder, not by deleting live rules.
+- **Invocation economics:** a model-invoked skill pays context load (its description sits in every turn) — worth it only when the agent must reach it autonomously. Rarely-fired hand-tools can be user-invoked (zero context load, you are the index); many of those pile up cognitive load — cure with one router skill.
+
 ## What deserves a skill
 
 Repeatable guidance an agent will need again: a technique, a discipline, a reference. NOT: one-off solutions ("we chose library Y" → decision log/memory), things a validator can enforce, retellings of how one problem was solved once. Family skills are written in English; project-local skills go to the project's `.claude/skills/`, not the family.

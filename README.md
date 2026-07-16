@@ -27,7 +27,7 @@ A skills family for disciplined agentic development. Form factor — superpowers
 | `catalyst:handoff` | Session transfer: mental-model handoff create/resume (ContinuousClaude-hook compatible) |
 | `catalyst:upgrade-harness` | Extend the ouros sandbox with new external functions (requires the ContinuousClaude binary layer) |
 | `catalyst:install` | Toolchain setup and doctor: detect-by-response, one batched consent, verify every component |
-| `catalyst:debug` | Root cause before fixes: repro → localize → prove → fix; persistent debug state; 3-fix rule |
+| `catalyst:debug` | A red feedback loop before fixes: build/tighten the loop → minimise → prove → fix at the source; persistent debug state; 3-fix rule |
 | `catalyst:forge-skill` | TDD for skills: RED baseline → write → GREEN pressure run → close loopholes (wires tests/pressure) |
 
 Flow: fog bigger than a session → `starchart` → `crucible` → spec → `premortem` → `arcane-mode`. A well-scoped feature goes straight to `crucible` → `premortem` → `arcane-mode`. Entry from scratch — `bootup`.
