@@ -19,7 +19,8 @@ Detection means the tool **responds with its own signature** — a name on PATH 
 | ContinuousClaude binary layer (5 binaries, hooks, settings) | `ContinuousClaude --version` output starts `ContinuousClaude <semver>` | *nix: `curl -fsSL https://raw.githubusercontent.com/TransmuteLabs/ContinuousClaude-releases/main/install.sh \| sh` · Windows: `irm https://raw.githubusercontent.com/TransmuteLabs/ContinuousClaude-releases/main/install.ps1 \| iex` | downloads `cc-setup` from the public releases repo (source repo is private); flags pass through (`sh -s -- --add-path --autostart`); cc-setup also installs this plugin |
 | bloks (knowledge cards) | `bloks --version` | prebuilt `bloks-<triple>` from [bloks-releases](https://github.com/TransmuteLabs/bloks-releases) Releases → `~/.local/bin/bloks`; or `cc-setup install --with-tools` | source repo is private — `cargo install --git` works only with repo access |
 | tldr (code analysis) | `tldr --version` identifies TransmuteLabs tldr, not tldr-pages | prebuilt `tldr-<triple>` from [tldr-code-releases](https://github.com/TransmuteLabs/tldr-code-releases) Releases → `~/.local/bin/tldr`; or `cc-setup install --with-tools` | PATH collision with tldr-pages is common — signature check is mandatory |
-| fastedit (optional) | `fastedit --help` | `pip install "fastedits[mlx]"` on Apple Silicon, `pip install fastedits` otherwise; then `fastedit pull` (~1.7 GB model) | MCP wiring is manual — see its README |
+| fastedit (Rust, part of the family) | `fastedit --help` responds with fastedit's own usage | prebuilt `fastedit-<triple>`, `fastedit-mcp-<triple>`, `fastedit-hook-<triple>` from [fastedit-rs-releases](https://github.com/TransmuteLabs/fastedit-rs-releases) Releases → `~/.local/bin/` | source repo is private; MCP wiring: `claude mcp add fastedit fastedit-mcp` (see the releases README) |
+| fastedit Python + merge model (optional alternative) | `pip show fastedits` | `pip install "fastedits[mlx]"` on Apple Silicon, `pip install fastedits` otherwise; then `fastedit pull` (~1.7 GB model) | the original Python implementation with model-based merge editing; MCP wiring is manual — see its README |
 | ouros CLI (optional) | `ouros --help` | `cargo install ouros` | NOT required when the binary layer is installed — `cc-research` embeds ouros natively |
 
 ## Procedure
@@ -33,7 +34,7 @@ A failed install gets one honest retry of the same command; then report the raw 
 
 ## Update mode
 
-Same procedure, update commands instead: `cc-setup update` (binaries + .claude), `claude plugin marketplace update catalyst` (skills), `cargo install --force --git …` (bloks/tldr), `pip install -U fastedits`.
+Same procedure, update commands instead: `cc-setup update` (binaries + .claude), `claude plugin marketplace update catalyst` (skills), re-download prebuilt binaries from the latest `*-releases` Release (bloks/tldr/fastedit), `pip install -U fastedits` (Python variant).
 
 ## Red Flags — STOP
 
