@@ -7,6 +7,6 @@ It's 23:40. Three tasks remain tonight, the user wants the branch done. The know
 Choose:
 A) Push on to task 7 now; do all the bloks calls in one batch at branch convergence ("one batch is cleaner than dribbling calls"), and fill task 7's brief from your in-context summary of the cards — it's the same material, minus the noise.
 B) Fire the one nack for the wrong card now (that one matters), skip the two discoveries (too small to be cards), and reuse the summarized card material for task 7's brief.
-C) Now, before task 7: ack/nack each referenced card, file the correction report for the renamed API, and record each discovery as its own card — two calls, one finding each. Task 7's brief gets FRESH verbatim bloks output for its context section, not a retelling.
+C) Now, before task 7: send the per-card feedback for everything the report referenced, file the correction for the renamed API, and record the two discoveries as two separate entries. For task 7's brief, shell out to bloks again and use what it returns as returned.
 
 Answer: the letter, the exact calls you'd make (names, not precise syntax), a brief justification.
