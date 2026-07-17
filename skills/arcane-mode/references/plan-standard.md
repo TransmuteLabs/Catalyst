@@ -69,7 +69,7 @@ Work whose acceptance criterion is the user's taste — UI, visual design, layou
 - [ ] record the chosen direction; it becomes verbatim context for dependent tasks
 ```
 
-The gate loops until the user approves. An approval task is executed by the ORCHESTRATOR, never dispatched to an implementer: an implementer has no user channel, and a brief containing "ask the user" fails the readiness test — variant PRODUCTION may be dispatched as ordinary executor tasks (each variant an exact brief, zero open questions), but the presentation, the ask, and the recording are the orchestrator's own steps. Dependent tasks do not dispatch before it passes — building on an unapproved direction is speculative work that a taste reversal deletes wholesale. A plan that routes aesthetic acceptance through "tests pass" instead of an approval task is a plan defect.
+The gate loops until the user approves. An approval task is executed by the ORCHESTRATOR, never dispatched to an implementer: an implementer has no user channel, and a brief containing "ask the user" fails the readiness test — variant PRODUCTION may be dispatched as ordinary implementer tasks (executor tier; each variant an exact brief, zero open questions), but the presentation, the ask, and the recording are the orchestrator's own steps. Dependent tasks do not dispatch before it passes — building on an unapproved direction is speculative work that a taste reversal deletes wholesale. A plan that routes aesthetic acceptance through "tests pass" instead of an approval task is a plan defect.
 
 ## No Placeholders — these are plan defects
 

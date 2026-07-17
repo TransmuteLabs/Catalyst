@@ -80,7 +80,7 @@ Critical/Important → fix wave immediately; Minor → into the ledger, the fina
 
 ## Scouts
 
-Forbidden in the prompt: "choose / decide / propose / evaluate / conclude". Allowed: "find / list / measure / quote / cross-check / run (read-only)". Choosing among N → the scout returns ALL N with objective attributes (dates, sizes, metrics, file:line) — the orchestrator chooses. A recommendation a scout brings is raw material: re-decide it yourself. Scout claims about the codebase are accepted only with file:line and spot-verified by the consumer.
+Forbidden in the prompt: "choose / decide / propose / evaluate / conclude". Allowed: "find / list / measure / quote / cross-check / run-to-measure" (build/test/lint baseline runs are sanctioned — agents/scout.md's carve-out: artifact side effects named in the report, everything else read-only). Choosing among N → the scout returns ALL N with objective attributes (dates, sizes, metrics, file:line) — the orchestrator chooses. A recommendation a scout brings is raw material: re-decide it yourself. Scout claims about the codebase are accepted only with file:line and spot-verified by the consumer.
 
 ## Failure escalation and liveness
 

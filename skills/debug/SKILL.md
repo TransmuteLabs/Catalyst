@@ -7,7 +7,7 @@ description: Use when facing a bug, test failure, performance regression, or une
 
 ## Overview
 
-Random fixes waste time and mask real defects. This skill is the family's debugging discipline: build a feedback loop that goes red on the bug, prove the cause against it, fix at the source — never patch the symptom. Debugging is analysis: under the family tiering (the tier→model mapping lives in arcane-mode's Tiering table) it never runs on the executor tier; a dispatched debugger is "standard" minimum, and the verdict on the cause is adjudicated by the orchestrator.
+Random fixes waste time and mask real defects. This skill is the family's debugging discipline: build a feedback loop that goes red on the bug, prove the cause against it, fix at the source — never patch the symptom. Debugging is analysis: under the family tiering (the tier→model mapping lives in arcane-mode's Tiering table) it never runs on the executor tier (economics' availability fallback — the executor model at high reasoning effort, flagged to the user — is the sole exception); a dispatched debugger is "standard" minimum, and the verdict on the cause is adjudicated by the orchestrator.
 
 **Iron Law: NO FIX WITHOUT A PROVEN ROOT CAUSE. NO HYPOTHESIS WITHOUT A RED LOOP.**
 
