@@ -76,10 +76,10 @@ A roadmap of phases toward a milestone, alive across weeks, dozens of sessions, 
 
 Thin role definitions in `agents/`; the dispatch prompt sets scope and focus, each agent's safety core is non-overridable.
 
-- **`catalyst:implementer`** (executor tier) — executes ONE pipeline task from a complete brief: implementation, tests, atomic commits, honest report. Makes no decisions; an unexpected red means one honest attempt, then BLOCKED with raw output.
-- **`catalyst:critic`** (standard tier) — reviews one task's diff: spec compliance and code quality as two separate verdicts, adjudication requests as an explicit list.
-- **`catalyst:scout`** (executor tier) — fact reconnaissance: find/list/measure/quote with file:line. No conclusions, no recommendations.
-- **`catalyst:researcher`** (standard tier) — external research: web, docs, packages, foreign repos. Sources, confidence, and counterarguments mandatory; sandboxed when the binary layer is present.
+- **`catalyst:implementer`** (executor tier for complete briefs; tier named per dispatch, up on the tier-up triggers) — executes ONE pipeline task from a complete brief: implementation, tests, atomic commits, honest report. Makes no decisions; an unexpected red means one honest attempt, then BLOCKED with raw output.
+- **`catalyst:critic`** (standard tier minimum; named per dispatch) — reviews one task's diff: spec compliance and code quality as two separate verdicts, adjudication requests as an explicit list.
+- **`catalyst:scout`** (executor tier for find-and-quote, standard for grounding scouts; named per dispatch) — fact reconnaissance: find/list/measure/quote with file:line. No conclusions, no recommendations.
+- **`catalyst:researcher`** (standard tier; named per dispatch) — external research: web, docs, packages, foreign repos. Sources, confidence, and counterarguments mandatory; sandboxed when the binary layer is present.
 - **`catalyst:auditor`** (tier set per dispatch) — fresh-eyes audit of a branch or milestone through an assigned lens set: undirected defect search, claim-truth, goal-backward. Clean context by design.
 
 ## ContinuousClaude binary layer

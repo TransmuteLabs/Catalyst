@@ -1,6 +1,6 @@
-arcane-stop-rule	sonnet	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/dispatch-templates.md
-arcane-critic-form	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/dispatch-templates.md
-arcane-convergence	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md
+arcane-stop-rule	sonnet	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/dispatch-templates.md	agents/implementer.md
+arcane-critic-form	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/dispatch-templates.md	agents/critic.md
+arcane-convergence	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	agents/auditor.md
 arcane-plan-lexicon	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/plan-standard.md
 arcane-adjudication	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md
 crucible-batching	opus	skills/crucible/SKILL.md
@@ -10,7 +10,7 @@ starchart-decides	opus	skills/starchart/SKILL.md
 premortem-tiger-accept	opus	skills/premortem/SKILL.md
 handoff-mental-model	opus	skills/handoff/SKILL.md
 bootup-dispatcher	opus	skills/bootup/SKILL.md
-research-grounding	opus	skills/research/SKILL.md
+research-grounding	opus	skills/research/SKILL.md	agents/researcher.md
 review-fixing	opus	skills/review/SKILL.md
 bootup-dispatcher-v2	opus	skills/bootup/SKILL.md
 install-verify	opus	skills/install/SKILL.md
@@ -23,6 +23,8 @@ campaign-migration-backfill	opus	skills/campaign/SKILL.md
 campaign-batch-discipline	opus	skills/campaign/SKILL.md
 arcane-waiver-record	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/arcane-mode/references/economics.md	skills/campaign/SKILL.md
 arcane-uat-reoffer	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/campaign/SKILL.md
-review-capture-complete	opus	skills/review/SKILL.md
+review-capture-complete	opus	skills/review/SKILL.md	agents/scout.md
 forge-edit-gate	opus	skills/forge-skill/SKILL.md
 bootup-git-init	opus	skills/bootup/SKILL.md
+upgrade-harness-policy	opus	skills/upgrade-harness/SKILL.md
+arcane-knowledge-loop	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/knowledge-loop.md
