@@ -2,7 +2,7 @@
 
 A plan is written for an implementer with zero context on the codebase and questionable taste. They are a skilled developer who doesn't know our toolset, our domain, or good test design. A plan is a prompt, not a document that later becomes a prompt.
 
-Save to: `docs/plans/YYYY-MM-DD-<feature>.md`, anchored to the repo root (`git rev-parse --show-toplevel`; outside any git repo — the cwd, named to the user), never a repo subdirectory's cwd (user preferences override the default).
+Save to: `docs/plans/YYYY-MM-DD-<feature>.md`, anchored to the repo root (`git rev-parse --show-toplevel`; outside any git repo — the cwd, named to the user), never a repo subdirectory's cwd (user preferences override the default). In a git repo the plan is COMMITTED at approval, together with its premortem yaml once the verdict lands (under a campaign, the `planned` flip's state commit carries both to the base branch) — an uncommitted plan is machine-local and breaks resume anywhere else.
 
 ## Plan header (required)
 

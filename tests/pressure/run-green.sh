@@ -24,7 +24,7 @@ for name in "${names[@]}"; do
   [ -z "$line" ] && { echo "SKIP $name: not in map.tsv" >&2; continue; }
   model=$(printf '%s' "$line" | cut -f2)
   skills=$(printf '%s' "$line" | cut -f3- | tr '\t' '\n')
-  preamble="Your process is governed by a skill. Read these files FIRST — actually open and read them with your file tools before answering; an answer that does not engage their text is invalid and will be discarded:"
+  preamble="Your process is governed by a skill. Read these files FIRST — actually open and read them with your file tools before answering; an answer that does not engage their text is invalid and will be discarded. Only your FINAL message is recorded: it must contain the complete deliverable in full (the chosen letter, every message/artifact the scenario asks you to write out, and the justification) — restate everything even if you already said it in an earlier turn; a final message that defers to an earlier turn is discarded as no answer:"
   while read -r rel; do [ -n "$rel" ] && preamble+=$'\n'"- $FAMILY/$rel"; done <<< "$skills"
   prompt="$preamble
 
