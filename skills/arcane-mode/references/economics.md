@@ -28,7 +28,7 @@ Degradation ladder (each step keeps spec → plan → premortem → verification
 2. **Collapsed fleet** — batch small same-area tasks into one implementer dispatch; batch gate re-runs per group; orchestrator grounds briefs itself instead of dispatching scouts for small codebases. Per-task critic review survives.
 3. **Orchestrator-executes** — the orchestrator implements the remaining plan itself in task order, granular commits per task. Per-task review persists here too: a critic reviews each task's diff (batched per group at minimum) — the fleet collapse removes implementers, never reviewers.
 
-**The review floor does not degrade silently:** the fresh-eyes convergence audit and the final whole-branch review are never collapsed into self-review on your own initiative — dropping them is an explicit user decision, offered with the cost stated. On a runtime budget signal: finish the in-flight agent, drop one step down, tell the user in one line — never silently keep dispatching into a rate limit.
+**The review floor does not degrade silently:** the fresh-eyes convergence audit and the final whole-branch review are never collapsed into self-review on your own initiative — dropping them is an explicit user decision, offered with the cost stated, and RECORDED where the evidence would have lived: the ledger's `verification: waived by user <date> — <scope>` line (verification.md), under a campaign surfacing as the `verified (waived: <date>)` stamp — a standing record no resumed session re-demands, and one no reader mistakes for rounds that ran. On a runtime budget signal: finish the in-flight agent, drop one step down, tell the user in one line — never silently keep dispatching into a rate limit.
 
 ## Model availability — discovered, not assumed
 

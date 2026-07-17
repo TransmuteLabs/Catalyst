@@ -9,7 +9,7 @@ description: Use when creating a new skill or agent definition, editing an exist
 
 A skill is production code whose runtime is an agent. It is developed the same way: write the test first (a pressure scenario), watch it fail (baseline WITHOUT the skill), write the skill, watch it pass (GREEN run), close the loopholes. A skill written without watching an agent fail first encodes what the author assumed, not what agents actually get wrong.
 
-**Iron Law: A SKILL EDIT SHIPS ONLY AFTER A GREEN PRESSURE RUN.** For a new skill the baseline (RED) comes first — the recorded rationalizations are the requirements the skill must answer.
+**Iron Law: A SKILL EDIT SHIPS ONLY AFTER A GREEN PRESSURE RUN.** For a new skill the baseline (RED) comes first — the recorded rationalizations are the requirements the skill must answer. The user's EXPLICIT order to ship ungated is taken and recorded in the tests journal ("shipped ungated by user order <date>, gate owed") — the owed gate stays visible and runs at the next session, it never silently becomes a passed one.
 
 ## The loop
 

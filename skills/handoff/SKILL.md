@@ -22,13 +22,17 @@ Format (required sections marked):
 session: {name}
 date: YYYY-MM-DD
 status: complete|partial|blocked
-outcome: SUCCEEDED|PARTIAL_PLUS|PARTIAL_MINUS|FAILED
-        # PARTIAL_PLUS = partial, path forward clear; PARTIAL_MINUS = partial, path blocked/unclear
+outcome: SUCCEEDED|PARTIAL_PLUS|PARTIAL_MINUS|FAILED   # OPTIONAL — kept for
+        # ContinuousClaude analytics compatibility; no family text reads it
+        # (drop it on non-CC projects). PARTIAL_PLUS = partial, path forward
+        # clear; PARTIAL_MINUS = partial, path blocked/unclear
 ---
 # ── STATUSLINE (goal:/now: REQUIRED — parsed by hooks) ──
 goal: {what this session accomplished}
 now: {what the next session should do first}
-test: {verification command, e.g. pytest tests/test_foo.py}
+test: {verification command, e.g. pytest tests/test_foo.py — a statusline MIRROR
+      of codebase_state.test_command: that field is the source of truth, on
+      divergence it wins}
 campaign: {.catalyst/campaign/<name>/ — OPTIONAL, only when the session ran under a campaign; omit otherwise}
 
 # ── MENTAL MODEL (REQUIRED) ──

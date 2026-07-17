@@ -19,7 +19,7 @@ Subagent-driven development pipeline: spec → plan → execution by fresh subag
 
 **When NOT to use:** a < ~20 line change with an obvious direction — do it yourself, dispatch costs more; pure research with no implementation.
 
-**Inputs:** no approved spec → catalyst:crucible first (decision hardening → spec; approved = the spec file carries crucible's `status: approved` marker — a markerless file is a draft; TWO approved specs for the same effort → the user picks, never the newest silently — under a campaign the ROADMAP row's spec link names THE spec). Effort larger than one session with a foggy route → catalyst:starchart (decision map), then crucible → spec → here.
+**Inputs:** no approved spec → catalyst:crucible first (decision hardening → spec; approved = the spec file carries crucible's `status: approved` marker — a markerless file is a draft; a markerless spec the effort's history says WAS approved (a pre-marker effort resumed after an upgrade) is NAMED to the user with a fast re-approval offered — never silently re-interviewed; TWO approved specs for the same effort → the user picks, never the newest silently — under a campaign the ROADMAP row's spec link names THE spec). Effort larger than one session with a foggy route → catalyst:starchart (decision map), then crucible → spec → here.
 
 ## Pipeline
 
@@ -44,6 +44,7 @@ Effort is a second dial, set per dispatch independently of tier; budget pressure
 ## Iron rules
 
 - A found defect gets fixed completely, never legitimized (no "accept the limitation", no DEFERRED, no self-initiated stubs).
+- **Named gates bend only to the user's EXPLICIT command — and never silently.** The family doctrine: state the cost in one line, execute, and RECORD the waiver where the gate's evidence would have lived (the ledger's `waived by user` line, a spec's open/deferred entry, the campaign `waived` stamp, the tests journal for a skill shipped ungated) — a waived gate must never read as a passed gate, and a recorded waiver is never re-demanded. Casual pressure ("demo tomorrow", "skip the ceremony") is not a command. An explicit order to build with NO spec is recorded the same way: in the plan header and the ledger — a waiver, not an approval.
 - An implementer brief passes the readiness test: the task can be done without opening a single file "to scout" and without asking a single question.
 - A gate is confirmed only by an honest exit-code form (`set -o pipefail` or no pipe at all) and an exact test baseline (`N passed; 0 failed; K ignored`) — never a bare "EXIT 0".
 - After compaction trust the ledger `.catalyst/sdd/progress.md` and `git log`, not memory. At execution start, run the ledger identity check (created at plan approval; none for plan-writing sessions): `references/verification.md`.
