@@ -60,4 +60,4 @@ When the request is "clean this up / remove the AI slop" rather than a verdict, 
 - The reviewer started fixing findings while the review was still open (post-verdict small fixes and a requested deslop pass are separate engagements, not this).
 - The test baseline not compared BEFORE/AFTER ("tests look green").
 - The diff built as `HEAD~1` on a multi-commit branch — early commits are lost; only merge-base/an explicit BASE.
-- A verdict issued over a capture missing staged or untracked files (bare `git diff` muscle memory) — the capture is `git status --porcelain -uall` + `git diff HEAD` + the `--no-index` appends, and the verdict covers only what the capture holds.
+- A verdict issued over a capture that silently misses files its sanctioned scope includes (bare `git diff` muscle memory on the default uncommitted scope, whose capture is `git status --porcelain -uall` + `git diff HEAD` + the `--no-index` appends; staged-only, base-ref, PR, and unborn-HEAD scopes use their own recipes above) — the verdict covers only what the capture holds.
