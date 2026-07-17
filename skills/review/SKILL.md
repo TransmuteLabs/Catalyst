@@ -43,7 +43,7 @@ The critic rules from arcane-mode/references/dispatch-templates.md apply here to
 ### Summary                — 2-3 sentences in plain language
 ```
 
-Follow-up: findings are fixed outside the open review, never woven into it — a reviewer who edits code mid-review stops being a reviewer. Task-sized findings → arcane-mode (fix plan + critic + re-review). A small obvious fix (< ~20 lines, arcane's own do-it-yourself threshold) → apply it AFTER the verdict is delivered, then re-run phases 1-2 on the new diff; the ban is on editing while the review is open, not on fixing after the verdict.
+Follow-up: findings are fixed outside the open review, never woven into it — a reviewer who edits code mid-review stops being a reviewer. Task-sized findings → arcane-mode (fix plan + critic + re-review; its input gate wants an approved spec — the verdict already contains the decisions, so crucible's FAST PATH synthesizes the spec from them, section approvals only, never a fresh interview). A small obvious fix (< ~20 lines, arcane's own do-it-yourself threshold) → apply it AFTER the verdict is delivered, then re-run phases 1-2 on the new diff; the ban is on editing while the review is open, not on fixing after the verdict.
 
 ## Deslop mode — cleaning up agent-generated slop
 

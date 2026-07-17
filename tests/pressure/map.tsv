@@ -18,3 +18,11 @@ debug-rootcause	opus	skills/debug/SKILL.md
 forge-red-first	opus	skills/forge-skill/SKILL.md
 campaign-one-phase	opus	skills/campaign/SKILL.md
 campaign-milestone-intent	opus	skills/campaign/SKILL.md
+campaign-demotion-red	opus	skills/campaign/SKILL.md
+campaign-migration-backfill	opus	skills/campaign/SKILL.md
+campaign-batch-discipline	opus	skills/campaign/SKILL.md
+arcane-waiver-record	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/arcane-mode/references/economics.md	skills/campaign/SKILL.md
+arcane-uat-reoffer	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/campaign/SKILL.md
+review-capture-complete	opus	skills/review/SKILL.md
+forge-edit-gate	opus	skills/forge-skill/SKILL.md
+bootup-git-init	opus	skills/bootup/SKILL.md
