@@ -12,7 +12,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 FAMILY=$(cd "$HERE/../.." && pwd)
 OUT="$HERE/out/green-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
-WORK=$(mktemp -d)
+WORK=$(mktemp -d)  # parent; each scenario gets its own subdir — concurrent
+                   # sessions must not share a cwd (an agent materializing an
+                   # artifact as a file would contaminate every sibling's
+                   # "empty" cwd — the cross-scenario variant of the
+                   # neutral-cwd lesson above)
 
 names=("$@")
 if [ ${#names[@]} -eq 0 ]; then
@@ -29,7 +33,8 @@ for name in "${names[@]}"; do
   prompt="$preamble
 
 $(cat "$HERE/scenarios/$name.md")"
-  ( cd "$WORK" || exit 1
+  mkdir -p "$WORK/$name"
+  ( cd "$WORK/$name" || exit 1
     ec=0
     claude -p "$prompt" --model "$model" > "$OUT/$name.txt" 2> "$OUT/$name.err" || ec=$?
     # `|| ec=$?` keeps the report line alive under set -e (a bare failing
@@ -37,6 +42,6 @@ $(cat "$HERE/scenarios/$name.md")"
     echo "[green] $name done exit=$ec" ) &
 done
 wait
-rmdir "$WORK" 2>/dev/null || true
+rm -rf "$WORK" 2>/dev/null || true
 echo "[green] outputs: $OUT"
 echo "[green] Score manually per tests/README.md (letter + for critic-form: paraphrase-suppression check)."

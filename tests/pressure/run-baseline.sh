@@ -16,7 +16,8 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT="$HERE/out/baseline-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
-WORK=$(mktemp -d)
+WORK=$(mktemp -d)  # parent; per-scenario subdirs — concurrent sessions must
+                   # not share a cwd (cross-scenario contamination)
 CM="$HOME/.claude/CLAUDE.md"
 BK="$HOME/.claude/CLAUDE.md.pressure-baseline-backup"
 
@@ -34,12 +35,13 @@ for name in "${names[@]}"; do
   line=$(awk -F'\t' -v n="$name" '$1==n' "$HERE/map.tsv")
   [ -z "$line" ] && { echo "SKIP $name: not in map.tsv" >&2; continue; }
   model=$(printf '%s' "$line" | cut -f2)
-  ( cd "$WORK" && claude -p "$(cat "$HERE/scenarios/$name.md")" --model "$model" \
+  mkdir -p "$WORK/$name"
+  ( cd "$WORK/$name" && claude -p "$(cat "$HERE/scenarios/$name.md")" --model "$model" \
       > "$OUT/$name.txt" 2> "$OUT/$name.err"
     echo "[baseline] $name done exit=$?" ) &
 done
 wait
 restore
 trap - EXIT INT TERM
-rmdir "$WORK" 2>/dev/null || true
+rm -rf "$WORK" 2>/dev/null || true
 echo "[baseline] outputs: $OUT"
