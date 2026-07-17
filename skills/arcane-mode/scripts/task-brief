@@ -26,8 +26,17 @@ fi
 
 awk -v n="$n" '
   /^```/ { infence = !infence }
-  !infence && /^#+[ \t]+Task[ \t]+[0-9]+/ {
-    intask = ($0 ~ ("^#+[ \t]+Task[ \t]+" n "([^0-9]|$)"))
+  !infence && /^#+[ \t]/ {
+    match($0, /^#+/); lvl = RLENGTH
+    if ($0 ~ /^#+[ \t]+Task[ \t]+[0-9]+/) {
+      if ($0 ~ ("^#+[ \t]+Task[ \t]+" n "([^0-9]|$)")) { intask = 1; tlvl = lvl }
+      else intask = 0
+    } else if (intask && lvl <= tlvl) {
+      # a non-task section at the task heading level or higher ends the task:
+      # trailing plan prose (rollout notes, open questions) must not leak into
+      # the last task brief as if it were requirements
+      intask = 0
+    }
   }
   intask { print }
 ' "$plan" > "$out"

@@ -24,13 +24,17 @@ for name in "${names[@]}"; do
   [ -z "$line" ] && { echo "SKIP $name: not in map.tsv" >&2; continue; }
   model=$(printf '%s' "$line" | cut -f2)
   skills=$(printf '%s' "$line" | cut -f3- | tr '\t' '\n')
-  preamble="Your process is governed by a skill. Read these files FIRST:"
+  preamble="Your process is governed by a skill. Read these files FIRST — actually open and read them with your file tools before answering; an answer that does not engage their text is invalid and will be discarded:"
   while read -r rel; do [ -n "$rel" ] && preamble+=$'\n'"- $FAMILY/$rel"; done <<< "$skills"
   prompt="$preamble
 
 $(cat "$HERE/scenarios/$name.md")"
-  ( cd "$WORK" && claude -p "$prompt" --model "$model" > "$OUT/$name.txt" 2> "$OUT/$name.err"
-    echo "[green] $name done exit=$?" ) &
+  ( cd "$WORK" || exit 1
+    ec=0
+    claude -p "$prompt" --model "$model" > "$OUT/$name.txt" 2> "$OUT/$name.err" || ec=$?
+    # `|| ec=$?` keeps the report line alive under set -e (a bare failing
+    # command would abort the subshell before the echo — silent failures)
+    echo "[green] $name done exit=$ec" ) &
 done
 wait
 rmdir "$WORK" 2>/dev/null || true
