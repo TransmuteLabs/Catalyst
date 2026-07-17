@@ -60,3 +60,5 @@ Effort is a second dial, set per dispatch independently of tier; budget pressure
 - A plan/diff/report pasted into a prompt instead of a file path.
 - A task already marked complete in the ledger re-dispatched as new.
 - Presented the integrate question (or merged) while the base branch had advanced, without the merged-head suite + tail-gate run.
+- Presented the integrate question after a post-convergence fix on the strength of a green suite alone — the fix re-opened convergence (and a waived lineage owes its disposition ask); the stop criterion must hold again first.
+- A waiver written in the passed/converged shape — a waived gate must never read as a passed gate.

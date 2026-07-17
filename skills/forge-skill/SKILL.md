@@ -58,7 +58,7 @@ Repeatable guidance an agent will need again: a technique, a discipline, a refer
 
 ## Red Flags — STOP
 
-- A skill written or edited with no baseline evidence of the failure it prevents.
+- A skill written or edited with no baseline evidence of the failure it prevents — nor, for a convention rule, the sanctioned field evidence (observed harm, or a verified concrete failure sequence).
 - Shipping after editing a skill without a GREEN re-run ("the change is obviously fine").
 - A scenario where the tested rule is quoted or the right answer carries no cost.
 - One green pass declared convergence for a family skill.

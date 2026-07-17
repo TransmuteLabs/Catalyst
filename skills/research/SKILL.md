@@ -58,4 +58,5 @@ Findings feed the next skills: a decision to make → catalyst:crucible; fog wid
 - Raw agent reports pasted into context instead of paths.
 - The "research" started changing code — that's implementation; it belongs in arcane-mode.
 - A confidence score raised without new evidence ("it sounds increasingly right").
+- A committed artifact left pointing into the self-ignored research workspace — on every other machine the evidence dangles; inline the extract or commit the source.
 - Deep mode spent an iteration going wider when existing hypotheses sit below 0.6.

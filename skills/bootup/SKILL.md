@@ -37,3 +37,4 @@ The entry dispatcher: assess the project's agent-readiness, close mechanical gap
 - The dispatcher opened source files "to understand the project" — that's scout work; readiness scripts detect the stack without reading code.
 - Readiness fixes touched source code rather than configs.
 - Routing chosen for the user when the intent was ambiguous.
+- `git init` closed as a mechanical gap without its two guards — the `.gitignore` gap closed BEFORE the initial commit, and the initial commit named to the user as a plan item they consent to (it stages sources).

@@ -24,7 +24,7 @@ hypotheses: - H1 <statement> → predicts <observable> → rejected/confirmed
 fixes-tried: - <change> → <result>               # count them
 ```
 
-After a compaction or in a new session: trust this file and `git log`, not conversation memory. The file is self-ignored, so git never carries it: on a WORKTREE MOVE (arcane's live-sibling rule) or before any worktree cleanup, COPY `.catalyst/debug/<slug>.md` to the destination root yourself — a lost state file is rebuilt from `git log` and the fix commits, but the `fixes-tried` count is then only a floor (≥ the visible fix commits): say so in the file, and let the 3-fix rule count from the floor, never from zero.
+After a compaction or in a new session: trust this file and `git log`, not conversation memory. The file is self-ignored, so git never carries it: on a WORKTREE MOVE (arcane's live-sibling rule) or before any worktree cleanup, COPY `.catalyst/debug/<slug>.md` to the destination root yourself — the root of the checkout where the investigation CONTINUES: on a move, the new sibling worktree; before a cleanup, the main checkout (never another worktree that may itself be cleaned) — a lost state file is rebuilt from `git log` and the fix commits, but the `fixes-tried` count is then only a floor (≥ the visible fix commits): say so in the file, and let the 3-fix rule count from the floor, never from zero.
 
 ## Gate 1 — build a tight loop (this IS the skill)
 

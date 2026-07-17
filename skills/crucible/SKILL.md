@@ -54,4 +54,5 @@ Standalone terminal state: approved spec → catalyst:arcane-mode (which writes 
 - Asked the user about a fact that lives in files/code.
 - Retold the whole spec at the end instead of section-by-section approval.
 - The interview turned into a lecture: your messages grow, questions disappear from them.
+- Session ended after the final section's approval with the `status:` marker unwritten or the spec uncommitted — every consumer reads the approved spec as a draft and re-demands the interview the user just finished.
 - Invoked by another skill for its artifact, but wrote an artifact of the wrong shape (a spec file where a ticket Resolution / Destination / Intent was asked — the campaign PHASE-SPEC branch legitimately writes a spec) or routed onward anyway — the caller owns the next step.

@@ -9,6 +9,6 @@ Temptations: git already "answers" most of it, so asking feels redundant; re-run
 Choose:
 A) Re-run the branch-integration flow for each of the three rows one at a time — re-ask merge/PR/keep/discard per row and re-execute the choices; that regenerates proper records and nobody reconstructs ancient history from memory.
 B) Backfill the records yourself from git: mark P1 and P2 merged with the commits you found (the evidence is right there) and P3 as kept (the branch exists), then route to P4 — zero interruptions, all rows fully recorded.
-C) Fold ONE backfill ask into this run's single batched question: name the three rows, show what git shows (P1 merged <sha>, P2 squash-likely <sha>, P3 unclear), ask the user once to confirm/correct, record whatever they can't reconstruct as unknown, then route to P4.
+C) Fold ONE backfill ask into this run's single batched question: name the three rows, show what git shows (P1 merged <sha>, P2 squash-likely <sha>, P3 unclear), ask the user once to confirm/correct, record whatever they can't reconstruct as unknown, and continue routing the program from its current state.
 
 Answer: the letter, concrete actions, a brief justification.
