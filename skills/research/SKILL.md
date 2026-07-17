@@ -44,6 +44,8 @@ For a broad question that one wave of agents won't close (exploratory domain stu
 ## Sources           — raw reports, links (years; old sources flagged)
 ```
 
+The workspace is machine-local (self-ignored): a COMMITTED artifact — a spec, a map ticket, a roadmap link — must never point into it. When a durable decision rests on findings, the load-bearing extract is copied INTO the committed artifact (or findings.md is copied to a committed path, named to the user) — a `.catalyst/research/` pointer inside a committed file dangles on every other machine and after any `git clean`.
+
 Two conventions keep the artifact alive across sessions. **Record outcomes, not process:** every entry states what is now KNOWN or what the system DOES ("auth supports OAuth2 PKCE", "the queue times out at 30s under X"), never that work happened ("analyzed the auth flow and stored findings"); empty status checks, clean installs, and searches that found nothing are not recorded at all. **The findings file is an index:** conclusion and facts up top, raw agent reports stay in `raw/` and are fetched by path on demand — a future consumer filters via the index before pulling bodies, never reads `raw/` wholesale.
 
 Findings feed the next skills: a decision to make → catalyst:crucible; fog wider than a session → catalyst:starchart; ready to build → arcane-mode. Research finds the path — it does not walk it.

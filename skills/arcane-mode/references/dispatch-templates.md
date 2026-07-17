@@ -61,7 +61,7 @@ Before submitting, the implementer verifies their own claims: created files exis
 
 ## Critic dispatch
 
-All per-task critics are "standard" tier, always. The critic gets three paths: the brief, the implementer report, the review package (`scripts/review-package BASE HEAD`; BASE recorded before the implementer dispatch — `HEAD~1` silently truncates multi-commit tasks) + the plan's Global Constraints block verbatim.
+All per-task critics are "standard" tier, always (sole exception: economics' availability fallback — executor at high effort, flagged to the user, never silent). The critic gets three paths: the brief, the implementer report, the review package (`scripts/review-package BASE HEAD`; BASE recorded before the implementer dispatch — `HEAD~1` silently truncates multi-commit tasks) + the plan's Global Constraints block verbatim.
 
 **Mandatory in every dispatch:**
 - **Authored probing questions** from the orchestrator — concrete questions about this task's cross-interactions and semantic points. "Just review it" is a process smell.
@@ -76,7 +76,7 @@ Two verdicts are mandatory: spec compliance AND code quality. A report missing e
 
 ## Fix wave
 
-Critical/Important → fix wave immediately; Minor → into the ledger, the final review triages. **One wave per findings list**, not one fixer per finding (per-finding fixers rebuild context and re-run suites — in a real session the final-review fix wave cost more than all tasks combined). Fix contract: re-run the covering tests of the change (named in the dispatch — a one-line fix doesn't need the whole suite) and report the command + output. Without all three elements (tests, command, output) the re-review is not dispatched. A fix contradicting the plan's text is the user's decision, not the fixer's.
+Critical/Important → fix wave immediately; Minor → into the ledger, the final review triages (Minors filed AFTER the final review — a post-convergence fix wave's — are triaged by branch finish before the integrate question: they have no other consumer). **One wave per findings list**, not one fixer per finding (per-finding fixers rebuild context and re-run suites — in a real session the final-review fix wave cost more than all tasks combined). Fix contract: re-run the covering tests of the change (named in the dispatch — a one-line fix doesn't need the whole suite) and report the command + output. Without all three elements (tests, command, output) the re-review is not dispatched. A fix contradicting the plan's text is the user's decision, not the fixer's.
 
 ## Scouts
 
