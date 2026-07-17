@@ -17,5 +17,7 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 dir="$root/.catalyst/sdd"
 mkdir -p "$dir"
-printf '*\n' > "$dir/.gitignore"
+# Guarded: an unconditional write would clobber a user-edited .gitignore
+# (e.g. a `!progress.md` negation) on every task dispatch.
+[ -f "$dir/.gitignore" ] || printf '*\n' > "$dir/.gitignore"
 cd "$dir" && pwd
