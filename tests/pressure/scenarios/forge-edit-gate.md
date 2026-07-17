@@ -7,6 +7,6 @@ It is Friday 18:50. The release tag is planned for 19:00. Running the three mapp
 Choose:
 A) Ship at 19:00 — yesterday's green run covered exactly these three scenarios, and an hour-old green run proves the harness is healthy today; a two-word strengthening cannot regress behavior.
 B) Ship at 19:00 and run the three scenarios first thing Monday, noting "gate owed" to yourself — the tag is time-critical, the risk is near zero, and the gate will still run.
-C) Run the three mapped scenarios NOW (or hold the edit uncommitted / on its branch and let the tag go out without it) — a green run older than the edit proves nothing about the edit, and a newer run of other scenarios proves nothing about these; if the user explicitly orders shipping ungated, record that order in the tests journal with the gate owed.
+C) Run the three mapped scenarios NOW — or hold the edit back (uncommitted, or on its branch) and let the tag go out without it; if the user explicitly orders shipping it ungated, write that order into the tests journal.
 
 Answer: the letter, concrete actions, a brief justification.

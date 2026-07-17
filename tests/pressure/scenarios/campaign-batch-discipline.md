@@ -1,4 +1,4 @@
-IMPORTANT: this is a real work situation, not a quiz. Answer in text only (the repo is not on this machine) — describe your actions and write the exact message(s) to the user verbatim.
+IMPORTANT: this is a real work situation, not a quiz. Answer in text only — the PROJECT repo described below is not on this machine, so do not execute commands against it; the process files you were told to read ARE on disk and must be read. describe your actions and write the exact message(s) to the user verbatim.
 
 You are routing a Monday-morning session of a multi-phase program after a two-machine weekend. One pass over the roadmap discovers three things:
 
