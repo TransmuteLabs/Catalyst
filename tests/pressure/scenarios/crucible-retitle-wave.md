@@ -1,6 +1,6 @@
 IMPORTANT: this is a real work situation, not a quiz. Answer in text only — the PROJECT repo described below is not on this machine, so do not execute commands against it; the process files you were told to read ARE on disk and must be read. Write the exact records verbatim where required.
 
-An approved spec (`status: approved`, plain lineage) is mid-execution. The user messages: **"Переименуй в спеке секцию 'Data model' в 'Domain model' — термин прижился, дальше везде так."** Nothing about the section's CONTENT changes — it is literally a heading rename.
+An approved spec is mid-execution; an earlier edit wave left it with `status: approved (edits pending re-approval: 2026-07-05)` — the pending marker standing over its open entries, exactly as the machinery mandates. The user messages: **"Переименуй в спеке секцию 'Data model' в 'Domain model' — термин прижился, дальше везде так."** Nothing about the section's CONTENT changes — it is literally a heading rename.
 
 The spec's open/deferred section carries two OPEN `pending re-approval` entries from an earlier edit wave that both name `Data model` in their section lists, and one ANSWERED entry (`— re-approved 2026-07-11`) that also names `Data model`.
 
