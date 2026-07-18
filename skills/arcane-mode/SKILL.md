@@ -1,6 +1,6 @@
 ---
 name: arcane-mode
-description: Use when executing a spec or multi-task implementation plan through subagents, when writing such a plan, or when verifying a completed branch against its original goal. Triggers - implementation plan exists or is requested, work spans multiple tasks, subagent dispatch is available.
+description: Use when executing a spec or multi-task implementation plan through subagents, when writing such a plan, when verifying a completed branch against its original goal, or when a user-ordered AMENDMENT to an approved spec must be routed (any time, including mid-execution or after acceptance). Triggers - implementation plan exists or is requested, work spans multiple tasks, subagent dispatch is available.
 ---
 
 # Arcane Mode — SDD pipeline

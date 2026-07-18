@@ -36,19 +36,39 @@ LOCK="$HOME/.claude/.pressure-baseline-lock"
 # re-read before calling the lock stale. A holder pid is live only if the
 # process both exists AND is a run-baseline invocation (a recycled pid
 # belonging to an unrelated process must not refuse baselines forever).
+is_live_baseline() {
+  # True only when the pid's argv0 is this script (or a shell running it) —
+  # a recycled pid in an editor/pager whose args mention the script must not
+  # refuse baselines forever.
+  local cmd argv0 argv1
+  cmd=$(ps -p "$1" -o command= 2>/dev/null) || return 1
+  argv0=${cmd%% *}; argv0=${argv0##*/}
+  argv1=$(printf '%s\n' "$cmd" | awk '{print $2}')
+  case "$argv0" in
+    run-baseline.sh) return 0 ;;
+    sh|bash|zsh|dash) case "$argv1" in *run-baseline.sh) return 0 ;; esac ;;
+  esac
+  return 1
+}
 if ! mkdir "$LOCK" 2>/dev/null; then
   holder=$(cat "$LOCK/pid" 2>/dev/null || echo "")
   if [ -z "$holder" ]; then
     sleep 2
     holder=$(cat "$LOCK/pid" 2>/dev/null || echo "")
   fi
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
-     && ps -p "$holder" -o command= 2>/dev/null | grep -q "run-baseline"; then
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && is_live_baseline "$holder"; then
     echo "[baseline] a live baseline run (pid $holder) holds $LOCK — refusing to start" >&2
     exit 1
   fi
-  echo "[baseline] removing stale lock (holder pid ${holder:-unknown} is not a live baseline run)" >&2
-  rm -rf "$LOCK"
+  # Atomic takeover: rename the stale lock aside — only ONE of two concurrent
+  # starters wins the rename; the loser must not rm a lock the winner already
+  # replaced with its own live one.
+  if ! mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+    echo "[baseline] another starter is taking over the stale lock — refusing to start (re-run)" >&2
+    exit 1
+  fi
+  echo "[baseline] removed stale lock (holder pid ${holder:-unknown} was not a live baseline run)" >&2
+  rm -rf "$LOCK.stale.$$"
   mkdir "$LOCK" || { echo "[baseline] cannot acquire $LOCK" >&2; exit 1; }
 fi
 echo $$ > "$LOCK/pid"

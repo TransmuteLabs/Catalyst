@@ -1,6 +1,6 @@
 ---
 name: review
-description: Use for standalone code review outside the arcane-mode pipeline - "review this code", "review my PR", "check before merge", "what did I break". For task review inside the pipeline use arcane-mode's critic flow instead.
+description: Use for standalone code review outside the arcane-mode pipeline - "review this code", "review my PR", "check before merge", "what did I break" - and for cleanup requests like "clean this up / remove the AI slop" (the deslop pass). For task review inside the pipeline use arcane-mode's critic flow instead.
 ---
 
 # Review — standalone review
