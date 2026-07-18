@@ -10,7 +10,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 FAMILY=$(cd "$HERE/../.." && pwd)
-OUT="$HERE/out/green-$(date +%Y%m%d-%H%M%S)"
+OUT="$HERE/out/green-$(date -u +%Y%m%d-%H%M%S)Z"
 mkdir -p "$OUT"
 WORK=$(mktemp -d)  # parent; each scenario gets its own subdir — concurrent
                    # sessions must not share a cwd (an agent materializing an

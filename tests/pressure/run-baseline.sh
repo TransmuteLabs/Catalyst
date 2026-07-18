@@ -21,7 +21,7 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT="$HERE/out/baseline-$(date +%Y%m%d-%H%M%S)"
+OUT="$HERE/out/baseline-$(date -u +%Y%m%d-%H%M%S)Z"
 mkdir -p "$OUT"
 WORK=$(mktemp -d)  # parent; per-scenario subdirs — concurrent sessions must
                    # not share a cwd (cross-scenario contamination)
