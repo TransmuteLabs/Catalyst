@@ -29,21 +29,36 @@ CM="$HOME/.claude/CLAUDE.md"
 BK="$HOME/.claude/CLAUDE.md.pressure-baseline-backup"
 LOCK="$HOME/.claude/.pressure-baseline-lock"
 
-# Self-heal a stale backup from a hard-killed previous run.
+# Single-writer lock FIRST (the self-heal below must never run while another
+# baseline is live — it would restore CLAUDE.md under that run's sessions).
+# The lock carries the holder's PID; a lock whose holder is dead is stale
+# (a hard-killed run) and is removed, never treated as a live run.
+if ! mkdir "$LOCK" 2>/dev/null; then
+  holder=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    echo "[baseline] a live baseline run (pid $holder) holds $LOCK — refusing to start" >&2
+    exit 1
+  fi
+  echo "[baseline] removing stale lock left by a killed run (pid ${holder:-unknown})" >&2
+  rm -rf "$LOCK"
+  mkdir "$LOCK" || { echo "[baseline] cannot acquire $LOCK" >&2; exit 1; }
+fi
+echo $$ > "$LOCK/pid"
+
+# Self-heal a stale backup from a hard-killed previous run (safe: we hold
+# the lock, so no other baseline is live).
 if [ -f "$BK" ] && [ ! -f "$CM" ]; then
   mv "$BK" "$CM" && echo "[baseline] stale backup from a killed run restored" >&2
-fi
-
-# Single-writer lock: two concurrent baselines silently invalidate each
-# other's RED (one restores CLAUDE.md while the other's sessions launch).
-if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "[baseline] another baseline run holds $LOCK — refusing to start" >&2
+elif [ -f "$BK" ] && [ -f "$CM" ]; then
+  echo "[baseline] BOTH $CM and stale backup $BK exist (CLAUDE.md was recreated after a killed run)." >&2
+  echo "[baseline] Refusing to overwrite the backup — reconcile the two files manually, then re-run." >&2
+  rm -rf "$LOCK"
   exit 1
 fi
 
 restore() {
   if [ -f "$BK" ]; then mv "$BK" "$CM" && echo "[baseline] CLAUDE.md restored"; fi
-  rmdir "$LOCK" 2>/dev/null || true
+  rm -rf "$LOCK" 2>/dev/null || true
 }
 trap restore EXIT INT TERM
 
