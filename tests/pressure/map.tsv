@@ -3,11 +3,11 @@ arcane-critic-form	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/reference
 arcane-convergence	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	agents/auditor.md
 arcane-plan-lexicon	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/plan-standard.md
 arcane-adjudication	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md
-crucible-batching	opus	skills/crucible/SKILL.md
-crucible-hardgate	opus	skills/crucible/SKILL.md
+crucible-batching	opus	skills/crucible/SKILL.md	skills/crucible/references/marker-machine.md
+crucible-hardgate	opus	skills/crucible/SKILL.md	skills/crucible/references/marker-machine.md
 starchart-one-ticket	opus	skills/starchart/SKILL.md
 starchart-decides	opus	skills/starchart/SKILL.md
-premortem-tiger-accept	opus	skills/premortem/SKILL.md
+premortem-tiger-accept	opus	skills/premortem/SKILL.md	skills/premortem/references/spec-gate.md
 handoff-mental-model	opus	skills/handoff/SKILL.md
 bootup-dispatcher	opus	skills/bootup/SKILL.md
 research-grounding	opus	skills/research/SKILL.md	agents/researcher.md
@@ -16,15 +16,16 @@ bootup-dispatcher-v2	opus	skills/bootup/SKILL.md
 install-verify	opus	skills/install/SKILL.md
 debug-rootcause	opus	skills/debug/SKILL.md
 forge-red-first	opus	skills/forge-skill/SKILL.md
-campaign-one-phase	opus	skills/campaign/SKILL.md
-campaign-milestone-intent	opus	skills/campaign/SKILL.md
-campaign-demotion-red	opus	skills/campaign/SKILL.md
-campaign-migration-backfill	opus	skills/campaign/SKILL.md
-campaign-batch-discipline	opus	skills/campaign/SKILL.md
+campaign-one-phase	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
+campaign-milestone-intent	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
+campaign-demotion-red	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md	skills/arcane-mode/references/amendment.md
+campaign-migration-backfill	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
+campaign-batch-discipline	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
 arcane-waiver-record	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/arcane-mode/references/economics.md	skills/campaign/SKILL.md
-arcane-uat-reoffer	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/campaign/SKILL.md
+arcane-uat-reoffer	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/campaign/SKILL.md	skills/arcane-mode/references/amendment.md
 review-capture-complete	opus	skills/review/SKILL.md	agents/scout.md
 forge-edit-gate	opus	skills/forge-skill/SKILL.md
 bootup-git-init	opus	skills/bootup/SKILL.md
 upgrade-harness-policy	opus	skills/upgrade-harness/SKILL.md
 arcane-knowledge-loop	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/knowledge-loop.md
+campaign-conflict-trigger	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md	skills/crucible/references/marker-machine.md	skills/premortem/references/spec-gate.md
