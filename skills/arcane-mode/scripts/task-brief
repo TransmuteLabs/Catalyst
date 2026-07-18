@@ -64,7 +64,10 @@ extract_constraints() {
     !infence && /^#+[ \t]/ {
       match($0, /^#+/); lvl = RLENGTH
       if ($0 ~ /^#+[ \t]+Global Constraints/) { insec = 1; slvl = lvl; print; next }
-      else if (insec && lvl <= slvl) insec = 0
+      # A Task heading ends the section regardless of depth: an incomplete
+      # plan that omits the peer section between constraints and tasks must
+      # not leak every task body into every brief as "constraints".
+      else if (insec && (lvl <= slvl || $0 ~ /^#+[ \t]+Task[ \t]+[0-9]+/)) insec = 0
     }
     insec { print }
   ' "$plan"
@@ -78,10 +81,47 @@ fi
 
 # The implementer contract scopes writes by the brief. Surface the task's
 # **Files:** list as a canonical `paths:` header line the agent can bind to.
-paths_line=$(printf '%s\n' "$task_text" | sed -n 's/^\*\*Files:\*\*[ \t]*//p' | head -1 | sed 's/`//g')
+# Both sanctioned plan shapes are parsed: the canonical bulleted block
+# (`**Files:**` followed by `- Create:/- Modify:/- Test:` bullets, per
+# plan-standard) and the inline `**Files:** a.py, b.py` form. Bullet
+# prefixes and `:N-M` line-range suffixes are normalized away.
+paths_line=$(printf '%s\n' "$task_text" | awk '
+  /^```/ { infence = !infence; next }
+  infence { next }
+  inblock {
+    if ($0 ~ /^-[ \t]+/) {
+      p = $0
+      sub(/^-[ \t]+/, "", p)
+      sub(/^(Create|Modify|Test|Delete):[ \t]*/, "", p)
+      gsub(/`/, "", p)
+      sub(/[ \t].*$/, "", p)
+      sub(/:[0-9]+(-[0-9]+)?$/, "", p)
+      if (p != "") out = out (out == "" ? "" : ", ") p
+      next
+    }
+    inblock = 0
+  }
+  /^\*\*Files:\*\*/ {
+    rest = $0
+    sub(/^\*\*Files:\*\*[ \t]*/, "", rest)
+    gsub(/`/, "", rest)
+    if (rest != "") { out = rest; exit }
+    inblock = 1
+  }
+  END { print out }
+')
+
+# Fail closed: a brief without `paths:` leaves the implementer write-scope
+# contract undefined (dispatch-templates makes the header mandatory). An
+# empty extraction means the plan's Files field is missing or malformed —
+# that is a plan defect to fix, not a header to silently omit.
+if [ -z "$paths_line" ]; then
+  echo "task ${n}: no paths extracted from a **Files:** field — the implementer write scope binds to the brief's paths: header; fix the plan's Files block (canonical bulleted form or inline **Files:** a.py, b.py)" >&2
+  exit 5
+fi
 
 {
-  [ -n "$paths_line" ] && printf 'paths: %s\n\n' "$paths_line"
+  printf 'paths: %s\n\n' "$paths_line"
   constraints=$(extract_constraints)
   if [ -n "$constraints" ]; then
     printf '%s\n\n' "$constraints"

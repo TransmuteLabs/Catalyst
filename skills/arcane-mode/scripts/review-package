@@ -28,18 +28,34 @@ else
   out="$dir/review-$(git rev-parse --short "$base")..$(git rev-parse --short "$head").diff"
 fi
 
+# Full OIDs in the package metadata: short prefixes are unique only against
+# the object database at write time — a later fetch can make a stored prefix
+# ambiguous. Short forms stay display-only (the filename).
+base_full=$(git rev-parse "${base}^{commit}")
+head_full=$(git rev-parse "${head}^{commit}")
+
+# Write to a temp file and rename atomically: a direct redirect creates the
+# final path first, so a kill/ENOSPC mid-write leaves a plausible truncated
+# package (and regenerating destroys the previous complete one first). The
+# terminal marker lets any reader verify completeness.
+tmp=$(mktemp "${out}.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
 {
-  echo "# Review package: ${base}..${head}"
+  echo "# Review package: ${base_full}..${head_full}"
   echo
   echo "## Commits"
-  git log --oneline "${base}..${head}"
+  git log --oneline "${base_full}..${head_full}"
   echo
   echo "## Files changed"
-  git diff --stat "${base}..${head}"
+  git diff --stat "${base_full}..${head_full}"
   echo
   echo "## Diff"
-  git diff -U10 "${base}..${head}"
-} > "$out"
+  git diff -U10 "${base_full}..${head_full}"
+  echo
+  echo "## End of package (complete)"
+} > "$tmp"
+mv "$tmp" "$out"
+trap - EXIT
 
-commits=$(git rev-list --count "${base}..${head}")
+commits=$(git rev-list --count "${base_full}..${head_full}")
 echo "wrote ${out}: ${commits} commit(s), $(wc -c < "$out" | tr -d ' ') bytes"

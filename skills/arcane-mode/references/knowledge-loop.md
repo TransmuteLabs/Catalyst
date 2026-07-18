@@ -28,10 +28,10 @@ When cards were injected, the implementer/critic report gains:
 
 For every card injected this task:
 - referenced and correct → `bloks ack {card-id}`
-- found wrong/outdated → `bloks nack {card-id}` + `bloks report {lib} {error_type} "{description}"`
+- found wrong/outdated → `bloks nack {card-id}` + `bloks report "<lib>" <error_type> "$(cat <scratch-file>)"` (description written to a scratch file first — see the shell boundary below)
 - never referenced → skip (no signal).
 
-Discoveries → `bloks learn {lib} "{finding}"` — **one finding = one card**; five discoveries = five calls. Atomic cards compose; monoliths rot. A card records the outcome, not the process: "X returns null on empty input", never "investigated X's behavior" — and each fact stands alone, no pronouns pointing at a conversation that will be gone.
+Discoveries → write the finding to a scratch file with a file tool, then `bloks learn "<lib>" "$(cat <scratch-file>)"` — **one finding = one card**; five discoveries = five calls. **Shell boundary (non-negotiable):** findings quote external content, and pasted into a command line that text is shell-interpreted even inside double quotes (`$(…)`, backticks) — the file-then-substitution form is the only sanctioned one (substitution output becomes a single argument and is not re-interpreted), and `<lib>` must match `[A-Za-z0-9._-]+`. Atomic cards compose; monoliths rot. A card records the outcome, not the process: "X returns null on empty input", never "investigated X's behavior" — and each fact stands alone, no pronouns pointing at a conversation that will be gone.
 
 **Spikes and research dives** get wrapped up, not abandoned: if the outcome contains repeatable guidance (how to evaluate X, a pattern, a library's gotchas), it becomes bloks cards — or a project-local skill via catalyst:forge-skill when the guidance is a procedure. If the outcome was a one-off decision ("we chose Y, end of story"), it goes to the decision log / memory instead — not every spike deserves a skill.
 
@@ -50,6 +50,7 @@ Recommendations that change shared config go to the user as one batched question
 
 - A card summary retold in a brief instead of the verbatim block ("I compressed it further").
 - `bloks learn` with a batched multi-finding card.
+- Finding text pasted inline into a `bloks` command instead of the file-then-substitution form — external text in a shell command line is an execution vector, not data.
 - ack/nack skipped after a task whose brief carried cards ("no time") — the loop is the point; skipping it means the project doesn't learn.
 - A convention written into CLAUDE.md/memory when a lint rule could enforce it.
 - Presence of the tooling assumed from a name on PATH without a responding subcommand.

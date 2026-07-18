@@ -25,14 +25,18 @@ async def _call_new_function(param1, param2="default"):
     try:
         return await api_call(param1=param1, param2=param2)
     except Exception as e:  # the bridge boundary: errors return, never escape
-        return {"error": f"{type(e).__name__}: {e}"}
+        logging.exception("new_function bridge failure")  # full detail stays host-side
+        return {"error": f"{type(e).__name__} (details logged host-side)"}
 
 def _call_new_function_sync(*args, **kwargs):
     try:
         return asyncio.run(_call_new_function(*args, **kwargs))
     except Exception as e:  # asyncio.run itself can raise (nested loop, etc.)
-        return {"error": f"{type(e).__name__}: {e}"}
+        logging.exception("new_function sync-wrapper failure")
+        return {"error": f"{type(e).__name__} (details logged host-side)"}
 ```
+
+Error strings cross the sandbox boundary, so they are REDACTED by construction: an SDK/HTTP exception's `str(e)` can carry URLs, headers, local paths, or an API token — the sandbox gets only the exception TYPE plus a fixed message, and the full detail goes to host-side logging. Never interpolate `{e}` (or `repr(e)`, or a traceback) into the returned dict.
 
 Sync local operation → plain function with a policy check first (`_check_path_allowed(...)`), all exceptions caught and returned as `{"error": "..."}`. Bridge functions must return JSON-serializable dicts/strings and keep parameters simple (strings, ints, bools, lists).
 
@@ -40,7 +44,7 @@ Sync local operation → plain function with a policy check first (`_check_path_
 
 5. **Register** in `EXTERNAL_FUNCTIONS` — the key becomes the name sandbox code calls.
 
-6. **Test end-to-end** — smoke (works?), security (blocks unauthorized access?), error handling (fails gracefully?):
+6. **Test end-to-end** — smoke (works?), security (blocks unauthorized access?), error handling (fails gracefully?), redaction (raise a test exception whose message embeds a fake secret — the sandbox-visible return must show the type only, never the secret):
 
 ```bash
 echo 'result = new_function("test_arg"); print(result)' | python tools/ouros_harness.py

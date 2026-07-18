@@ -17,7 +17,7 @@ install-verify	opus	skills/install/SKILL.md
 debug-rootcause	opus	skills/debug/SKILL.md
 forge-red-first	opus	skills/forge-skill/SKILL.md	skills/forge-skill/references/gate-records.md
 campaign-one-phase	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
-campaign-milestone-intent	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
+campaign-milestone-intent	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md	agents/auditor.md
 campaign-demotion-red	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md	skills/arcane-mode/references/amendment.md
 campaign-migration-backfill	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
 campaign-batch-discipline	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
@@ -33,5 +33,5 @@ campaign-base-interim	opus	skills/campaign/SKILL.md	skills/campaign/references/a
 crucible-entangled-revert	opus	skills/crucible/SKILL.md	skills/crucible/references/marker-machine.md	skills/premortem/references/spec-gate.md
 crucible-retitle-wave	opus	skills/crucible/SKILL.md	skills/crucible/references/marker-machine.md
 spec-smuggle-accounting	opus	skills/crucible/references/marker-machine.md	skills/campaign/references/arbitration.md	skills/campaign/SKILL.md
-arcane-amendment-route	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/amendment.md	skills/crucible/references/marker-machine.md	skills/campaign/SKILL.md
+arcane-amendment-route	opus	skills/arcane-mode/SKILL.md	skills/campaign/SKILL.md
 forge-invalid-closure	opus	skills/forge-skill/SKILL.md	skills/forge-skill/references/gate-records.md

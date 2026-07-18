@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Unit test for run-baseline.sh's is_live_baseline() classifier — the lock's
-# stale-vs-live decision. A misclassification of LIVE as stale re-creates the
-# CLAUDE.md-restore contamination the rounds 29-33 fixes closed (incl. the
-# space-in-path defect: awk-$2 tokenization read a live holder as stale).
+# Script-level tests for the pressure runners. Covers, by name:
+#   (a) run-baseline.sh's is_live_baseline() classifier — the lock's
+#       stale-vs-live decision (a LIVE-as-stale misclassification re-creates
+#       the CLAUDE.md-restore contamination the rounds 29-33 fixes closed,
+#       incl. the space-in-path defect);
+#   (b) the verified-exclusive pid-write guard — the single-winner property
+#       of every lock-takeover interleaving;
+#   (c) bash -n syntax on BOTH runners (the rest of their lifecycle — traps,
+#       rename/restore, scenario loop — cannot be smoked without running a
+#       baseline; syntax is the strongest safe whole-file check).
+# Anything outside (a)-(c) is NOT covered here.
 #
 # This is a SCRIPT-level test: the pressure harness (map.tsv scenarios) cannot
 # exercise shell behavior, so this file is the compensating gate for
-# run-baseline.sh edits — run it after touching the script.
+# runner edits — run it after touching run-baseline.sh or run-green.sh.
 #
-# Extracts the function from run-baseline.sh (never sources the whole script —
-# that would RUN a baseline) and asserts classification on real spawned pids.
+# Extracts function/guard blocks from run-baseline.sh (never sources the whole
+# script — that would RUN a baseline) and asserts behavior on real processes.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/run-baseline.sh"
@@ -55,5 +62,23 @@ kill "$p4" 2>/dev/null
 bash -c 'exit 0' & p5=$!; wait "$p5" 2>/dev/null
 check 1 "$p5" "dead pid classified STALE"
 
-if [ "$fails" -eq 0 ]; then echo "PASS: is_live_baseline classifier (5/5)"; exit 0
+# 6-7. Verified-exclusive pid-write guard: extract the guard block and run it
+# in a sandbox lock dir. A pre-claimed pid file must refuse (exit 1); a free
+# one must claim and pass through.
+sed -n '/^# VERIFIED exclusive pid write/,/^fi$/p' "$SRC" > "$TMP/guard.sh"
+grep -q 'noclobber' "$TMP/guard.sh" || { echo "FAIL: could not extract pid-write guard from $SRC"; fails=$((fails+1)); }
+mkdir -p "$TMP/lock-taken"; echo 99999 > "$TMP/lock-taken/pid"
+if LOCK="$TMP/lock-taken" bash -c ". '$TMP/guard.sh' && echo claimed" >/dev/null 2>&1; then
+  echo "FAIL: guard claimed a pid file another writer already owns"; fails=$((fails+1))
+else echo "ok: pre-claimed pid file refused"; fi
+mkdir -p "$TMP/lock-free"
+if LOCK="$TMP/lock-free" bash -c ". '$TMP/guard.sh' && echo claimed" 2>/dev/null | grep -q claimed; then
+  echo "ok: free pid file claimed and verified"
+else echo "FAIL: guard refused a free lock dir"; fails=$((fails+1)); fi
+
+# 8. Syntax gate on both runners.
+if bash -n "$SRC" && bash -n "$HERE/run-green.sh"; then echo "ok: bash -n both runners"
+else echo "FAIL: bash -n"; fails=$((fails+1)); fi
+
+if [ "$fails" -eq 0 ]; then echo "PASS: runner script gates (8/8)"; exit 0
 else echo "FAIL: $fails assertion(s)"; exit 1; fi

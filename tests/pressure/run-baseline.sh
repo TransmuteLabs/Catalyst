@@ -21,8 +21,24 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+FAMILY=$(cd "$HERE/../.." && pwd)
 OUT="$HERE/out/baseline-$(date -u +%Y%m%d-%H%M%S)Z"
-mkdir -p "$OUT"
+# Identity must be unique (same-second runs must not share a dir and
+# interleave outputs) — exclusive mkdir, on collision suffix the pid.
+if ! mkdir "$OUT" 2>/dev/null; then
+  OUT="$OUT-$$"
+  mkdir "$OUT"
+fi
+# Bind the run to the exact revision and scenario texts it diagnosed — after
+# a scenario/map edit, an unbound old RED cannot be tied to the text that
+# later went GREEN. Per-scenario hashes are appended as scenarios enqueue.
+{
+  echo "head: $(git -C "$FAMILY" rev-parse HEAD 2>/dev/null || echo no-git)"
+  echo "dirty: $(git -C "$FAMILY" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  echo "map_sha256: $(shasum -a 256 "$HERE/map.tsv" | cut -d' ' -f1)"
+  echo "cli: $(claude --version 2>/dev/null | head -1 || echo unknown)"
+  echo "utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$OUT/MANIFEST.txt"
 WORK=$(mktemp -d)  # parent; per-scenario subdirs — concurrent sessions must
                    # not share a cwd (cross-scenario contamination)
 CM="$HOME/.claude/CLAUDE.md"
@@ -73,6 +89,12 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     echo "[baseline] another starter is taking over the stale lock — refusing to start (re-run)" >&2
     exit 1
   fi
+  # An EMPTY pid in the moved-aside dir is decidably stale HERE (unlike the
+  # first-phase grace): every winner VERIFIES its pid write below and refuses
+  # on failure, so a mid-acquisition winner whose dir we just renamed away
+  # will self-detect (its write hits a missing path or loses the exclusive
+  # create) and exit — it never runs unlocked. Only a corpse leaves an empty
+  # pid that no live process will ever claim.
   moved_pid=$(cat "$LOCK.stale.$$/pid" 2>/dev/null || echo "")
   if [ -n "$moved_pid" ] && [ "$moved_pid" != "$holder" ] && kill -0 "$moved_pid" 2>/dev/null && is_live_baseline "$moved_pid"; then
     # We stole a fresh live lock — put it back and refuse. If the restore
@@ -86,7 +108,17 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK.stale.$$"
   mkdir "$LOCK" || { echo "[baseline] cannot acquire $LOCK" >&2; exit 1; }
 fi
-echo $$ > "$LOCK/pid"
+# VERIFIED exclusive pid write — this is what makes every takeover
+# interleaving single-winner. noclobber (O_EXCL) guarantees at most one
+# writer claims a given lock dir's pid file; the read-back catches the
+# stolen-dir case (our dir was renamed away mid-acquisition and the write
+# went nowhere, or landed in a dir another starter now owns). On any
+# failure we hold nothing and must refuse, not run unlocked.
+if ! ( set -o noclobber; echo $$ > "$LOCK/pid" ) 2>/dev/null \
+   || [ "$(cat "$LOCK/pid" 2>/dev/null)" != "$$" ]; then
+  echo "[baseline] lost the lock acquisition race (pid write failed or was not ours) — refusing to start (re-run)" >&2
+  exit 1
+fi
 
 # Self-heal a stale backup from a hard-killed previous run (safe: we hold
 # the lock, so no other baseline is live).
@@ -105,7 +137,7 @@ restore() {
 }
 trap restore EXIT INT TERM
 
-printf '%s\n' "NOTE: baseline ran on this machine's environment. The CLAUDE.md rename does not remove process rules injected through other channels; check transcripts for reliance on injected rules before crediting model defaults (forge-skill's law)." > "$OUT/NOTE-baseline-validity.txt"
+printf '%s\n' "NOTE: baseline ran on this machine's environment. The CLAUDE.md rename does not remove process rules injected through other channels, and the recorded final message CANNOT prove the absence of reliance on such rules (a rule can shape behavior without being named). Treat every baseline as DIAGNOSTIC evidence, never as proof of clean-model defaults (forge-skill's law)." > "$OUT/NOTE-baseline-validity.txt"
 
 names=("$@")
 if [ ${#names[@]} -eq 0 ]; then
@@ -114,11 +146,17 @@ fi
 
 [ -f "$CM" ] && mv "$CM" "$BK" && echo "[baseline] CLAUDE.md renamed"
 
+# Bounded worker pool: an unthrottled no-args run launches every mapped
+# session at once and the resulting process/API burst produces its own
+# failures (429s, kills) that read as broken runs.
+MAX_PAR="${PRESSURE_MAX_PAR:-4}"
 for name in "${names[@]}"; do
   line=$(awk -F'\t' -v n="$name" '$1==n' "$HERE/map.tsv")
   [ -z "$line" ] && { echo "SKIP $name: not in map.tsv" >&2; continue; }
   [ -f "$HERE/scenarios/$name.md" ] || { echo "SKIP $name: scenario file missing" >&2; continue; }
   model=$(printf '%s' "$line" | cut -f2)
+  echo "scenario $name model $model sha256 $(shasum -a 256 "$HERE/scenarios/$name.md" | cut -d' ' -f1)" >> "$OUT/MANIFEST.txt"
+  while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$MAX_PAR" ]; do sleep 1; done
   mkdir -p "$WORK/$name"
   ( cd "$WORK/$name" && claude -p "$(cat "$HERE/scenarios/$name.md")" --model "$model" \
       > "$OUT/$name.txt" 2> "$OUT/$name.err"

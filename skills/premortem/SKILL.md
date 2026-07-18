@@ -1,6 +1,6 @@
 ---
 name: premortem
-description: Use when a plan or spec is ready and implementation has not started - failure-state projection before work begins. The gate between an approved plan and dispatching Task 1. Also gate RE-RUNS on amended or rejected ground - any time, including mid-execution (the season rule bars retroactive analysis of shipped work, not re-gating amendments).
+description: Use when a plan or spec is ready and implementation has not started - failure-state projection before work begins. The gate between an approved plan and dispatching Task 1. Also gate RE-RUNS on amended or rejected ground, and REVERSALS of a previously accepted risk (the user withdraws an acceptance) - any time, including mid-execution or after the work shipped (the season rule bars retroactive analysis of shipped work, not re-gating amendments or honoring withdrawals).
 ---
 
 # Premortem — failure analysis before the start
@@ -63,10 +63,20 @@ premortem:
       falsifiable_test: "..."
       mitigation_tasks: "task refs in the plan; at a spec-gate run, the spec
                          must_haves/decisions the mitigation landed as"
-  accepted_risks:        # only by explicit user decision — see the BLOCK rule
+  accepted_risks:        # only by explicit user decision — see the BLOCK rule.
+                         # A FULL snapshot of the original entry: `class:` plus the
+                         # original class's fields carried VERBATIM (a tiger's
+                         # evidence/root_cause/falsifiable_test, an elephant's
+                         # why_avoided/true_impact) — a withdrawal restores the
+                         # entry from THIS record alone, so a snapshot that drops
+                         # fields loses them for good
     - risk: "..."
+      class: tiger|elephant
       accepted_by: user, YYYY-MM-DD
       consequence_accepted: "..."
+      evidence: "..."            # (tiger fields, verbatim from the original entry)
+      root_cause: "..."
+      falsifiable_test: "..."
 ```
 
 - **BLOCK** — at least one tiger in `tigers:`: Task 1 is not dispatched until every tiger's mitigation lands in the plan as concrete tasks/verify steps (in must_haves), then the gate re-runs on the reworked plan — the re-run moves each tiger whose mitigation landed to `mitigated:` (BLOCK counts only `tigers:`; a mitigated risk never re-blocks). A tiger with NO viable mitigation path is the user's decision: accept explicitly or rework the scope — never proceed silently. An explicit user acceptance is a RECORDED state change, not a mental note: the tiger moves to `accepted_risks:` in the yaml (`accepted_by: user`, the date, the consequence accepted, and `class:` — the risk's ORIGINAL class, tiger or elephant: withdrawal must return it to its own section, and without the field an accepted elephant is unrecoverable) and the verdict recomputes without it (no other tigers → WARN); the ledger verdict line names it (`WARN — tiger <X> accepted by user <date>`), so no resumed session re-blocks on a decision already made. Every gate RE-RUN reads the existing yaml first: risks in `accepted_risks` stay there — they are never re-listed as tigers and never demand mitigation again; the yaml is the source of the acceptance, the ledger line its cache (a death between the recompute and the ledger write heals from the yaml). An acceptance is the user's decision and the user can REVERSE it — a withdrawal order is a STOP-read trigger: `references/spec-gate.md` owns the withdrawal machinery ENTIRELY (the `withdrawn:` append shape, the one-commit recompute, never-defer transport, re-acceptance supersede, and the per-risk merge arbitration); the effect is immediate — the risk returns to its recorded ORIGINAL class NOW (`class:` in the acceptance record — a withdrawn tiger to `tigers:` with BLOCK force, a withdrawn elephant to `elephants:` with its WARN semantics; a legacy acceptance without `class:` returns to `tigers:`, the conservative default), never parked for a later re-run.
@@ -79,7 +89,7 @@ A sanctioned PRE-PLAN run (large/risky spec) gates the spec instead: mitigations
 
 **Post-approval edits to spec-gate ground — the normative home is `references/spec-gate.md`** (entry and marker shapes: crucible's `references/marker-machine.md`). Any edit landing on an approved spec's ground after its approval, any user answer to a pending entry, any rejection's revert, and any rejection or recompute landing while the phase is already executing → STOP and read that file ENTIRELY before writing, reverting, or dispatching anything — it owns the marker rewrite + entry commit, per-answer recording, stacked and entangled reverts, the yaml recompute, and the amendment-class barring rule. A partial read loses recorded user decisions.
 
-At a spec-gate run the verdict is recorded in the spec's open/deferred section as an anchored append-only record — `premortem: <PASS|BLOCK> <ISO date> (yaml: <path>)`, a later re-run appends a new line and the LATEST dated line governs, never a rewrite of an earlier one — consumers (crucible's lost-yaml detection, campaign's stamps) key on this exact shape, not on prose (no plan, no ledger exists yet): that in-spec record is what makes a LOST yaml detectable — the bridge and the campaign referent check read the spec first, and a spec whose open/deferred records a spec-gate verdict REQUIRES the yaml next to it (absent = a lost referent: recover from the branch or from base git history — campaign's recovery arms, unshallow a shallow clone first — or batch to the user; never "no gate ran") — and the plan-gate run still happens after the plan is written.
+At a spec-gate run the verdict is recorded in the spec's open/deferred section as an anchored append-only record — `premortem: <PASS|WARN|BLOCK> <ISO date> (yaml: <path>)` (the grammar names every reachable verdict — WARN is the STANDARD post-BLOCK re-run outcome and must be writable, or a successful mitigation re-run leaves the governing record stuck at BLOCK), a later re-run appends a new line and the LATEST dated line governs, never a rewrite of an earlier one — consumers (crucible's lost-yaml detection, campaign's stamps) key on this exact shape, not on prose (no plan, no ledger exists yet): that in-spec record is what makes a LOST yaml detectable — the bridge and the campaign referent check read the spec first, and a spec whose open/deferred records a spec-gate verdict REQUIRES the yaml next to it (absent = a lost referent: recover from the branch or from base git history — campaign's recovery arms, unshallow a shallow clone first — or batch to the user; never "no gate ran") — and the plan-gate run still happens after the plan is written.
 
 The plan-gate run BRIDGES the spec run: it reads `<spec>.premortem.yaml` first and carries its `accepted_risks`, still-valid `mitigated` entries (still-valid means the plan actually carries the spec must_have/decision the mitigation landed as; one the plan dropped returns to `tigers:` at the plan gate — UNLESS the risk also sits in `accepted_risks`, a merge union's dual membership: the recorded acceptance governs, it never re-blocks — the dual state is named to the user once), AND any still-live `tigers:` (a spec-gate BLOCK the user walked away from does not dissolve — the live tigers enter the plan gate as tigers, never trusted to be re-discovered by luck) into `<plan>.premortem.yaml` with their records — a decision accepted at the spec gate is never re-asked at the plan gate, and a spec-gate BLOCK bars Task 1 exactly like a plan-gate BLOCK until its tigers are mitigated or user-accepted.
 

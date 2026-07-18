@@ -33,6 +33,7 @@ The entry dispatcher: assess the project's agent-readiness, close mechanical gap
 | Bug / failure / "why is it broken" | catalyst:debug |
 | Author or fix a skill/agent | catalyst:forge-skill |
 | Risk-gate an existing plan/spec (standalone) | catalyst:premortem |
+| Withdraw/reverse a previously accepted risk (any time, incl. shipped work) | catalyst:premortem (its spec-gate withdrawal machinery) |
 | Extend the agent sandbox/harness | catalyst:upgrade-harness |
 | Toolchain setup or repair | catalyst:install |
 | Continue a previous session | catalyst:handoff (resume) |

@@ -1,6 +1,6 @@
 ---
 name: crucible
-description: Use when a feature idea, architectural decision, or spec needs hardening before planning - requirements are fuzzy, trade-offs unresolved, or the user wants their thinking stress-tested. Also use before catalyst:arcane-mode when no approved spec exists, and when changing or amending an ALREADY-APPROVED spec (the amendment fast path - never hand-edit an approved spec).
+description: Use when a feature idea, architectural decision, or spec needs hardening before planning - requirements are fuzzy, trade-offs unresolved, or the user wants their thinking stress-tested. Also use before catalyst:arcane-mode when no approved spec exists, and when changing or amending an ALREADY-APPROVED spec that has NO plan or execution yet (the amendment fast path - never hand-edit an approved spec); once a plan, ledger, or campaign phase exists on the spec, the amendment enters via catalyst:arcane-mode's amendment route, which invokes this fast path itself and then reconciles the plan/ledger/campaign state the spec change touches.
 ---
 
 # Crucible — hardening decisions by interview
