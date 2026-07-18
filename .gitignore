@@ -1,4 +1,6 @@
 .DS_Store
 ._*
 tests/pressure/out/
-.catalyst/
+.catalyst/*
+!.catalyst/campaign/
+!.catalyst/map/

@@ -44,7 +44,7 @@ Code-side gates prove the code matches the plan; they do not prove the feature w
 
 ## Final whole-branch review
 
-The orchestrator reads the branch review package PERSONALLY (`scripts/review-package MERGE_BASE HEAD`, MERGE_BASE = `git merge-base <base-ref> HEAD` where `<base-ref>` is the branch this effort forked from — never assume `main`). Exception — a package >~150KB: a fresh-eyes subagent on the same top tier with clean context; the orchestrator adjudicates its verdict. The final review receives the ledger's Minor list and triages what must be fixed before merge. Final findings → one fix wave with the complete list → re-review.
+The orchestrator reads the branch review package PERSONALLY (`<skill-dir>/scripts/review-package MERGE_BASE HEAD` — resolved against the arcane-mode skill's directory, never the project cwd; REQUIRE a clean tree first — `git status --porcelain -uall` empty (workspace/ledger paths self-ignored aside): a dirty tree means the tests and reads ran on state the package does NOT contain, and the verdict would certify a tree nobody can reproduce; MERGE_BASE = `git merge-base <base-ref> HEAD` where `<base-ref>` is the branch this effort forked from — never assume `main`). Exception — a package >~150KB: a fresh-eyes subagent on the same top tier with clean context; the orchestrator adjudicates its verdict. The final review receives the ledger's Minor list and triages what must be fixed before merge. Final findings → one fix wave with the complete list → re-review.
 
 ## Fresh-eyes convergence (after the final review, iterative)
 

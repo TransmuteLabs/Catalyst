@@ -61,7 +61,7 @@ Before submitting, the implementer verifies their own claims: created files exis
 
 ## Critic dispatch
 
-All per-task critics are "standard" tier, always (sole exception: economics' availability fallback — executor at high effort, flagged to the user, never silent). The critic gets three paths: the brief, the implementer report, the review package (`scripts/review-package BASE HEAD`; BASE recorded before the implementer dispatch — `HEAD~1` silently truncates multi-commit tasks) + the plan's Global Constraints block verbatim.
+All per-task critics are "standard" tier, always (sole exception: economics' availability fallback — executor at high effort, flagged to the user, never silent). The critic gets three paths: the brief, the implementer report, the review package (`<skill-dir>/scripts/review-package BASE HEAD` — the arcane-mode skill's own directory, not the project root; BASE recorded before the implementer dispatch — `HEAD~1` silently truncates multi-commit tasks) + the plan's Global Constraints block verbatim.
 
 **Mandatory in every dispatch:**
 - **Authored probing questions** from the orchestrator — concrete questions about this task's cross-interactions and semantic points. "Just review it" is a process smell.

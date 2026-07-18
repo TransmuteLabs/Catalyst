@@ -20,6 +20,10 @@ Planning an effort that doesn't fit one session, via a shared map of **decision 
 
 ```markdown
 # MAP: <effort>
+base: <branch>        — the branch every map commit and pull targets (durable identity:
+                        a fresh clone / second machine reads it here — the current checkout
+                        is NOT the record; a legacy map without the line backfills it from the
+                        branch its creation commit sits on, two candidates → the user)
 ## Destination        — where we're going, 2-4 sentences
 ## Notes              — mode agreements, each DATED (e.g. permission to "do", if the user granted it)
 ## Decisions so far   — index: one line per closed ticket + link (the map is an index, not a store)

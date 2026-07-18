@@ -24,26 +24,69 @@ else
   out="$dir/task-${n}-brief.md"
 fi
 
-awk -v n="$n" '
+# Duplicate task ids are a silent-loss hazard: two `Task N` headings would
+# concatenate into one brief while the ledger holds one identity — one of the
+# logical tasks gets skipped or falsely closed. Refuse instead.
+dupes=$(awk -v n="$n" '
   /^```/ { infence = !infence }
-  !infence && /^#+[ \t]/ {
-    match($0, /^#+/); lvl = RLENGTH
-    if ($0 ~ /^#+[ \t]+Task[ \t]+[0-9]+/) {
-      if ($0 ~ ("^#+[ \t]+Task[ \t]+" n "([^0-9]|$)")) { intask = 1; tlvl = lvl }
-      else intask = 0
-    } else if (intask && lvl <= tlvl) {
-      # a non-task section at the task heading level or higher ends the task:
-      # trailing plan prose (rollout notes, open questions) must not leak into
-      # the last task brief as if it were requirements
-      intask = 0
-    }
-  }
-  intask { print }
-' "$plan" > "$out"
+  !infence && $0 ~ ("^#+[ \t]+Task[ \t]+" n "([^0-9]|$)") { c++ }
+  END { print c+0 }
+' "$plan")
+if [ "$dupes" -gt 1 ]; then
+  echo "plan has ${dupes} headings matching 'Task ${n}' — task ids must be unique; fix the plan first" >&2
+  exit 4
+fi
 
-if [ ! -s "$out" ]; then
+extract_task() {
+  awk -v n="$n" '
+    /^```/ { infence = !infence }
+    !infence && /^#+[ \t]/ {
+      match($0, /^#+/); lvl = RLENGTH
+      if ($0 ~ /^#+[ \t]+Task[ \t]+[0-9]+/) {
+        if ($0 ~ ("^#+[ \t]+Task[ \t]+" n "([^0-9]|$)")) { intask = 1; tlvl = lvl }
+        else intask = 0
+      } else if (intask && lvl <= tlvl) {
+        # a non-task section at the task heading level or higher ends the task:
+        # trailing plan prose (rollout notes, open questions) must not leak into
+        # the last task brief as if it were requirements
+        intask = 0
+      }
+    }
+    intask { print }
+  ' "$plan"
+}
+
+# Plan-wide Global Constraints implicitly bind every task (plan-standard) —
+# a brief that drops them hands the implementer requirements with a hole.
+extract_constraints() {
+  awk '
+    /^```/ { infence = !infence }
+    !infence && /^#+[ \t]/ {
+      match($0, /^#+/); lvl = RLENGTH
+      if ($0 ~ /^#+[ \t]+Global Constraints/) { insec = 1; slvl = lvl; print; next }
+      else if (insec && lvl <= slvl) insec = 0
+    }
+    insec { print }
+  ' "$plan"
+}
+
+task_text=$(extract_task)
+if [ -z "$task_text" ]; then
   echo "task ${n} not found in ${plan} (no heading matching 'Task ${n}')" >&2
   exit 3
 fi
+
+# The implementer contract scopes writes by the brief. Surface the task's
+# **Files:** list as a canonical `paths:` header line the agent can bind to.
+paths_line=$(printf '%s\n' "$task_text" | sed -n 's/^\*\*Files:\*\*[ \t]*//p' | head -1 | sed 's/`//g')
+
+{
+  [ -n "$paths_line" ] && printf 'paths: %s\n\n' "$paths_line"
+  constraints=$(extract_constraints)
+  if [ -n "$constraints" ]; then
+    printf '%s\n\n' "$constraints"
+  fi
+  printf '%s\n' "$task_text"
+} > "$out"
 
 echo "wrote ${out}: $(wc -l < "$out" | tr -d ' ') lines"

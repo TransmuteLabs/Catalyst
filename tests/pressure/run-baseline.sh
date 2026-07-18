@@ -65,11 +65,21 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     echo "[baseline] a live baseline run (pid $holder) holds $LOCK — refusing to start" >&2
     exit 1
   fi
-  # Atomic takeover: rename the stale lock aside — only ONE of two concurrent
-  # starters wins the rename; the loser must not rm a lock the winner already
-  # replaced with its own live one.
+  # Takeover: rename the stale lock aside, then RE-VALIDATE what we actually
+  # moved. The rename alone is not enough (ABA): between our staleness check
+  # and our mv, a faster starter may have replaced the stale lock with its own
+  # LIVE one — the bare mv would steal it and two baselines would run at once.
   if ! mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
     echo "[baseline] another starter is taking over the stale lock — refusing to start (re-run)" >&2
+    exit 1
+  fi
+  moved_pid=$(cat "$LOCK.stale.$$/pid" 2>/dev/null || echo "")
+  if [ -n "$moved_pid" ] && [ "$moved_pid" != "$holder" ] && kill -0 "$moved_pid" 2>/dev/null && is_live_baseline "$moved_pid"; then
+    # We stole a fresh live lock — put it back and refuse. If the restore
+    # rename fails (a third starter already made a new lock), the moved-aside
+    # copy is left for inspection and we still refuse.
+    mv "$LOCK.stale.$$" "$LOCK" 2>/dev/null ||       echo "[baseline] WARNING: could not restore stolen live lock (left at $LOCK.stale.$$)" >&2
+    echo "[baseline] a live baseline run (pid $moved_pid) took over first — refusing to start" >&2
     exit 1
   fi
   echo "[baseline] removed stale lock (holder pid ${holder:-unknown} was not a live baseline run)" >&2

@@ -1,6 +1,6 @@
 ---
 name: auditor
-description: Fresh-eyes audit of a branch's final state through an assigned lens set - undirected defect search, claim-truth, goal-backward. Clean context, findings of any severity.
+description: Fresh-eyes audit of a branch's or milestone's final state through an assigned lens set - undirected defect search, claim-truth, goal-backward. Clean context, findings of any severity.
 tools: Read, Grep, Glob, Bash
 ---
 

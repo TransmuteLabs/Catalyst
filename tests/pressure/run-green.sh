@@ -11,7 +11,20 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 FAMILY=$(cd "$HERE/../.." && pwd)
 OUT="$HERE/out/green-$(date -u +%Y%m%d-%H%M%S)Z"
-mkdir -p "$OUT"
+# Identity must be unique (two same-second runs previously shared a dir via
+# mkdir -p and mixed/overwrote outputs) — on collision, suffix the pid.
+if ! mkdir "$OUT" 2>/dev/null; then
+  OUT="$OUT-$$"
+  mkdir "$OUT"
+fi
+# Bind the run to the exact revision it proves (a newer-by-timestamp run from
+# another branch/dirty tree must not pass as evidence for this edit).
+{
+  echo "head: $(git -C "$FAMILY" rev-parse HEAD 2>/dev/null || echo no-git)"
+  echo "dirty: $(git -C "$FAMILY" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  echo "map_sha256: $(shasum -a 256 "$HERE/map.tsv" | cut -d' ' -f1)"
+  echo "utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$OUT/MANIFEST.txt"
 WORK=$(mktemp -d)  # parent; each scenario gets its own subdir — concurrent
                    # sessions must not share a cwd (an agent materializing an
                    # artifact as a file would contaminate every sibling's

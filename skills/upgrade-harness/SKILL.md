@@ -22,10 +22,16 @@ async def _call_new_function(param1, param2="default"):
     """Bridge to the real API."""
     if not param1:
         return {"error": "param1 is required"}
-    return await api_call(param1=param1, param2=param2)
+    try:
+        return await api_call(param1=param1, param2=param2)
+    except Exception as e:  # the bridge boundary: errors return, never escape
+        return {"error": f"{type(e).__name__}: {e}"}
 
 def _call_new_function_sync(*args, **kwargs):
-    return asyncio.run(_call_new_function(*args, **kwargs))
+    try:
+        return asyncio.run(_call_new_function(*args, **kwargs))
+    except Exception as e:  # asyncio.run itself can raise (nested loop, etc.)
+        return {"error": f"{type(e).__name__}: {e}"}
 ```
 
 Sync local operation → plain function with a policy check first (`_check_path_allowed(...)`), all exceptions caught and returned as `{"error": "..."}`. Bridge functions must return JSON-serializable dicts/strings and keep parameters simple (strings, ints, bools, lists).
