@@ -40,13 +40,18 @@ is_live_baseline() {
   # True only when the pid's argv0 is this script (or a shell running it) —
   # a recycled pid in an editor/pager whose args mention the script must not
   # refuse baselines forever.
-  local cmd argv0 argv1
+  local cmd argv0
   cmd=$(ps -p "$1" -o command= 2>/dev/null) || return 1
   argv0=${cmd%% *}; argv0=${argv0##*/}
-  argv1=$(printf '%s\n' "$cmd" | awk '{print $2}')
+  # Match the WHOLE command string for shell holders, not whitespace field 2:
+  # install paths with spaces (or a shell flag before the script) put the
+  # script path outside $2 and a LIVE run would read as stale (silent RED
+  # contamination via takeover). *run-baseline.sh* on the full string is
+  # space-safe; the argv0 gate above it keeps editors/pagers mentioning the
+  # script from matching.
   case "$argv0" in
     run-baseline.sh) return 0 ;;
-    sh|bash|zsh|dash) case "$argv1" in *run-baseline.sh) return 0 ;; esac ;;
+    sh|bash|zsh|dash) case "$cmd" in *run-baseline.sh*) return 0 ;; esac ;;
   esac
   return 1
 }

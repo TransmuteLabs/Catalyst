@@ -29,3 +29,7 @@ bootup-git-init	opus	skills/bootup/SKILL.md
 upgrade-harness-policy	opus	skills/upgrade-harness/SKILL.md
 arcane-knowledge-loop	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/knowledge-loop.md
 campaign-conflict-trigger	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md	skills/crucible/references/marker-machine.md	skills/premortem/references/spec-gate.md
+campaign-base-interim	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
+crucible-entangled-revert	opus	skills/crucible/SKILL.md	skills/crucible/references/marker-machine.md	skills/premortem/references/spec-gate.md
+crucible-retitle-wave	opus	skills/crucible/SKILL.md	skills/crucible/references/marker-machine.md
+spec-smuggle-accounting	opus	skills/crucible/references/marker-machine.md	skills/campaign/references/arbitration.md	skills/campaign/SKILL.md
