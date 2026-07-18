@@ -31,15 +31,23 @@ LOCK="$HOME/.claude/.pressure-baseline-lock"
 
 # Single-writer lock FIRST (the self-heal below must never run while another
 # baseline is live — it would restore CLAUDE.md under that run's sessions).
-# The lock carries the holder's PID; a lock whose holder is dead is stale
-# (a hard-killed run) and is removed, never treated as a live run.
+# The lock carries the holder's PID. mkdir→pid-write is two steps, so an
+# EMPTY pid can be a winner mid-acquisition, not a corpse: give it a grace
+# re-read before calling the lock stale. A holder pid is live only if the
+# process both exists AND is a run-baseline invocation (a recycled pid
+# belonging to an unrelated process must not refuse baselines forever).
 if ! mkdir "$LOCK" 2>/dev/null; then
   holder=$(cat "$LOCK/pid" 2>/dev/null || echo "")
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+  if [ -z "$holder" ]; then
+    sleep 2
+    holder=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+  fi
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
+     && ps -p "$holder" -o command= 2>/dev/null | grep -q "run-baseline"; then
     echo "[baseline] a live baseline run (pid $holder) holds $LOCK — refusing to start" >&2
     exit 1
   fi
-  echo "[baseline] removing stale lock left by a killed run (pid ${holder:-unknown})" >&2
+  echo "[baseline] removing stale lock (holder pid ${holder:-unknown} is not a live baseline run)" >&2
   rm -rf "$LOCK"
   mkdir "$LOCK" || { echo "[baseline] cannot acquire $LOCK" >&2; exit 1; }
 fi
