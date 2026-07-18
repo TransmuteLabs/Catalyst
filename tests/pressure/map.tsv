@@ -15,7 +15,7 @@ review-fixing	opus	skills/review/SKILL.md
 bootup-dispatcher-v2	opus	skills/bootup/SKILL.md
 install-verify	opus	skills/install/SKILL.md
 debug-rootcause	opus	skills/debug/SKILL.md
-forge-red-first	opus	skills/forge-skill/SKILL.md
+forge-red-first	opus	skills/forge-skill/SKILL.md	skills/forge-skill/references/gate-records.md
 campaign-one-phase	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
 campaign-milestone-intent	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md
 campaign-demotion-red	opus	skills/campaign/SKILL.md	skills/campaign/references/arbitration.md	skills/arcane-mode/references/amendment.md
@@ -24,7 +24,7 @@ campaign-batch-discipline	opus	skills/campaign/SKILL.md	skills/campaign/referenc
 arcane-waiver-record	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/arcane-mode/references/economics.md	skills/campaign/SKILL.md
 arcane-uat-reoffer	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/verification.md	skills/campaign/SKILL.md	skills/arcane-mode/references/amendment.md
 review-capture-complete	opus	skills/review/SKILL.md	agents/scout.md
-forge-edit-gate	opus	skills/forge-skill/SKILL.md
+forge-edit-gate	opus	skills/forge-skill/SKILL.md	skills/forge-skill/references/gate-records.md
 bootup-git-init	opus	skills/bootup/SKILL.md
 upgrade-harness-policy	opus	skills/upgrade-harness/SKILL.md
 arcane-knowledge-loop	opus	skills/arcane-mode/SKILL.md	skills/arcane-mode/references/knowledge-loop.md
