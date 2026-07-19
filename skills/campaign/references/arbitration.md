@@ -1,6 +1,6 @@
 # Campaign state arbitration & legacy shapes (normative)
 
-> Orientation (0.7.0 distillation): references in this file to "SKILL.md's" schema/rules/Mechanics point at text that now lives VERBATIM in `references/mechanics.md`; SKILL.md keeps the executable core. Nothing normative changed.
+> Orientation (0.7.0 distillation): references in this file to "SKILL.md's" schema/rules/Mechanics point at text that now lives VERBATIM in the split `references/` files (`mechanics.md` is the router); SKILL.md keeps the executable core. Nothing normative changed.
 
 This file is the normative home of every state-file merge cell, every durable unresolved shape, and every legacy/migration shape. SKILL.md's Rules OWN the trigger list — merge conflicts in state files, standing `unresolved` / `unresolved-scope` / `base: unresolved` shapes, legacy shapes, a `base:` answer missing its transport receipt, the user's ORDER to change the base (and the resolved carve: a bare `closed` standing under its declined-backfill D-line owes no read) — **→ read this file ENTIRELY before resolving or routing past anything.** The body's list is authoritative; this sentence is a summary, never a second home. Every "→ the user" outcome here is a MEMBER of the router run's one batched question (SKILL.md Rules); dates, stamps, and lineage tokens are defined in SKILL.md's schema.
 
