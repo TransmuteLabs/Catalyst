@@ -34,7 +34,13 @@ OUT="$HERE/out/baseline-$(date -u +%Y%m%d-%H%M%S)Z"
 # interleave outputs) — exclusive mkdir, on collision suffix the pid.
 if ! mkdir "$OUT" 2>/dev/null; then
   OUT="$OUT-$$"
-  mkdir "$OUT"
+  # No set -e in this runner: an unchecked failure here (unwritable out/,
+  # ENOSPC) would still rename CLAUDE.md, launch every scenario with failing
+  # redirects, and exit 0 over a totally failed destructive run.
+  if ! mkdir "$OUT"; then
+    echo "[baseline] cannot create output dir '$OUT' — refusing" >&2
+    exit 1
+  fi
 fi
 # Bind the run to the exact revision and scenario texts it diagnosed — after
 # a scenario/map edit, an unbound old RED cannot be tied to the text that
@@ -222,9 +228,11 @@ restore() {
 # INT/TERM must TERMINATE the run, not just restore: a bare handler returns
 # control to the interrupted script, which would keep launching baseline
 # sessions AGAINST the restored CLAUDE.md with the lock already released
-# (demonstrated on bash 3.2 and 5.x). The handler stops the children first
-# (they must not outlive the restore), then exits — the EXIT trap performs
-# the single restore.
+# (demonstrated on bash 3.2 and 5.x). `jobs -pr` names the WRAPPER subshells
+# only — the sessions live in their OWN process groups, so a bare TERM here
+# never reaches them; each wrapper's own TERM trap kills its session group
+# + watchdog and records a durable signal status, which is what makes this
+# cascade actually stop the sessions before the EXIT trap's single restore.
 on_signal() {
   echo "[baseline] caught SIG$1 — stopping scenario sessions, restoring, exiting" >&2
   local jl
@@ -264,6 +272,14 @@ done
 # Guard the empty set BEFORE expanding it (bash 3.2 + set -u aborts on an
 # empty-array expansion with an opaque "unbound variable").
 [ -n "${deduped[*]-}" ] || { echo "[baseline] no scenarios selected (empty map.tsv?) — refusing" >&2; exit 1; }
+# Portable key grammar (mirrors run-green.sh): case/normalization-equivalent
+# keys alias one output identity on APFS while being two on ext4 — the
+# byte-exact dup check cannot see that class, so the grammar refuses it.
+for n in "${deduped[@]}"; do
+  case "$n" in
+    *[!a-z0-9-]*|-*) echo "[baseline] scenario key '$n' outside the portable grammar [a-z0-9-] (must not start with '-') — refusing" >&2; exit 1 ;;
+  esac
+done
 names=("${deduped[@]}")
 
 # Validated pool bound and per-scenario timeout (mirrors run-green.sh —
@@ -324,7 +340,9 @@ for name in "${names[@]}"; do
   ( cd "$WORK/$name" || exit 1
     # Scenario over STDIN (argv limits are per-platform and the class is
     # gone entirely on stdin); `set -m` puts the session in its OWN process
-    # group so the watchdog kills the TREE — a single-pid kill leaves
+    # group so the watchdog kills the GROUP (honest residual: a descendant
+    # that calls setsid/setpgid escapes a group kill — stated, not solved);
+    # a single-pid kill leaves
     # helper/tool children alive, still writing into the outputs after the
     # run is scored.
     set -m
@@ -340,7 +358,16 @@ for name in "${names[@]}"; do
         echo "timeout: ${TIMEOUT_S}s" > "$OUT/$name.timeout"
         kill -TERM -- "-$cpid" 2>/dev/null; sleep 5; kill -KILL -- "-$cpid" 2>/dev/null
       fi ) & wpid=$!
+    # A signal to this wrapper must stop the SESSION (own process group —
+    # a plain wrapper death orphans it, and here an orphan outlives the
+    # CLAUDE.md restore: the exact contamination the lock exists to prevent).
+    # Kill the session group + watchdog, record a durable signal status.
+    trap 'kill -TERM -- "-$cpid" 2>/dev/null; kill "$wpid" 2>/dev/null
+          { echo "exit: 143"; echo "signal: terminated"
+            echo "utc_end: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$OUT/$name.status"; exit 143' TERM INT
     ec=0; wait "$cpid" || ec=$?
+    trap - TERM INT
     kill "$wpid" 2>/dev/null || true
     # Durable per-scenario status (mirrors run-green.sh).
     { echo "exit: $ec"
@@ -353,11 +380,17 @@ wait
 restore
 trap - EXIT INT TERM
 rm -rf "$WORK" 2>/dev/null || true
-# Aggregate durable statuses into the MANIFEST (mirrors run-green.sh).
+# Aggregate durable statuses into the MANIFEST (mirrors run-green.sh):
+# iterate the SELECTED names — a scenario whose wrapper died before writing
+# its status must surface as broken, never vanish from the results.
 broken=0
-for st in "$OUT"/*.status; do
-  [ -f "$st" ] || continue
-  sn=$(basename "$st" .status)
+for sn in "${names[@]}"; do
+  st="$OUT/$sn.status"
+  if [ ! -f "$st" ]; then
+    echo "result $sn exit missing" >> "$OUT/MANIFEST.txt"
+    broken=1
+    continue
+  fi
   sec=$(sed -n 's/^exit: //p' "$st" | head -1)
   flag=""; if [ -f "$OUT/$sn.timeout" ]; then flag=" timeout"; fi
   echo "result $sn exit ${sec:-unknown}$flag" >> "$OUT/MANIFEST.txt"

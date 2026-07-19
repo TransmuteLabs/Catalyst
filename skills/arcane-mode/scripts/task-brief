@@ -8,11 +8,14 @@
 # Default OUTFILE: <workspace>/task-<N>-brief.md
 # Exit codes: 0 ok; 2 usage / missing plan file / non-numeric task id;
 # 3 task not found; 4 duplicate task ids; 5 no paths derivable, an unquoted
-# path contains whitespace, or a path is UNENCODABLE in the backtick header
-# (embedded/unterminated backtick, text outside a closed span) — plan
-# defect, fix the Files block; 6 structural Files conflict: multiple
-# **Files:** fields, the inline form mixed with bullet lines, or a Files
-# block on an approval task.
+# path contains whitespace, a path is UNENCODABLE in the backtick header
+# (embedded/unterminated backtick, text outside a closed span), or a path is
+# a CASE ALIAS of a tracked file (paths bind by exact git-tree spelling) —
+# plan defect, fix the Files block; 6 structural Files conflict: multiple
+# **Files:** fields, the inline form mixed with bullet lines, a **Files:**
+# line after the task's checklist steps began (step content, never scope),
+# or a Files block on an approval task. CRLF plans are normalized (trailing
+# CR is line-ending encoding, not content).
 set -euo pipefail
 
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
@@ -46,6 +49,7 @@ fi
 # inside a ```` fence "close" it, and a literal task heading in a fixture
 # then truncates the real task.
 dupes=$(awk -v n="$n" '
+  { sub(/\r$/, "") }  # CRLF normalization — same rule as every other pass
   /^(```|~~~)/ {
     match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
     if (!infence) { infence = 1; fch = ch; flen = len }
@@ -61,6 +65,7 @@ fi
 
 extract_task() {
   awk -v n="$n" '
+    { sub(/\r$/, "") }  # CRLF plans: the trailing CR is line-ending encoding, not content — normalized ONCE here in every pass (an unstripped CR rode into backtick spans as a path byte and flipped the canonical bulleted form into a false "mixed" refusal)
     /^(```|~~~)/ {
       match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
       if (!infence) { infence = 1; fch = ch; flen = len }
@@ -86,6 +91,7 @@ extract_task() {
 # a brief that drops them hands the implementer requirements with a hole.
 extract_constraints() {
   awk '
+    { sub(/\r$/, "") }  # CRLF plans: the trailing CR is line-ending encoding, not content — normalized ONCE here in every pass (an unstripped CR rode into backtick spans as a path byte and flipped the canonical bulleted form into a false "mixed" refusal)
     /^(```|~~~)/ {
       match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
       if (!infence) { infence = 1; fch = ch; flen = len }
@@ -134,6 +140,7 @@ fence_grep() {
   # NB: awk -v PROCESSES backslash escapes in the value — call sites must
   # DOUBLE every backslash or the regex arrives mangled (\* becomes *).
   printf '%s\n' "$task_text" | awk -v pat="$1" '
+    { sub(/\r$/, "") }  # CRLF plans: the trailing CR is line-ending encoding, not content — normalized ONCE here in every pass (an unstripped CR rode into backtick spans as a path byte and flipped the canonical bulleted form into a false "mixed" refusal)
     /^(```|~~~)/ {
       match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
       if (!infence) { infence = 1; fch = ch; flen = len }
@@ -154,6 +161,7 @@ if [ "$is_approval" = 1 ]; then
   paths_line='(none — approval task, orchestrator-owned; not an implementer dispatch)'
 else
   paths_raw=$(printf '%s\n' "$task_text" | awk '
+    { sub(/\r$/, "") }  # CRLF plans: the trailing CR is line-ending encoding, not content — normalized ONCE here in every pass (an unstripped CR rode into backtick spans as a path byte and flipped the canonical bulleted form into a false "mixed" refusal)
     /^(```|~~~)/ {
       match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
       if (!infence) { infence = 1; fch = ch; flen = len }
@@ -186,22 +194,45 @@ else
     }
     function add(p) {
       if (p == "") return
-      if (!quoted && p ~ /[ \t]/) { printf "ERR:ws:%s\n", p; err = 1; exit 1 }
+      if (!quoted && p ~ /[ \t\r]/) { printf "ERR:ws:%s\n", p; err = 1; exit 1 }
       out = out (out == "" ? "" : ", ") "`" p "`"
     }
     # After an INLINE Files field, bullet lines are the MIXED form — refused:
     # silently dropping them ships a partial write scope under a valid-looking
     # header (blank lines between the field and the bullets do not clear the
-    # watch).
-    mixwatch {
+    # watch). The watch does NOT die at the first prose line: it degrades to
+    # op-bullet watching for the REST of the task — a `- Create:/Modify:/
+    # Test:/Delete:` bullet anywhere after an inline field is Files intent
+    # that would silently miss the write scope (one intervening prose line
+    # previously defeated the whole guard).
+    # A checklist step (`- [ ]`) is unambiguously a STEP, never a Files
+    # bullet: it ends the bulleted Files block (canonical plans without a
+    # blank line between the block and the steps previously fed "[ ] step"
+    # into the path normalizer), clears the strict inline watch (a step
+    # right after an inline field is the canonical anatomy, not the mixed
+    # form), and marks the steps as begun for the positional gate below.
+    /^-[ \t]+\[[ xX]?\]/ { steps = 1; if (mixwatch == 1) mixwatch = 2; inblock = 0 }
+    mixwatch == 1 {
       if ($0 ~ /^-[ \t]+/) { printf "ERR:mixed:\n"; err = 1; exit 1 }
-      if ($0 !~ /^[ \t]*$/) mixwatch = 0
+      if ($0 !~ /^[ \t]*$/) mixwatch = 2
+    }
+    mixwatch == 2 && /^-[ \t]+(Create|Modify|Test|Delete):/ {
+      printf "ERR:mixed:\n"; err = 1; exit 1
     }
     inblock {
       if ($0 ~ /^-[ \t]+/) { p = $0; sub(/^-[ \t]+/, "", p); add(norm(p)); next }
       inblock = 0
     }
+    # Positional grammar: the Files field belongs to the task HEADER (after
+    # Type, before the steps — plan-standard anatomy). Once a checklist step
+    # has appeared, a **Files:** line is CONTENT (an unfenced illustration in
+    # a step body) or a misplaced field — refused, never harvested: a
+    # tutorial example was previously minted into the write scope, binding
+    # the implementer to files the plan never authorized. (Residual: an
+    # unfenced example BEFORE any checklist line still parses as grammar —
+    # fence illustrations, per plan-standard.)
     /^\*\*Files:\*\*/ {
+      if (steps) { printf "ERR:late:\n"; err = 1; exit 1 }
       if (seen) { printf "ERR:dupfiles:\n"; err = 1; exit 1 }
       seen = 1
       rest = $0
@@ -232,6 +263,9 @@ else
     ERR:mixed:*)
       echo "task ${n}: inline **Files:** field followed by bullet lines — the mixed form silently drops the bullets from the write scope; use ONE form (the canonical bulleted block, or a purely inline list)" >&2
       exit 6 ;;
+    ERR:late:*)
+      echo "task ${n}: a **Files:** line after the task's checklist steps began — that is step CONTENT (an unfenced illustration) or a misplaced field, never the write scope; move the Files field into the task header, or fence the illustration" >&2
+      exit 6 ;;
     ERR:ws:*)
       echo "task ${n}: unquoted path contains whitespace: '${paths_raw#ERR:ws:}' — backtick-quote the path in the plan's Files block (silent truncation would bind the write scope to a wrong path)" >&2
       exit 5 ;;
@@ -240,6 +274,34 @@ else
       exit 5 ;;
   esac
   paths_line=$paths_raw
+  # ALIAS GATE: repository paths bind by their exact git-tree BYTE spelling —
+  # a case-insensitive filesystem (macOS APFS) resolves `SRC/App.py` to a
+  # tracked `src/app.py`, so the implementer "successfully" edits a file the
+  # scope never named while `git rev-parse HEAD:<path>` calls it absent. A
+  # derived path that is NOT byte-exact tracked but casefold-equal to a
+  # tracked path is refused. (Unicode-normalization aliases are covered by
+  # the doctrine's tree-spelling rule — not shell-checkable portably; paths
+  # that are simply untracked-yet (files a later task creates) pass.)
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    tracked=$(git ls-files 2>/dev/null || true)
+    if [ -n "$tracked" ]; then
+      while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        if printf '%s\n' "$tracked" | grep -qxF -- "$p"; then continue; fi
+        lc=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
+        hit=$(printf '%s\n' "$tracked" | while IFS= read -r t; do
+                tl=$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')
+                if [ "$tl" = "$lc" ]; then printf '%s\n' "$t"; break; fi
+              done)
+        if [ -n "$hit" ]; then
+          echo "task ${n}: path '$p' is a case alias of tracked '$hit' — repository paths bind by exact tree spelling (an alias resolves on this filesystem but is a different identity in git and on case-sensitive systems); fix the plan's Files entry" >&2
+          exit 5
+        fi
+      done <<EOF_PATHS
+$(printf '%s\n' "$paths_line" | awk -F'`' '{ for (i = 2; i <= NF; i += 2) print $i }')
+EOF_PATHS
+    fi
+  fi
 fi
 
 # Fail closed: a brief without `paths:` leaves the implementer write-scope

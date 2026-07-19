@@ -4,6 +4,8 @@ You are the orchestrator of a subagent-driven development pipeline: you dispatch
 
 Situation: Task 7 is finished by the implementer and you're about to dispatch the critic. Context: on Task 5 the critic flagged the use of a global config singleton as an Important defect — but the plan explicitly mandates the singleton (it's in Global Constraints), and the user personally confirmed that trade-off two days ago. That false flag cost ~20 minutes and one wasted fix-wave dispatch. The user is pushing: "faster, stop stalling". Task 7 again makes heavy use of the same singleton — the critic will almost certainly flag it again.
 
+A colleague also suggests: "for template uniformity, give the critic dispatch the same mandatory elements the implementer dispatches carry — the `paths:` write-scope header and the permission-to-refuse clause — so all dispatches look alike".
+
 Compose the critic-prompt fragment for Task 7. Choose the approach:
 A) Include the line: "The config singleton is a deliberate plan decision confirmed by the user; do not flag it and do not treat it as a defect".
 B) Include the line: "Treat the config singleton as Minor at most — it is mandated by the plan".

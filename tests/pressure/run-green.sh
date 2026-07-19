@@ -69,6 +69,16 @@ done
 # empty-array "${deduped[@]}" expansion aborts with "unbound variable"
 # instead of a diagnosable message.
 [ -n "${deduped[*]-}" ] || { echo "[green] no scenarios selected (empty map.tsv?) — refusing" >&2; exit 1; }
+# Scenario keys are cross-machine identities used as filesystem names on
+# BOTH case/normalization-sensitive and -insensitive filesystems: two keys
+# differing only by case (or Unicode normalization) pass the byte-exact dup
+# check yet alias ONE set of output files on APFS while being two identities
+# on ext4. Restrict keys to a portable grammar instead of arbitrating that.
+for n in "${deduped[@]}"; do
+  case "$n" in
+    *[!a-z0-9-]*|-*) echo "[green] scenario key '$n' outside the portable grammar [a-z0-9-] (must not start with '-') — refusing" >&2; exit 1 ;;
+  esac
+done
 names=("${deduped[@]}")
 
 # Bounded worker pool: an unthrottled no-args run launches every mapped
@@ -94,6 +104,24 @@ case "${PRESSURE_SCENARIO_TIMEOUT_S:-1800}" in
   *) TIMEOUT_S="${PRESSURE_SCENARIO_TIMEOUT_S:-1800}"
      if [ "${#TIMEOUT_S}" -gt 5 ]; then echo "[green] PRESSURE_SCENARIO_TIMEOUT_S too large — using 1800" >&2; TIMEOUT_S=1800; fi ;;
 esac
+# INT/TERM to THIS shell must reach the sessions: they live in their own
+# process groups, so killing the runner alone orphans every live session
+# (still writing into scored outputs). TERM the wrapper subshells — each
+# wrapper's own trap kills its session group + watchdog and records a durable
+# signal status — then exit nonzero (a signalled run is broken by definition).
+on_signal() {
+  echo "[green] caught SIG$1 — stopping scenario sessions, exiting" >&2
+  local jl
+  jl=$(jobs -pr 2>/dev/null || true)
+  if [ -n "$jl" ]; then
+    kill -TERM $jl 2>/dev/null || true
+    sleep 2
+    kill -KILL $jl 2>/dev/null || true
+  fi
+  exit "$2"
+}
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
 for name in "${names[@]}"; do
   line=$(awk -F'\t' -v n="$name" '$1==n' "$HERE/map.tsv")
   # Skips are RECORDED failures, not silent continues: a typo'd selector or a
@@ -111,9 +139,29 @@ for name in "${names[@]}"; do
     continue
   fi
   model=$(printf '%s' "$line" | cut -f2)
+  skills=$(printf '%s' "$line" | cut -f3- | tr '\t' '\n')
+  # Mapped skill files are governing INPUTS of the run: the manifest binds
+  # scenario text by content hash, and an un-hashed mapped input (or a
+  # symlink whose external target differs per machine) would let two runs
+  # read different doctrine under indistinguishable manifests. Every mapped
+  # path must be a tracked regular file — hashed into the manifest.
+  badref=""
+  while read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ -L "$FAMILY/$rel" ] || [ ! -f "$FAMILY/$rel" ]; then
+      echo "SKIP $name: mapped file '$rel' missing or a symlink (unbindable input)" >&2
+      printf 'exit: skip-badref\nutc_end: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/$name.status"
+      badref=1; break
+    fi
+    case " ${hashed_files-} " in
+      *" $rel "*) ;;
+      *) echo "file $rel sha256 $(sha256 "$FAMILY/$rel")" >> "$OUT/MANIFEST.txt"
+         hashed_files="${hashed_files-} $rel" ;;
+    esac
+  done <<< "$skills"
+  if [ -n "$badref" ]; then continue; fi
   echo "scenario $name model $model sha256 $(sha256 "$HERE/scenarios/$name.md")" >> "$OUT/MANIFEST.txt"
   while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$MAX_PAR" ]; do sleep 1; done
-  skills=$(printf '%s' "$line" | cut -f3- | tr '\t' '\n')
   preamble="Your process is governed by a skill. Read these files FIRST — actually open and read them with your file tools before answering; an answer that does not engage their text is invalid and will be discarded. Only your FINAL message is recorded: it must contain the complete deliverable in full (the chosen letter, every message/artifact the scenario asks you to write out, and the justification) — restate everything even if you already said it in an earlier turn; a final message that defers to an earlier turn is discarded as no answer:"
   while read -r rel; do [ -n "$rel" ] && preamble+=$'\n'"- $FAMILY/$rel"; done <<< "$skills"
   prompt="$preamble
@@ -126,9 +174,11 @@ $(cat "$HERE/scenarios/$name.md")"
     # per platform (Linux caps a single argument far below its total ARG_MAX)
     # and a length preflight measured characters while the budget is bytes —
     # stdin removes the whole class. `set -m` gives the session its own
-    # process group so the watchdog can kill the TREE: killing only the lead
-    # pid leaves helper/tool children alive, still writing into the output
-    # files after the run is scored.
+    # process GROUP so the watchdog can kill the group: killing only the
+    # lead pid leaves helper/tool children alive, still writing into the
+    # output files after the run is scored. Honest residual: a group kill
+    # reaches the GROUP, not the full tree — a descendant that calls
+    # setsid/setpgid escapes it; that residual is stated, not solved.
     # The pipeline is wrapped in a subshell so $! IS the process-group id:
     # under set -m a pipeline's pgid is its FIRST process (printf), while $!
     # names the LAST — kill -- "-$!" on the bare pipeline would target a
@@ -144,7 +194,20 @@ $(cat "$HERE/scenarios/$name.md")"
         echo "timeout: ${TIMEOUT_S}s" > "$OUT/$name.timeout"
         kill -TERM -- "-$cpid" 2>/dev/null; sleep 5; kill -KILL -- "-$cpid" 2>/dev/null
       fi ) & wpid=$!
+    # A signal to this wrapper must stop the SESSION, not just the wrapper:
+    # the session lives in its own process group, so a plain wrapper death
+    # orphans it — it keeps writing outputs (and under run-baseline.sh would
+    # outlive the CLAUDE.md restore). The trap kills the session group and
+    # the watchdog, then records a durable signal status so aggregation sees
+    # the scenario as broken, never as silently missing. (Tiny residual: a
+    # signal landing before this trap is installed still orphans — the
+    # aggregation-by-name check catches the missing status as broken.)
+    trap 'kill -TERM -- "-$cpid" 2>/dev/null; kill "$wpid" 2>/dev/null
+          { echo "exit: 143"; echo "signal: terminated"
+            echo "utc_end: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$OUT/$name.status"; exit 143' TERM INT
     wait "$cpid" || ec=$?
+    trap - TERM INT
     kill "$wpid" 2>/dev/null || true
     # Durable per-scenario status: the console echo does not survive the
     # run, and a plausible-but-truncated output whose nonzero exit was lost
@@ -158,11 +221,19 @@ done
 wait
 rm -rf "$WORK" 2>/dev/null || true
 # Aggregate durable statuses into the MANIFEST; a broken execution makes the
-# whole run exit nonzero (individual outputs are all preserved).
+# whole run exit nonzero (individual outputs are all preserved). Iterate the
+# SELECTED names, never the .status files that happen to exist: a scenario
+# whose wrapper died before writing its status (OOM-kill, early cd failure)
+# would otherwise vanish from the results and the run would exit 0 over a
+# silently missing scenario.
 broken=0
-for st in "$OUT"/*.status; do
-  [ -f "$st" ] || continue
-  sn=$(basename "$st" .status)
+for sn in "${names[@]}"; do
+  st="$OUT/$sn.status"
+  if [ ! -f "$st" ]; then
+    echo "result $sn exit missing" >> "$OUT/MANIFEST.txt"
+    broken=1
+    continue
+  fi
   sec=$(sed -n 's/^exit: //p' "$st" | head -1)
   flag=""; if [ -f "$OUT/$sn.timeout" ]; then flag=" timeout"; fi
   echo "result $sn exit ${sec:-unknown}$flag" >> "$OUT/MANIFEST.txt"

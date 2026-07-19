@@ -16,6 +16,15 @@ set -euo pipefail
 
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 dir="$root/.catalyst/sdd"
+# The contract says the workspace LIVES IN THE WORKING TREE. A symlinked
+# component (`.catalyst` or `.catalyst/sdd` pointing outside the repo) would
+# silently route every brief/report/package/ledger write out of the tree —
+# different per machine, absent on the next one. Refuse symlinks instead of
+# following them.
+if [ -L "$root/.catalyst" ] || [ -L "$dir" ]; then
+  echo "sdd-workspace: $root/.catalyst (or /sdd) is a symlink — the workspace must be a real directory inside the working tree; remove the link" >&2
+  exit 2
+fi
 mkdir -p "$dir"
 # Self-heal must guarantee an EFFECTIVE ignore, not just a file: an existing
 # empty .gitignore (or one holding only negations) would leak briefs/ledger
