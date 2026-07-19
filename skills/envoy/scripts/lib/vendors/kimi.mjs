@@ -21,7 +21,7 @@ import { runCliCommand } from "./cli-runner.mjs";
  */
 
 export function getKimiAvailability() {
-  return { available: binaryAvailable("kimi") };
+  return binaryAvailable("kimi");
 }
 
 function parseKimiStream(stdout) {

@@ -196,6 +196,15 @@ export function renderSetupReport(report) {
     ""
   ];
 
+  if (Array.isArray(report.vendors) && report.vendors.length > 0) {
+    lines.push("Vendors:");
+    for (const vendor of report.vendors) {
+      const status = vendor.available ? "available" : "not found";
+      lines.push(`- ${vendor.id}${vendor.default ? " (default)" : ""}: ${status}`);
+    }
+    lines.push("");
+  }
+
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");
     for (const action of report.actionsTaken) {

@@ -224,6 +224,74 @@ test("kimi rejects --effort fast without launching the CLI", () => {
   assert.ok(!fs.existsSync(argsFile), "the kimi CLI must not have been invoked");
 });
 
+test("setup reports per-vendor availability and suggests installing missing CLI vendors", () => {
+  const binDir = makeTempDir();
+  const workspace = makeTempDir();
+  installFakeGrok(binDir);
+  fs.symlinkSync(process.execPath, path.join(binDir, "node"));
+
+  // PATH contains only the fake bin dir: grok is present, kimi is not.
+  const result = run("node", [SCRIPT, "setup", "--json"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      PATH: binDir
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.ok(Array.isArray(payload.vendors));
+  assert.deepEqual(
+    payload.vendors.map((vendor) => vendor.id),
+    ["codex", "grok", "kimi"]
+  );
+  const grok = payload.vendors.find((vendor) => vendor.id === "grok");
+  const kimi = payload.vendors.find((vendor) => vendor.id === "kimi");
+  const codex = payload.vendors.find((vendor) => vendor.id === "codex");
+  assert.equal(codex.default, true);
+  assert.equal(grok.available, true);
+  assert.equal(kimi.available, false);
+  assert.ok(
+    payload.nextSteps.some((step) => step.includes("--vendor kimi")),
+    "expected an install hint for the missing kimi CLI"
+  );
+  assert.ok(
+    !payload.nextSteps.some((step) => step.includes("--vendor grok")),
+    "no install hint expected for the available grok CLI"
+  );
+
+  const rendered = run("node", [SCRIPT, "setup"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      PATH: binDir
+    }
+  });
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(rendered.stdout, /Vendors:/);
+  assert.match(rendered.stdout, /- codex \(default\): /);
+  assert.match(rendered.stdout, /- grok: available/);
+  assert.match(rendered.stdout, /- kimi: not found/);
+});
+
+test("task fails fast when the requested CLI vendor is not installed", () => {
+  const binDir = makeTempDir();
+  const workspace = makeTempDir();
+  fs.symlinkSync(process.execPath, path.join(binDir, "node"));
+
+  const result = run("node", [SCRIPT, "task", "--vendor", "grok", "do something"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      PATH: binDir
+    }
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Grok CLI \(`grok`\) is not installed or not on PATH\./);
+});
+
 test("result renders vendor-specific resume hints for CLI vendor jobs", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();

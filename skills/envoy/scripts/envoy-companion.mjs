@@ -23,6 +23,7 @@ import {
   } from "./lib/vendors/codex.mjs";
 import {
     DEFAULT_VENDOR,
+    listVendorIds,
     normalizeVendorEffort,
     normalizeVendorModel,
     resolveVendor
@@ -164,6 +165,20 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   const authStatus = await getCodexAuthStatus(cwd);
   const config = getConfig(workspaceRoot);
 
+  const vendors = listVendorIds().map((id) => {
+    const vendor = resolveVendor(id);
+    const availability =
+      id === DEFAULT_VENDOR ? codexStatus : vendor.getAvailability?.() ?? { available: false, detail: "not found" };
+    return {
+      id,
+      title: vendor.title,
+      cli: vendor.cli,
+      default: id === DEFAULT_VENDOR,
+      available: Boolean(availability.available),
+      detail: availability.detail ?? (availability.available ? "ok" : "not found")
+    };
+  });
+
   const nextSteps = [];
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
@@ -171,6 +186,11 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   if (codexStatus.available && !authStatus.loggedIn && authStatus.requiresOpenaiAuth) {
     nextSteps.push("Run `!codex login`.");
     nextSteps.push("If browser login is blocked, retry with `!codex login --device-auth` or `!codex login --with-api-key`.");
+  }
+  for (const vendor of vendors) {
+    if (!vendor.default && !vendor.available) {
+      nextSteps.push(`Optional: install the ${vendor.title} CLI (\`${vendor.cli}\`) to enable \`--vendor ${vendor.id}\` tasks.`);
+    }
   }
   if (!config.stopReviewGate) {
     nextSteps.push("Optional: run `/catalyst:envoy-setup --enable-review-gate` to require a fresh review before stop.");
@@ -182,6 +202,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     npm: npmStatus,
     codex: codexStatus,
     auth: authStatus,
+    vendors,
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
     reviewGateEnabled: Boolean(config.stopReviewGate),
     actionsTaken,

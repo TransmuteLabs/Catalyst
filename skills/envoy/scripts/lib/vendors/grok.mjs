@@ -23,7 +23,7 @@ import { runCliCommand } from "./cli-runner.mjs";
  */
 
 export function getGrokAvailability() {
-  return { available: binaryAvailable("grok") };
+  return binaryAvailable("grok");
 }
 
 function writePromptFile(prompt) {
