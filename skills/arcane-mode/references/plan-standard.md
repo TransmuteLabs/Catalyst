@@ -86,6 +86,14 @@ Work whose acceptance criterion is the user's taste — UI, visual design, layou
 
 The gate loops until the user approves. An approval task is executed by the ORCHESTRATOR, never dispatched to an implementer: an implementer has no user channel, and a brief containing "ask the user" fails the readiness test — variant PRODUCTION may be dispatched as ordinary implementer tasks (executor tier; each variant an exact brief, zero open questions), but the presentation, the ask, and the recording are the orchestrator's own steps. Dependent tasks do not dispatch before it passes — building on an unapproved direction is speculative work that a taste reversal deletes wholesale. A plan that routes aesthetic acceptance through "tests pass" instead of an approval task is a plan defect.
 
+## Migration and subtraction discipline
+
+Absorbed from a principle-skill stack (journal 0.8.3), aligned with the family's no-partial-fix mandate:
+
+- **Migrate callers, then delete — same wave.** A plan introducing a replacement API/mechanism migrates every caller and deletes the legacy path within the SAME plan; a compatibility layer or a dual path left "temporarily" is a plan defect, not a convenience. If the wave genuinely cannot land at once, that is a scoping decision the user makes explicitly — never the plan's silent default.
+- **Subtract before you add.** When a task builds on cluttered ground, its first step removes the dead weight (unused branches, redundant validators, stub references) and only then builds on the simpler base — deletion first makes the addition smaller and the diff reviewable.
+- **Exhaust the design space for novel decisions.** A plan facing an interface or architecture choice with NO precedent in the codebase does not commit to the first shape: 2-3 radically DIFFERENT candidate shapes are produced (parallel scouts each given the same requirements and told to differ structurally, not cosmetically), compared on the actual call sites, and the choice is recorded with its rejected alternatives. Decisions with existing precedent follow the precedent — this lens is for genuinely novel ground only.
+
 ## No Placeholders — these are plan defects
 
 Never write:

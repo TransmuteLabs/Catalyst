@@ -7,6 +7,8 @@ home-of:
   - the self-improvement contour (friction → challenger → proposal → outcome)
   - the dead-end veto
   - the one-variable challenger and its boundary with rework-not-patch
+  - the held-out validation gate (quantitative checks only)
+  - the structure-over-prose rule for recurring corrections
 ---
 # Improvement loop — the family's self-improvement contour
 
@@ -22,6 +24,8 @@ friction → target → deconstruct → veto check → one challenger → propos
 
 The edit target is the skill with recurring OPEN friction entries — the component that is actually degrading in production. A quiet skill is not edited (the standing rule: edits source from FRICTION.md, not from taste), and a skill whose entries are all closed is not re-opened for polish. The limited edit budget concentrates where the trend points down.
 
+Harvest discipline (absorbed from a transcript-mining memory updater, journal 0.8.3): when past sessions are swept for missed friction, only DURABLE, reusable items qualify — recurring corrections and stable facts; one-off instructions and transient details do not become entries. A semantically duplicate observation links the existing entry instead of minting a twin. And the null outcome is a valid, stated outcome: "no high-signal friction found" — a sweep never invents entries to justify itself.
+
 ## 2. Deconstruct into improvement surfaces
 
 Before writing any fix, name the SURFACE being changed — specific enough to test. "Make the skill better" is not a surface; "the trigger description misses the X situation named in friction entry N" is. Each surface carries:
@@ -34,6 +38,10 @@ Before writing any fix, name the SURFACE being changed — specific enough to te
 - **coupling** — which other rules/mirrors move with this one (check norms.yaml).
 
 An improvement whose observation plan can never observe anything was not an improvement — it was decoration; strike it before it is proposed.
+
+**Validation gate where a quantitative check exists** (absorbed from a skill-training framework that treats the skill document as trainable state, journal 0.8.3): if the surface being edited already has a MEASURABLE held-out check — a harness RED-baseline set for a rule, a script's test suite, a lint rule — the edit is accepted only when that check does not regress, and a NEW rule ships with its RED baseline as before. This is not the buried per-edit prose gate (dead ends, 2026-07-19): that epitaph buried LLM-review rounds over skill texts, whose audit surface grows with each fix; a deterministic held-out check is fixed, free, and terminates. The framework's measured result stands as the why: candidate edits accepted only on strict held-out improvement kept skill training stable where uncontrolled self-revision diverged — and its rejected-edit buffer is this family's dead-end epitaphs under another name: a rejected candidate is RECORDED with why, so it is not innocently re-proposed.
+
+**Recurring corrections become structure, not prose** (absorbed from a principle-skill stack, journal 0.8.3): the second time the same instruction is written — or the same friction class re-opens after a wording fix — the fix moves UP a layer: a lint rule, a schema field, a deterministic script check, instead of more text. The family's own precedent is the founding case: free deterministic lint checks replaced whole classes of paid review findings. Text instructs; structure enforces — and only structure survives context pressure.
 
 ## 3. The dead-end veto
 

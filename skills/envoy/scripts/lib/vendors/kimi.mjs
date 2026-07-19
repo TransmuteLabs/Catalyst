@@ -24,6 +24,17 @@ export function getKimiAvailability() {
   return binaryAvailable("kimi");
 }
 
+// Mechanical config probe for setup: `kimi doctor` validates the local
+// kimi-code configuration files and costs no model call. Exit 0 = valid.
+export function probeKimiReadiness() {
+  const result = binaryAvailable("kimi", ["doctor"]);
+  return {
+    ok: Boolean(result.available),
+    label: "config",
+    detail: result.available ? "config validated (kimi doctor)" : result.detail
+  };
+}
+
 function parseKimiStream(stdout) {
   const assistantParts = [];
   let sessionId = null;

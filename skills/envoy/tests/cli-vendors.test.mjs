@@ -21,6 +21,10 @@ if (args.includes("--version")) {
   console.log("fake-grok 0.0.0");
   process.exit(0);
 }
+if (args[0] === "models") {
+  console.log("You are logged in with fake-grok.");
+  process.exit(0);
+}
 let promptText = null;
 const promptFileIndex = args.indexOf("--prompt-file");
 if (promptFileIndex !== -1) {
@@ -51,6 +55,10 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
   console.log("fake-kimi 0.0.0");
+  process.exit(0);
+}
+if (args[0] === "doctor") {
+  console.log("OK config.toml");
   process.exit(0);
 }
 fs.appendFileSync(${JSON.stringify(argsFile)}, JSON.stringify({ args }) + "\\n");
@@ -257,7 +265,10 @@ test("setup reports per-vendor availability and suggests installing missing CLI 
   const codex = payload.vendors.find((vendor) => vendor.id === "codex");
   assert.equal(codex.default, true);
   assert.equal(grok.available, true);
+  assert.equal(grok.probe.ok, true);
+  assert.equal(grok.probe.label, "auth");
   assert.equal(kimi.available, false);
+  assert.equal(kimi.probe, undefined);
   assert.ok(
     payload.nextSteps.some((step) => step.includes("--vendor kimi")),
     "expected an install hint for the missing kimi CLI"
@@ -277,7 +288,7 @@ test("setup reports per-vendor availability and suggests installing missing CLI 
   assert.equal(rendered.status, 0, rendered.stderr);
   assert.match(rendered.stdout, /Vendors:/);
   assert.match(rendered.stdout, /- codex \(default\): /);
-  assert.match(rendered.stdout, /- grok: available/);
+  assert.match(rendered.stdout, /- grok: available, auth check passed/);
   assert.match(rendered.stdout, /- kimi: not found/);
 });
 

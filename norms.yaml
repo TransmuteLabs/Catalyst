@@ -116,3 +116,34 @@ norms:
     home: skills/forge-skill/references/improvement-loop.md
     mirrors:
       - skills/forge-skill/SKILL.md
+
+  - id: held-out-gate
+    what: an edit to a surface that has a measurable held-out check (harness RED set, test suite, lint rule) is accepted only without regression on that check; rejected candidates are recorded, not silently dropped — quantitative checks only, never prose review rounds
+    home: skills/forge-skill/references/improvement-loop.md
+    mirrors: []
+
+  - id: structure-over-prose
+    what: a recurring correction or re-opened friction class is fixed one layer up — a lint rule, schema field, or deterministic check — not with more instruction text
+    home: skills/forge-skill/references/improvement-loop.md
+    mirrors: []
+
+  - id: migrate-then-delete
+    what: a replacement API/mechanism migrates every caller and deletes the legacy path in the SAME plan; a compatibility layer or dual path is a plan defect unless the user explicitly scopes otherwise
+    home: skills/arcane-mode/references/plan-standard.md
+    mirrors: []
+
+  - id: subtract-before-add
+    what: a task on cluttered ground removes dead weight first (unused branches, redundant validators, stub references), then builds on the simpler base
+    home: skills/arcane-mode/references/plan-standard.md
+    mirrors: []
+
+  - id: design-space-novelty
+    what: an interface/architecture decision with no codebase precedent produces 2-3 radically different candidate shapes and records the choice with rejected alternatives; precedented decisions follow the precedent
+    home: skills/arcane-mode/references/plan-standard.md
+    mirrors: []
+
+  - id: severity-trust
+    what: severity is never inflated, a finding with unfinished research is not a finding (check what you can check yourself), and own audit runs before reading other reviewers' findings
+    home: skills/review/references/hunt-lenses.md
+    mirrors:
+      - agents/critic.md

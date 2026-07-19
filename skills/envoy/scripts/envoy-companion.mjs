@@ -169,13 +169,18 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     const vendor = resolveVendor(id);
     const availability =
       id === DEFAULT_VENDOR ? codexStatus : vendor.getAvailability?.() ?? { available: false, detail: "not found" };
+    const available = Boolean(availability.available);
+    // Readiness is confirmed mechanically (a probe command's exit code),
+    // never assumed from binary presence alone.
+    const probe = available && vendor.probeReadiness ? vendor.probeReadiness() : null;
     return {
       id,
       title: vendor.title,
       cli: vendor.cli,
       default: id === DEFAULT_VENDOR,
-      available: Boolean(availability.available),
-      detail: availability.detail ?? (availability.available ? "ok" : "not found")
+      available,
+      detail: availability.detail ?? (available ? "ok" : "not found"),
+      ...(probe ? { probe: { ok: probe.ok, label: probe.label, detail: probe.detail } } : {})
     };
   });
 

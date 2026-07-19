@@ -26,6 +26,17 @@ export function getGrokAvailability() {
   return binaryAvailable("grok");
 }
 
+// Mechanical auth probe for setup: `grok models` requires a valid login and
+// costs no model call. Exit 0 = authenticated.
+export function probeGrokReadiness() {
+  const result = binaryAvailable("grok", ["models"]);
+  return {
+    ok: Boolean(result.available),
+    label: "auth",
+    detail: result.available ? "login verified (grok models)" : result.detail
+  };
+}
+
 function writePromptFile(prompt) {
   const filePath = path.join(
     os.tmpdir(),

@@ -199,7 +199,12 @@ export function renderSetupReport(report) {
   if (Array.isArray(report.vendors) && report.vendors.length > 0) {
     lines.push("Vendors:");
     for (const vendor of report.vendors) {
-      const status = vendor.available ? "available" : "not found";
+      let status = vendor.available ? "available" : "not found";
+      if (vendor.probe) {
+        status += vendor.probe.ok
+          ? `, ${vendor.probe.label} check passed`
+          : `, ${vendor.probe.label} check FAILED: ${vendor.probe.detail}`;
+      }
       lines.push(`- ${vendor.id}${vendor.default ? " (default)" : ""}: ${status}`);
     }
     lines.push("");

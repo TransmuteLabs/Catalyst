@@ -31,6 +31,10 @@ Detection means the tool **responds with its own signature** — a name on PATH 
 
 A failed install gets one honest retry of the same command; then report the raw output and stop — do not improvise alternative install paths that are not in the table.
 
+## Skill discovery mechanics (for manual/standalone installs)
+
+Verified facts about how harnesses discover skills OUTSIDE plugin delivery (absorbed from a field-tested sync toolchain, journal 0.8.3): Claude Code loads only `~/.claude/skills/<name>/SKILL.md` — exactly one level deep; a per-entry symlink is followed, but a category subfolder is NOT scanned, so nested layouts silently drop skills. Codex scans nested directories, so it accepts whole-root links. When wiring skills by symlink, one flat link per skill for Claude Code, and check name collisions explicitly — the last writer silently wins otherwise.
+
 ## Update mode
 
 Same procedure, update commands instead: `cc-setup update --with-tools` (binaries + .claude + refreshes bloks/tldr/fastedit from their releases). The plugin updates in TWO steps — installed plugins are version-pinned copies: `claude plugin marketplace update catalyst` refreshes only the catalog clone (it exits 0 while sessions keep loading the old pinned skills), then `claude plugin update catalyst@catalyst` moves the installed copy (restart required); verify with `claude plugin list` showing the new version — the marketplace step alone never changes what `plugin list` reports. Without the CC layer: re-download prebuilt binaries from the latest `*-releases` Release.

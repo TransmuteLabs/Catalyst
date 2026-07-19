@@ -9,8 +9,8 @@
  * reads these descriptors instead of hardcoding vendor specifics.
  */
 
-import { getGrokAvailability, runGrokTask } from "./grok.mjs";
-import { getKimiAvailability, runKimiTask } from "./kimi.mjs";
+import { getGrokAvailability, probeGrokReadiness, runGrokTask } from "./grok.mjs";
+import { getKimiAvailability, probeKimiReadiness, runKimiTask } from "./kimi.mjs";
 
 export const DEFAULT_VENDOR = "codex";
 
@@ -40,6 +40,7 @@ const VENDORS = new Map([
       modelAliases: new Map([["spark", "gpt-5.3-codex-spark"]]),
       resumeCommand: (sessionId) => `codex resume ${sessionId}`,
       getAvailability: null,
+      probeReadiness: null,
       runTask: null
     }
   ],
@@ -54,6 +55,7 @@ const VENDORS = new Map([
       modelAliases: new Map(),
       resumeCommand: (sessionId) => `grok --resume ${sessionId}`,
       getAvailability: getGrokAvailability,
+      probeReadiness: probeGrokReadiness,
       runTask: runGrokTask
     }
   ],
@@ -68,6 +70,7 @@ const VENDORS = new Map([
       modelAliases: new Map(),
       resumeCommand: (sessionId) => `kimi -r ${sessionId}`,
       getAvailability: getKimiAvailability,
+      probeReadiness: probeKimiReadiness,
       runTask: runKimiTask
     }
   ]
