@@ -19,7 +19,7 @@ Format (required sections marked):
 
 ```yaml
 ---
-session: {name}   # this handoff's front-matter field only — NOT the arcane ledger's `session: <ISO> resumed (…)` claim line (verification.md): same word, different record, never cross-parsed
+session: {name}   # this handoff's front-matter field only — NOT the arcane ledger's `session: <ISO> resumed (…)` claim line (arcane's `references/ledger.md`): same word, different record, never cross-parsed
 date: YYYY-MM-DD
 status: complete|partial|blocked
 outcome: SUCCEEDED|PARTIAL_PLUS|PARTIAL_MINUS|FAILED   # OPTIONAL — kept for
