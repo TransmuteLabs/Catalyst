@@ -34,6 +34,23 @@ case "$n" in
   ''|*[!0-9]*) echo "task id must be numeric, got: '$n'" >&2; exit 2 ;;
 esac
 [ -f "$plan" ] || { echo "no such plan file: $plan" >&2; exit 2; }
+# A relative plan path containing `=` parses as an awk VARIABLE ASSIGNMENT
+# operand (awk then reads stdin — hangs, or consumes a wrong stream); a `./`
+# prefix makes it a filename again. Applies to every awk pass below.
+case "$plan" in
+  /*) : ;;
+  *=*) plan="./$plan" ;;
+esac
+# NUL bytes truncate awk records mid-line on BSD awk: `Task 1\0...` binds a
+# different task identity, `safe\0evil.py` binds a wrong write path — the
+# plan is refused, never silently reinterpreted.
+# Detection via tr|cmp: a NUL cannot ride a shell variable or a command
+# substitution (both strip it), so the probe compares the file against its
+# NUL-stripped self — byte-identical means clean.
+if ! LC_ALL=C tr -d '\000' < "$plan" | cmp -s - "$plan"; then
+  echo "plan contains NUL bytes — not a text plan; refusing (a NUL truncates parsing mid-line and silently rebinds task identity or write scope)" >&2
+  exit 2
+fi
 
 if [ $# -eq 3 ]; then
   out=$3
@@ -282,6 +299,23 @@ else
       exit 5 ;;
   esac
   paths_line=$paths_raw
+# CONTAINMENT: the write scope is repo-relative by contract — an absolute
+# path or a `..` segment escapes the tree (a FUTURE `../x` never trips the
+# implementer's tree-absent-but-opens defense, and can authorize creation
+# OUTSIDE the repository). Refused as a plan defect, never normalized.
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  case "/$p/" in
+    //*)
+      echo "task ${n}: absolute path in Files: '$p' — the write scope is repo-relative; fix the plan's Files entry" >&2
+      exit 5 ;;
+    */../*)
+      echo "task ${n}: path traversal in Files: '$p' — a '..' segment escapes the repository; fix the plan's Files entry" >&2
+      exit 5 ;;
+  esac
+done <<EOF_CONT
+$(printf '%s\n' "$paths_line" | awk -F'`' '{ for (i = 2; i <= NF; i += 2) print $i }')
+EOF_CONT
   # ALIAS GATE: repository paths bind by their exact git-tree BYTE spelling —
   # a case-insensitive filesystem (macOS APFS) resolves `SRC/App.py` to a
   # tracked `src/app.py`, so the implementer "successfully" edits a file the
@@ -297,7 +331,14 @@ else
   # from another repo must be checked against ITS OWN tree.
   plandir=$(cd "$(dirname "$plan")" && pwd)
   if top=$(git -C "$plandir" rev-parse --show-toplevel 2>/dev/null); then
-    tracked=$(git -C "$top" ls-files 2>/dev/null || true)
+    # Fail CLOSED on a broken index: `|| true` here turned a failing
+    # `git ls-files` (corrupt/unreadable index, rc 128) into an empty
+    # tracked set — the alias gate silently disarmed. An EMPTY set from a
+    # SUCCESSFUL ls-files (fresh repo, no commits) legitimately skips.
+    if ! tracked=$(git -C "$top" ls-files 2>/dev/null); then
+      echo "task ${n}: git ls-files failed in $top — cannot verify tree-spelling aliases; fix the repository index and re-run (refusing rather than silently disarming the alias gate)" >&2
+      exit 2
+    fi
     if [ -n "$tracked" ]; then
       # Casefold the tracked set ONCE (a per-tracked-path subprocess loop
       # measured 650+ s on 300 paths x 5k tracked — two forks per tracked
@@ -343,6 +384,11 @@ fi
 # marker — a semantically truncated brief carrying proof of completeness.
 constraints=$(extract_constraints)
 tmp="$out.tmp.$$"
+# A prior run killed between ln and rm leaves this SAME tmp name hard-linked
+# to the PUBLISHED brief (pid reuse): writing through it would truncate the
+# published file in place. Unlink first — the published file keeps its own
+# link; the write below then creates a fresh inode.
+rm -f "$tmp"
 {
   printf 'paths: %s\n\n' "$paths_line"
   if [ -n "$constraints" ]; then

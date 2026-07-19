@@ -61,6 +61,21 @@ if [ -n "$dup_keys" ]; then
 fi
 # Duplicate selectors share one cwd and one output identity (two truncating
 # redirects race) — deduplicate deterministically, keeping first occurrence.
+# Grammar validation runs BEFORE deduplication: the dedup membership test
+# flattens the set on spaces, so a hostile selector `a b` looked identical
+# to members `a`,`b` and was silently SKIPPED as a duplicate instead of
+# refused -- validation-first makes the flattening safe (no member can
+# contain a space once every selector passed the grammar).
+# Scenario keys are cross-machine identities used as filesystem names on
+# BOTH case/normalization-sensitive and -insensitive filesystems: two keys
+# differing only by case (or Unicode normalization) pass the byte-exact dup
+# check yet alias ONE set of output files on APFS while being two identities
+# on ext4. Restrict keys to a portable grammar instead of arbitrating that.
+for n in "${names[@]}"; do
+  case "$n" in
+    *[!a-z0-9-]*|-*) echo "[green] scenario key '$n' outside the portable grammar [a-z0-9-] (must not start with '-') -- refusing" >&2; exit 1 ;;
+  esac
+done
 deduped=()
 for n in "${names[@]}"; do
   case " ${deduped[*]-} " in
@@ -72,17 +87,13 @@ done
 # empty-array "${deduped[@]}" expansion aborts with "unbound variable"
 # instead of a diagnosable message.
 [ -n "${deduped[*]-}" ] || { echo "[green] no scenarios selected (empty map.tsv?) — refusing" >&2; exit 1; }
-# Scenario keys are cross-machine identities used as filesystem names on
-# BOTH case/normalization-sensitive and -insensitive filesystems: two keys
-# differing only by case (or Unicode normalization) pass the byte-exact dup
-# check yet alias ONE set of output files on APFS while being two identities
-# on ext4. Restrict keys to a portable grammar instead of arbitrating that.
-for n in "${deduped[@]}"; do
-  case "$n" in
-    *[!a-z0-9-]*|-*) echo "[green] scenario key '$n' outside the portable grammar [a-z0-9-] (must not start with '-') — refusing" >&2; exit 1 ;;
-  esac
-done
 names=("${deduped[@]}")
+# NUL bytes in map.tsv truncate awk/command-substitution output mid-field:
+# the MANIFEST would then certify bytes the session never consumed. Refuse.
+if ! LC_ALL=C tr -d '\000' < "$HERE/map.tsv" | cmp -s - "$HERE/map.tsv"; then
+  echo "[green] map.tsv contains NUL bytes -- not a text map; refusing" >&2
+  exit 1
+fi
 
 # Bounded worker pool: an unthrottled no-args run launches every mapped
 # session at once and the resulting process/API burst produces its own
@@ -131,7 +142,10 @@ on_signal() {
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 for name in "${names[@]}"; do
-  line=$(awk -F'\t' -v n="$name" '$1==n' "$HERE/map.tsv")
+  # String-force + first-row-only: POSIX numeric coercion matched key `01`
+  # against selector `1` (bypassing skip-notmap onto a wrong row), and a
+  # multi-row result would corrupt the cut parsing below.
+  line=$(awk -F'\t' -v n="$name" '($1 "") == (n "") { print; exit }' "$HERE/map.tsv")
   # Skips are RECORDED failures, not silent continues: a typo'd selector or a
   # map row whose scenario file drifted must fail the run (a closure invocation
   # that silently ran N-1 scenarios previously exited 0 with no trace beyond a
@@ -146,6 +160,14 @@ for name in "${names[@]}"; do
     printf 'exit: skip-nofile\nutc_end: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/$name.status"
     continue
   fi
+  # A NUL in the scenario would be HASHED into the manifest yet dropped from
+  # the prompt (shell variables cannot hold NUL) -- the manifest would
+  # certify bytes the session never saw. Unbindable input, recorded skip.
+  if ! LC_ALL=C tr -d '\000' < "$HERE/scenarios/$name.md" | cmp -s - "$HERE/scenarios/$name.md"; then
+    echo "SKIP $name: scenario file contains NUL bytes (unbindable input)" >&2
+    printf 'exit: skip-badref\nutc_end: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/$name.status"
+    continue
+  fi
   model=$(printf '%s' "$line" | cut -f2)
   skills=$(printf '%s' "$line" | cut -f3- | tr '\t' '\n')
   # Mapped skill files are governing INPUTS of the run: the manifest binds
@@ -153,25 +175,38 @@ for name in "${names[@]}"; do
   # symlink whose external target differs per machine) would let two runs
   # read different doctrine under indistinguishable manifests. Every mapped
   # path must be a tracked regular file — hashed into the manifest.
+  # A row with NO nonempty skill field would launch a GREEN session with no
+  # governing skill at all -- a gate bypass, recorded as a bad reference.
+  if [ -z "$(printf '%s' "$skills" | tr -d '[:space:]')" ]; then
+    echo "SKIP $name: map row has no skill files (a GREEN run without a governing skill is a gate bypass)" >&2
+    printf 'exit: skip-badref\nutc_end: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/$name.status"
+    continue
+  fi
   badref=""
-  while read -r rel; do
+  # IFS= keeps mapped paths byte-exact (bare `read` trims edge whitespace --
+  # a whitespace-bearing mapped path silently became a DIFFERENT path in
+  # both the hash and the prompt).
+  while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     if [ -L "$FAMILY/$rel" ] || [ ! -f "$FAMILY/$rel" ]; then
       echo "SKIP $name: mapped file '$rel' missing or a symlink (unbindable input)" >&2
       printf 'exit: skip-badref\nutc_end: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/$name.status"
       badref=1; break
     fi
-    case " ${hashed_files-} " in
-      *" $rel "*) ;;
-      *) echo "file $rel sha256 $(sha256 "$FAMILY/$rel")" >> "$OUT/MANIFEST.txt"
-         hashed_files="${hashed_files-} $rel" ;;
-    esac
+    # Newline-delimited membership: the old space-joined set could not tell
+    # members `a`,`b` from one path `a b` -- that file was silently left out
+    # of the manifest file bindings while still entering the prompt.
+    if ! printf '%s\n' "${hashed_files-}" | grep -qxF -- "$rel"; then
+      echo "file $rel sha256 $(sha256 "$FAMILY/$rel")" >> "$OUT/MANIFEST.txt"
+      hashed_files="${hashed_files-}
+$rel"
+    fi
   done <<< "$skills"
   if [ -n "$badref" ]; then continue; fi
   echo "scenario $name model $model sha256 $(sha256 "$HERE/scenarios/$name.md")" >> "$OUT/MANIFEST.txt"
   while [ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$MAX_PAR" ]; do sleep 1; done
   preamble="Your process is governed by a skill. Read these files FIRST — actually open and read them with your file tools before answering; an answer that does not engage their text is invalid and will be discarded. Only your FINAL message is recorded: it must contain the complete deliverable in full (the chosen letter, every message/artifact the scenario asks you to write out, and the justification) — restate everything even if you already said it in an earlier turn; a final message that defers to an earlier turn is discarded as no answer:"
-  while read -r rel; do [ -n "$rel" ] && preamble+=$'\n'"- $FAMILY/$rel"; done <<< "$skills"
+  while IFS= read -r rel; do [ -n "$rel" ] && preamble+=$'\n'"- $FAMILY/$rel"; done <<< "$skills"
   prompt="$preamble
 
 $(cat "$HERE/scenarios/$name.md")"

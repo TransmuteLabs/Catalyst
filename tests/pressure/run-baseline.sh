@@ -198,7 +198,14 @@ acquire_lock || exit 1
 # Self-heal a stale backup from a hard-killed previous run (safe: we hold
 # the lock, so no other baseline is live).
 if [ -f "$BK" ] && [ ! -f "$CM" ]; then
-  mv "$BK" "$CM" && echo "[baseline] stale backup from a killed run restored" >&2
+  # A failed self-heal must refuse: continuing would run "one more" baseline
+  # over a machine whose CLAUDE.md silently stays renamed after we exit.
+  if ! mv "$BK" "$CM"; then
+    echo "[baseline] ERROR: stale backup exists but restore failed (mv '$BK' '$CM') — fix manually, then re-run" >&2
+    owns_lock && rm -f "$LOCK"
+    exit 1
+  fi
+  echo "[baseline] stale backup from a killed run restored" >&2
 elif [ -f "$BK" ] && [ -f "$CM" ]; then
   echo "[baseline] BOTH $CM and stale backup $BK exist (CLAUDE.md was recreated after a killed run)." >&2
   echo "[baseline] Refusing to overwrite the backup — reconcile the two files manually, then re-run." >&2
@@ -221,7 +228,11 @@ restore() {
     if [ -n "$cur" ] && [ "$cur" != "$$" ] && kill -0 "$cur" 2>/dev/null && is_live_baseline "$cur"; then
       echo "[baseline] WARNING: a live successor (pid $cur) holds the lock — leaving CLAUDE.md renamed for its run; the next acquisition self-heals the backup" >&2
     else
-      mv "$BK" "$CM" && echo "[baseline] CLAUDE.md restored"
+      if mv "$BK" "$CM"; then
+        echo "[baseline] CLAUDE.md restored"
+      else
+        echo "[baseline] ERROR: CLAUDE.md restore FAILED — every fresh session on this machine now runs without global instructions. Restore manually: mv '$BK' '$CM'" >&2
+      fi
     fi
   fi
   # Lock removal is ownership-guarded AT ACTION TIME: an unconditional rm
@@ -269,6 +280,15 @@ if [ -n "$dup_keys" ]; then
   echo "[baseline] map.tsv has duplicate scenario keys: $dup_keys — fix the map first" >&2
   exit 1
 fi
+# Grammar validation runs BEFORE deduplication (mirrors run-green.sh): the
+# dedup membership test flattens the set on spaces, so a hostile selector
+# `a b` looked identical to members `a`,`b` and was silently SKIPPED as a
+# duplicate instead of refused -- validation-first makes the flattening safe.
+for n in "${names[@]}"; do
+  case "$n" in
+    *[!a-z0-9-]*|-*) echo "[baseline] scenario key '$n' outside the portable grammar [a-z0-9-] (must not start with '-') -- refusing" >&2; exit 1 ;;
+  esac
+done
 # Duplicate selectors share one cwd and one output identity — deduplicate.
 deduped=()
 for n in "${names[@]}"; do
@@ -280,15 +300,13 @@ done
 # Guard the empty set BEFORE expanding it (bash 3.2 + set -u aborts on an
 # empty-array expansion with an opaque "unbound variable").
 [ -n "${deduped[*]-}" ] || { echo "[baseline] no scenarios selected (empty map.tsv?) — refusing" >&2; exit 1; }
-# Portable key grammar (mirrors run-green.sh): case/normalization-equivalent
-# keys alias one output identity on APFS while being two on ext4 — the
-# byte-exact dup check cannot see that class, so the grammar refuses it.
-for n in "${deduped[@]}"; do
-  case "$n" in
-    *[!a-z0-9-]*|-*) echo "[baseline] scenario key '$n' outside the portable grammar [a-z0-9-] (must not start with '-') — refusing" >&2; exit 1 ;;
-  esac
-done
 names=("${deduped[@]}")
+# NUL bytes in map.tsv truncate awk/command-substitution output mid-field:
+# the MANIFEST would then certify bytes the sessions never consumed. Refuse.
+if ! LC_ALL=C tr -d '\000' < "$HERE/map.tsv" | cmp -s - "$HERE/map.tsv"; then
+  echo "[baseline] map.tsv contains NUL bytes -- not a text map; refusing" >&2
+  exit 1
+fi
 
 # Validated pool bound and per-scenario timeout (mirrors run-green.sh —
 # 0/negative/nonnumeric would wedge or unbound the pool; a hung session
@@ -315,7 +333,15 @@ if ! owns_lock; then
   exit 1
 fi
 if [ -f "$CM" ]; then
-  mv "$CM" "$BK" && DID_RENAME=1 && echo "[baseline] CLAUDE.md renamed"
+  # A failed rename must refuse the whole run: falling through would launch
+  # every "baseline" session against the LIVE CLAUDE.md — a contaminated RED
+  # presented as clean. The EXIT trap releases the lock (DID_RENAME stays 0).
+  if ! mv "$CM" "$BK"; then
+    echo "[baseline] ERROR: could not rename CLAUDE.md aside — refusing (a RED against the live CLAUDE.md is contaminated)" >&2
+    exit 1
+  fi
+  DID_RENAME=1
+  echo "[baseline] CLAUDE.md renamed"
 fi
 
 for name in "${names[@]}"; do
@@ -328,7 +354,10 @@ for name in "${names[@]}"; do
     printf 'exit: skip-lostlock\nutc_end: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/$name.status"
     continue
   fi
-  line=$(awk -F'\t' -v n="$name" '$1==n' "$HERE/map.tsv")
+  # String-force + first-row-only (mirrors run-green.sh): POSIX numeric
+  # coercion matched key `01` against selector `1`, and a multi-row result
+  # would corrupt the cut parsing below.
+  line=$(awk -F'\t' -v n="$name" '($1 "") == (n "") { print; exit }' "$HERE/map.tsv")
   # Skips are RECORDED failures, not silent continues (a typo'd selector or
   # a drifted map row previously exited 0 with no durable trace).
   if [ -z "$line" ]; then
@@ -339,6 +368,14 @@ for name in "${names[@]}"; do
   if [ ! -f "$HERE/scenarios/$name.md" ]; then
     echo "SKIP $name: scenario file missing" >&2
     printf 'exit: skip-nofile\nutc_end: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/$name.status"
+    continue
+  fi
+  # A NUL in the scenario would be HASHED into the manifest yet truncate the
+  # stdin the session reads through text tooling -- the manifest would
+  # certify bytes the session never saw. Unbindable input, recorded skip.
+  if ! LC_ALL=C tr -d '\000' < "$HERE/scenarios/$name.md" | cmp -s - "$HERE/scenarios/$name.md"; then
+    echo "SKIP $name: scenario file contains NUL bytes (unbindable input)" >&2
+    printf 'exit: skip-badref\nutc_end: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/$name.status"
     continue
   fi
   model=$(printf '%s' "$line" | cut -f2)

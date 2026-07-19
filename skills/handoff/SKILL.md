@@ -19,7 +19,7 @@ Format (required sections marked):
 
 ```yaml
 ---
-session: {name}
+session: {name}   # this handoff's front-matter field only — NOT the arcane ledger's `session: <ISO> resumed (…)` claim line (verification.md): same word, different record, never cross-parsed
 date: YYYY-MM-DD
 status: complete|partial|blocked
 outcome: SUCCEEDED|PARTIAL_PLUS|PARTIAL_MINUS|FAILED   # OPTIONAL — kept for
@@ -103,7 +103,7 @@ files:
 
 ## RESUME mode
 
-1. Path given → read the document completely (no limit/offset), plus linked research/plans. Multiple files → the most recent by timestamp; a torn newest file (its required trailing sections — `next_session_prompt`, `files` — missing) means the writer died mid-CREATE: take the prompt/files from the previous complete handoff, but READ the torn file's surviving top sections (`mental_model`, findings) — the freshest mental model is the whole point of a handoff; flag the tear to the user. No parameters → ask which one; NO handoff files at all (a fresh clone — the workspace is self-ignored, handoffs are machine-local) → say so and fall back to durable state: an active campaign's router, the arcane ledger + `git log`, or bootup routing — never invent a resume context.
+1. Path given → read the document completely (no limit/offset), plus linked research/plans. Multiple files → the most recent by timestamp; a torn newest file (its required trailing sections — `next_session_prompt`, `files` — missing) means the writer died mid-CREATE: take the prompt/files from the previous complete handoff, but READ the torn file's surviving top sections (`mental_model`, findings) — the freshest mental model is the whole point of a handoff; flag the tear to the user. No parameters → ask which one; NO handoff files at all (a fresh clone — the workspace is self-ignored, handoffs are machine-local) → say so and fall back to durable state: an active campaign's router, a standing starchart map (`.catalyst/map/` — committed, survives clones), the arcane ledger + `git log`, or bootup routing — never invent a resume context.
 2. **Campaign pointer first:** the handoff carries `campaign:` → run the campaign router before anything else (read ROADMAP.md; catalyst:campaign rules). A dangling pointer (the campaign directory missing or unreadable) is flagged to the user and the resume proceeds as NON-campaign — never silently, and never looping handoff↔router. The handoff supplies the mental model; the roadmap decides what happens next — a next_session_prompt executes only if the router lands on the same work, on divergence the roadmap wins.
 3. **next_session_prompt priority:** if present — present it to the user directly: "The previous session left a prompt: {…}. Proceed or adjust?" Approved → verify the state first with step-4's mechanics scoped to the prompt (a scout checks `codebase_state` — builds/tests/branch/dirty files — and the critical findings' files against reality), then execute as-is; the rest of the handoff is context.
 4. No prompt → full analysis: verify the current state against the handoff (scouts under arcane-mode rules), read the critical files from findings, present a synthesis: tasks → status then/now, learnings validity (file:line), recommended actions, conflicts.
