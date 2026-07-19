@@ -10,8 +10,10 @@
 #       traps, CLAUDE.md rename/restore, scenario loop — cannot be smoked
 #       without running a baseline, so syntax is its strongest safe whole-file
 #       check; run-green's lifecycle has its own one-scenario smoke, named in
-#       forge-skill).
-# Anything outside (a)-(c) is NOT covered here.
+#       forge-skill);
+#   (d) the skip-class gate on a sandboxed run-green copy — a not-in-map
+#       selector writes a durable skip status and fails the run.
+# Anything outside (a)-(d) is NOT covered here.
 #
 # This is a SCRIPT-level test: the pressure harness (map.tsv scenarios) cannot
 # exercise shell behavior, so this file is the compensating gate for
@@ -99,5 +101,17 @@ else echo "FAIL: legacy conversion"; fails=$((fails+1)); fi
 if bash -n "$SRC" && bash -n "$HERE/run-green.sh"; then echo "ok: bash -n both runners"
 else echo "FAIL: bash -n"; fails=$((fails+1)); fi
 
-if [ "$fails" -eq 0 ]; then echo "PASS: runner script gates (10/10)"; exit 0
+# 11. Skip classes are RECORDED failures: a selector not in the map must
+# yield a durable skip status and a nonzero runner exit (never a silent
+# green). Runs a sandboxed COPY of run-green.sh — no sessions launch (the
+# skip fires before any launch) and the real out/ stays untouched.
+mkdir -p "$TMP/g/scenarios" "$TMP/g/out"
+cp "$HERE/run-green.sh" "$TMP/g/"
+printf 'real-scenario\topus\tskills/x.md\n' > "$TMP/g/map.tsv"
+grc=0; bash "$TMP/g/run-green.sh" no-such-scenario >/dev/null 2>&1 || grc=$?
+if [ "$grc" -ne 0 ] && grep -q '^exit: skip-notmap$' "$TMP/g/out"/green-*/no-such-scenario.status 2>/dev/null; then
+  echo "ok: not-in-map skip recorded and run exits nonzero"
+else echo "FAIL: skip-notmap (rc=$grc)"; fails=$((fails+1)); fi
+
+if [ "$fails" -eq 0 ]; then echo "PASS: runner script gates (11/11)"; exit 0
 else echo "FAIL: $fails assertion(s)"; exit 1; fi

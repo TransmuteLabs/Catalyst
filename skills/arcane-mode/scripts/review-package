@@ -8,9 +8,10 @@
 # Usage: review-package BASE HEAD [OUTFILE]
 # Default OUTFILE: <workspace>/review-<base7>..<head7>.diff
 # (named per range, so a re-review after fixes gets a distinct fresh file).
-# Exit codes: 0 ok; 2 usage / unresolvable rev; 3 BASE is not an ancestor of
-# HEAD (swapped arguments or a wrong recorded BASE — a reversed range would
-# emit an inverted diff with an empty commit list that still LOOKS complete).
+# Exit codes: 0 ok; 2 usage / unresolvable or non-commit rev / unwritable
+# OUTFILE location; 3 BASE is not an ancestor of HEAD (swapped arguments or
+# a wrong recorded BASE — a reversed range would emit an inverted diff with
+# an empty commit list that still LOOKS complete).
 set -euo pipefail
 
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
@@ -21,8 +22,11 @@ fi
 base=$1
 head=$2
 
-git rev-parse --verify --quiet "$base" >/dev/null || { echo "bad BASE: $base" >&2; exit 2; }
-git rev-parse --verify --quiet "$head" >/dev/null || { echo "bad HEAD: $head" >&2; exit 2; }
+# Verify COMMIT-ness up front (`^{commit}`): a bare --verify accepts any
+# object — a mis-pasted blob/tree OID would pass here and die later at the
+# peel with a raw git 128 instead of the documented exit 2.
+git rev-parse --verify --quiet "${base}^{commit}" >/dev/null || { echo "bad BASE (not a commit-ish): $base" >&2; exit 2; }
+git rev-parse --verify --quiet "${head}^{commit}" >/dev/null || { echo "bad HEAD (not a commit-ish): $head" >&2; exit 2; }
 
 if [ $# -eq 3 ]; then
   out=$3
@@ -43,7 +47,7 @@ head_full=$(git rev-parse "${head}^{commit}")
 # unrelated, and a silent exit 0 is worse than a hard refusal. Equal
 # BASE==HEAD stays allowed (an honestly empty range).
 if ! git merge-base --is-ancestor "$base_full" "$head_full"; then
-  echo "BASE is not an ancestor of HEAD (${base_full}..${head_full}) — swapped arguments, or the recorded BASE predates an amend/rebase; fix the range" >&2
+  echo "BASE is not an ancestor of HEAD (${base_full}..${head_full}) — swapped arguments, or the recorded BASE predates an amend/rebase; fix the range (on a SHALLOW clone this can also be truncated history reading as non-ancestry — unshallow first, then retry)" >&2
   exit 3
 fi
 
@@ -51,7 +55,7 @@ fi
 # final path first, so a kill/ENOSPC mid-write leaves a plausible truncated
 # package (and regenerating destroys the previous complete one first). The
 # terminal marker lets any reader verify completeness.
-tmp=$(mktemp "${out}.XXXXXX")
+tmp=$(mktemp "${out}.XXXXXX") || { echo "cannot create temp file next to '$out' (missing directory or unwritable?) — fix OUTFILE" >&2; exit 2; }
 trap 'rm -f "$tmp"' EXIT
 {
   echo "# Review package: ${base_full}..${head_full}"
