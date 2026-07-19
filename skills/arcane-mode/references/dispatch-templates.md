@@ -1,12 +1,19 @@
 # Dispatch templates and role rules
 
-## Mandatory elements of EVERY dispatch
+## Mandatory elements — by role
+
+Universal (every dispatch, any role):
 
 1. **Model named explicitly.** An omitted model silently inherits the session's expensive top model and breaks tiering.
-2. **`paths:` write scope** — nothing outside the list is touched; anything noticed outside the scope goes into the report as a flag, not an edit.
-3. **Permission-to-refuse** — task already done or premise false → proof (grep/diff/test) and stop; fabricating a diff is forbidden.
-4. **File handoffs** — brief, report, review package travel as paths. Everything pasted into a prompt stays resident in the orchestrator's context until the session ends.
-5. **Report contract** — full report to a file; the reply carries only: status, commits, one exact test-baseline line, concerns.
+2. **File handoffs** — brief, report, review package travel as paths. Everything pasted into a prompt stays resident in the orchestrator's context until the session ends.
+3. **Report contract** — full report to a file; the reply carries only: status, one-line result, concerns (implementers add commits + one exact test-baseline line).
+
+Writer roles only (implementer, fix-wave executor — anyone whose task EDITS the tree):
+
+4. **`paths:` write scope** — nothing outside the list is touched; anything noticed outside the scope goes into the report as a flag, not an edit. The scope line is READ as backtick-quoted spans (`` `path` ``, comma-separated between spans): each backtick span is ONE path verbatim — spaces inside a span are part of the path, and splitting the line on commas/whitespace without honoring the backticks mis-reads any path containing either (a legacy unquoted line falls back to comma-splitting).
+5. **Permission-to-refuse** — task already done or premise false → proof (grep/diff/test) and stop; fabricating a diff is forbidden.
+
+Read-only roles (critic, scout, auditor, researcher) get NO `paths:` write scope — their contract already bars edits entirely; a "refuse" for them is the false-premise stop their agent contracts carry (critic: review premise false → proof and stop; scout/researcher: report the absence as the finding). Imposing the writer elements on a read-only dispatch is noise, not safety.
 
 A dispatch describes one task, not the session's history. Do not paste accumulated summaries of prior tasks: a fresh subagent needs its task, the interfaces it touches, and the global constraints. Nothing else.
 

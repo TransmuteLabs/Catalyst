@@ -4,11 +4,13 @@
 #       stale-vs-live decision (a LIVE-as-stale misclassification re-creates
 #       the CLAUDE.md-restore contamination the rounds 29-33 fixes closed,
 #       incl. the space-in-path defect);
-#   (b) the verified-exclusive pid-write guard — the single-winner property
-#       of every lock-takeover interleaving;
-#   (c) bash -n syntax on BOTH runners (the rest of their lifecycle — traps,
-#       rename/restore, scenario loop — cannot be smoked without running a
-#       baseline; syntax is the strongest safe whole-file check).
+#   (b) the atomic symlink acquisition (acquire_lock/owns_lock) — free path,
+#       live-holder refusal, stale takeover, legacy-dir conversion;
+#   (c) bash -n syntax on BOTH runners (run-baseline's remaining lifecycle —
+#       traps, CLAUDE.md rename/restore, scenario loop — cannot be smoked
+#       without running a baseline, so syntax is its strongest safe whole-file
+#       check; run-green's lifecycle has its own one-scenario smoke, named in
+#       forge-skill).
 # Anything outside (a)-(c) is NOT covered here.
 #
 # This is a SCRIPT-level test: the pressure harness (map.tsv scenarios) cannot
@@ -62,23 +64,40 @@ kill "$p4" 2>/dev/null
 bash -c 'exit 0' & p5=$!; wait "$p5" 2>/dev/null
 check 1 "$p5" "dead pid classified STALE"
 
-# 6-7. Verified-exclusive pid-write guard: extract the guard block and run it
-# in a sandbox lock dir. A pre-claimed pid file must refuse (exit 1); a free
-# one must claim and pass through.
-sed -n '/^# VERIFIED exclusive pid write/,/^fi$/p' "$SRC" > "$TMP/guard.sh"
-grep -q 'noclobber' "$TMP/guard.sh" || { echo "FAIL: could not extract pid-write guard from $SRC"; fails=$((fails+1)); }
-mkdir -p "$TMP/lock-taken"; echo 99999 > "$TMP/lock-taken/pid"
-if LOCK="$TMP/lock-taken" bash -c ". '$TMP/guard.sh' && echo claimed" >/dev/null 2>&1; then
-  echo "FAIL: guard claimed a pid file another writer already owns"; fails=$((fails+1))
-else echo "ok: pre-claimed pid file refused"; fi
-mkdir -p "$TMP/lock-free"
-if LOCK="$TMP/lock-free" bash -c ". '$TMP/guard.sh' && echo claimed" 2>/dev/null | grep -q claimed; then
-  echo "ok: free pid file claimed and verified"
-else echo "FAIL: guard refused a free lock dir"; fails=$((fails+1)); fi
+# 6-9. Atomic symlink acquisition (acquire_lock/owns_lock): extract the
+# functions and exercise them against sandbox lock paths.
+{ sed -n '/^owns_lock()/,/^}/p' "$SRC"; sed -n '/^acquire_lock()/,/^}/p' "$SRC"; } >> "$TMP/fn.sh"
+grep -q 'acquire_lock()' "$TMP/fn.sh" || { echo "FAIL: could not extract acquire_lock from $SRC"; fails=$((fails+1)); }
 
-# 8. Syntax gate on both runners.
+# 6. Free path: atomic create claims, ownership verifies.
+if LOCK="$TMP/l-free" bash -c ". '$TMP/fn.sh'; acquire_lock 2>/dev/null && owns_lock && echo claimed" | grep -q claimed; then
+  echo "ok: free path claimed atomically and owned"
+else echo "FAIL: free acquisition"; fails=$((fails+1)); fi
+
+# 7. Held by a LIVE baseline-shaped process → refuse.
+bash "$TMP/plain/run-baseline.sh" & p7=$!
+sleep 0.3
+ln -s "$p7" "$TMP/l-live"
+if LOCK="$TMP/l-live" bash -c ". '$TMP/fn.sh'; acquire_lock 2>/dev/null && echo claimed" | grep -q claimed; then
+  echo "FAIL: acquired over a live baseline holder"; fails=$((fails+1))
+else echo "ok: live holder refused takeover"; fi
+kill "$p7" 2>/dev/null
+
+# 8. Stale symlink holder (dead pid) → takeover succeeds and re-owns.
+ln -s "$p5" "$TMP/l-stale"
+if LOCK="$TMP/l-stale" bash -c ". '$TMP/fn.sh'; acquire_lock 2>/dev/null && owns_lock && echo claimed" | grep -q claimed; then
+  echo "ok: stale symlink holder taken over"
+else echo "FAIL: stale takeover"; fails=$((fails+1)); fi
+
+# 9. Legacy DIRECTORY lock with a dead pid → converted and claimed.
+mkdir -p "$TMP/l-legacy"; echo "$p5" > "$TMP/l-legacy/pid"
+if LOCK="$TMP/l-legacy" bash -c ". '$TMP/fn.sh'; acquire_lock 2>/dev/null && owns_lock && echo claimed" | grep -q claimed; then
+  echo "ok: legacy dir lock converted and claimed"
+else echo "FAIL: legacy conversion"; fails=$((fails+1)); fi
+
+# 10. Syntax gate on both runners.
 if bash -n "$SRC" && bash -n "$HERE/run-green.sh"; then echo "ok: bash -n both runners"
 else echo "FAIL: bash -n"; fails=$((fails+1)); fi
 
-if [ "$fails" -eq 0 ]; then echo "PASS: runner script gates (8/8)"; exit 0
+if [ "$fails" -eq 0 ]; then echo "PASS: runner script gates (10/10)"; exit 0
 else echo "FAIL: $fails assertion(s)"; exit 1; fi

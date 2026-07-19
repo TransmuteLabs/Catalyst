@@ -8,6 +8,9 @@
 # Usage: review-package BASE HEAD [OUTFILE]
 # Default OUTFILE: <workspace>/review-<base7>..<head7>.diff
 # (named per range, so a re-review after fixes gets a distinct fresh file).
+# Exit codes: 0 ok; 2 usage / unresolvable rev; 3 BASE is not an ancestor of
+# HEAD (swapped arguments or a wrong recorded BASE — a reversed range would
+# emit an inverted diff with an empty commit list that still LOOKS complete).
 set -euo pipefail
 
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
@@ -33,6 +36,16 @@ fi
 # ambiguous. Short forms stay display-only (the filename).
 base_full=$(git rev-parse "${base}^{commit}")
 head_full=$(git rev-parse "${head}^{commit}")
+
+# Refuse a non-ancestor range: object existence alone does not make BASE..HEAD
+# a review range — swapped args or a stale recorded BASE (post-amend/rebase)
+# would produce a plausible "complete" package whose diff is inverted or
+# unrelated, and a silent exit 0 is worse than a hard refusal. Equal
+# BASE==HEAD stays allowed (an honestly empty range).
+if ! git merge-base --is-ancestor "$base_full" "$head_full"; then
+  echo "BASE is not an ancestor of HEAD (${base_full}..${head_full}) — swapped arguments, or the recorded BASE predates an amend/rebase; fix the range" >&2
+  exit 3
+fi
 
 # Write to a temp file and rename atomically: a direct redirect creates the
 # final path first, so a kill/ENOSPC mid-write leaves a plausible truncated

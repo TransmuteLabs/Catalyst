@@ -64,19 +64,28 @@ premortem:
       mitigation_tasks: "task refs in the plan; at a spec-gate run, the spec
                          must_haves/decisions the mitigation landed as"
   accepted_risks:        # only by explicit user decision — see the BLOCK rule.
-                         # A FULL snapshot of the original entry: `class:` plus the
-                         # original class's fields carried VERBATIM (a tiger's
-                         # evidence/root_cause/falsifiable_test, an elephant's
-                         # why_avoided/true_impact) — a withdrawal restores the
-                         # entry from THIS record alone, so a snapshot that drops
-                         # fields loses them for good
-    - risk: "..."
-      class: tiger|elephant
+                         # A FULL snapshot of the original entry: `class:` plus ALL
+                         # the original class's fields carried VERBATIM (a tiger's
+                         # evidence/root_cause/falsifiable_test/mitigation — the
+                         # mitigation text too: a withdrawn tiger re-blocks and its
+                         # recorded mitigation path must not be re-derived; an
+                         # elephant's why_avoided/true_impact) — a withdrawal
+                         # restores the entry from THIS record alone, so a snapshot
+                         # that drops fields loses them for good
+    - risk: "..."              # accepted TIGER — the five tiger fields verbatim:
+      class: tiger
       accepted_by: user, YYYY-MM-DD
       consequence_accepted: "..."
-      evidence: "..."            # (tiger fields, verbatim from the original entry)
+      evidence: "..."
       root_cause: "..."
       falsifiable_test: "..."
+      mitigation: "..."
+    - risk: "..."              # accepted ELEPHANT — the elephant fields verbatim:
+      class: elephant
+      accepted_by: user, YYYY-MM-DD
+      consequence_accepted: "..."
+      why_avoided: "..."
+      true_impact: "..."
 ```
 
 - **BLOCK** — at least one tiger in `tigers:`: Task 1 is not dispatched until every tiger's mitigation lands in the plan as concrete tasks/verify steps (in must_haves), then the gate re-runs on the reworked plan — the re-run moves each tiger whose mitigation landed to `mitigated:` (BLOCK counts only `tigers:`; a mitigated risk never re-blocks). A tiger with NO viable mitigation path is the user's decision: accept explicitly or rework the scope — never proceed silently. An explicit user acceptance is a RECORDED state change, not a mental note: the tiger moves to `accepted_risks:` in the yaml (`accepted_by: user`, the date, the consequence accepted, and `class:` — the risk's ORIGINAL class, tiger or elephant: withdrawal must return it to its own section, and without the field an accepted elephant is unrecoverable) and the verdict recomputes without it (no other tigers → WARN); the ledger verdict line names it (`WARN — tiger <X> accepted by user <date>`), so no resumed session re-blocks on a decision already made. Every gate RE-RUN reads the existing yaml first: risks in `accepted_risks` stay there — they are never re-listed as tigers and never demand mitigation again; the yaml is the source of the acceptance, the ledger line its cache (a death between the recompute and the ledger write heals from the yaml). An acceptance is the user's decision and the user can REVERSE it — a withdrawal order is a STOP-read trigger: `references/spec-gate.md` owns the withdrawal machinery ENTIRELY (the `withdrawn:` append shape, the one-commit recompute, never-defer transport, re-acceptance supersede, and the per-risk merge arbitration); the effect is immediate — the risk returns to its recorded ORIGINAL class NOW (`class:` in the acceptance record — a withdrawn tiger to `tigers:` with BLOCK force, a withdrawn elephant to `elephants:` with its WARN semantics; a legacy acceptance without `class:` returns to `tigers:`, the conservative default), never parked for a later re-run.

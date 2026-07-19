@@ -6,6 +6,11 @@
 # Adapted from superpowers (MIT, Jesse Vincent).
 # Usage: task-brief PLAN_FILE TASK_NUMBER [OUTFILE]
 # Default OUTFILE: <workspace>/task-<N>-brief.md
+# Exit codes: 0 ok; 2 usage / missing plan file; 3 task not found;
+# 4 duplicate task ids; 5 no paths derivable or an unquoted path contains
+# whitespace (plan defect — fix the Files block); 6 multiple **Files:**
+# fields inside one task (a later inline field would silently shadow the
+# canonical block).
 set -euo pipefail
 
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
@@ -27,8 +32,17 @@ fi
 # Duplicate task ids are a silent-loss hazard: two `Task N` headings would
 # concatenate into one brief while the ledger holds one identity — one of the
 # logical tasks gets skipped or falsely closed. Refuse instead.
+# Fence tracking is CommonMark-shaped in every block below: remember the
+# opener's character (backtick/tilde) and run length; only a run of the SAME
+# character AT LEAST as long closes it — a naive toggle lets an inner ```
+# inside a ```` fence "close" it, and a literal task heading in a fixture
+# then truncates the real task.
 dupes=$(awk -v n="$n" '
-  /^```/ { infence = !infence }
+  /^(```|~~~)/ {
+    match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
+    if (!infence) { infence = 1; fch = ch; flen = len }
+    else if (ch == fch && len >= flen) infence = 0
+  }
   !infence && $0 ~ ("^#+[ \t]+Task[ \t]+" n "([^0-9]|$)") { c++ }
   END { print c+0 }
 ' "$plan")
@@ -39,7 +53,11 @@ fi
 
 extract_task() {
   awk -v n="$n" '
-    /^```/ { infence = !infence }
+    /^(```|~~~)/ {
+      match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
+      if (!infence) { infence = 1; fch = ch; flen = len }
+      else if (ch == fch && len >= flen) infence = 0
+    }
     !infence && /^#+[ \t]/ {
       match($0, /^#+/); lvl = RLENGTH
       if ($0 ~ /^#+[ \t]+Task[ \t]+[0-9]+/) {
@@ -60,7 +78,11 @@ extract_task() {
 # a brief that drops them hands the implementer requirements with a hole.
 extract_constraints() {
   awk '
-    /^```/ { infence = !infence }
+    /^(```|~~~)/ {
+      match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
+      if (!infence) { infence = 1; fch = ch; flen = len }
+      else if (ch == fch && len >= flen) infence = 0
+    }
     !infence && /^#+[ \t]/ {
       match($0, /^#+/); lvl = RLENGTH
       if ($0 ~ /^#+[ \t]+Global Constraints/) { insec = 1; slvl = lvl; print; next }
@@ -85,31 +107,65 @@ fi
 # (`**Files:**` followed by `- Create:/- Modify:/- Test:` bullets, per
 # plan-standard) and the inline `**Files:** a.py, b.py` form. Bullet
 # prefixes and `:N-M` line-range suffixes are normalized away.
-paths_line=$(printf '%s\n' "$task_text" | awk '
-  /^```/ { infence = !infence; next }
-  infence { next }
-  inblock {
-    if ($0 ~ /^-[ \t]+/) {
-      p = $0
-      sub(/^-[ \t]+/, "", p)
-      sub(/^(Create|Modify|Test|Delete):[ \t]*/, "", p)
-      gsub(/`/, "", p)
-      sub(/[ \t].*$/, "", p)
-      sub(/:[0-9]+(-[0-9]+)?$/, "", p)
-      if (p != "") out = out (out == "" ? "" : ", ") p
+# ENCODING CONTRACT (the header the implementer parses): every path is
+# emitted BACKTICK-QUOTED, separated by `, ` — consumers read the backtick
+# spans, never split raw text on commas/whitespace. A plan path containing
+# whitespace must be backtick-quoted in the plan (an unquoted one is
+# refused, never silently truncated at the first space); the inline form
+# does not support comma-containing paths (use the bulleted form).
+# APPROVAL tasks (plan-standard `**Type:** approval`) have no Files block by
+# design — orchestrator-owned, never an implementer dispatch.
+if printf '%s\n' "$task_text" | grep -q '^\*\*Type:\*\*[ \t]*approval'; then
+  paths_line='(none — approval task, orchestrator-owned; not an implementer dispatch)'
+else
+  paths_raw=$(printf '%s\n' "$task_text" | awk '
+    /^(```|~~~)/ {
+      match($0, /^(`+|~+)/); ch = substr($0,1,1); len = RLENGTH
+      if (!infence) { infence = 1; fch = ch; flen = len }
+      else if (ch == fch && len >= flen) infence = 0
       next
     }
-    inblock = 0
-  }
-  /^\*\*Files:\*\*/ {
-    rest = $0
-    sub(/^\*\*Files:\*\*[ \t]*/, "", rest)
-    gsub(/`/, "", rest)
-    if (rest != "") { out = rest; exit }
-    inblock = 1
-  }
-  END { print out }
-')
+    infence { next }
+    function norm(p) {
+      sub(/^(Create|Modify|Test|Delete):[ \t]*/, "", p)
+      gsub(/^[ \t]+/, "", p); gsub(/[ \t]+$/, "", p)
+      quoted = 0
+      if (p ~ /^`/ && match(p, /^`[^`]+`/)) { p = substr(p, 2, RLENGTH - 2); quoted = 1 }
+      else gsub(/`/, "", p)
+      sub(/:[0-9]+(-[0-9]+)?$/, "", p)
+      return p
+    }
+    function add(p) {
+      if (p == "") return
+      if (!quoted && p ~ /[ \t]/) { printf "ERR:ws:%s\n", p; err = 1; exit 1 }
+      out = out (out == "" ? "" : ", ") "`" p "`"
+    }
+    inblock {
+      if ($0 ~ /^-[ \t]+/) { p = $0; sub(/^-[ \t]+/, "", p); add(norm(p)); next }
+      inblock = 0
+    }
+    /^\*\*Files:\*\*/ {
+      if (seen) { printf "ERR:dupfiles:\n"; err = 1; exit 1 }
+      seen = 1
+      rest = $0
+      sub(/^\*\*Files:\*\*[ \t]*/, "", rest)
+      if (rest != "") {
+        nn = split(rest, arr, /,/)
+        for (i = 1; i <= nn; i++) add(norm(arr[i]))
+      } else inblock = 1
+    }
+    END { if (!err) print out }
+  ' || true)
+  case "$paths_raw" in
+    ERR:dupfiles:*)
+      echo "task ${n}: multiple **Files:** fields in one task — a later inline field would shadow the canonical block; keep exactly one Files field per task" >&2
+      exit 6 ;;
+    ERR:ws:*)
+      echo "task ${n}: unquoted path contains whitespace: '${paths_raw#ERR:ws:}' — backtick-quote the path in the plan's Files block (silent truncation would bind the write scope to a wrong path)" >&2
+      exit 5 ;;
+  esac
+  paths_line=$paths_raw
+fi
 
 # Fail closed: a brief without `paths:` leaves the implementer write-scope
 # contract undefined (dispatch-templates makes the header mandatory). An
