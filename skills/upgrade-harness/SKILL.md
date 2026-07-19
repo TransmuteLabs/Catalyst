@@ -5,6 +5,8 @@ description: Use when extending the ouros sandbox with a new external function -
 
 # Upgrade harness — new ouros external functions
 
+## Overview
+
 Walk through adding a new external function to the ouros sandbox harness (ContinuousClaude core, carried by the family so the capability survives the skill-layer replacement). External functions are the sandbox's only way to interact with the outside world — each one pauses Python execution, runs the real operation on the host, and returns the result.
 
 **Precondition:** `tools/ouros_harness.py` exists in the project (verify the file, not a name on PATH). Absent → this skill does not apply; the sandbox itself ships with the ContinuousClaude binary layer.

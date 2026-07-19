@@ -31,6 +31,14 @@ Or interactively: `/plugin marketplace add TransmuteLabs/Catalyst`, then `/plugi
 
 **Skills themselves.** `forge-skill`: a new rule earns its place only with baseline evidence — a recorded pressure-scenario failure (RED) or verified field harm — and is written against the observed rationalizations. This repo's own `tests/pressure/` harness holds 38 such recorded baselines (see `tests/pressure/INDEX.md`); it runs only to baseline NEW rules, never as a regression gate over text edits.
 
+## Maintenance
+
+- `scripts/lint.py` — free deterministic checks (frontmatter, size budgets, dangling pointers, map/index/norms integrity). Run before committing family edits.
+- `norms.yaml` — the seam registry: every family-wide norm's single normative home + its mirrors; on divergence the home governs.
+- `scripts/gen-index.py` — regenerates `tests/pressure/INDEX.md` from `map.tsv` + `proves.tsv`.
+- `tests/scripts/test-scripts.sh` — fast shell tests for the family scripts (<1s, no live sessions).
+- References carry `read-on:`/`home-of:` frontmatter — the read-triggers and norm ownership as data, checked by lint.
+
 ## Learn by example
 
 `docs/EXAMPLE.md` walks one feature end-to-end through the family (bootup → crucible → premortem → arcane-mode → finish) with realistically-shaped artifacts. `FRICTION.md` at the repo root is the live friction journal — the sole source of skill edits between rule baselines.
