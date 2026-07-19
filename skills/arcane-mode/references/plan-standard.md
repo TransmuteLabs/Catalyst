@@ -3,6 +3,7 @@ read-on:
   - an implementation plan is being written or reviewed
 home-of:
   - the plan standard (tracer-first, must_haves, no placeholders, task anatomy, approval tasks, context budget, self-review)
+  - the one-new-complexity-source cap and baseline verification tiers
 ---
 # Plan standard
 
@@ -38,6 +39,12 @@ The first task of every plan is a `tracer`: the thinnest slice that passes end-t
 **Gate:** until the tracer passes its end-to-end check, no expansion task runs. An architectural dead-end is caught after one commit, not ten.
 
 Opting out of tracer-first is allowed only when the architecture is already proven and a thin slice adds no information; the plan states this explicitly with the reason.
+
+## One new complexity source per task, on a verified baseline
+
+A task introduces at most ONE new source of complexity — a new dependency, a new concurrency pattern, a new data path, a new tool — on top of a passing baseline. When the task goes red, the cause is then attributable to the one thing that changed; two new sources per task turn every failure into a two-variable investigation. Doesn't fit in one task — propose a split, never bundle.
+
+Baseline verification is tiered: **current run** (the gate ran in THIS session, output in hand) > **proven artifact** (a recorded passing run against this exact revision — a CI link, a journal/ledger line naming the head) > **claim** ("it worked", memory, a README sentence). A plan builds only on the first two tiers: a claim-tier baseline is restored and verified BEFORE new complexity lands on it — "it was green when I left it" is where multi-day debugging sessions are born.
 
 ## Task anatomy
 

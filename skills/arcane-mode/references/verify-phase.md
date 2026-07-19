@@ -8,6 +8,7 @@ home-of:
   - the conversational UAT pass and the uat receipt channel
   - the final whole-branch review
   - fresh-eyes convergence over CODE and its stop criterion
+  - perf-comparison discipline (interleaving, directional confounding)
 ---
 # Verification phase — goal-backward, UAT, final review, convergence
 
@@ -24,6 +25,8 @@ All tasks done ≠ goal achieved. Against the plan's `must_haves`:
 **Stub scan** over all created/modified files: hardcoded empty values (`=[]`, `={}`, `=null`) flowing into render/output; placeholder texts ("not available", "coming soon", TODO/FIXME); components with no data source wired. Every found stub is either wired up or explicitly accepted by the user as intentional. A silent stub = verification failure.
 
 **Grounding for doc/synthesis claims:** every claim is checked against the deepest source (code, not a retelling); separately check the connectives and quantifiers added during compression ("when", "always", "after", "therefore", "most") — distortions are born in the connective tissue absent from the source. Derived-vs-derived checks don't count.
+
+**Performance claims (before/after measurement discipline):** a before/after perf comparison is confounded by drift when the two arms ran in different environments (warm vs cold cache, background load, thermal state, data growth) — INTERLEAVE the runs (A B A B, never all-A then all-B) so drift hits both arms, pin what can be pinned (seed, dataset, machine), and report the spread, not one number. Directional confounding is the one legitimate shortcut: when every identified bias works AGAINST the claimed effect (the new build measured on the loaded machine, the old on the idle one), the true effect is at least the observed one — state that direction explicitly instead of pretending no bias exists; a bias whose direction is unknown grants no shortcut.
 
 ## Conversational UAT (user-facing behavior)
 

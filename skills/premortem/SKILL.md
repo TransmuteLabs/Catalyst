@@ -36,6 +36,8 @@ For each identified failure mode: a **falsifiable check** (how to confirm the ri
 
 **Falsifiability rule:** a risk with no statement of what would disprove it is not a verified finding; demote to paper tiger or discard. Every tiger comes with evidence (file:line or an observable condition).
 
+Two mitigation shapes to prefer when they fit: a **no-regret action** — cheap and sensible under every outcome of the risk; take it regardless of how the risk resolves instead of debating probabilities — and a **pre-registered tripwire** — an observable condition + threshold recorded in the yaml BEFORE execution starts ("error rate on X above Y", "task N red twice"). A tripwire firing mid-execution is a sanctioned re-gate trigger (the season rule's amendment arm, scoped to the firing); pre-registering it is what makes the stop non-negotiable instead of a judgment call under sunk cost.
+
 ## Output and gate
 
 ```yaml
@@ -90,9 +92,14 @@ premortem:
       consequence_accepted: "..."
       why_avoided: "..."
       true_impact: "..."
+  tripwires:             # optional — pre-registered mid-execution stop conditions,
+                         # recorded BEFORE Task 1; a firing is a sanctioned re-gate
+                         # trigger scoped to it (see Method)
+    - condition: "observable X crosses threshold Y"
+      action: "stop; re-run the gate scoped to the firing"
 ```
 
-- **BLOCK** — at least one tiger in `tigers:`: Task 1 is not dispatched until every tiger's mitigation lands in the plan as concrete tasks/verify steps, then the gate re-runs on the reworked plan — the re-run moves each mitigated tiger to `mitigated:` (keeping its fields). A tiger with NO viable mitigation path is the user's decision: accept explicitly (recorded as the FULL snapshot in `accepted_risks:` — protocol: `references/gate-mechanics.md` §1) or rework the scope — never proceed silently. Every re-run preserves `accepted_risks:`, `mitigated:`, and `amendments:` verbatim.
+- **BLOCK** — at least one tiger in `tigers:`: Task 1 is not dispatched until every tiger's mitigation lands in the plan as concrete tasks/verify steps, then the gate re-runs on the reworked plan — the re-run moves each mitigated tiger to `mitigated:` (keeping its fields). A tiger with NO viable mitigation path is the user's decision: accept explicitly (recorded as the FULL snapshot in `accepted_risks:` — protocol: `references/gate-mechanics.md` §1) or rework the scope — never proceed silently. Every re-run preserves `accepted_risks:`, `mitigated:`, `amendments:`, and `tripwires:` verbatim.
 - **WARN** — no unmitigated, unaccepted tigers; paper tigers, elephants, accepted risks and/or mitigated entries present: proceed with documented awareness; every elephant gets an owner-decision (a task, or the user's recorded acceptance — gate-mechanics §2). A yaml holding ONLY mitigated entries is a WARN, not a PASS: the mitigations are plan tasks that still have to execute.
 - **PASS** — no findings in any class.
 

@@ -18,7 +18,7 @@ Between baselines, EDITS to existing skills source from the repo's `FRICTION.md`
 1. **RED — baseline.** Write a pressure scenario (below) and run it in a fresh headless session WITHOUT the skill — on the tier that will actually execute (an opus-clean scenario can still fail on the executor tier). Record verbatim how the agent rationalizes the wrong choice. No failure at baseline → that rule is already default and earns no place in the skill; a skill made ONLY of baseline-passing rules is not needed — stop. Conventions the agent cannot know (paths, harness wiring, family mechanics) count as missing by definition and need no behavioral RED — but they also need evidence that their absence hurt: observed harm in the field, or a VERIFIED concrete failure sequence demonstrated against the mechanism's text (an adjudicated audit finding qualifies; a hypothetical does not).
 2. **Write.** Address the recorded rationalizations specifically. Every rule earns its place by countering an observed failure, not a hypothetical one.
 3. **GREEN.** Same scenario, fresh session WITH the skill loaded. The agent must comply for the right reason (check the stated reasoning, not just the answer letter).
-4. **REFACTOR.** New loophole observed in real use → plug it. (The former clean-rounds convergence criterion for skill texts is retired — it belongs to code.)
+4. **REFACTOR.** New loophole observed in real use → plug it. (The former clean-rounds convergence criterion for skill texts is retired — it belongs to code.) **Rework, don't patch:** a skill failing MOST of its scenarios is rebuilt from the recorded rationalizations, not repaired sentence-by-sentence — cosmetic patches over a wrong core teach the next reader the wrong shape. "Fix the test instead" is licensed only by demonstrating the scenario itself is defective (a logged run showing it demands the impossible or punishes the right choice), never by the skill's failure alone.
 
 ## Pressure scenario design
 
@@ -43,6 +43,8 @@ Before shipping, check the four defects that kill discovery:
 - No echoed or truncated trigger lists copy-pasted from another skill.
 - Body rules are behavioral ("do X before Y", red flags with rationalization counters) — anything expressible as a lint/validation belongs in tooling, not prose.
 
+Discovery is testable without a live pressure run — the **blind trigger probe**: a clean subagent gets ONLY the frontmatter description plus a work prompt (the expected answer hidden) and answers would-trigger / why. Run it three-sided: a prompt that SHOULD trigger, 1-2 **decoys** that must NOT (a description never negative-tested is untested), and one **cross-skill confusion** prompt that should route to a neighboring overlapping skill instead (crucible/premortem/debug share surface — exactly where descriptions bleed).
+
 ## Craft — what makes a skill predictable
 
 A skill exists to wrangle determinism out of a stochastic system; predictability of PROCESS (same steps every run) is the root virtue. The levers:
@@ -52,11 +54,12 @@ A skill exists to wrangle determinism out of a stochastic system; predictability
 - **Prompt the positive:** prohibition names the elephant ("don't think of X" makes X more available). State the target behavior; keep a prohibition only as a hard guardrail you can't phrase positively, paired with what to do instead.
 - **Completion criteria, checkable and exhaustive:** each step ends on a condition the agent can verify ("every modified file accounted for", not "produce a list") — a fuzzy criterion invites premature completion.
 - **Progressive disclosure by branches:** inline what every run needs; push what only some branches reach into a linked reference file. Cure sprawl with the ladder, not by deleting live rules.
+- **Boundary section:** state when NOT to invoke — written from an adversarial pass (which neighboring situations would wrongly match this description?). Skills in an overlapping family bleed into each other without one; the routing sentence ("for X use catalyst:Y instead") is the cheapest defect fix in the family.
 - **Invocation economics:** a model-invoked skill pays context load (its description sits in every turn) — worth it only when the agent must reach it autonomously. Rarely-fired hand-tools can be user-invoked (zero context load, you are the index); many of those pile up cognitive load — cure with one router skill.
 
 ## What deserves a skill
 
-Repeatable guidance an agent will need again: a technique, a discipline, a reference. NOT: one-off solutions ("we chose library Y" → decision log/memory), things a validator can enforce, retellings of how one problem was solved once. Family skills are written in English; project-local skills go to the project's `.claude/skills/`, not the family.
+Repeatable guidance an agent will need again: a technique, a discipline, a reference. NOT: one-off solutions ("we chose library Y" → decision log/memory), things a validator can enforce, retellings of how one problem was solved once — and not commonsense the base model already executes: the no-op test applied at the UNIT level, not per sentence — when a clean agent already does the whole thing right, the unit earns no skill regardless of how well its sentences read. Family skills are written in English; project-local skills go to the project's `.claude/skills/`, not the family.
 
 ## Red Flags — STOP
 
