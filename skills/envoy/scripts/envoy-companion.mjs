@@ -233,6 +233,16 @@ async function handleSetup(argv) {
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken);
+  // Persist the check outcome: task/review/transfer are gated on a workspace
+  // having at least one successful setup run on record (completedAt survives
+  // later failed re-checks).
+  const previousSetupStatus = getConfig(workspaceRoot).setupStatus;
+  setConfig(workspaceRoot, "setupStatus", {
+    checkedAt: nowIso(),
+    ready: finalReport.ready,
+    completedAt: finalReport.ready ? nowIso() : previousSetupStatus?.completedAt ?? null,
+    vendors: finalReport.vendors.map((vendor) => ({ id: vendor.id, available: vendor.available }))
+  });
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
@@ -251,6 +261,17 @@ function ensureCodexAvailable(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/catalyst:envoy-setup`.");
+  }
+}
+
+// The gate opens on the FIRST successful setup run for a workspace and stays
+// open afterwards: later failed re-checks (e.g. a stale auth probe from the
+// stop hook) update the snapshot but do not revoke completedAt — runtime
+// availability is still verified live per run.
+function requireSetupCompleted(workspaceRoot) {
+  const status = getConfig(workspaceRoot).setupStatus;
+  if (!status?.completedAt) {
+    throw new Error("Envoy setup has not passed for this workspace yet. Run /catalyst:envoy-setup first.");
   }
 }
 
@@ -815,6 +836,7 @@ async function handleReviewCommand(argv, config) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+  requireSetupCompleted(workspaceRoot);
   const focusText = positionals.join(" ").trim();
   const target = resolveReviewTarget(cwd, {
     base: options.base,
@@ -865,6 +887,7 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
+  requireSetupCompleted(workspaceRoot);
   const vendor = resolveVendor(options.vendor);
   const model = normalizeVendorModel(vendor, options.model);
   const effort = normalizeVendorEffort(vendor, options.effort);
@@ -928,6 +951,7 @@ async function handleTransfer(argv) {
   });
 
   const cwd = resolveCommandCwd(options);
+  requireSetupCompleted(resolveCommandWorkspace(options));
   const { payload, rendered } = await executeTransfer(cwd, {
     source: options.source
   });

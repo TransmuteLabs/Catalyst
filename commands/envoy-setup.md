@@ -1,5 +1,5 @@
 ---
-description: Check whether the local Codex CLI is ready (plus grok/kimi vendor availability) and optionally toggle the stop-time review gate
+description: Check whether the local Codex CLI is ready (plus grok/kimi vendor availability) and optionally toggle the stop-time review gate; a successful run is recorded per workspace and unlocks task/review/transfer
 argument-hint: '[--enable-review-gate|--disable-review-gate]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---

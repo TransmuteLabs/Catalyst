@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, markSetupComplete, run } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../scripts/lib/broker-lifecycle.mjs";
 import { resolveStateDir } from "../scripts/lib/state.mjs";
 
@@ -138,6 +138,7 @@ test("setup reports not ready when app-server config read fails", () => {
 
 test("review renders a no-findings result from app-server review/start", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -159,6 +160,7 @@ test("review renders a no-findings result from app-server review/start", () => {
 
 test("task runs when the active provider does not require OpenAI login", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "provider-no-auth");
   initGitRepo(repo);
@@ -177,6 +179,7 @@ test("task runs when the active provider does not require OpenAI login", () => {
 
 test("task runs without auth preflight so Codex can refresh an expired session", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "refreshable-auth");
   initGitRepo(repo);
@@ -199,6 +202,7 @@ test("transfer delegates the current Claude session directly to native import", 
   const binDir = makeTempDir();
   const sessionId = "sess-native-transfer";
   fs.mkdirSync(repo, { recursive: true });
+  markSetupComplete(repo);
   const projectDir = path.join(home, ".claude", "projects", "-repo");
   const sourcePath = path.join(projectDir, `${sessionId}.jsonl`);
   fs.mkdirSync(projectDir, { recursive: true });
@@ -251,6 +255,7 @@ test("transfer reports an actionable upgrade error when native import is unsuppo
   const projectDir = path.join(home, ".claude", "projects", "-repo");
   const sourcePath = path.join(projectDir, "session.jsonl");
   fs.mkdirSync(repo, { recursive: true });
+  markSetupComplete(repo);
   fs.mkdirSync(projectDir, { recursive: true });
   installFakeCodex(binDir, "external-import-unsupported");
   initGitRepo(repo);
@@ -281,6 +286,7 @@ test("transfer fails visibly when native import completes without a ledger recor
   const projectDir = path.join(home, ".claude", "projects", "-repo");
   const sourcePath = path.join(projectDir, "session.jsonl");
   fs.mkdirSync(repo, { recursive: true });
+  markSetupComplete(repo);
   fs.mkdirSync(projectDir, { recursive: true });
   installFakeCodex(binDir, "external-import-fails");
   initGitRepo(repo);
@@ -309,6 +315,7 @@ test("transfer rejects sources outside the Claude projects directory", () => {
   const binDir = makeTempDir();
   const sourcePath = path.join(home, "session.jsonl");
   fs.mkdirSync(repo, { recursive: true });
+  markSetupComplete(repo);
   fs.mkdirSync(path.join(home, ".claude", "projects"), { recursive: true });
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -329,6 +336,7 @@ test("transfer rejects sources outside the Claude projects directory", () => {
 
 test("task reports the actual Codex auth error when the run is rejected", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "auth-run-fails");
   initGitRepo(repo);
@@ -347,6 +355,7 @@ test("task reports the actual Codex auth error when the run is rejected", () => 
 
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -368,6 +377,7 @@ test("review accepts the quoted raw argument style for built-in base-branch revi
 
 test("adversarial review renders structured findings over app-server turn/start", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -388,6 +398,7 @@ test("adversarial review renders structured findings over app-server turn/start"
 
 test("adversarial review accepts the same base-branch targeting as review", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -409,6 +420,7 @@ test("adversarial review accepts the same base-branch targeting as review", () =
 
 test("adversarial review asks Codex to inspect larger diffs itself", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -436,6 +448,7 @@ test("adversarial review asks Codex to inspect larger diffs itself", () => {
 
 test("review includes reasoning output when the app server returns it", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-reasoning");
   initGitRepo(repo);
@@ -456,6 +469,7 @@ test("review includes reasoning output when the app server returns it", () => {
 
 test("review logs reasoning summaries and review output to the job log", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-reasoning");
   initGitRepo(repo);
@@ -481,6 +495,7 @@ test("review logs reasoning summaries and review output to the job log", () => {
 
 test("task --resume-last resumes the latest persisted task thread", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -505,6 +520,7 @@ test("task --resume-last resumes the latest persisted task thread", () => {
 
 test("task-resume-candidate returns the latest rescue thread from the current session", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -514,7 +530,7 @@ test("task-resume-candidate returns the latest rescue thread from the current se
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "task-current",
@@ -572,6 +588,7 @@ test("task-resume-candidate returns the latest rescue thread from the current se
 
 test("task --resume-last does not resume a task from another Claude session", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir);
@@ -616,6 +633,7 @@ test("task --resume-last does not resume a task from another Claude session", ()
 
 test("task --resume-last ignores running tasks from other Claude sessions", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -630,7 +648,7 @@ test("task --resume-last ignores running tasks from other Claude sessions", () =
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "task-other-running",
@@ -671,6 +689,7 @@ test("task --resume-last ignores running tasks from other Claude sessions", () =
 
 test("session start hook exports the Claude session id, transcript path, and plugin data dir", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const envFile = path.join(makeTempDir(), "claude-env.sh");
   fs.writeFileSync(envFile, "", "utf8");
   const pluginDataDir = makeTempDir();
@@ -700,6 +719,7 @@ test("session start hook exports the Claude session id, transcript path, and plu
 
 test("write task output focuses on the Codex result without generic follow-up hints", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -718,6 +738,7 @@ test("write task output focuses on the Codex result without generic follow-up hi
 
 test("task --resume acts like --resume-last without leaking the flag into the prompt", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir);
@@ -745,6 +766,7 @@ test("task --resume acts like --resume-last without leaking the flag into the pr
 
 test("task --fresh is treated as routing control and does not leak into the prompt", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir);
@@ -765,6 +787,7 @@ test("task --fresh is treated as routing control and does not leak into the prom
 
 test("task forwards model selection and reasoning effort to app-server turn/start", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir);
@@ -786,6 +809,7 @@ test("task forwards model selection and reasoning effort to app-server turn/star
 
 test("task logs reasoning summaries and assistant messages to the job log", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-reasoning");
   initGitRepo(repo);
@@ -810,6 +834,7 @@ test("task logs reasoning summaries and assistant messages to the job log", () =
 
 test("task logs subagent reasoning and messages with a subagent prefix", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-subagent");
   initGitRepo(repo);
@@ -838,6 +863,7 @@ test("task logs subagent reasoning and messages with a subagent prefix", () => {
 
 test("task waits for the main thread to complete before returning the final result", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-subagent");
   initGitRepo(repo);
@@ -856,6 +882,7 @@ test("task waits for the main thread to complete before returning the final resu
 
 test("task ignores later subagent messages when choosing the final returned output", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-late-subagent-message");
   initGitRepo(repo);
@@ -874,6 +901,7 @@ test("task ignores later subagent messages when choosing the final returned outp
 
 test("task can finish after subagent work even if the parent turn/completed event is missing", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-subagent-no-main-turn-completed");
   initGitRepo(repo);
@@ -892,6 +920,7 @@ test("task can finish after subagent work even if the parent turn/completed even
 
 test("task using the shared broker still completes when Codex spawns subagents", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-subagent");
   initGitRepo(repo);
@@ -922,6 +951,7 @@ test("task using the shared broker still completes when Codex spawns subagents",
 
 test("task --background enqueues a detached worker and exposes per-job status", async () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "slow-task");
   initGitRepo(repo);
@@ -971,6 +1001,7 @@ test("task --background enqueues a detached worker and exposes per-job status", 
 
 test("review rejects focus text because it is native-review only", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -991,6 +1022,7 @@ test("review rejects focus text because it is native-review only", () => {
 
 test("review rejects staged-only scope because it is native-review only", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -1012,6 +1044,7 @@ test("review rejects staged-only scope because it is native-review only", () => 
 
 test("adversarial review rejects staged-only scope to match review target selection", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -1033,6 +1066,7 @@ test("adversarial review rejects staged-only scope to match review target select
 
 test("review accepts --background while still running as a tracked review job", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -1064,6 +1098,7 @@ test("review accepts --background while still running as a tracked review job", 
 
 test("status shows phases, hints, and the latest finished job", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1101,7 +1136,7 @@ test("status shows phases, hints, and the latest finished job", () => {
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "review-live",
@@ -1162,6 +1197,7 @@ test("status shows phases, hints, and the latest finished job", () => {
 
 test("status without a job id only shows jobs from the current Claude session", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1176,7 +1212,7 @@ test("status without a job id only shows jobs from the current Claude session", 
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "review-current",
@@ -1233,6 +1269,7 @@ test("status without a job id only shows jobs from the current Claude session", 
 
 test("status preserves adversarial review kind labels", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1245,7 +1282,7 @@ test("status preserves adversarial review kind labels", () => {
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "review-adv-live",
@@ -1294,6 +1331,7 @@ test("status preserves adversarial review kind labels", () => {
 
 test("status --wait times out cleanly when a job is still active", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1320,7 +1358,7 @@ test("status --wait times out cleanly when a job is still active", () => {
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "task-live",
@@ -1354,6 +1392,7 @@ test("status --wait times out cleanly when a job is still active", () => {
 
 test("result returns the stored output for the latest finished job by default", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1384,7 +1423,7 @@ test("result returns the stored output for the latest finished job by default", 
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "review-finished",
@@ -1417,6 +1456,7 @@ test("result returns the stored output for the latest finished job by default", 
 
 test("result without a job id prefers the latest finished job from the current Claude session", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1466,7 +1506,7 @@ test("result without a job id prefers the latest finished job from the current C
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "review-current",
@@ -1515,6 +1555,7 @@ test("result without a job id prefers the latest finished job from the current C
 
 test("result for a finished write-capable task returns the raw Codex final response", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);
@@ -1541,6 +1582,7 @@ test("result for a finished write-capable task returns the raw Codex final respo
 
 test("cancel stops an active background job and marks it cancelled", async (t) => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1586,7 +1628,7 @@ test("cancel stops an active background job and marks it cancelled", async (t) =
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "task-live",
@@ -1636,6 +1678,7 @@ test("cancel stops an active background job and marks it cancelled", async (t) =
 
 test("cancel without a job id ignores active jobs from other Claude sessions", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1647,7 +1690,7 @@ test("cancel without a job id ignores active jobs from other Claude sessions", (
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "task-other",
@@ -1691,6 +1734,7 @@ test("cancel without a job id ignores active jobs from other Claude sessions", (
 
 test("cancel with a job id can still target an active job from another Claude session", () => {
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
   fs.mkdirSync(jobsDir, { recursive: true });
@@ -1702,7 +1746,7 @@ test("cancel with a job id can still target an active job from another Claude se
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "task-other",
@@ -1739,6 +1783,7 @@ test("cancel with a job id can still target an active job from another Claude se
 
 test("cancel sends turn interrupt to the shared app-server before killing a brokered task", async () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir, "interruptible-slow-task");
@@ -1803,6 +1848,7 @@ test("cancel sends turn interrupt to the shared app-server before killing a brok
 
 test("session end fully cleans up jobs for the ending session", async (t) => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -1849,7 +1895,7 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
     `${JSON.stringify(
       {
         version: 1,
-        config: { stopReviewGate: false },
+        config: { stopReviewGate: false, setupStatus: { checkedAt: "2026-03-18T00:00:00.000Z", ready: true, completedAt: "2026-03-18T00:00:00.000Z", vendors: [] } },
         jobs: [
           {
             id: "review-completed",
@@ -1925,6 +1971,7 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
 
 test("stop hook runs a stop-time review task and blocks on findings when the review gate is enabled", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir);
@@ -1981,6 +2028,7 @@ test("stop hook runs a stop-time review task and blocks on findings when the rev
 
 test("stop hook logs running tasks to stderr without blocking when the review gate is disabled", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -2038,6 +2086,7 @@ test("stop hook logs running tasks to stderr without blocking when the review ga
 
 test("stop hook allows the stop when the review gate is enabled and the stop-time review task is clean", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "adversarial-clean");
   initGitRepo(repo);
@@ -2063,6 +2112,7 @@ test("stop hook allows the stop when the review gate is enabled and the stop-tim
 
 test("stop hook does not block when Codex is unavailable even if the review gate is enabled", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -2090,6 +2140,7 @@ test("stop hook does not block when Codex is unavailable even if the review gate
 
 test("stop hook runs the actual task when auth status looks stale", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir, "refreshable-auth");
   initGitRepo(repo);
@@ -2118,6 +2169,7 @@ test("stop hook runs the actual task when auth status looks stale", () => {
 
 test("commands lazily start and reuse one shared app-server after first use", async () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
 
@@ -2163,6 +2215,7 @@ test("commands lazily start and reuse one shared app-server after first use", as
 
 test("setup reuses an existing shared app-server without starting another one", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
 
@@ -2208,6 +2261,7 @@ test("setup reuses an existing shared app-server without starting another one", 
 
 test("status reports shared session runtime when a lazy broker is active", () => {
   const repo = makeTempDir();
+  markSetupComplete(repo);
   const binDir = makeTempDir();
   installFakeCodex(binDir);
   initGitRepo(repo);

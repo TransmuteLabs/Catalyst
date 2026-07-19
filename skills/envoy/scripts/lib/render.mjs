@@ -343,6 +343,11 @@ export function renderStatusReport(report) {
     "",
     `Session runtime: ${report.sessionRuntime.label}`,
     `Review gate: ${report.config.stopReviewGate ? "enabled" : "disabled"}`,
+    `Setup: ${
+      report.config.setupStatus
+        ? `${report.config.setupStatus.ready ? "ready" : "not ready"} (checked ${report.config.setupStatus.checkedAt ?? "unknown"})`
+        : "not verified — run /catalyst:envoy-setup"
+    }`,
     ""
   ];
 

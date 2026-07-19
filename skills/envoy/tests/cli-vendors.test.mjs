@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { makeTempDir, run, writeExecutable } from "./helpers.mjs";
+import { makeTempDir, markSetupComplete, run, writeExecutable } from "./helpers.mjs";
 import { buildEnv } from "./fake-codex-fixture.mjs";
 import { resolveStateDir } from "../scripts/lib/state.mjs";
 
@@ -87,6 +87,7 @@ function loadJobs(workspace) {
 test("task --vendor grok drives the grok CLI read-only by default and records the session", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const { argsFile } = installFakeGrok(binDir);
 
   const result = run("node", [SCRIPT, "task", "--vendor", "grok", "investigate the flaky test"], {
@@ -117,6 +118,7 @@ test("task --vendor grok drives the grok CLI read-only by default and records th
 test("task --vendor grok --write --effort max maps to --always-approve and xhigh", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const { argsFile } = installFakeGrok(binDir);
 
   const result = run(
@@ -143,6 +145,7 @@ test("task --vendor grok --write --effort max maps to --always-approve and xhigh
 test("grok resume-last resumes the tracked grok session and stays vendor-isolated", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const { argsFile } = installFakeGrok(binDir);
   installFakeKimi(binDir);
   const env = buildEnv(binDir);
@@ -177,6 +180,7 @@ test("grok resume-last resumes the tracked grok session and stays vendor-isolate
 test("task --vendor kimi parses stream-json, records the session, and honors --write", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const { argsFile } = installFakeKimi(binDir);
   const env = buildEnv(binDir);
 
@@ -212,6 +216,7 @@ test("task --vendor kimi parses stream-json, records the session, and honors --w
 test("kimi rejects --effort fast without launching the CLI", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   const { argsFile } = installFakeKimi(binDir);
 
   const result = run("node", [SCRIPT, "task", "--vendor", "kimi", "--effort", "high", "do it"], {
@@ -227,6 +232,7 @@ test("kimi rejects --effort fast without launching the CLI", () => {
 test("setup reports per-vendor availability and suggests installing missing CLI vendors", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   installFakeGrok(binDir);
   fs.symlinkSync(process.execPath, path.join(binDir, "node"));
 
@@ -278,6 +284,7 @@ test("setup reports per-vendor availability and suggests installing missing CLI 
 test("task fails fast when the requested CLI vendor is not installed", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   fs.symlinkSync(process.execPath, path.join(binDir, "node"));
 
   const result = run("node", [SCRIPT, "task", "--vendor", "grok", "do something"], {
@@ -295,6 +302,7 @@ test("task fails fast when the requested CLI vendor is not installed", () => {
 test("result renders vendor-specific resume hints for CLI vendor jobs", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
+  markSetupComplete(workspace);
   installFakeGrok(binDir);
   const env = buildEnv(binDir);
 
@@ -311,4 +319,50 @@ test("result renders vendor-specific resume hints for CLI vendor jobs", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Session ID: grok-sess-1/);
   assert.match(result.stdout, /Resume in Grok: grok --resume grok-sess-1/);
+});
+
+test("task and review are gated until setup has passed once for the workspace", () => {
+  const binDir = makeTempDir();
+  const freshWorkspace = makeTempDir();
+  installFakeGrok(binDir);
+  const env = buildEnv(binDir);
+
+  const gatedTask = run("node", [SCRIPT, "task", "--vendor", "grok", "do something"], {
+    cwd: freshWorkspace,
+    env
+  });
+  assert.notEqual(gatedTask.status, 0);
+  assert.match(gatedTask.stderr, /Envoy setup has not passed for this workspace yet\. Run \/catalyst:envoy-setup first\./);
+
+  const gatedReview = run("node", [SCRIPT, "review"], {
+    cwd: freshWorkspace,
+    env
+  });
+  assert.notEqual(gatedReview.status, 0);
+  assert.match(gatedReview.stderr, /Envoy setup has not passed/);
+
+  // After a recorded successful setup the gate opens...
+  markSetupComplete(freshWorkspace);
+  const allowed = run("node", [SCRIPT, "task", "--vendor", "grok", "do something"], {
+    cwd: freshWorkspace,
+    env
+  });
+  assert.equal(allowed.status, 0, allowed.stderr);
+
+  // ...and a later failed re-check does not revoke it: setup against a PATH
+  // without codex records ready:false but keeps completedAt.
+  const nodeOnlyBin = makeTempDir();
+  fs.symlinkSync(process.execPath, path.join(nodeOnlyBin, "node"));
+  const failedRecheck = run("node", [SCRIPT, "setup", "--json"], {
+    cwd: freshWorkspace,
+    env: { ...process.env, PATH: nodeOnlyBin }
+  });
+  assert.equal(failedRecheck.status, 0, failedRecheck.stderr);
+  assert.equal(JSON.parse(failedRecheck.stdout).ready, false);
+
+  const stillAllowed = run("node", [SCRIPT, "task", "--vendor", "grok", "still works"], {
+    cwd: freshWorkspace,
+    env
+  });
+  assert.equal(stillAllowed.status, 0, stillAllowed.stderr);
 });

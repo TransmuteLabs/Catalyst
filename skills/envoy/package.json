@@ -1,6 +1,6 @@
 {
   "name": "catalyst-envoy",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "Envoy companion runtime for the Catalyst family - drive external harnesses (codex today; grok/kimi next) from Claude Code.",

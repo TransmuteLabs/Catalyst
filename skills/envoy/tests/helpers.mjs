@@ -4,6 +4,20 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
+import { setConfig } from "../scripts/lib/state.mjs";
+
+// task/review/transfer are gated on a successful /catalyst:envoy-setup run;
+// tests that exercise those commands seed the recorded outcome directly.
+export function markSetupComplete(cwd) {
+  const now = new Date().toISOString();
+  setConfig(cwd, "setupStatus", {
+    checkedAt: now,
+    ready: true,
+    completedAt: now,
+    vendors: []
+  });
+}
+
 export function makeTempDir(prefix = "codex-plugin-test-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }

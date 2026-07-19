@@ -40,7 +40,7 @@ Reload plugins:
 /reload-plugins
 ```
 
-Then run:
+Then run (required: a successful setup is recorded per workspace and unlocks `task`/`review`/`transfer`):
 
 ```bash
 /catalyst:envoy-setup
