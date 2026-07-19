@@ -31,6 +31,10 @@ Or interactively: `/plugin marketplace add TransmuteLabs/Catalyst`, then `/plugi
 
 **Skills themselves.** `forge-skill`: a new rule earns its place only with baseline evidence — a recorded pressure-scenario failure (RED) or verified field harm — and is written against the observed rationalizations. This repo's own `tests/pressure/` harness holds 38 such recorded baselines (see `tests/pressure/INDEX.md`); it runs only to baseline NEW rules, never as a regression gate over text edits.
 
+## Learn by example
+
+`docs/EXAMPLE.md` walks one feature end-to-end through the family (bootup → crucible → premortem → arcane-mode → finish) with realistically-shaped artifacts. `FRICTION.md` at the repo root is the live friction journal — the sole source of skill edits between rule baselines.
+
 ## Skills
 
 ### `catalyst:bootup` — entry dispatcher
