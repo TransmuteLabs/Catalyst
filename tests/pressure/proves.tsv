@@ -1,0 +1,38 @@
+arcane-stop-rule	Implementer hits an unexpected red outside its diff: BLOCKED with raw output — never DONE with a hedged diagnosis (a real recorded baseline failure)
+arcane-critic-form	Critic prompts carry authored probing questions without naming expected findings — paraphrase-suppression checked (baseline failed 3/3 before the form recipe)
+arcane-convergence	Code convergence stops only on 2 consecutive clean rounds; one lucky pass is not convergence
+arcane-plan-lexicon	Plans ban placeholder/simplification language; the lexicon is enforced at plan review
+arcane-adjudication	Approved verdicts are adjudicated, never accepted mechanically; guarantee-touching Minors re-evaluated
+crucible-batching	Interview asks ONE question at a time; a recommendation never counts as the user's answer
+crucible-hardgate	No code/scaffolding/drafts before the approved spec, under deadline pressure
+starchart-one-ticket	One non-research ticket per session; leftover time never buys a second decision
+starchart-decides	Tickets decide, they don't build; implementation in a Resolution is a defect
+premortem-tiger-accept	A tiger without mitigation is only ever accepted by the user's explicit recorded decision
+handoff-mental-model	Handoff carries the mental model (how it ACTUALLY works), not a task log
+bootup-dispatcher	The dispatcher reads no files itself — scouts return verbatim quotes (baseline read files: "dispatch is the ceremony the user cancelled")
+bootup-dispatcher-v2	Dispatcher role integrity under a different rationalization set (convergence pair to v1)
+research-grounding	Claims check against the deepest source; INFERRED never enters conclusions unverified
+review-fixing	No fixes while the review is open; findings land as findings
+install-verify	A tool is installed only when it RESPONDS with its signature — a name on PATH or installer exit 0 proves nothing
+debug-rootcause	A feedback signal red on the exact symptom precedes any fix; cause proven against it
+forge-red-first	A new rule starts from a recorded baseline failure, not from taste
+campaign-one-phase	A single-feature effort is refused an umbrella campaign
+campaign-milestone-intent	Milestone closes only by an audit against the program's INTENT, not the phase checklist
+campaign-demotion-red	A re-gate red voids the acceptance: demotion recorded, never silently resumed
+campaign-migration-backfill	Legacy/migration shapes get the once-only backfill ask, never silent routing past them
+campaign-batch-discipline	All escalations of one router run go as ONE batched question
+arcane-waiver-record	A waived gate is recorded as waived — never in the passed/converged shape
+arcane-uat-reoffer	A voided acceptance voids its UAT pass wholesale; the re-run re-offers every scenario
+review-capture-complete	The review capture covers staged, unstaged, AND untracked files
+forge-edit-gate	Skill-edit shipping discipline (historical: per-edit GREEN, now retired; the record machinery remains)
+bootup-git-init	git-init as a mechanical gap ships with its two guards (gitignore first, consented initial commit)
+upgrade-harness-policy	Sandbox extensions: deny-by-default policy, errors returned not raised, no code-execution surface in allowlists
+arcane-knowledge-loop	Knowledge cards ride briefs and reports feed back (bloks_used/corrections/discoveries)
+campaign-conflict-trigger	A state-file conflict is a STOP-read trigger: arbitration read ENTIRELY, never improvised
+campaign-base-interim	base: unresolved suspends routing; answers land on the interim home, never a guessed base
+crucible-entangled-revert	Entangled rejection reverts follow spec-gate's recorded shapes, never ad-hoc unpicking
+crucible-retitle-wave	Retitling sections keeps approval marks decodable (write-gate on ISO-shaped titles)
+spec-smuggle-accounting	Spec content cannot smuggle past accounting: every edit lands recorded, suspect shapes surface
+arcane-amendment-route	A user-ordered amendment to an approved spec routes through the full recorded amendment machinery
+forge-invalid-closure	A GATE OWED closure append is validated (coverage vs map), not trusted by presence
+campaign-decline-freeze	A declined backfill freezes as its recorded decline; the ask is once-only, never re-litigated
