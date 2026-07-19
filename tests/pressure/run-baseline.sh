@@ -354,7 +354,7 @@ for name in "${names[@]}"; do
     # helper/tool children alive, still writing into the outputs after the
     # run is scored.
     set -m
-    claude -p --model "$model" < "$HERE/scenarios/$name.md" \
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 claude -p --model "$model" < "$HERE/scenarios/$name.md" \
       > "$OUT/$name.txt" 2> "$OUT/$name.err" & cpid=$!
     set +m
     # Watchdog: TERM at the deadline, KILL after a grace period — a hung
@@ -412,8 +412,16 @@ for sn in "${names[@]}"; do
     continue
   fi
   sec=$(sed -n 's/^exit: //p' "$st" | head -1)
+  # No `exit:` line at all is the same torn class: the atomic writer always
+  # emits it — its absence marks a foreign/torn artifact, and an out-of-
+  # grammar `unknown` word previously leaked into the MANIFEST here.
+  if [ -z "$sec" ]; then
+    echo "result $sn exit torn" >> "$OUT/MANIFEST.txt"
+    broken=1
+    continue
+  fi
   flag=""; if [ -f "$OUT/$sn.timeout" ]; then flag=" timeout"; fi
-  echo "result $sn exit ${sec:-unknown}$flag" >> "$OUT/MANIFEST.txt"
+  echo "result $sn exit ${sec}${flag}" >> "$OUT/MANIFEST.txt"
   # A timed-out scenario is broken even when the terminated process exited 0
   # (TERM handled as graceful cancellation) — the deadline fired.
   if [ "${sec:-broken}" != "0" ] || [ -n "$flag" ]; then broken=1; fi

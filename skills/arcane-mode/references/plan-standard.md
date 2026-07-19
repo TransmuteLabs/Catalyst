@@ -35,7 +35,7 @@ Opting out of tracer-first is allowed only when the architecture is already prov
 
 ## Task anatomy
 
-Grammar-shaped lines are POSITIONAL: `**Type:**`/`**Files:**` belong to the task header, before the checklist steps. Any ILLUSTRATION of these shapes inside step bodies (tutorials, examples) MUST be fenced — an unfenced example is parsed as grammar (task-brief refuses a Files line after steps began, and harvesting an example into the write scope is the defect that rule exists to stop).
+Grammar-shaped lines are POSITIONAL: `**Type:**`/`**Files:**` belong to the task header, before the checklist steps — and before ANY list-shaped content: a checklist bullet, a `Steps:`/`**Steps:**` header, or a numbered item (`1.`/`1)`) all CLOSE the task header, so numbered constraint lists and other list-shaped prose go AFTER the Files field or inside a fence (the extractor refuses a Files line below list content rather than guess which list was steps). Any ILLUSTRATION of these shapes inside step bodies (tutorials, examples) MUST be fenced — an unfenced example is parsed as grammar (task-brief refuses a Files line after steps began, and harvesting an example into the write scope is the defect that rule exists to stop).
 
 ```markdown
 ### Task N: <action-oriented name>

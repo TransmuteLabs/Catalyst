@@ -192,7 +192,12 @@ $(cat "$HERE/scenarios/$name.md")"
     # names the LAST — kill -- "-$!" on the bare pipeline would target a
     # nonexistent group.
     set -m
-    ( printf '%s' "$prompt" | claude -p --model "$model" ) > "$OUT/$name.txt" 2> "$OUT/$name.err" & cpid=$!
+    # BG-wait ceiling OFF: the CLI's default 600s cap on waiting for a
+    # session's own background tasks killed sessions that delegated the
+    # mapped-file reads to reader agents — the captured final message was a
+    # "waiting on the reader" stub, a broken run (3 of 4 observed). The
+    # wrapper's TIMEOUT_S watchdog below is the real deadline.
+    ( printf '%s' "$prompt" | CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 claude -p --model "$model" ) > "$OUT/$name.txt" 2> "$OUT/$name.err" & cpid=$!
     set +m
     # Watchdog: TERM at the deadline, KILL after a grace period — process
     # group, not single pid.
@@ -253,8 +258,16 @@ for sn in "${names[@]}"; do
     continue
   fi
   sec=$(sed -n 's/^exit: //p' "$st" | head -1)
+  # No `exit:` line at all is the same torn class: the atomic writer always
+  # emits it — its absence marks a foreign/torn artifact, and an out-of-
+  # grammar `unknown` word previously leaked into the MANIFEST here.
+  if [ -z "$sec" ]; then
+    echo "result $sn exit torn" >> "$OUT/MANIFEST.txt"
+    broken=1
+    continue
+  fi
   flag=""; if [ -f "$OUT/$sn.timeout" ]; then flag=" timeout"; fi
-  echo "result $sn exit ${sec:-unknown}$flag" >> "$OUT/MANIFEST.txt"
+  echo "result $sn exit ${sec}${flag}" >> "$OUT/MANIFEST.txt"
   # A timed-out scenario is broken EVEN when the terminated process exited 0
   # (TERM handled as graceful cancellation) — the deadline fired, the answer
   # is not a completed run.

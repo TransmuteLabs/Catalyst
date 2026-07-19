@@ -6,7 +6,7 @@ Universal (every dispatch, any role):
 
 1. **Model named explicitly.** An omitted model silently inherits the session's expensive top model and breaks tiering.
 2. **File handoffs** — brief, report, review package travel as paths. Everything pasted into a prompt stays resident in the orchestrator's context until the session ends.
-3. **Report contract** — full report to a file; the reply is MINIMAL: status + concerns as the common floor, plus exactly the lines the AGENT CONTRACT's reply form names (implementer: commits + the exact test-baseline line; critic: two one-line verdicts, findings, adjudication requests, baseline; auditor: severity counts + one-line round verdict; scout: the `Not determined:` tail) — this element sets the ceiling (nothing beyond the role's form), the agent contract sets the exact shape; the two texts describe one reply, the role form governs its fields.
+3. **Report contract** — full report to a file; the reply is EXACTLY the agent contract's reply form, nothing beyond it (implementer: status, commits, the exact test-baseline line, concerns; critic: two one-line verdicts, findings, adjudication requests, baseline; auditor: severity counts + one-line round verdict; scout: the coordinate structure + the `Not determined:` tail; researcher: summary + report path) — there is no universal floor: the role's contract defines every field of its reply, this element only bars anything beyond it.
 
 Writer roles only (implementer, fix-wave executor — anyone whose task EDITS the tree):
 
@@ -36,7 +36,7 @@ The implementer WILL find work outside the plan. Rules:
 
 - **Rule 1 — auto-fix bugs:** code doesn't work as intended (logic errors, type errors, nulls, broken validation) → fix inline, add/update a test, continue. No permission needed.
 - **Rule 2 — auto-add critical functionality:** something essential for correctness/security/basic operation is missing (input validation, error handling) → add it. These aren't "features", they are correctness requirements.
-- **Rule 3 — auto-unblock:** something prevents completing the current task (broken import, wrong type, missing env var) → fix it. Exception: a package that fails to install — do not pick a similarly-named alternative, do not retry other names; stop and ask a human.
+- **Rule 3 — auto-unblock:** something prevents completing the current task (broken import, wrong type, missing env var) → fix it. Exception: a package that fails to install — do not pick a similarly-named alternative, do not retry other names; report BLOCKED with the raw install output (an implementer has no user channel — the orchestrator carries the question to the user).
 - **Rule 4 — architectural changes:** new table/service, library switch, breaking API → STOP, return: what was found, the proposed change, why, impact, alternatives. A human decides.
 
 Priority: Rule 4 → stop; Rules 1-3 → fix; in doubt → Rule 4.

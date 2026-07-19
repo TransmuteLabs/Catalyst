@@ -14,8 +14,10 @@
 # plan defect, fix the Files block; 6 structural Files conflict: multiple
 # **Files:** fields, the inline form mixed with bullet lines, a **Files:**
 # line after the task's checklist steps began (step content, never scope),
-# or a Files block on an approval task. CRLF plans are normalized (trailing
-# CR is line-ending encoding, not content).
+# or a Files block on an approval task; 7 OUTFILE already exists (exclusive
+# publish — concurrent writer or stale brief; remove it deliberately, then
+# re-run). CRLF plans are normalized (trailing CR is line-ending encoding,
+# not content).
 set -euo pipefail
 
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then
@@ -216,6 +218,7 @@ else
     # too — a plan violating the checkbox norm previously got ZERO positional
     # protection, and the unfenced-illustration harvest returned whole.
     /^Steps:[ \t]*$/ { steps = 1 }
+    /^\*\*Steps:\*\*[ \t]*$/ { steps = 1 }
     /^[0-9]+[.)][ \t]/ { steps = 1 }
     mixwatch == 1 {
       if ($0 ~ /^-[ \t]+/) { printf "ERR:mixed:\n"; err = 1; exit 1 }
@@ -269,7 +272,7 @@ else
       echo "task ${n}: inline **Files:** field followed by bullet lines — the mixed form silently drops the bullets from the write scope; use ONE form (the canonical bulleted block, or a purely inline list)" >&2
       exit 6 ;;
     ERR:late:*)
-      echo "task ${n}: a **Files:** line after the task's checklist steps began — that is step CONTENT (an unfenced illustration) or a misplaced field, never the write scope; move the Files field into the task header, or fence the illustration" >&2
+      echo "task ${n}: a **Files:** line after the task's steps or a list block began (checklist, Steps: header, or a numbered item all close the task header) — that is step/list CONTENT or a misplaced field, never the write scope; the Files field belongs in the task HEADER: move it up, or fence an illustration" >&2
       exit 6 ;;
     ERR:ws:*)
       echo "task ${n}: unquoted path contains whitespace: '${paths_raw#ERR:ws:}' — backtick-quote the path in the plan's Files block (silent truncation would bind the write scope to a wrong path)" >&2
@@ -305,7 +308,9 @@ else
         if printf '%s\n' "$tracked" | grep -qxF -- "$p"; then continue; fi
         lc=$(printf '%s' "$p" | LC_ALL=C tr '[:upper:]' '[:lower:]')
         # ENVIRON, not -v: awk -v processes backslash escapes (the fence_grep NB)
-        hit=$(printf '%s\n' "$pairs" | LC_ALL=C K="$lc" awk -F'\t' '$1 == ENVIRON["K"] { print $2; exit }')
+        # String-force both sides ("" concat): POSIX numeric-string coercion made
+        # tracked `01` a false alias hit for derived `1` (compared numerically).
+        hit=$(printf '%s\n' "$pairs" | LC_ALL=C K="$lc" awk -F'\t' '($1 "") == (ENVIRON["K"] "") { print $2; exit }')
         if [ -n "$hit" ]; then
           echo "task ${n}: path '$p' is a case alias of tracked '$hit' — repository paths bind by exact tree spelling (an alias resolves on this filesystem but is a different identity in git and on case-sensitive systems); fix the plan's Files entry" >&2
           exit 5
@@ -332,15 +337,30 @@ fi
 # the implementer's only structural check is the paths: header, so thousands
 # of dropped requirements would pass unnoticed. The reader requires the
 # marker (implementer contract).
+# Command substitutions run BEFORE the redirect group: inside `{...} > tmp &&`
+# errexit is suppressed for the whole group (POSIX), so a failing extractor
+# there emitted an EMPTY constraints section yet still printed the terminal
+# marker — a semantically truncated brief carrying proof of completeness.
+constraints=$(extract_constraints)
 tmp="$out.tmp.$$"
 {
   printf 'paths: %s\n\n' "$paths_line"
-  constraints=$(extract_constraints)
   if [ -n "$constraints" ]; then
     printf '%s\n\n' "$constraints"
   fi
   printf '%s\n' "$task_text"
   printf '\n<!-- BRIEF COMPLETE -->\n'
-} > "$tmp" && mv "$tmp" "$out"
+} > "$tmp"
+# EXCLUSIVE publish: ln(1) fails on an existing target where mv silently
+# replaces it — two sessions writing the same OUTFILE previously ended
+# last-writer-wins with both reporting success, and the survivor carried a
+# valid COMPLETE marker for the WRONG task. Regeneration after a plan fix is
+# a deliberate act: remove the stale brief first.
+if ! ln "$tmp" "$out" 2>/dev/null; then
+  rm -f "$tmp"
+  echo "task ${n}: ${out} already exists — a concurrent writer or a stale brief; verify no sibling session owns it, remove it, and re-run" >&2
+  exit 7
+fi
+rm -f "$tmp"
 
 echo "wrote ${out}: $(wc -l < "$out" | tr -d ' ') lines"
