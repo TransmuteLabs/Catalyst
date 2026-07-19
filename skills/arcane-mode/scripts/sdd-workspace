@@ -29,9 +29,22 @@ mkdir -p "$dir"
 # Self-heal must guarantee an EFFECTIVE ignore, not just a file: an existing
 # empty .gitignore (or one holding only negations) would leak briefs/ledger
 # into git status. Preserve user lines (e.g. `!progress.md`); ensure `*`.
+# Unique-temp + atomic rename in BOTH branches: a direct create can be torn
+# (kill/ENOSPC leaves an empty .gitignore — valid to git, ignores nothing),
+# and a SHARED temp name races two concurrent heals (the second mv fails
+# under set -e, or the second heal re-reads the first's output and prepends
+# a duplicate `*`). Re-check right before replacing — another healer may
+# have already landed the effective ignore.
 if [ ! -f "$dir/.gitignore" ]; then
-  printf '*\n' > "$dir/.gitignore"
+  tmp="$dir/.gitignore.tmp.$$"
+  printf '*\n' > "$tmp" && mv "$tmp" "$dir/.gitignore"
 elif ! grep -qx '\*' "$dir/.gitignore"; then
-  { printf '*\n'; cat "$dir/.gitignore"; } > "$dir/.gitignore.tmp" && mv "$dir/.gitignore.tmp" "$dir/.gitignore"
+  tmp="$dir/.gitignore.tmp.$$"
+  { printf '*\n'; cat "$dir/.gitignore"; } > "$tmp"
+  if grep -qx '\*' "$dir/.gitignore"; then
+    rm -f "$tmp"
+  else
+    mv "$tmp" "$dir/.gitignore"
+  fi
 fi
 cd "$dir" && pwd

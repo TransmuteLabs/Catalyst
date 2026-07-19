@@ -2,7 +2,7 @@
 
 This file is the NORMATIVE home for premortem's post-approval machinery on a spec-gate lineage: the ground-edit rule (marker rewrite + entry in one commit), per-answer recording, the revert arms (stacked, entangled), the spec-gate yaml recompute, and the amendment-class rule for rejections landing mid-execution. Entry and marker SHAPES are normative in crucible's `references/marker-machine.md`; campaign's cells own the cross-machine transport and arbitration. `SKILL.md` holds the gate itself (method, verdict, BLOCK/WARN/PASS, the bridge) and points here.
 
-**Trigger — read this file ENTIRELY, never a fragment:** any edit landing on an approved spec's ground after its approval, any user answer to a pending entry, any rejection's revert, and any rejection or recompute landing while the phase is already executing. A partial read loses recorded user decisions.
+**Trigger — read this file ENTIRELY, never a fragment:** any edit landing on an approved spec's ground after its approval, any user answer to a pending entry, any rejection's revert, any acceptance WITHDRAWAL order (the reversal machinery below), and any rejection or recompute landing while the phase is already executing. A partial read loses recorded user decisions.
 
 ## The ground-edit rule and the answers
 

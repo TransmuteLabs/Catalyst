@@ -19,6 +19,9 @@ else echo "[green] no sha256 tool (shasum/sha256sum) — MANIFEST binding imposs
 OUT="$HERE/out/green-$(date -u +%Y%m%d-%H%M%S)Z"
 # Identity must be unique (two same-second runs previously shared a dir via
 # mkdir -p and mixed/overwrote outputs) — on collision, suffix the pid.
+# A fresh clone has NO out/ (fully gitignored): the exclusive mkdir would
+# fail with raw ENOENT and the pid-suffix retry is meaningless there.
+mkdir -p "$HERE/out"
 if ! mkdir "$OUT" 2>/dev/null; then
   OUT="$OUT-$$"
   mkdir "$OUT"
@@ -115,9 +118,14 @@ on_signal() {
   jl=$(jobs -pr 2>/dev/null || true)
   if [ -n "$jl" ]; then
     kill -TERM $jl 2>/dev/null || true
-    sleep 2
+    # 4s, not 2: each wrapper's trap TERMs its session group, waits 1s, then
+    # KILLs it (the escalation is IN the wrapper — killing the wrapper early
+    # would strip the KILL step and a TERM-ignoring group member would
+    # outlive everything, run-baseline's restore included).
+    sleep 4
     kill -KILL $jl 2>/dev/null || true
   fi
+  rm -rf "$WORK" 2>/dev/null || true
   exit "$2"
 }
 trap 'on_signal INT 130' INT
@@ -202,10 +210,12 @@ $(cat "$HERE/scenarios/$name.md")"
     # the scenario as broken, never as silently missing. (Tiny residual: a
     # signal landing before this trap is installed still orphans — the
     # aggregation-by-name check catches the missing status as broken.)
-    trap 'kill -TERM -- "-$cpid" 2>/dev/null; kill "$wpid" 2>/dev/null
+    trap 'kill -TERM -- "-$cpid" 2>/dev/null; sleep 1
+          kill -KILL -- "-$cpid" 2>/dev/null; kill "$wpid" 2>/dev/null
           { echo "exit: 143"; echo "signal: terminated"
             echo "utc_end: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } > "$OUT/$name.status"; exit 143' TERM INT
+          } > "$OUT/$name.status.tmp.$$" && mv "$OUT/$name.status.tmp.$$" "$OUT/$name.status"
+          exit 143' TERM INT
     wait "$cpid" || ec=$?
     trap - TERM INT
     kill "$wpid" 2>/dev/null || true
@@ -215,7 +225,7 @@ $(cat "$HERE/scenarios/$name.md")"
     { echo "exit: $ec"
       if [ -f "$OUT/$name.timeout" ]; then cat "$OUT/$name.timeout"; fi
       echo "utc_end: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    } > "$OUT/$name.status"
+    } > "$OUT/$name.status.tmp.$$" && mv "$OUT/$name.status.tmp.$$" "$OUT/$name.status"
     echo "[green] $name done exit=$ec" ) &
 done
 wait
@@ -231,6 +241,14 @@ for sn in "${names[@]}"; do
   st="$OUT/$sn.status"
   if [ ! -f "$st" ]; then
     echo "result $sn exit missing" >> "$OUT/MANIFEST.txt"
+    broken=1
+    continue
+  fi
+  # A status without its utc_end tail is TORN (killed/ENOSPC mid-write —
+  # writes are atomic now, but legacy/foreign dirs may carry torn files):
+  # grammar-complete or broken, never "exit: 0 is enough".
+  if ! grep -q '^utc_end: ' "$st"; then
+    echo "result $sn exit torn" >> "$OUT/MANIFEST.txt"
     broken=1
     continue
   fi

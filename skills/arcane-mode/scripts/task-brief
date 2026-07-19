@@ -212,6 +212,11 @@ else
     # right after an inline field is the canonical anatomy, not the mixed
     # form), and marks the steps as begun for the positional gate below.
     /^-[ \t]+\[[ xX]?\]/ { steps = 1; if (mixwatch == 1) mixwatch = 2; inblock = 0 }
+    # A `Steps:` header or numbered steps (1. / 1)) mark the steps as begun
+    # too — a plan violating the checkbox norm previously got ZERO positional
+    # protection, and the unfenced-illustration harvest returned whole.
+    /^Steps:[ \t]*$/ { steps = 1 }
+    /^[0-9]+[.)][ \t]/ { steps = 1 }
     mixwatch == 1 {
       if ($0 ~ /^-[ \t]+/) { printf "ERR:mixed:\n"; err = 1; exit 1 }
       if ($0 !~ /^[ \t]*$/) mixwatch = 2
@@ -282,17 +287,25 @@ else
   # tracked path is refused. (Unicode-normalization aliases are covered by
   # the doctrine's tree-spelling rule — not shell-checkable portably; paths
   # that are simply untracked-yet (files a later task creates) pass.)
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    tracked=$(git ls-files 2>/dev/null || true)
+  # Anchored to the PLAN'S repository, never the caller's cwd: `git ls-files`
+  # from a subdirectory lists only paths UNDER the cwd (silently disabling
+  # the gate) and cwd-relative (falsely refusing `App.py` against a tracked
+  # `src/app.py` when run from src/); and a plan passed by absolute path
+  # from another repo must be checked against ITS OWN tree.
+  plandir=$(cd "$(dirname "$plan")" && pwd)
+  if top=$(git -C "$plandir" rev-parse --show-toplevel 2>/dev/null); then
+    tracked=$(git -C "$top" ls-files 2>/dev/null || true)
     if [ -n "$tracked" ]; then
+      # Casefold the tracked set ONCE (a per-tracked-path subprocess loop
+      # measured 650+ s on 300 paths x 5k tracked — two forks per tracked
+      # file); C locale pins ASCII folding deterministically.
+      pairs=$(printf '%s\n' "$tracked" | LC_ALL=C awk '{ print tolower($0) "\t" $0 }')
       while IFS= read -r p; do
         [ -n "$p" ] || continue
         if printf '%s\n' "$tracked" | grep -qxF -- "$p"; then continue; fi
-        lc=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
-        hit=$(printf '%s\n' "$tracked" | while IFS= read -r t; do
-                tl=$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')
-                if [ "$tl" = "$lc" ]; then printf '%s\n' "$t"; break; fi
-              done)
+        lc=$(printf '%s' "$p" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+        # ENVIRON, not -v: awk -v processes backslash escapes (the fence_grep NB)
+        hit=$(printf '%s\n' "$pairs" | LC_ALL=C K="$lc" awk -F'\t' '$1 == ENVIRON["K"] { print $2; exit }')
         if [ -n "$hit" ]; then
           echo "task ${n}: path '$p' is a case alias of tracked '$hit' — repository paths bind by exact tree spelling (an alias resolves on this filesystem but is a different identity in git and on case-sensitive systems); fix the plan's Files entry" >&2
           exit 5
@@ -313,6 +326,13 @@ if [ -z "$paths_line" ]; then
   exit 5
 fi
 
+# Temp-then-atomic-rename with a TERMINAL MARKER (the review-package shield):
+# a direct `> $out` first TRUNCATES a prior complete brief, and a kill/ENOSPC
+# mid-write leaves a valid-looking header + a silent prefix of the task —
+# the implementer's only structural check is the paths: header, so thousands
+# of dropped requirements would pass unnoticed. The reader requires the
+# marker (implementer contract).
+tmp="$out.tmp.$$"
 {
   printf 'paths: %s\n\n' "$paths_line"
   constraints=$(extract_constraints)
@@ -320,6 +340,7 @@ fi
     printf '%s\n\n' "$constraints"
   fi
   printf '%s\n' "$task_text"
-} > "$out"
+  printf '\n<!-- BRIEF COMPLETE -->\n'
+} > "$tmp" && mv "$tmp" "$out"
 
 echo "wrote ${out}: $(wc -l < "$out" | tr -d ' ') lines"
