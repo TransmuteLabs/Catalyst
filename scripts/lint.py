@@ -58,6 +58,10 @@ skill_names = sorted(
     if os.path.isfile(os.path.join(skills_dir, d, 'SKILL.md')))
 agent_names = sorted(
     f[:-3] for f in os.listdir(agents_dir) if f.endswith('.md'))
+commands_dir = os.path.join(ROOT, 'commands')
+command_names = sorted(
+    f[:-3] for f in os.listdir(commands_dir)
+    if f.endswith('.md')) if os.path.isdir(commands_dir) else []
 
 # ---- 1 + 2: frontmatter and budgets ----
 for name in skill_names:
@@ -118,10 +122,11 @@ for path in md_files:
         candidates.append(os.path.join(ROOT, 'scripts', m))
         if not any(os.path.isfile(c) for c in candidates):
             err(f"{rel}: dangling pointer scripts/{m}")
-    # catalyst:<name> mentions
+    # catalyst:<name> mentions (skills, agents, or plugin slash-commands)
     for m in set(re.findall(r'catalyst:([a-z][a-z0-9-]*)', text)):
-        if m not in skill_names and m not in agent_names and m != 'catalyst':
-            err(f"{rel}: unknown catalyst:{m} (not a skill or agent)")
+        if (m not in skill_names and m not in agent_names
+                and m not in command_names and m != 'catalyst'):
+            err(f"{rel}: unknown catalyst:{m} (not a skill, agent, or command)")
 
 # ---- 4: map.tsv ----
 map_path = os.path.join(ROOT, 'tests', 'pressure', 'map.tsv')

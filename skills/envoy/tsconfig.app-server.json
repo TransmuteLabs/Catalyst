@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "scripts/lib/app-server.mjs",
+    "scripts/lib/codex.mjs",
+    "scripts/lib/fs.mjs",
+    "scripts/lib/process.mjs",
+    "scripts/lib/app-server-protocol.d.ts",
+    ".generated/app-server-types/**/*.ts"
+  ]
+}
