@@ -13,7 +13,7 @@ Arcane-mode executes one plan; a campaign is the umbrella above many of them: a 
 
 ## State (two files)
 
-`<repo>/.catalyst/campaign/<name>/` — **committed to the repo**, the program's memory across weeks, clones, and machines. Sketch (the FULL annotated schema — stamp grammar, `head:` pin recovery, demotion shapes, Parked protocol — is `references/mechanics.md` §1, and it governs):
+`<repo>/.catalyst/campaign/<name>/` — **committed to the repo**, the program's memory across weeks, clones, and machines. Sketch (the FULL annotated schema — stamp grammar, `head:` pin recovery, demotion shapes, Parked protocol — is `references/schema.md`, and it governs):
 
 ```markdown
 # PROGRAM.md
@@ -53,32 +53,32 @@ base: <branch>     — the campaign's BASE branch; every state commit, ON-base c
 
 **STOP-read triggers — read the named file ENTIRELY before acting:**
 - Any merge conflict in state files, any `unresolved (…)`/legacy/suspect shape, a hand-demotion, a bare `closed`/`done` → `references/arbitration.md`.
-- Any state write/commit/pull/push mechanics question, stamp decode, demotion, re-gate red, parallel sanction, reconciliation detail, parking/un-parking, the verified/terminal route cells, milestone audit, creation details → `references/mechanics.md`.
+- Stamp decode, demotion, parking/un-parking → `references/schema.md`. Any state write/commit, the write guard, pull/push/transport failures, gitignore, ephemeral → `references/state-writes.md`. Worktrees/flips, parallel sanction, the batched question → `references/phases.md`. Step-0/scans, reconciliation, full route cells → `references/router.md`. Creation details, milestone audit → `references/creation-and-audit.md`. (`references/mechanics.md` is the router for pre-split pointers.)
 
 ## Router — every campaign session starts here
 
-**Step 0 — pull first** when a remote exists: the branch pulled, read, and committed to is PROGRAM.md's `base:` line (failure shapes: mechanics §8). Then: an `executing` phase ANYWHERE takes precedence — resume it first; two+ `executing` rows are consistent only with a parallel-sanction D-line (mechanics §5, §8). Otherwise take the first milestone whose status is not `closed` and its first non-`done` phase; **reconcile both ways before dispatching** — forward (evidence already on disk → flip with stamp, don't redo) and backward (every claimed status still backed by its referent; gaps → mechanics §9). Then route:
+**Step 0 — pull first** when a remote exists: the branch pulled, read, and committed to is PROGRAM.md's `base:` line (failure shapes: `references/state-writes.md` + `references/router.md`). Then: an `executing` phase ANYWHERE takes precedence — resume it first; two+ `executing` rows are consistent only with a parallel-sanction D-line (`references/phases.md`, `references/router.md`). Otherwise take the first milestone whose status is not `closed` and its first non-`done` phase; **reconcile both ways before dispatching** — forward (evidence already on disk → flip with stamp, don't redo) and backward (every claimed status still backed by its referent; gaps → `references/router.md`). Then route:
 
 | State found | Route |
 |---|---|
 | Phase `executing` | resume: its ledger + `git log` are the truth (arcane-mode rules) |
 | Phase `planned` | dispatch into arcane-mode execution |
-| Phase `specced` | plan it — check the roadmap's plan/ledger links first (full cell: mechanics §10) |
+| Phase `specced` | plan it — check the roadmap's plan/ledger links first (full cell: `references/router.md`) |
 | Phase `pending` | catalyst:crucible for its spec; control returns to THIS router |
-| Phase `verified` | acceptance → UAT offer → `done` flip → branch-finish question (full cell, incl. reopened/demoted arms: mechanics §10) |
+| Phase `verified` | acceptance → UAT offer → `done` flip → branch-finish question (full cell, incl. reopened/demoted arms: `references/router.md`) |
 | All phases of a milestone `done` | milestone audit (below) — mandatory |
-| Every milestone `closed` | campaign complete: `status: complete` + terminal sweep (full cell: mechanics §10) |
+| Every milestone `closed` | campaign complete: `status: complete` + terminal sweep (full cell: `references/router.md`) |
 | No roadmap | creation (below) — only when the user actually asked for a program |
 
 ## Creating a campaign
 
-1. Intent and milestones through catalyst:crucible; a finished starchart map converts COMPLETELY (Destination → Intent, decisions → Decision log with original dates, out-of-scope → Non-goals) — full mapping: mechanics §11.
+1. Intent and milestones through catalyst:crucible; a finished starchart map converts COMPLETELY (Destination → Intent, decisions → Decision log with original dates, out-of-scope → Non-goals) — full mapping: `references/creation-and-audit.md`.
 2. Slice phases tracer-first, 3-9 per milestone; ONE phase = the single-feature red flag — at creation this REFUSES (route to crucible → arcane-mode) unless the user explicitly orders the umbrella with the cost named.
-3. Write both files (`base:` = `git branch --show-current` at creation), get the roadmap approved as ONE question, Decision-log the approval; all three land in ONE genesis commit (mechanics §11).
+3. Write both files (`base:` = `git branch --show-current` at creation), get the roadmap approved as ONE question, Decision-log the approval; all three land in ONE genesis commit (`references/creation-and-audit.md`).
 
 ## Milestone audit — against intent, not the checklist
 
-When all of a milestone's phases are `done`: spot-check the `branch:` claims against git, then a fresh-eyes audit against the PROGRAM's Intent text (not the phase list); clean → `closed (audited: <date>, rounds N..M)` + its D-log event; findings → fix phases first. The user's explicit skip → `closed (waived: <date>)`, D-logged, never re-demanded, never read as audited. Full protocol: mechanics §12.
+When all of a milestone's phases are `done`: spot-check the `branch:` claims against git, then a fresh-eyes audit against the PROGRAM's Intent text (not the phase list); clean → `closed (audited: <date>, rounds N..M)` + its D-log event; findings → fix phases first. The user's explicit skip → `closed (waived: <date>)`, D-logged, never re-demanded, never read as audited. Full protocol: `references/creation-and-audit.md`.
 
 ## Session end
 
