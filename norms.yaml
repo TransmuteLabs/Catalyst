@@ -103,3 +103,16 @@ norms:
     home: skills/arcane-mode/references/verify-phase.md
     mirrors:
       - skills/forge-skill/references/harness.md
+
+  - id: dead-end-veto
+    what: before any skill edit is proposed, the dead-end epitaphs are checked; a match stops the proposal absent explicitly named new grounds, and nothing is retired without an epitaph
+    home: skills/forge-skill/references/improvement-loop.md
+    mirrors:
+      - FRICTION.md
+      - skills/forge-skill/SKILL.md
+
+  - id: one-variable-challenger
+    what: an incremental skill edit moves ONE variable as a localized challenger with hypothesis, regression risk, and observation plan; wholesale rework is licensed only by systematic-failure evidence
+    home: skills/forge-skill/references/improvement-loop.md
+    mirrors:
+      - skills/forge-skill/SKILL.md

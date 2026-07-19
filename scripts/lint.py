@@ -13,6 +13,9 @@ Checks:
   4. map.tsv: every scenario row names an existing scenario file and existing
      mapped files; no duplicate keys; keys within the portable grammar.
   5. INDEX.md scenario count matches map.tsv.
+  6. Every reference file declares read-on frontmatter.
+  7. norms.yaml: ids unique, every home/mirror path exists.
+  8. FRICTION.md: entries dated, statuses in vocabulary, epitaphs carry why.
 
 Exit 0 = clean (warnings allowed), 1 = errors found.
 """
@@ -180,11 +183,43 @@ if os.path.isfile(norms_path):
                 err(f"norms.yaml:{i}: duplicate norm id '{cur}'")
             ids.add(cur)
             continue
-        m = re.match(r"\s*(?:home:|-)\s*((?:skills|agents|scripts|tests)/\S+)", line)
+        m = re.match(r"\s*(?:home:|-)\s*((?:(?:skills|agents|scripts|tests)/\S+)|FRICTION\.md)", line)
         if m:
             p = m.group(1)
             if not os.path.isfile(os.path.join(ROOT, p)):
                 err(f"norms.yaml:{i}: path '{p}' does not exist (norm '{cur}')")
+
+# ---- 8: FRICTION.md grammar (entries dated, statuses from the vocabulary,
+#         epitaphs carry their why) ----
+friction_path = os.path.join(ROOT, 'FRICTION.md')
+if os.path.isfile(friction_path):
+    ftext = open(friction_path).read()
+    if '## Dead ends' not in ftext:
+        err("FRICTION.md: missing '## Dead ends' section (the veto's memory)")
+    in_fence = False
+    in_dead_ends = False
+    for i, line in enumerate(ftext.splitlines(), 1):
+        if line.startswith('```'):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if line.startswith('## '):
+            in_dead_ends = line.startswith('## Dead ends')
+            continue
+        if not line.startswith('- '):
+            continue
+        if not re.match(r'- \d{4}-\d{2}-\d{2} ', line):
+            err(f"FRICTION.md:{i}: bullet entry without a leading ISO date")
+            continue
+        if in_dead_ends:
+            if 'why:' not in line:
+                err(f"FRICTION.md:{i}: epitaph without a 'why:' clause")
+        else:
+            m = re.search(r'\[status:\s*([^\]]+)\]', line)
+            if m and not re.match(
+                    r"(open|fixed \S+|won't-fix — .+|dead-end.*)$", m.group(1).strip()):
+                err(f"FRICTION.md:{i}: status '{m.group(1).strip()}' outside the vocabulary")
 
 # ---- report ----
 for w in warnings:

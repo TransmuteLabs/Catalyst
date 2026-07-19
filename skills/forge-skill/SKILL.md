@@ -11,7 +11,7 @@ A skill is production code whose runtime is an agent. It is developed the same w
 
 **Iron Law: A NEW RULE EARNS ITS PLACE ONLY WITH BASELINE EVIDENCE.** Before authoring a rule, record the failure it prevents: a RED baseline run (a fresh session WITHOUT the skill fails the scenario; the recorded rationalizations are the requirements the rule must answer), or — for a convention rule — sanctioned field evidence (observed harm, a verified concrete failure sequence). A COMPLIANT baseline is credited to clean model defaults only after checking the transcript for reliance on machine-injected process rules — reliance found means the rule still earns its place. Shipping without evidence on the user's EXPLICIT order is recorded in the tests journal (record shapes: `references/gate-records.md`). Per-edit GREEN regression gates over skill TEXTS are retired (user decision, journal 0.6.3): a convergence criterion belongs to code, not prose — text edits ship on review, and the harness runs only to baseline a NEW rule.
 
-Between baselines, EDITS to existing skills source from the repo's `FRICTION.md` (recorded real-use friction) — not from taste or memory.
+Between baselines, EDITS to existing skills source from the repo's `FRICTION.md` (recorded real-use friction) — not from taste or memory. **The full self-improvement contour — target by friction trend, dead-end veto against FRICTION.md's epitaphs, one-variable challenger, minimal-diff proposal with named operation and risk, outcome record — lives in `references/improvement-loop.md`: read it ENTIRELY before editing an existing skill.** A self-initiated edit (no explicit user order) is proposed, never self-applied.
 
 ## The loop
 
@@ -69,3 +69,6 @@ Repeatable guidance an agent will need again: a technique, a discipline, a refer
 - A live harness run launched for anything other than baselining a NEW rule (regression gates over text edits are retired — they burn live sessions for nothing).
 - A description that summarizes the workflow instead of naming the triggering situations.
 - Judging GREEN by the answer letter while the reasoning shows compliance for the wrong reason.
+- A candidate fix matching a buried dead-end approach (FRICTION.md epitaphs) proposed without naming what changed since the burial.
+- A rule, reference, or approach deleted with no epitaph — the veto cannot guard a path nobody recorded.
+- An edit moving two variables at once, or a "series of localized edits" that in sum rewrites the core (rework needs its own evidence arm).
