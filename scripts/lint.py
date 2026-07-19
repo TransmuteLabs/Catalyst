@@ -153,6 +153,39 @@ if os.path.isfile(index_path) and rows:
     if sorted(index_keys) != sorted(rows):
         err(f"INDEX.md scenarios ({len(index_keys)}) do not match map.tsv ({len(rows)}) — regenerate the index")
 
+# ---- 6: every reference file declares its read-on triggers ----
+for name in skill_names:
+    refdir = os.path.join(skills_dir, name, 'references')
+    if not os.path.isdir(refdir):
+        continue
+    for f in sorted(os.listdir(refdir)):
+        if not f.endswith('.md'):
+            continue
+        text = open(os.path.join(refdir, f)).read()
+        rel = f'skills/{name}/references/{f}'
+        if not text.startswith('---\n'):
+            err(f"{rel}: missing frontmatter (read-on/home-of)")
+        elif 'read-on:' not in text.split('\n---')[0]:
+            err(f"{rel}: frontmatter lacks read-on:")
+
+# ---- 7: norms.yaml — ids unique, every home/mirror path exists ----
+norms_path = os.path.join(ROOT, 'norms.yaml')
+if os.path.isfile(norms_path):
+    ids, cur = set(), None
+    for i, line in enumerate(open(norms_path).read().splitlines(), 1):
+        m = re.match(r'\s*-\s*id:\s*(\S+)', line)
+        if m:
+            cur = m.group(1)
+            if cur in ids:
+                err(f"norms.yaml:{i}: duplicate norm id '{cur}'")
+            ids.add(cur)
+            continue
+        m = re.match(r"\s*(?:home:|-)\s*((?:skills|agents|scripts|tests)/\S+)", line)
+        if m:
+            p = m.group(1)
+            if not os.path.isfile(os.path.join(ROOT, p)):
+                err(f"norms.yaml:{i}: path '{p}' does not exist (norm '{cur}')")
+
 # ---- report ----
 for w in warnings:
     print(f"WARN  {w}")

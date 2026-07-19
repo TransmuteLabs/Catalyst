@@ -1,3 +1,11 @@
+---
+read-on:
+  - the spec marker is anything but a plain top-of-file status: approved
+  - branch finish is due (convergence reached)
+home-of:
+  - the full spec-marker entry grammar and repo gate
+  - the branch-finish protocol (re-gate, tail gates, the integrate question)
+---
 # Entry (spec markers) and branch finish — the normative deep layer
 
 Moved VERBATIM from SKILL.md (v0.6.3) in the 0.7.0 distillation. SKILL.md keeps the executable core; where its sketch and this file differ in detail, THIS file governs.

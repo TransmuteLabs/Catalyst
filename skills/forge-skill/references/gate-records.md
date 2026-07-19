@@ -1,3 +1,11 @@
+---
+read-on:
+  - an open GATE OWED journal line is found at session start
+  - a journal record is about to be written
+  - a map.tsv row is retired/renamed
+home-of:
+  - the tests-journal record machinery (closure validity, re-binds, retirement)
+---
 # GATE OWED records (normative home)
 
 This file is the NORMATIVE home for the tests-journal GATE OWED record machinery: the closure append's shape and coverage validity, rename re-binds, lost referents, the machine-local out/ identity, and row retirement. `SKILL.md` keeps the always-hot duty — the session-start `^GATE OWED` grep — and points here. Journal WRITES are commit-serialized: a closure append or `— now <path>` re-bind is an IN-PLACE append to the journal RE-READ immediately before the write — never a whole-file snapshot built earlier (a snapshot saved over a sibling's fresher file is the loss mechanism, and it needs no merge: two sessions in one checkout commit linearly and the second's tree silently drops the first's append) — COMMITTED immediately; right after its commit the writer re-reads the COMMITTED copy and verifies its append is present, and after any later merge it re-verifies survival again — a vanished append is re-appended (two sessions saving whole-file snapshots silently drop each other's closures: the lost append fails safe — the line looks open and forces a re-run — but the completed run's record must not evaporate). The duty is TWO-SIDED: the session that MERGES the journal (a pull's merge, a branch integration) preserves the closure and re-bind appends of BOTH parents as a line-level UNION — never ours/theirs: each parent's appends are recorded answers, the writer-side re-verify above catches only the writer's OWN append, and only the merge writer sees both parents at once — a parent's append missing from the merged result is restored in the merge commit itself. The line anchor is the data/grammar boundary, and journal WRITERS keep it honest from their side: prose that CITES the record form (a finding, a historical example) must never place `GATE OWED` at the start of a line — indent it, fence it, or quote it mid-sentence (a line-start citation is grepped as an open owed record).

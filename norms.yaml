@@ -1,0 +1,105 @@
+# Family norms registry — one normative home per norm, known mirrors listed.
+# Purpose: duplicated norms drifting apart was the top defect class of the
+# audit era; this file makes every seam checkable in seconds (scripts/lint.py
+# verifies all paths exist and that home files are unique per norm).
+# A mirror may COMPRESS its home, never contradict it; on divergence the home
+# governs and the mirror is the bug.
+
+norms:
+  - id: waiver-doctrine
+    what: named gates bend only to the user's explicit command; the waiver is recorded where the gate's evidence would have lived and never reads as a pass
+    home: skills/arcane-mode/SKILL.md            # Iron rules
+    mirrors:
+      - skills/campaign/references/schema.md     # waived stamps
+      - skills/forge-skill/SKILL.md              # ship-without-evidence order
+      - skills/crucible/SKILL.md                 # skip-order recording
+      - skills/arcane-mode/references/ledger.md  # waived verification line
+
+  - id: state-write-guard
+    what: re-read before write, surgical in-place, pre-staging blob check, post-commit parent verify; commit immediately on the base branch
+    home: skills/campaign/references/state-writes.md
+    mirrors:
+      - skills/starchart/references/map-mechanics.md
+
+  - id: one-batched-question
+    what: all escalations one run discovers go to the user as ONE batched question, never a drip
+    home: skills/campaign/references/phases.md
+    mirrors:
+      - skills/campaign/SKILL.md
+      - skills/starchart/references/map-mechanics.md
+      - skills/install/SKILL.md
+
+  - id: commit-at-the-moment
+    what: durable records commit the moment they are produced; session end is a safety net, not the commit point
+    home: skills/campaign/references/state-writes.md
+    mirrors:
+      - skills/starchart/SKILL.md
+      - skills/crucible/SKILL.md                 # per-section approval commits
+      - skills/arcane-mode/references/amendment.md
+
+  - id: same-day-time-append
+    what: the second same-day record of a kind appends the time; identity disambiguation, never an arbitration key
+    home: skills/campaign/references/arbitration.md
+    mirrors:
+      - skills/arcane-mode/references/amendment.md
+      - skills/premortem/references/spec-gate.md
+
+  - id: one-question-at-a-time
+    what: interview questions go one at a time, each carrying a recommended answer that never counts as the user's answer
+    home: skills/crucible/SKILL.md
+    mirrors:
+      - skills/bootup/SKILL.md
+      - skills/upgrade-harness/SKILL.md
+
+  - id: tiering-by-decision-boundary
+    what: executors execute decisions already made; any task containing a decision/diagnosis is standard-tier minimum; analysis is never executor-tier
+    home: skills/arcane-mode/SKILL.md
+    mirrors:
+      - skills/research/SKILL.md
+      - skills/starchart/SKILL.md                # research tickets under arcane rules
+      - agents/scout.md
+
+  - id: single-writer-workspace
+    what: one session per checkout/workspace at a time; live-sibling signals route to the user, never silent co-writing or archiving
+    home: skills/arcane-mode/references/ledger.md
+    mirrors:
+      - skills/review/SKILL.md
+      - skills/research/SKILL.md
+      - skills/debug/SKILL.md
+
+  - id: exit-code-honesty
+    what: a gate is confirmed only by an honest exit-code form (pipefail or no pipe) and an exact test baseline, never a bare EXIT 0
+    home: skills/arcane-mode/references/review-duties.md
+    mirrors:
+      - skills/arcane-mode/SKILL.md              # Iron rules
+      - agents/implementer.md
+      - skills/install/SKILL.md                  # tool responds, not installer exit 0
+
+  - id: goal-backward
+    what: verify the goal (must_haves), not the task list; all tasks done != goal achieved
+    home: skills/arcane-mode/references/verify-phase.md
+    mirrors:
+      - skills/campaign/references/creation-and-audit.md  # milestone audit against Intent
+      - skills/arcane-mode/references/plan-standard.md
+
+  - id: repo-root-anchoring
+    what: every .catalyst/ and docs/specs path anchors to `git rev-parse --show-toplevel`, never a subdirectory cwd
+    home: skills/campaign/references/state-writes.md
+    mirrors:
+      - skills/starchart/SKILL.md
+      - skills/handoff/SKILL.md
+      - skills/crucible/SKILL.md
+      - skills/bootup/SKILL.md
+
+  - id: evidence-before-status
+    what: a status/claim advances only with its evidence recorded (stamp, baseline line, verdict); the flip writes the evidence
+    home: skills/campaign/references/phases.md
+    mirrors:
+      - skills/campaign/SKILL.md
+      - skills/forge-skill/SKILL.md              # baseline evidence for rules
+
+  - id: convergence-is-for-code
+    what: the 2-consecutive-clean-rounds stop criterion applies to CODE verification only, never to prose/skill texts
+    home: skills/arcane-mode/references/verify-phase.md
+    mirrors:
+      - skills/forge-skill/references/harness.md

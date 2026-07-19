@@ -1,3 +1,10 @@
+---
+read-on:
+  - a NEW-rule baseline run is being prepared (the only sanctioned harness use)
+home-of:
+  - harness operating mechanics
+  - the retired pre-0.7.0 gate texts (verbatim history)
+---
 # Family pressure harness — mechanics (historical + new-rule baselining)
 
 Moved VERBATIM from SKILL.md in the 0.7.0 distillation. POLICY (user-ratified, journal 0.6.3 NOTE): the harness serves its ORIGINAL purpose only — RED-baselining a genuinely NEW rule before authoring it. The per-edit GREEN regression gate and the clean-rounds convergence criterion for skill texts are RETIRED (a code-defect convergence criterion misapplied to prose; the harness's live sessions are expensive). The two paragraphs below are preserved in full: §1 for the still-live journal record machinery it names, §2 as the operating manual whenever a new-rule baseline IS run.

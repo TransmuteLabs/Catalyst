@@ -1,3 +1,13 @@
+---
+read-on:
+  - any post-approval edit to an approved spec
+  - a pending-entry answer or rejection revert
+  - per-section approval marks are being written or resumed
+home-of:
+  - the status marker state machine (approved/waived/pending shapes, restore rule)
+  - per-section approval mark grammar
+  - ground-edit entry shapes
+---
 # The post-approval marker machine (normative home)
 
 THE marker is a POSITION, not a grep hit: it is the `status:` line at the TOP of the file — before the first markdown heading (crucible writes it there; nothing else legitimately precedes the title region). A `status:`-shaped line ANYWHERE ELSE in the file — a body example, a decisions note, a quoted shape in open/deferred — is CONTENT, never the marker: every consumer keyed on "the file carries the marker" reads the top-of-file line ONLY (a presence-grep over the whole file previously let a body example approve a draft, or a body `pending` shape shadow a plain top marker).

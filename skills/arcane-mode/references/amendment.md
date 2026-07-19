@@ -1,3 +1,9 @@
+---
+read-on:
+  - the user orders an amendment to an ALREADY-APPROVED spec (any time, incl. mid-execution and post-done)
+home-of:
+  - the spec-amendment route (pending marker, scoped gate re-run, plan reconcile, ledger re-opens, campaign demotion, post-done wave)
+---
 # The user-ordered amendment route (normative home)
 
 This file is the NORMATIVE home for arcane-mode's spec-amendment route: what happens when the user orders a change to an ALREADY-APPROVED spec — any time, including mid-execution and after a phase is `verified`/`done`. Entry and marker shapes are normative in crucible's `references/marker-machine.md`; the revert arms in premortem's `references/spec-gate.md`; the roadmap demotion shapes and transport in campaign's rules. `SKILL.md` points here from its Inputs rule.

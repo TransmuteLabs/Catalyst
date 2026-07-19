@@ -1,3 +1,10 @@
+---
+read-on:
+  - a review scope is being determined and capture scouts dispatched
+home-of:
+  - the TREE IDENTITY rule
+  - the capture commands and coverage
+---
 # Review capture mechanics — the normative deep layer
 
 Moved VERBATIM from SKILL.md (v0.6.3) in the 0.7.0 distillation. Where SKILL.md's sketch differs in detail, THIS file governs.

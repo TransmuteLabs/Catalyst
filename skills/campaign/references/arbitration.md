@@ -1,3 +1,14 @@
+---
+read-on:
+  - any merge conflict in campaign state files (ROADMAP/PROGRAM/specs/plans/premortem yamls)
+  - any unresolved (…)/suspect/hand-demotion shape or legacy shape without its terminal record
+  - a base-change order or a missing transport receipt
+home-of:
+  - every campaign state merge cell
+  - the D-line kind vocabulary and collapse rules
+  - legacy and migration shapes
+  - the family same-day time-append arm
+---
 # Campaign state arbitration & legacy shapes (normative)
 
 > Orientation (0.7.0 distillation): references in this file to "SKILL.md's" schema/rules/Mechanics point at text that now lives VERBATIM in the split `references/` files (`mechanics.md` is the router); SKILL.md keeps the executable core. Nothing normative changed.

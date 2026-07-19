@@ -1,3 +1,9 @@
+---
+read-on:
+  - bloks responds on this machine and a pipeline session starts or ends
+home-of:
+  - the bloks knowledge loop (PREPARE cards into briefs, report feedback fields, DISTILL)
+---
 # Knowledge loop — optional bloks integration
 
 Activates only when `bloks` responds on this machine (verify by running `bloks --version` or `bloks context .` and checking the output — a name on PATH proves nothing; ContinuousClaude's multitool was once named `cc` and collided with the system C compiler on every Unix machine, which is why it's now `ContinuousClaude`). Without bloks, the loop degrades to what the pipeline already does: lessons distill to persistent memory and the ledger. Nothing else in the pipeline changes.

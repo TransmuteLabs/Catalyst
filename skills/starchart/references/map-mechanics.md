@@ -1,3 +1,13 @@
+---
+read-on:
+  - a map merge conflict, pull/push failure, or duplicate NNN/slug collision
+  - a torn/orphaned ticket or Resolution
+  - the map→campaign conversion
+home-of:
+  - map arbitration and repairs
+  - ticket anatomy and index repair
+  - the full working/done protocols and the conversion contract
+---
 # Starchart map mechanics — the normative deep layer
 
 Moved VERBATIM from SKILL.md (v0.6.3) in the 0.7.0 distillation. SKILL.md keeps the executable core; where its sketch and this file differ in detail, THIS file governs. Campaign's `references/state-writes.md` remains the normative home of the state-write guard this file mirrors.

@@ -1,3 +1,12 @@
+---
+read-on:
+  - a verdict is being recorded or re-run
+  - a tiger has no viable mitigation (acceptance protocol)
+  - a spec-gate verdict or plan-gate bridge is being written
+home-of:
+  - the BLOCK/WARN full rules and the acceptance snapshot
+  - the spec-gate verdict record and the plan-gate bridge
+---
 # Premortem gate mechanics — the normative deep layer
 
 Moved VERBATIM from SKILL.md (v0.6.3) in the 0.7.0 distillation. SKILL.md keeps the executable core; where its sketch and this file differ in detail, THIS file governs. Post-approval machinery (entries, reverts, withdrawal, amendment-class) remains in `references/spec-gate.md` (unchanged).

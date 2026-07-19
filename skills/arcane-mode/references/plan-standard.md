@@ -1,3 +1,9 @@
+---
+read-on:
+  - an implementation plan is being written or reviewed
+home-of:
+  - the plan standard (tracer-first, must_haves, no placeholders, task anatomy, approval tasks, context budget, self-review)
+---
 # Plan standard
 
 A plan is written for an implementer with zero context on the codebase and questionable taste. They are a skilled developer who doesn't know our toolset, our domain, or good test design. A plan is a prompt, not a document that later becomes a prompt.

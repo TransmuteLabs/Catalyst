@@ -1,3 +1,12 @@
+---
+read-on:
+  - a dispatch tier/effort is being chosen
+  - budget pressure or repeated failures force degradation decisions
+home-of:
+  - the effort dial and its escalation ladders
+  - budget-degradation order (collapse agents, never planning)
+  - the review floor
+---
 # Dispatch economics — effort, budget, availability
 
 Tiering (SKILL.md) decides WHO thinks; this reference decides HOW HARD and HOW MANY. Both dials are set per dispatch, and both degrade under real-session constraints without ever degrading the decision boundary silently — the one sanctioned boundary exception (availability fallback below) is always flagged to the user.
