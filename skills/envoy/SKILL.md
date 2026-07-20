@@ -17,6 +17,7 @@ Primary helper:
 Execution rules:
 - The rescue subagent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
 - Foreground `task` Bash calls must set the Bash tool `timeout` parameter to `3600000` ms — the harness clamps it to its `BASH_MAX_TIMEOUT_MS` ceiling (stock ceiling: 10 minutes; raise it in settings `env` for longer foreground runs). A harness-killed foreground call terminates the vendor process mid-run; anything that may outlast the ceiling belongs in `--background`.
+- Judging whether a long background run has hung (vs still thinking) and recovering it deterministically: `references/liveness.md` — the signal is job-log mtime freshness, not the absence of a final result.
 - Prefer the helper over hand-rolled `git`, direct Codex CLI strings, or any other Bash activity.
 - Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `catalyst:envoy-runner`.
 - Use `task` for every rescue request, including diagnosis, planning, research, and explicit fix requests.

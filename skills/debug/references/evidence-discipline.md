@@ -44,7 +44,14 @@ A manipulation rarely changes exactly one thing. Before concluding a factor is i
 Before closing, name the ROOT-CAUSE CATEGORY — change-induced / capacity /
 monitoring gap / dependency failure / process gap / design flaw — because the
 category, not the fix, points at the prevention class (a monitoring gap wants
-detection work; a process gap wants a gate, not more code). State causes in
+detection work; a process gap wants a gate, not more code). One discrimination
+matters most and is easy to skip: did the system lack a correct rule/guard
+(a genuine defect — fix the code/design), or did a correct rule already exist
+and simply not get followed (a lapse — the fix is enforcement: a gate, a
+check, a harder-to-miss position, NOT more of the code the rule already
+governed)? Patching the code when the rule was merely ignored fixes nothing;
+when unsure which, prefer the lapse reading before deleting a working guard.
+State causes in
 system language, never person language: "the change process lacked step X",
 not "N's mistake caused it" — the person-form ends the analysis exactly where
 the useful question begins. Where timing mattered, record time-to-detect and

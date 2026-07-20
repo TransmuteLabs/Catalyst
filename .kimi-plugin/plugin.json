@@ -1,0 +1,35 @@
+{
+  "name": "catalyst",
+  "version": "0.8.6",
+  "description": "Disciplined agentic development: SDD pipeline, decision-boundary model tiering, spec hardening, premortem gates, verification, handoffs.",
+  "author": {
+    "name": "Marat Karimov"
+  },
+  "homepage": "https://github.com/TransmuteLabs/Catalyst",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "sdd",
+    "subagents",
+    "planning",
+    "verification",
+    "workflows"
+  ],
+  "skills": "./skills/",
+  "sessionStart": {
+    "skill": "using-catalyst"
+  },
+  "skillInstructions": "Kimi Code tool mapping for Catalyst skills:\n\n- When a Catalyst skill says to ask the user, ask one question at a time, present multiple-choice options, or wait for the user's choice (crucible interrogation, premortem gates, plan approval, UAT scenarios, install consent), call Kimi Code's `AskUserQuestion` tool with 1 question and 2-4 concrete options; put the recommended option first and suffix its label with `(Recommended)`. Do not render those choices as plain assistant text unless `AskUserQuestion` is unavailable or the session is in auto permission mode.\n- When a Catalyst skill refers to `TodoWrite`/task tracking, use Kimi Code's `TodoList` tool.\n- When a Catalyst skill dispatches an implementer, critic, scout, researcher, or auditor subagent (the arcane-mode pipeline, research fan-out, review, fresh-eyes convergence), use Kimi Code's `Agent` tool with a Kimi subagent type; paste the fully filled brief into `prompt` and give a short `description`. Do not pass `general-purpose` as `subagent_type`. Honor the family's model tiering by choosing the strongest available Kimi subagent for critic/auditor/analysis roles and a coder subagent for briefed implementation.\n- Keep dependent pipeline steps sequential (spec before plan before implementation before review). Use multiple `Agent` calls, or `run_in_background: true` only for genuinely independent, file-non-overlapping work.\n- When a Catalyst skill refers to the `Skill` tool, use Kimi Code's native `Skill` tool.\n- Use Kimi Code's `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, `FetchURL`, `WebSearch`, and MCP tools by their actual exposed names; when a skill asks to search file contents use `Grep`, to find files by path use `Glob`, to fetch a URL use `FetchURL`, to search the web use `WebSearch`.\n- The envoy skill drives external vendor CLIs (codex/grok/kimi) through its companion runtime via `Bash`; do not substitute a native Kimi call for the companion helper.",
+  "interface": {
+    "displayName": "Catalyst",
+    "shortDescription": "SDD pipeline, spec hardening, premortem gates, verification, and handoffs for coding agents",
+    "longDescription": "Use Catalyst to run disciplined multi-step software work: bootup and routing, open-ended research, spec hardening, decision mapping, premortem gates, a subagent-driven development pipeline with decision-boundary model tiering and goal-backward verification, standalone review, systematic debugging, and cross-session handoffs.",
+    "developerName": "Marat Karimov",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/TransmuteLabs/Catalyst"
+  }
+}

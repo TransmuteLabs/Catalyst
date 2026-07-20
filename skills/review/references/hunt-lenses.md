@@ -103,6 +103,32 @@ or the blast radius exceeds the stated intent.
   the old shallow per-unit tests are DELETED, not kept alongside — a
   surviving stale layer re-pins the old structure.
 
+## Agent-runnable CLI lens (for diffs that add or change a command-line tool)
+
+A CLI that another agent (or a future automation) will invoke is judged on
+whether it can be driven blind, not just whether it works interactively
+(absorbed from a CLI-for-agents doctrine, journal 0.8.6):
+
+- **Non-interactive first**: every input expressible as a flag; an interactive
+  prompt is a fallback for a missing flag, never the only path. A command that
+  blocks on an arrow-key menu with no flag equivalent cannot be scripted.
+- **Fail fast with an actionable error**: a missing required flag exits
+  immediately with a correct example invocation — never hangs waiting on a TTY,
+  never fails with a message that doesn't show the fix.
+- **Discoverable without dumping context**: `--help` is layered (top-level lists
+  subcommands, each subcommand owns its own help) and carries copy-pasteable
+  Examples — an agent pattern-matches examples faster than prose, and unused
+  subcommands stay out of its context.
+- **Idempotent**: agents retry; running the same command twice is a safe no-op
+  or an explicit "already done", not a double-apply.
+- **Destructive actions gated**: `--dry-run` previews and `--yes`/`--force`
+  skips the confirm, while the bare interactive default stays safe for humans.
+- **Machine-useful success output**: emit the ids / URLs / durations a caller
+  needs to chain the next step, on stdout, parseable.
+
+Flag a CLI change that regresses any of these even when the human path still
+works — the break surfaces only when an agent tries to drive it.
+
 ## Severity trust and unfinished research (never overridden)
 
 - Never inflate severity: a Minor reported as Critical erodes the trust that

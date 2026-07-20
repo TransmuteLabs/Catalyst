@@ -1,0 +1,22 @@
+{
+  "name": "catalyst",
+  "displayName": "Catalyst",
+  "description": "Disciplined agentic development: SDD pipeline, decision-boundary model tiering, spec hardening, premortem gates, verification, handoffs.",
+  "version": "0.8.6",
+  "author": {
+    "name": "Marat Karimov"
+  },
+  "homepage": "https://github.com/TransmuteLabs/Catalyst",
+  "repository": "https://github.com/TransmuteLabs/Catalyst",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "sdd",
+    "subagents",
+    "planning",
+    "verification",
+    "workflows"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

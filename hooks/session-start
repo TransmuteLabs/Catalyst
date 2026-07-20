@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# SessionStart hook for the Catalyst plugin.
+# Injects the using-catalyst introduction so every session knows the family's
+# process skills exist and how they route.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+intro_content=$(cat "${PLUGIN_ROOT}/skills/using-catalyst/SKILL.md" 2>&1 || echo "Error reading using-catalyst skill")
+
+# Escape for JSON embedding via bash parameter substitution (single C-level
+# passes — far faster than a character loop).
+escape_for_json() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+intro_escaped=$(escape_for_json "$intro_content")
+session_context="<CATALYST>\nYou have Catalyst - a disciplined layer for multi-step software work. Below is the 'using-catalyst' introduction: how its process skills route. For any specific skill, use the 'Skill' tool.\n\n${intro_escaped}\n</CATALYST>"
+
+# Emit only the field the current platform consumes.
+# Cursor: additional_context (snake_case). Claude Code: nested
+# hookSpecificOutput.additionalContext. Others (Copilot CLI, SDK): top-level
+# additionalContext. printf avoids the bash 5.3+ heredoc hang.
+if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  printf '{\n  "additional_context": "%s"\n}\n' "$session_context" | cat
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$session_context" | cat
+else
+  printf '{\n  "additionalContext": "%s"\n}\n' "$session_context" | cat
+fi
+
+exit 0

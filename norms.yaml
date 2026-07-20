@@ -157,3 +157,39 @@ norms:
     what: trackers and ledgers record status and coordinates only; task content lives solely in the plan/briefs — duplicated content forks the truth and drifts
     home: skills/arcane-mode/references/ledger.md
     mirrors: []
+
+  - id: metric-reverification
+    what: a self-reported quantitative outcome (line count, size, coverage, test count) is re-derived by re-running its command on the committed artifact and compared with tolerance AND matching unit; a number with no runnable command is not verified
+    home: skills/arcane-mode/references/verify-phase.md
+    mirrors: []
+
+  - id: evidence-source-coverage
+    what: a causal/why question is answered from every reachable evidence category (VCS, tracker, docs, chat, observability, error-tracking, analytics) queried in parallel; null results are recorded, skips carry a one-line reason, and the synthesis keeps direct-cited separate from inferred
+    home: skills/research/SKILL.md
+    mirrors: []
+
+  - id: defect-vs-lapse
+    what: before editing to fix a failure, decide whether a correct rule was absent (defect — fix the body/code) or present-but-ignored (lapse — fix by enforcement/position, not more text); when unsure prefer lapse and do not delete a working rule
+    home: skills/forge-skill/references/improvement-loop.md
+    mirrors:
+      - skills/debug/references/evidence-discipline.md
+
+  - id: longitudinal-regression
+    what: an edit's outcome includes what it may have broken — re-run the neighboring RED baseline under old and new text (improved/regressed/persistent/stable); a single regression outranks the intended improvement and needs explicit user acceptance
+    home: skills/forge-skill/references/improvement-loop.md
+    mirrors: []
+
+  - id: arena-for-oneway-doors
+    what: an irreversible novel decision is resolved by building 2-3 candidates in parallel worktrees, judged on running code by a different-model-family reviewer against a rubric fixed beforehand, winner grafted from losers, rejected alternatives recorded
+    home: skills/arcane-mode/references/plan-standard.md
+    mirrors: []
+
+  - id: agent-runnable-cli
+    what: a CLI an agent will drive is non-interactive-first, fails fast with a correct example, layers help with copy-pasteable examples, is idempotent, gates destructive actions with dry-run/yes, and emits machine-useful success output
+    home: skills/review/references/hunt-lenses.md
+    mirrors: []
+
+  - id: prose-invariant-as-code
+    what: a guarantee-carrying prose invariant that must survive future edits is pinned by a deterministic check asserting the exact string present plus a forbidden-phrase blacklist absent; checks themselves must be provably able to fail (no vacuous green, no skipped prerequisite reported green)
+    home: skills/forge-skill/references/harness.md
+    mirrors: []
