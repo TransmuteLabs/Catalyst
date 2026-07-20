@@ -82,6 +82,27 @@ safeguard) and its scope is well constrained — do not report it as a defect.
 Report it anyway when the author likely does not see the full implications,
 or the blast radius exceeds the stated intent.
 
+## Testing-craft lens (for diffs that add or change tests)
+
+- **Horizontal slicing**: all tests written first, then all implementation —
+  the tests encode imagined behavior and the shape of data structures, not
+  actual behavior, and go stale against real changes. The healthy shape is
+  vertical: one test, its implementation, repeat (tracer bullet first).
+- **Never refactor while RED** — a refactor mixed into a failing state hides
+  which change broke what; get to GREEN, then reshape.
+- **Verify through the interface, not the storage**: a test that asserts by
+  querying the database (or internal state) instead of the public interface
+  pins the implementation, not the behavior.
+- **No mock-data fallback**: code that silently falls back to canned data
+  when the real dependency fails hides outages from every test above it —
+  fail fast instead.
+- **Mock at boundaries only, SDK-style**: mocking your own internal
+  collaborators pins structure; a boundary mock shaped per-endpoint (no
+  conditional logic inside the mock) stays honest.
+- **Replace, don't layer**: when boundary tests now cover a reshaped module,
+  the old shallow per-unit tests are DELETED, not kept alongside — a
+  surviving stale layer re-pins the old structure.
+
 ## Severity trust and unfinished research (never overridden)
 
 - Never inflate severity: a Minor reported as Critical erodes the trust that

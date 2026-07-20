@@ -147,3 +147,13 @@ norms:
     home: skills/review/references/hunt-lenses.md
     mirrors:
       - agents/critic.md
+
+  - id: security-full-coverage
+    what: a security review reports every swept category (no-finding marked PASS), prefers false positives over misses, and every finding ships runnable fix code with file:line
+    home: skills/review/references/security-review.md
+    mirrors: []
+
+  - id: ledger-status-only
+    what: trackers and ledgers record status and coordinates only; task content lives solely in the plan/briefs — duplicated content forks the truth and drifts
+    home: skills/arcane-mode/references/ledger.md
+    mirrors: []

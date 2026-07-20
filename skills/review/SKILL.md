@@ -24,7 +24,7 @@ The `.catalyst/sdd` workspace is single-writer — one arcane/review session per
 
 The critic rules from arcane-mode/references/dispatch-templates.md apply here too:
 - **Authored probing questions** formulated before reading the diff: cross-interactions, guarantee semantics, "what was lost silently".
-- **Hunt categories by change type**: refactor — AST drift, import direction, lost re-exports, stale mocks; bugfix — races, edge cases, swallowed errors, regression scope; always — vacuous-green ("does the test actually exercise the changed path?"). The full lens catalog (structural simplification, spaghetti-growth flags, craft lenses, breaking-devex, gate-leak, severity-trust rules) — `references/hunt-lenses.md`; pick per change type.
+- **Hunt categories by change type**: refactor — AST drift, import direction, lost re-exports, stale mocks; bugfix — races, edge cases, swallowed errors, regression scope; always — vacuous-green ("does the test actually exercise the changed path?"). The full lens catalog (structural simplification, spaghetti-growth flags, craft lenses, testing-craft, breaking-devex, gate-leak, severity-trust rules) — `references/hunt-lenses.md`; pick per change type. When the scope touches auth, secrets, user input, network calls, or deserialization — read `references/security-review.md` ENTIRELY: full-coverage category reporting (PASS marks included), secret-detection discipline, and the concrete high-value checks.
 - **No pre-judging**: if the review was ordered with "don't look at X" — X gets checked like everything else, and the conflict goes to the user.
 - For every phase-1 structural finding — read the actual code around it and judge: a real problem or acceptable in context; severity by actual risk.
 

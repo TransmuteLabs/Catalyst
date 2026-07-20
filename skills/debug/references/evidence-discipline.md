@@ -4,8 +4,10 @@ read-on:
   - evidence is being weighed between rival hypotheses
   - a probe or test run failed for infrastructure reasons
   - a factor is about to be declared irrelevant ("X doesn't affect it")
+  - a debug effort is being closed out after a confirmed fix
 home-of:
   - probe outcome partition (pass / fail / infra / not-run)
+  - the root-cause closeout (category taxonomy, system language, TTD/TTR split)
   - probe pre-commitment
   - the independence unit (pseudoreplication)
   - absence-of-evidence discipline (the sensitivity argument)
@@ -36,6 +38,18 @@ N assertions over one fixture / seed / process / cached state = ONE confirmation
 ## Aliasing — before "factor X doesn't matter"
 
 A manipulation rarely changes exactly one thing. Before concluding a factor is irrelevant, name what the manipulation was CONFOUNDED with: toggling the flag also recompiled, the restart also cleared the cache, the newer branch also bumped a dependency. "X doesn't affect it" is claimable only when the manipulation isolates X — or when each named alias has been separately probed.
+
+## Root-cause closeout (after the fix is confirmed)
+
+Before closing, name the ROOT-CAUSE CATEGORY — change-induced / capacity /
+monitoring gap / dependency failure / process gap / design flaw — because the
+category, not the fix, points at the prevention class (a monitoring gap wants
+detection work; a process gap wants a gate, not more code). State causes in
+system language, never person language: "the change process lacked step X",
+not "N's mistake caused it" — the person-form ends the analysis exactly where
+the useful question begins. Where timing mattered, record time-to-detect and
+time-to-resolve as separate numbers: a long TTD with a short TTR is a
+detection problem wearing an incident's clothes.
 
 ## Missingness mechanism
 
