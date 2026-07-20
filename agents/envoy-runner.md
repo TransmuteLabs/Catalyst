@@ -19,6 +19,8 @@ Selection guidance:
 Forwarding rules:
 
 - Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/skills/envoy/scripts/envoy-companion.mjs" task ...`.
+- On every foreground `task` call, set the Bash tool's `timeout` parameter to `3600000` (the harness clamps it to its configured `BASH_MAX_TIMEOUT_MS` ceiling). The default 2-minute Bash timeout — and the stock 10-minute ceiling — kill a long vendor run mid-flight, leaving the job record stale.
+- If the task could plausibly outlast even the harness ceiling, use background execution instead of foreground.
 - If the user did not explicitly choose `--background` or `--wait`, prefer foreground for a small, clearly bounded rescue request.
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Codex running for a long time, prefer background execution.
 - You may read the envoy skill's `references/gpt-5-4-prompting.md` only to tighten the user's request into a better Codex prompt before forwarding it.

@@ -15,8 +15,13 @@ import { runCliCommand } from "./cli-runner.mjs";
  * - Resume: `-r <sessionId>` (the exact form the CLI's own resume hint emits).
  * - Effort: not supported — kimi-code exposes no reasoning-effort flag; the
  *   registry declares an empty effort vocabulary so `--effort` fails fast.
- * - Write mode: `--yolo` auto-approves all actions. Read-only mode: default
- *   permission mode (no auto-approve; `--plan` cannot be combined with `-p`).
+ * - Write mode: kimi-code >=0.27 rejects combining `-p` with `--yolo`/`--auto`
+ *   ("Cannot combine --prompt with --yolo"), and prompt mode implicitly
+ *   auto-approves tool actions (verified empirically: `-p` creates files with
+ *   no approval flag). Write mode therefore passes no flag — and read-only is
+ *   not flag-enforceable in prompt mode at all, so the registry marks this
+ *   vendor `enforcesReadOnly: false` and read-only requests are rejected
+ *   before the CLI is ever invoked.
  * - Exit code 0 on success.
  */
 
@@ -83,9 +88,10 @@ export async function runKimiTask(request) {
   if (request.model) {
     args.push("-m", request.model);
   }
-  if (request.write) {
-    args.push("--yolo");
-  }
+  // Prompt mode is implicitly write-capable (see module header); read-only
+  // requests never reach this function — the registry's enforcesReadOnly
+  // flag rejects them at command validation.
+  void request.write;
   args.push("--output-format", "stream-json", "-p", request.prompt ?? "");
 
   onProgress({ message: "Kimi run started.", phase: "running" });

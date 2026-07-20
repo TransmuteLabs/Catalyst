@@ -23,6 +23,7 @@ import {
   } from "./lib/vendors/codex.mjs";
 import {
     DEFAULT_VENDOR,
+    ensureVendorWriteMode,
     listVendorIds,
     normalizeVendorEffort,
     normalizeVendorModel,
@@ -904,6 +905,7 @@ async function handleTask(argv) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
   const write = Boolean(options.write);
+  ensureVendorWriteMode(vendor, write);
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast,

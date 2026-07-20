@@ -177,7 +177,8 @@ test("grok resume-last resumes the tracked grok session and stays vendor-isolate
   assert.equal(calls[1].args[resumeIndex + 1], "grok-sess-1");
 
   // The grok session must be invisible to another vendor's resume flow.
-  const crossVendor = run("node", [SCRIPT, "task", "--vendor", "kimi", "--resume-last"], {
+  // (--write so the request passes kimi's read-only gate and reaches resume resolution.)
+  const crossVendor = run("node", [SCRIPT, "task", "--vendor", "kimi", "--write", "--resume-last"], {
     cwd: workspace,
     env
   });
@@ -185,39 +186,41 @@ test("grok resume-last resumes the tracked grok session and stays vendor-isolate
   assert.match(crossVendor.stderr, /No previous Kimi task session was found/);
 });
 
-test("task --vendor kimi parses stream-json, records the session, and honors --write", () => {
+test("task --vendor kimi runs prompt mode without approval flags and rejects read-only", () => {
   const binDir = makeTempDir();
   const workspace = makeTempDir();
   markSetupComplete(workspace);
   const { argsFile } = installFakeKimi(binDir);
   const env = buildEnv(binDir);
 
+  // kimi-code prompt mode implicitly auto-approves, so a read-only request
+  // must fail fast instead of silently running write-capable.
   const readOnly = run("node", [SCRIPT, "task", "--vendor", "kimi", "summarize the repo"], {
     cwd: workspace,
     env
   });
-  assert.equal(readOnly.status, 0, readOnly.stderr);
-  assert.match(readOnly.stdout, /OK from kimi/);
+  assert.notEqual(readOnly.status, 0);
+  assert.match(readOnly.stderr, /Vendor "kimi" cannot enforce read-only/);
+  assert.ok(!fs.existsSync(argsFile), "the kimi CLI must not have been invoked for a read-only request");
 
   const written = run("node", [SCRIPT, "task", "--vendor", "kimi", "--write", "apply the fix"], {
     cwd: workspace,
     env
   });
   assert.equal(written.status, 0, written.stderr);
+  assert.match(written.stdout, /OK from kimi/);
 
   const calls = readCalls(argsFile).filter((call) => !call.args.includes("--version"));
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.ok(!calls[0].args.includes("--yolo"));
-  assert.ok(calls[1].args.includes("--yolo"));
-  for (const call of calls) {
-    assert.ok(call.args.includes("--output-format"));
-    assert.ok(call.args.includes("stream-json"));
-    assert.ok(call.args.includes("-p"));
-  }
+  assert.ok(!calls[0].args.includes("--auto"));
+  assert.ok(calls[0].args.includes("--output-format"));
+  assert.ok(calls[0].args.includes("stream-json"));
+  assert.ok(calls[0].args.includes("-p"));
 
   const jobs = loadJobs(workspace);
   const kimiJobs = jobs.filter((job) => job.vendor === "kimi");
-  assert.equal(kimiJobs.length, 2);
+  assert.equal(kimiJobs.length, 1);
   assert.equal(kimiJobs[0].threadId, "session_kimi_1");
 });
 

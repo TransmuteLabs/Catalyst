@@ -22,6 +22,7 @@ export const DEFAULT_VENDOR = "codex";
  * @property {string[]} reasoningEfforts  accepted --effort values ([] = effort unsupported)
  * @property {Map<string, string>} effortAliases  user-facing effort alias → real value
  * @property {Map<string, string>} modelAliases   user-facing model alias → real model id
+ * @property {boolean} enforcesReadOnly  whether the vendor can mechanically enforce a read-only run
  * @property {(sessionId: string) => string} resumeCommand  shell command that resumes a session
  * @property {(() => { available: boolean }) | null} getAvailability  CLI availability probe (null = companion handles it)
  * @property {((request: object) => Promise<object>) | null} runTask  CLI task runner (null = companion drives the vendor itself)
@@ -38,6 +39,7 @@ const VENDORS = new Map([
       reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh"],
       effortAliases: new Map(),
       modelAliases: new Map([["spark", "gpt-5.3-codex-spark"]]),
+      enforcesReadOnly: true,
       resumeCommand: (sessionId) => `codex resume ${sessionId}`,
       getAvailability: null,
       probeReadiness: null,
@@ -53,6 +55,7 @@ const VENDORS = new Map([
       reasoningEfforts: ["low", "medium", "high", "xhigh"],
       effortAliases: new Map([["max", "xhigh"]]),
       modelAliases: new Map(),
+      enforcesReadOnly: true,
       resumeCommand: (sessionId) => `grok --resume ${sessionId}`,
       getAvailability: getGrokAvailability,
       probeReadiness: probeGrokReadiness,
@@ -68,6 +71,10 @@ const VENDORS = new Map([
       reasoningEfforts: [],
       effortAliases: new Map(),
       modelAliases: new Map(),
+      // kimi-code >=0.27: prompt mode (`-p`) implicitly auto-approves tool
+      // actions and rejects `--yolo`/`--auto`/`--plan`, so a read-only run
+      // cannot be flag-enforced — read-only requests are rejected up front.
+      enforcesReadOnly: false,
       resumeCommand: (sessionId) => `kimi -r ${sessionId}`,
       getAvailability: getKimiAvailability,
       probeReadiness: probeKimiReadiness,
@@ -121,6 +128,19 @@ export function normalizeVendorModel(vendor, model) {
     return null;
   }
   return vendor.modelAliases.get(normalized.toLowerCase()) ?? normalized;
+}
+
+/**
+ * Reject a read-only request for vendors that cannot mechanically enforce it.
+ * @param {VendorDescriptor} vendor
+ * @param {boolean} write
+ */
+export function ensureVendorWriteMode(vendor, write) {
+  if (!write && vendor.enforcesReadOnly === false) {
+    throw new Error(
+      `Vendor "${vendor.id}" cannot enforce read-only in prompt mode (its CLI auto-approves non-interactive runs and rejects approval flags). Re-run with --write, or pick a vendor that supports read-only.`
+    );
+  }
 }
 
 /**

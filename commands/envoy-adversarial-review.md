@@ -45,7 +45,7 @@ Argument handling:
 - Unlike `/catalyst:envoy-review`, it can still take extra focus text after the flags.
 
 Foreground flow:
-- Run:
+- Run (set the Bash tool `timeout` parameter to `3600000` — reviews routinely outlast the default 2-minute Bash timeout; the harness clamps the value to its configured ceiling):
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/skills/envoy/scripts/envoy-companion.mjs" adversarial-review "$ARGUMENTS"
 ```

@@ -33,5 +33,6 @@ If Codex is already installed or npm is unavailable:
 
 Output rules:
 - Present the final setup output to the user.
+- Append one note after the report: foreground vendor runs are killed by the harness at its `BASH_MAX_TIMEOUT_MS` ceiling (stock: 10 minutes); for longer foreground runs raise it in settings `env` (e.g. `"BASH_MAX_TIMEOUT_MS": "3600000"`), or use `--background`.
 - If installation was skipped, present the original setup output.
 - If Codex is installed but not authenticated, preserve the guidance to run `!codex login`.

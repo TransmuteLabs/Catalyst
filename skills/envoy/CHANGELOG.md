@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.0
+
+- Kimi adapted to kimi-code >=0.27: prompt mode (`-p`) rejects `--yolo`/`--auto` and implicitly auto-approves tool actions, so write mode passes no approval flag; read-only kimi requests are rejected before the CLI is invoked (new registry field `enforcesReadOnly`, validated at task parse time) instead of silently running write-capable.
+- Foreground timeout doctrine: the runner agent, review commands, and SKILL.md now require an explicit Bash-tool `timeout` of 3600000 ms on foreground companion calls (the harness clamps to its `BASH_MAX_TIMEOUT_MS` ceiling), and the setup command surfaces how to raise the stock 10-minute ceiling.
+
 ## 1.3.0
 
 - Mechanical readiness probes in setup: each available non-default vendor answers a cheap probe command (`grok models` for auth, `kimi doctor` for config) whose exit code is the fact — setup output shows `auth check passed` / `config check FAILED: <detail>` per vendor, and the probe results persist in the recorded setup state. Doctrine: vendor facts are established only by mechanical metadata, never by narrative model output.
