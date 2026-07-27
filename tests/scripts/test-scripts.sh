@@ -69,5 +69,32 @@ printf '01\tmodelA\n1\tmodelB\n' > map-test.tsv
 got=$(awk -F'\t' -v n="1" '($1 "") == (n "") { print $2; exit }' map-test.tsv)
 [ "$got" = "modelB" ];                                     check "awk string-force lookup exact" 0 $?
 
+# ---- pipeline-breadcrumb (UserPromptSubmit) ----
+BC="$ROOT/hooks/pipeline-breadcrumb"
+PROJ="$WORK/proj"; mkdir -p "$PROJ"
+
+out=$(CLAUDE_PROJECT_DIR="$PROJ" bash "$BC")
+[ -z "$out" ];                                             check "bc silent without pipeline" 0 $?
+
+mkdir -p "$PROJ/.catalyst/sdd"
+printf 'Plan: docs/plans/x-plan.md (feat/x)\nTask 1: complete (commits abc..def, review clean)\nprose quoting Task 9: complete mid-line\n' > "$PROJ/.catalyst/sdd/progress.md"
+out=$(CLAUDE_PROJECT_DIR="$PROJ" bash "$BC")
+case "$out" in *"ARCANE"*"Plan: docs/plans/x-plan.md (feat/x)"*"Task 1: complete"*) check "bc ledger surfaced" 0 0 ;; *) check "bc ledger surfaced" 0 1 ;; esac
+case "$out" in *"Task 9"*) check "bc quotes are not marks" 0 1 ;; *) check "bc quotes are not marks" 0 0 ;; esac
+
+printf 'no identity here\n' > "$PROJ/.catalyst/sdd/progress.md"
+out=$(CLAUDE_PROJECT_DIR="$PROJ" bash "$BC")
+case "$out" in *"NO identity line"*) check "bc missing identity warned" 0 0 ;; *) check "bc missing identity warned" 0 1 ;; esac
+
+rm -rf "$PROJ/.catalyst/sdd"
+mkdir -p "$PROJ/.catalyst/campaign/alpha"
+printf 'status: active\n' > "$PROJ/.catalyst/campaign/alpha/PROGRAM.md"
+out=$(CLAUDE_PROJECT_DIR="$PROJ" bash "$BC")
+case "$out" in *"CAMPAIGN active: alpha"*) check "bc active campaign surfaced" 0 0 ;; *) check "bc active campaign surfaced" 0 1 ;; esac
+
+printf 'status: complete (2026-07-01)\n' > "$PROJ/.catalyst/campaign/alpha/PROGRAM.md"
+out=$(CLAUDE_PROJECT_DIR="$PROJ" bash "$BC")
+[ -z "$out" ];                                             check "bc silent on completed campaign" 0 $?
+
 echo "test-scripts: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Pipeline breadcrumb — UserPromptSubmit hook (mechanism absorbed from Trellis's
+# workflow-state contract, 2026-07-27): the pipeline's state lives in artifacts,
+# and this hook re-surfaces it EVERY turn so compaction cannot silently drop
+# process discipline mid-effort.
+#
+# Contract: plain text on stdout is added to the model's context (Claude Code
+# UserPromptSubmit); SILENT (no output, exit 0) when no Catalyst pipeline is
+# active in this checkout. Reads only; writes nothing; never blocks a prompt.
+
+set -u
+ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+LEDGER="$ROOT/.catalyst/sdd/progress.md"
+
+emitted=0
+
+if [ -f "$LEDGER" ]; then
+  plan=$(grep -m1 '^Plan: ' "$LEDGER" 2>/dev/null || true)
+  marks=$(grep -E '^(Task [0-9]+:|verification:)' "$LEDGER" 2>/dev/null | tail -3 || true)
+  printf '<CATALYST-STATE>\n'
+  emitted=1
+  printf 'ARCANE effort active in this checkout.\n'
+  if [ -n "$plan" ]; then
+    printf '%s\n' "$plan"
+  else
+    printf 'Ledger has NO identity line — repair per arcane-mode references/ledger.md before any dispatch.\n'
+  fi
+  if [ -n "$marks" ]; then
+    printf 'Last line-anchored marks:\n%s\n' "$marks"
+  else
+    printf 'No task marks yet — execution has not started or the ledger is fresh.\n'
+  fi
+  printf 'Truth lives in .catalyst/sdd/progress.md and git log, not session memory: re-read the ledger before the next dispatch (resume rules: arcane-mode references/ledger.md).\n'
+fi
+
+for prog in "$ROOT"/.catalyst/campaign/*/PROGRAM.md; do
+  [ -f "$prog" ] || continue
+  if grep -q '^status: active' "$prog" 2>/dev/null; then
+    if [ "$emitted" -eq 0 ]; then printf '<CATALYST-STATE>\n'; emitted=1; fi
+    name=$(basename "$(dirname "$prog")")
+    printf 'CAMPAIGN active: %s — routing and "what next" belong to catalyst:campaign (router), not improvisation.\n' "$name"
+  fi
+done
+
+if [ "$emitted" -eq 1 ]; then printf '</CATALYST-STATE>\n'; fi
+exit 0
