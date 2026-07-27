@@ -20,13 +20,19 @@ check() { # check <name> <expected> <actual>
 
 # ---- fixtures ----
 mkdir -p "$WORK/agents" "$WORK/rw" "$WORK/home"
-printf -- '---\nname: withmodel\ndescription: x\nmodel: glm-5.2\n---\nbody\n' > "$WORK/agents/withmodel.md"
+printf -- '---\nname: withmodel\ndescription: x\nmodel: glm-5.2\neffort: xhigh\n---\nbody\n' > "$WORK/agents/withmodel.md"
 printf -- '---\nname: sonnetagent\ndescription: x\nmodel: sonnet\n---\nbody\n'  > "$WORK/agents/sonnetagent.md"
 printf -- '---\nname: nomodel\ndescription: x\n---\nbody\n'                     > "$WORK/agents/nomodel.md"
 printf -- '---\nname: inheritagent\ndescription: x\nmodel: inherit\n---\nbody\n' > "$WORK/agents/inheritagent.md"
+printf -- '---\nname: pinned1a\ndescription: x\neffort: max\n---\nbody\n'        > "$WORK/agents/pinned1a.md"
+printf -- '---\nname: badeffort\ndescription: x\nmodel: glm-5.2\neffort: turbo\n---\nbody\n' > "$WORK/agents/badeffort.md"
+printf -- '---\nname: kimipin\ndescription: x\nmodel: kimi-k3\neffort: max\n---\nbody\n'     > "$WORK/agents/kimipin.md"
+printf -- '---\nname: kimipinok\ndescription: x\nmodel: kimi-k3\neffort: high\n---\nbody\n'  > "$WORK/agents/kimipinok.md"
+printf -- '---\nname: gptmedium\ndescription: x\nmodel: gpt-5.6-sol\neffort: medium\n---\nbody\n' > "$WORK/agents/gptmedium.md"
 
-# Mutant table: the sonnet ban removed (everything else intact).
+# Mutant tables: one rule removed each (everything else intact).
 sed '/^\[bans\.sonnet\]/,/^reason/d' "$BASE_TABLE" > "$WORK/table-no-sonnet-ban.toml"
+sed '/^\[channels\.agent\]/,/^effort_required_for/d' "$BASE_TABLE" > "$WORK/table-no-agent-effort.toml"
 
 T="$BASE_TABLE"          # active base table for gate()
 O="$WORK/absent-override.toml"  # absent by default — isolates from the user's real override
@@ -86,8 +92,23 @@ check "t3 auditor on fable allowed"         allow "$(gate "$(task catalyst:audit
 check "t3 adjudicator never delegated"      deny  "$(gate "$(task adjudicator opus)")"
 # declared class tightens (D-02): opus is outside class 1a; typo'd class is loud
 check "t3 class 1a rejects opus"            deny  "$(gate "$(task implementer opus "[dispatch-class:1a] fix")")"
-check "t3 class 1a accepts grok"            allow "$(gate "$(task implementer grok-4.5 "[dispatch-class:1a] fix")")"
+check "t3 class 1a accepts grok"            allow "$(gate "$(task pinned1a grok-4.5 "[dispatch-class:1a] fix")")"
 check "t3 unknown class marker is loud"     deny  "$(gate "$(task implementer opus "[dispatch-class:9z] fix")")"
+
+# ---- Agent-channel effort: proxy models need explicit effort + accepted pins ----
+check "ae glm without effort denied"        deny  "$(gate "$(task nomodel glm-5.2)")"
+out=$(gate_out "$(task nomodel glm-5.2)")
+case "$out" in *effort*) check "ae deny names effort" 0 0 ;; *) check "ae deny names effort" 0 1 ;; esac
+check "ae anthropic model exempt"           allow "$(gate "$(task nomodel opus)")"
+check "ae frontmatter effort accepted"      allow "$(gate "$(task_nomodel withmodel)")"
+check "ae invalid effort value denied"      deny  "$(gate "$(task_nomodel badeffort)")"
+check "ae pin kimi-k3 at max denied"        deny  "$(gate "$(task_nomodel kimipin)")"
+check "ae pin kimi-k3 at high allowed"      allow "$(gate "$(task_nomodel kimipinok)")"
+check "ae pin gpt at medium denied"         deny  "$(gate "$(task_nomodel gptmedium)")"
+check "ae pin grok below max denied"        deny  "$(gate "$(task kimipinok grok-4.5)")"
+T="$WORK/table-no-agent-effort.toml"
+check "ae MUTANT no-requirement table"      allow "$(gate "$(task nomodel glm-5.2)")"
+T="$BASE_TABLE"
 
 # ---- truth 4: envoy/proxy without explicit effort denied where the table requires it ----
 check "t4 envoy grok effortless denied"     deny  "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok do-thing')")"

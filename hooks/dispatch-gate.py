@@ -175,16 +175,17 @@ def agent_dirs(cwd):
     return dirs
 
 
-def frontmatter_model(subagent_type, cwd):
-    """The ``model:`` field of the agent's definition file, or None.
+def frontmatter_fields(subagent_type, cwd):
+    """``model:`` and ``effort:`` from the agent's definition file.
 
     First existing <name>.md wins (project > user > plugins — the harness's own
-    precedence). A found definition without a model field ends the search:
-    that IS the definition, and it declares no model.
+    precedence). A found definition ends the search even when it declares
+    neither field: that IS the definition.
     """
+    fields = {"model": None, "effort": None}
     name = subagent_type.rsplit(":", 1)[-1].strip()
     if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
-        return None
+        return fields
     for d in agent_dirs(cwd):
         path = os.path.join(d, name + ".md")
         if not os.path.isfile(path):
@@ -193,25 +194,27 @@ def frontmatter_model(subagent_type, cwd):
             with open(path, encoding="utf-8", errors="replace") as f:
                 text = f.read()
         except OSError:
-            return None
+            return fields
         if not text.startswith("---\n"):
-            return None
+            return fields
         end = text.find("\n---", 4)
         if end == -1:
-            return None
+            return fields
         for line in text[4:end].split("\n"):
-            if line.startswith("model:"):
-                return line.partition(":")[2].strip().strip("\"'")
-        return None
-    return None
+            for key in ("model", "effort"):
+                if line.startswith(key + ":"):
+                    fields[key] = line.partition(":")[2].strip().strip("\"'")
+        return fields
+    return fields
 
 
 def check_dispatch(tool_input, table, cwd):
     st = str(tool_input.get("subagent_type") or "")
+    fm = frontmatter_fields(st, cwd)
     model = str(tool_input.get("model") or "").strip()
     source = "the call"
     if model.lower() in UNSET_MODELS:
-        model = (frontmatter_model(st, cwd) or "").strip()
+        model = (fm["model"] or "").strip()
         source = f"the frontmatter of agent '{st}'"
         if model.lower() in UNSET_MODELS:
             emit_deny(
@@ -258,24 +261,59 @@ def check_dispatch(tool_input, table, cwd):
                       f"failure? Remove the class marker or declare the higher class — "
                       f"the classification stays the controller's decision.")
 
+    # Agent-channel effort: proxy models must carry an explicit effort — the
+    # carrier is the agent definition's frontmatter ``effort:`` field (the
+    # harness sends it as output_config.effort; measured honored 2026-07-27).
+    agent_cfg = section(table, "channels").get("agent") or {}
+    required_for = agent_cfg.get("effort_required_for") or []
+    if any(str(p).lower() in eff for p in required_for):
+        effort = str(tool_input.get("effort") or "").strip().lower() \
+            or str(fm["effort"] or "").strip().lower()
+        if not effort:
+            emit_deny(f"proxy model '{model}' dispatched without an explicit effort — "
+                      f"the vendor's silent default effort is the defect class this "
+                      f"gate closes. Carrier: the agent definition's frontmatter "
+                      f"`effort: low|medium|high|xhigh|max` (dispatch an effort-pinned "
+                      f"agent). Routing home: hooks/routing-table.toml [channels.agent].")
+        if effort not in EFFORT_WORDS:
+            emit_deny(f"effort '{effort}' (agent '{st}') is not a valid level "
+                      f"({'|'.join(EFFORT_WORDS)}) — an unknown value would be "
+                      f"silently ignored by the harness.")
+        check_pins(model, effort, table, "Agent-channel effort pin violated")
+
+
+def pins_table(table):
+    """The channel-neutral accepted-effort pins ([pins]): model pattern -> efforts."""
+    pins = table.get("pins")
+    if pins is None:
+        return {}
+    if not isinstance(pins, dict) or any(not isinstance(v, list) for v in pins.values()):
+        emit_deny("routing table section [pins] is malformed (expected "
+                  "model-pattern = [efforts]) — fail-closed until the table is repaired")
+    return pins
+
+
+def check_pins(model, effort, table, where):
+    """Accepted-effort pins apply on every channel where model+effort are known."""
+    eff_model = model.lower()
+    for pat, allowed in pins_table(table).items():
+        if str(pat).lower() in eff_model:
+            allowed_l = [str(a).lower() for a in allowed]
+            if effort not in allowed_l:
+                emit_deny(f"{where}: model '{model}' runs at {allowed} "
+                          f"(accepted-effort pin), got '{effort}' "
+                          f"(routing home: hooks/routing-table.toml [pins]).")
+
 
 def check_channel_model(model, effort, table):
-    """Bans + proxy effort pins for a model/effort pair extracted from a Bash call."""
+    """Bans + accepted-effort pins for a model/effort pair from a Bash call."""
     eff_model = model.lower()
     for ban_name, ban in section(table, "bans").items():
         for p in ban.get("patterns") or []:
             if str(p).lower() in eff_model:
                 emit_deny(f"model '{model}' is banned (ban '{ban_name}', pattern '{p}'): "
                           f"{ban.get('reason', '')}")
-    channels = section(table, "channels")
-    pins = (channels.get("proxy") or {}).get("pins") or {}
-    for pat, allowed in pins.items():
-        if str(pat).lower() in eff_model:
-            allowed_l = [str(a).lower() for a in allowed]
-            if effort not in allowed_l:
-                emit_deny(f"proxy effort pin violated: model '{model}' runs at "
-                          f"{allowed} on this channel, got '{effort}' "
-                          f"(routing home: hooks/routing-table.toml).")
+    check_pins(model, effort, table, "proxy channel effort pin violated")
 
 
 def check_bash(cmd, table):
@@ -345,6 +383,17 @@ def render_slice():
                  for cid, c in classes.items()]
         lines.append("- Классы исполнения (опц. маркер [dispatch-class:<id>] в промпте): "
                      + "; ".join(parts) + ".")
+    agent_cfg = (table.get("channels") or {}).get("agent") or {}
+    required_for = agent_cfg.get("effort_required_for") or []
+    if required_for:
+        lines.append("- Прокси-модели в Agent-канале ("
+                     + "|".join(str(p) for p in required_for)
+                     + "): effort ОБЯЗАТЕЛЕН — frontmatter `effort:` определения агента.")
+    pins = table.get("pins") or {}
+    if pins:
+        lines.append("- Принятые effort по моделям (Agent/прокси; envoy-CLI — свои потолки): "
+                     + ", ".join(f"{m}→{'|'.join(str(a) for a in al)}"
+                                 for m, al in pins.items()) + ".")
     vendors = ((table.get("channels") or {}).get("envoy") or {}).get("vendors") or {}
     if vendors:
         req = [v for v, c in vendors.items() if c.get("effort_required", True)]
@@ -355,13 +404,8 @@ def render_slice():
         lines.append(line + ".")
     proxy = (table.get("channels") or {}).get("proxy") or {}
     if proxy.get("effort_required", True):
-        line = ("- прокси-POST (127.0.0.1:8317): reasoning_effort обязан быть виден "
-                "в команде")
-        pins = proxy.get("pins") or {}
-        if pins:
-            line += ("; пины: " + ", ".join(
-                f"{m}→{'|'.join(str(a) for a in al)}" for m, al in pins.items()))
-        lines.append(line + ".")
+        lines.append("- прокси-POST (127.0.0.1:8317): reasoning_effort обязан быть "
+                     "виден в команде.")
     lines.append("- Оверрайд: ~/.claude/catalyst/routing-override.toml "
                  "(запись второго уровня перекрывает базовую целиком).")
     lines.append("</DISPATCH-ROUTING>")
