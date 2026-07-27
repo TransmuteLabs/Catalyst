@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Launcher for run-hook.cmd (which always execs bash): hands off to the Python
+# dispatch gate. Fail-closed (spec D-07): if python3 is unavailable the gate
+# cannot judge, so dispatches and gated Bash channels are denied — but
+# unrelated Bash still passes on a crude marker scan of the raw hook input.
+
+set -u
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "${SCRIPT_DIR}/dispatch-gate.py" "$@"
+fi
+
+INPUT="$(cat 2>/dev/null || true)"
+case "$INPUT" in
+  *envoy-companion.mjs*|*proxy-critique*|*"8317/v1/chat/completions"*) : ;;
+  *\"Task\"*|*\"Agent\"*) : ;;
+  *) exit 0 ;;
+esac
+
+REASON="Dispatch gate: python3 is unavailable - the gate cannot run (fail-closed). Install Python >= 3.11 or repair the toolchain via catalyst:install."
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$REASON" | cat
+else
+  printf '{"decision":"deny","reason":"%s"}\n' "$REASON" | cat
+fi
+exit 0

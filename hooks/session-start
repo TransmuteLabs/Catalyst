@@ -10,6 +10,13 @@ PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 intro_content=$(cat "${PLUGIN_ROOT}/skills/using-catalyst/SKILL.md" 2>&1 || echo "Error reading using-catalyst skill")
 
+# Dispatch routing slice — rendered from the SAME table the PreToolUse gate
+# reads (hooks/routing-table.toml), so no second copy of the rules exists.
+# If rendering fails (no python3), inject a loud warning: the gate is
+# fail-closed and will deny dispatches until repaired.
+routing_slice=$(python3 "${SCRIPT_DIR}/dispatch-gate.py" --render-slice 2>/dev/null) \
+  || routing_slice="!! DISPATCH ROUTING SLICE UNAVAILABLE (python3 or hooks/routing-table.toml broken) — the dispatch gate is fail-closed: Task/Agent dispatches and envoy/proxy calls will be DENIED until repaired (catalyst:install)."
+
 # Escape for JSON embedding via bash parameter substitution (single C-level
 # passes — far faster than a character loop).
 escape_for_json() {
@@ -23,7 +30,8 @@ escape_for_json() {
 }
 
 intro_escaped=$(escape_for_json "$intro_content")
-session_context="<CATALYST>\nYou have Catalyst - a disciplined layer for multi-step software work. Below is the 'using-catalyst' introduction: how its process skills route. For any specific skill, use the 'Skill' tool.\n\n${intro_escaped}\n</CATALYST>"
+slice_escaped=$(escape_for_json "$routing_slice")
+session_context="<CATALYST>\nYou have Catalyst - a disciplined layer for multi-step software work. Below is the 'using-catalyst' introduction: how its process skills route. For any specific skill, use the 'Skill' tool.\n\n${intro_escaped}\n\n${slice_escaped}\n</CATALYST>"
 
 # Emit only the field the current platform consumes.
 # Cursor: additional_context (snake_case). Claude Code: nested

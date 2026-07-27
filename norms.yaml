@@ -193,3 +193,11 @@ norms:
     what: a guarantee-carrying prose invariant that must survive future edits is pinned by a deterministic check asserting the exact string present plus a forbidden-phrase blacklist absent; checks themselves must be provably able to fail (no vacuous green, no skipped prerequisite reported green)
     home: skills/forge-skill/references/harness.md
     mirrors: []
+
+  - id: routing-table-normative
+    what: hooks/routing-table.toml is the normative home of the EXECUTABLE routing rules (model bans, role floors, class sets, channel effort requirements and pins); the SessionStart slice is rendered from it and the PreToolUse gate enforces it; MODEL-ROUTING-PLAYBOOK.md mirrors those rules as prose, and measurements/model profiles stay prose-only, never in the table
+    home: hooks/routing-table.toml
+    mirrors:
+      - hooks/dispatch-gate.py                   # enforcement, channel-id contract constants
+      - hooks/session-start                      # injected slice (generated, never hand-written)
+      - skills/envoy/SKILL.md                    # mandatory --effort rule for codex/grok task runs

@@ -1,7 +1,6 @@
 ---
 name: envoy-runner
 description: Proactively use when Claude Code is stuck, wants a second implementation or diagnosis pass, needs a deeper root-cause investigation, or should hand a substantial coding task to Codex through the shared runtime
-model: sonnet
 tools: Bash
 skills:
   - envoy

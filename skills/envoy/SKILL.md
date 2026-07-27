@@ -23,7 +23,7 @@ Execution rules:
 - Use `task` for every rescue request, including diagnosis, planning, research, and explicit fix requests.
 - You may read `references/gpt-5-4-prompting.md` (and the recipe files it links) to rewrite the user's request into a tighter Codex prompt before the single `task` call.
 - That prompt drafting is the only Claude-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
-- Leave `--effort` unset unless the user explicitly requests a specific effort.
+- `--effort` is MANDATORY for codex and grok `task` runs — the dispatch gate (hooks/routing-table.toml) denies effortless calls: a vendor silently running at its default effort is the defect class the gate closes. Use the effort from the forwarded request; absent one, use `--effort xhigh` for codex and `--effort high` for grok. Kimi takes no `--effort` (the companion rejects it).
 - Leave model unset by default. Add `--model` only when the user explicitly asks for one.
 - Map `spark` to `--model gpt-5.3-codex-spark`.
 - Default to a write-capable Codex run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.

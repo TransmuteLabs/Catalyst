@@ -21,6 +21,13 @@ Detection means the tool **responds with its own signature** — a name on PATH 
 | tldr (code analysis) | `tldr --version` identifies TransmuteLabs tldr, not tldr-pages | prebuilt `tldr-<triple>` from [tldr-code-releases](https://github.com/TransmuteLabs/tldr-code-releases) Releases → `~/.local/bin/tldr`; or `cc-setup install --with-tools` | PATH collision with tldr-pages is common — signature check is mandatory |
 | fastedit (part of the family) | `fastedit --help` responds with fastedit's own usage | prebuilt `fastedit-<triple>`, `fastedit-mcp-<triple>`, `fastedit-hook-<triple>` from [fastedit-rs-releases](https://github.com/TransmuteLabs/fastedit-rs-releases) Releases → `~/.local/bin/`; or `cc-setup install --with-tools` | source repo is private; MCP wiring: `claude mcp add fastedit fastedit-mcp` (see the releases README) |
 | ouros CLI (optional) | `ouros --help` | `cargo install ouros` | NOT required when the binary layer is installed — `cc-research` embeds ouros natively |
+| Dispatch gate on Codex | `~/.codex/hooks.json` exists, parses as JSON, and carries a `PreToolUse` entry whose command ends in `run-hook.cmd" dispatch-gate` | merge the entry below into `~/.codex/hooks.json` (create the file with `{"hooks":{}}` first if missing), with `<plugin-root>` expanded to the installed Catalyst plugin path; never overwrite unrelated entries | Claude Code wires the gate automatically from the plugin's `hooks/hooks.json`; Codex has no plugin-hooks channel (`.codex-plugin/plugin.json` ships `"hooks": {}`), so install owns this write and re-checks it in every detection sweep |
+
+The Codex entry to merge (same shape as the plugin's own `hooks/hooks.json` PreToolUse block):
+
+```json
+{"hooks": {"PreToolUse": [{"matcher": "^(Task|Agent|Bash)$", "hooks": [{"type": "command", "command": "\"<plugin-root>/hooks/run-hook.cmd\" dispatch-gate"}]}]}}
+```
 
 ## Procedure
 
