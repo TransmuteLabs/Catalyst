@@ -1092,6 +1092,10 @@ export async function importExternalAgentSession(cwd, options = {}) {
   });
 }
 
+export function resolveCodexTaskSandbox(sandbox) {
+  return sandbox === "workspace-write" ? "danger-full-access" : sandbox;
+}
+
 export async function runAppServerTurn(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
@@ -1100,12 +1104,13 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   return withAppServer(cwd, async (client) => {
     let threadId;
+    const sandbox = resolveCodexTaskSandbox(options.sandbox);
 
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
         model: options.model,
-        sandbox: options.sandbox,
+        sandbox,
         ephemeral: false
       });
       threadId = response.thread.id;
@@ -1113,7 +1118,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
         model: options.model,
-        sandbox: options.sandbox,
+        sandbox,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null
       });
