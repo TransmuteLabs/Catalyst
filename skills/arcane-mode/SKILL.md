@@ -41,7 +41,9 @@ Subagent-driven development pipeline: spec → plan → execution by fresh subag
 | Implementation from a complete brief, fix waves with exact direction | executor | the brief must contain zero open questions |
 | Scouts | executor allowed | find/list/measure/quote only — no conclusions; a GROUNDING scout (facts that enter a brief as ground truth) runs "standard" |
 
-Current tier mapping: top = fable, standard = opus, executor = sonnet. Haiku — never. The model is named explicitly in every dispatch. Turn count beats token price: a cheap model taking 2-3× the turns on multi-step work costs more overall — the floor for reviewers and prose-brief implementers is "standard".
+Current tier mapping: top = fable, standard = opus, executor = the vendor rotation (grok / gpt-codex / glm / kimi), reached through their own channels — envoy CLI or the proxy, not the Agent tool. Sonnet, haiku and MiniMax are never used, in any role. The model is named explicitly in every dispatch — a dispatch that names none is DENIED by the gate, never silently inherited. So is the class: every dispatch declares `[dispatch-class:<id>]` in its prompt (`references/dispatch-templates.md`), because a dispatch belonging to no case is governed by no rule. Turn count beats token price: a cheap model taking 2-3× the turns on multi-step work costs more overall — the floor for reviewers and prose-brief implementers is "standard".
+
+The executable form of these rules — the per-class model sets, the agent-name-to-class mapping, the mandatory class declaration, channel effort requirements and pins — lives in `hooks/routing-table.toml` (its normative home; `norms.yaml`: `routing-table-normative`), is enforced on every dispatch by the PreToolUse gate, and is injected as a compact slice at session start. This section compresses that table and must never contradict it; on divergence the table governs.
 
 Effort is a second dial, set per dispatch independently of tier; budget pressure collapses the agent fleet, never planning or the review floor; model availability is discovered from failed spawns, not assumed: `references/economics.md`.
 

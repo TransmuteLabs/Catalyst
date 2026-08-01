@@ -195,9 +195,13 @@ norms:
     mirrors: []
 
   - id: routing-table-normative
-    what: hooks/routing-table.toml is the normative home of the EXECUTABLE routing rules (model bans, role floors, class sets, channel effort requirements and pins); the SessionStart slice is rendered from it and the PreToolUse gate enforces it; MODEL-ROUTING-PLAYBOOK.md mirrors those rules as prose, and measurements/model profiles stay prose-only, never in the table
+    what: hooks/routing-table.toml is the normative home of the EXECUTABLE routing rules; [classes.*] is the SOLE home of model sets (roles carry no second list — they map an agent NAME to its class), every dispatch must declare its class, a breach DENIES the dispatch (the model rules are binding; only the [stats] fleet observation is advisory, and an optional [dispatch] mode = "warn" trades that bindingness away), and the escape hatch is one parameter ([experiment] allow_all_models); overrides layer base < ~/.claude < project .claude, merging by named entry; the SessionStart slice is rendered from it and the PreToolUse gate enforces it; MODEL-ROUTING-PLAYBOOK.md mirrors those rules as prose, and measurements/model profiles stay prose-only, never in the table
     home: hooks/routing-table.toml
     mirrors:
       - hooks/dispatch-gate.py                   # enforcement, channel-id contract constants
       - hooks/session-start                      # injected slice (generated, never hand-written)
+      - hooks/dispatch-stats.py                  # [stats] thresholds + fleet bookkeeping + warn-mode context channel
+      - hooks/routing-override.template.toml     # commented, inert template of every knob
       - skills/envoy/SKILL.md                    # mandatory --effort rule for codex/grok task runs
+      - skills/arcane-mode/SKILL.md              # tier->model mapping prose (drifted to "executor = sonnet" until 2026-08-01)
+      - skills/arcane-mode/references/dispatch-templates.md  # mandatory class marker as a universal dispatch element

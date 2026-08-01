@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Launcher for run-hook.cmd (which always execs bash): hands off to the Python
+# dispatch stats recorder. Fail-OPEN by design, the opposite of the gate: this
+# is bookkeeping, and a missing python3 must never disturb a tool call that
+# already ran successfully.
+
+set -u
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "${SCRIPT_DIR}/dispatch-stats.py" "$@"
+fi
+cat >/dev/null 2>&1 || true
+exit 0

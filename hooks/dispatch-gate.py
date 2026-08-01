@@ -16,16 +16,24 @@ Contract (runtime-independent — a Rust replacement must preserve it):
             Cursor:      {"permission": "deny", "userMessage": ..., "agentMessage": ...}
             otherwise:   {"decision": "deny", "reason": "..."}
   table   : hooks/routing-table.toml (base, ships with the plugin) overlaid by
-            ~/.claude/catalyst/routing-override.toml. An override's
-            second-level table (e.g. [bans.minimax], [roles.critic]) replaces
-            the base entry WHOLESALE. Missing/invalid table or an unknown
-            schema_version anywhere → fail-closed (dispatches and gated Bash
-            channels are denied with the file and the breakage named).
+            ~/.claude/catalyst/routing-override.toml and then by the nearest
+            <project>/.claude/catalyst/routing-override.toml at or above cwd.
+            A layer's second-level table (e.g. [classes.1e]) replaces the base
+            entry WHOLESALE; entries it does not name survive. Missing/invalid
+            table or an unknown schema_version anywhere → fail-closed
+            (dispatches and gated Bash channels are denied with the file and
+            the breakage named).
   writes  : none, ever. The gate reads the table and agent frontmatter only.
 
 Effective model resolution: tool_input.model → agent frontmatter ``model:`` →
 unset ("inherit"/"default" count as unset) → deny. Inheriting the parent model
-silently is the defect class this gate closes.
+silently is the defect class this gate closes. Every dispatch must also declare
+its case with a [dispatch-class:<id>] marker: a dispatch belonging to no case is
+checked by nothing, which is the same hole one level up.
+
+Gated Bash channels: the envoy companion, the proxy POST, the proxy-critique
+wrapper, and a vendor CLI launched DIRECTLY (outside envoy) — same models and
+same ledger, so the same effort and admission rules.
 
 The channel identification constants below are contract constants mirrored in
 routing-table.toml's header comment: the Bash early-exit must work even when
@@ -34,7 +42,8 @@ never unrelated Bash commands.
 
 Env knobs (used by tests/scripts/test-dispatch-gate.sh):
   CATALYST_ROUTING_TABLE     base table path (default: alongside this script)
-  CATALYST_ROUTING_OVERRIDE  override path (default: ~/.claude/catalyst/routing-override.toml)
+  CATALYST_ROUTING_OVERRIDE  machine override (default: ~/.claude/catalyst/routing-override.toml)
+  CATALYST_ROUTING_PROJECT_OVERRIDE  project override (default: found by walking up from cwd)
   CATALYST_AGENT_DIRS        os.pathsep-separated agent dirs (replaces defaults)
 """
 import glob
@@ -54,10 +63,17 @@ SCHEMA_SUPPORTED = (1,)
 ENVOY_MARK = "envoy-companion.mjs"
 PROXY_MARK = "8317/v1/chat/completions"
 PROXY_CRITIQUE_MARK = "proxy-critique"
+# Vendor CLIs launched directly (outside the envoy companion). This tuple is the
+# EARLY-EXIT hint only — it decides whether the table is worth reading, and so
+# must live in code like the other channel constants (the early exit has to work
+# with an unreadable table). The authoritative per-vendor rules are the table's
+# [channels.cli.vendors.*]; a vendor added there must be added here too, which
+# tests/scripts/test-dispatch-gate.sh pins.
+CLI_BIN_HINTS = ("codex", "grok", "kimi", "glm")
 
 EFFORT_WORDS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 UNSET_MODELS = ("", "inherit", "default")
-CLASS_MARKER_RE = re.compile(r"\[dispatch-class:\s*([0-9A-Za-z_-]+)\s*\]")
+CLASS_MARKER_RE = re.compile(r"\[dispatch-class:\s*([0-9A-Za-z_-]+)\s*\]", re.I)
 ENVOY_TASK_RE = re.compile(r"envoy-companion\.mjs[\"']?\s+task\b")
 ENVOY_VENDOR_RE = re.compile(r"--vendor[=\s]+[\"']?([A-Za-z0-9_-]+)")
 ENVOY_EFFORT_RE = re.compile(r"--effort[=\s]+[\"']?(%s)\b" % "|".join(EFFORT_WORDS))
@@ -69,8 +85,24 @@ PROXY_MODEL_RE = re.compile(r'\\?"model\\?"\s*:\s*\\?"([^"\\]+)')
 PROXY_EFFORT_RE = re.compile(r'\\?"reasoning_effort\\?"\s*:\s*\\?"([A-Za-z]+)')
 
 
+class Violation(Exception):
+    """A broken routing rule. What HAPPENS to it is the caller's decision.
+
+    The checks raise; the boundary decides. That split is what lets one rule set
+    serve two modes (block the dispatch, or let it run and remind) and lets the
+    PostToolUse recorder re-evaluate the same rules without a second copy.
+    """
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
 def emit_deny(reason):
-    reason = "Dispatch gate: " + reason
+    raise Violation("Dispatch gate: " + reason)
+
+
+def print_deny(reason):
     if os.environ.get("CURSOR_PLUGIN_ROOT"):
         out = {"permission": "deny", "userMessage": reason, "agentMessage": reason}
     elif os.environ.get("CLAUDE_PLUGIN_ROOT") and not os.environ.get("COPILOT_CLI"):
@@ -82,7 +114,17 @@ def emit_deny(reason):
     else:
         out = {"decision": "deny", "reason": reason}
     print(json.dumps(out, ensure_ascii=False))
-    raise SystemExit(0)
+
+
+def print_warn(reason):
+    """Non-blocking: the dispatch proceeds, the breach is said out loud.
+
+    Never a permissionDecision — an "allow" from a PreToolUse hook would also
+    auto-approve the tool call, and a routing reminder must not hand out
+    permissions as a side effect. The model-facing copy of this reminder is
+    added by the PostToolUse recorder, which has a context channel.
+    """
+    print(json.dumps({"systemMessage": reason}, ensure_ascii=False))
 
 
 def base_table_path():
@@ -90,11 +132,46 @@ def base_table_path():
         os.path.dirname(os.path.abspath(__file__)), "routing-table.toml")
 
 
-def override_path():
-    env = os.environ.get("CATALYST_ROUTING_OVERRIDE")
-    if env is not None:
-        return env
-    return os.path.expanduser(os.path.join("~", ".claude", "catalyst", "routing-override.toml"))
+PROJECT_OVERRIDE_REL = os.path.join(".claude", "catalyst", "routing-override.toml")
+
+
+def find_project_override(cwd):
+    """Nearest .claude/catalyst/routing-override.toml at or above cwd, or None.
+
+    Walked rather than resolved through git so a checkout-less tree and a nested
+    directory-scoped config both work; the FIRST (most specific) hit wins.
+    """
+    d = os.path.abspath(cwd or os.getcwd())
+    while True:
+        cand = os.path.join(d, PROJECT_OVERRIDE_REL)
+        if os.path.isfile(cand):
+            return cand
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def override_paths(cwd):
+    """Override layers over the base table, LEAST specific first.
+
+    base (ships with the plugin) < ~/.claude/... (machine) < <project>/.claude/...
+    Each layer merges: a named entry replaces its base namesake whole, entries it
+    does not name survive. So a project config can retune one class without
+    restating the table.
+    """
+    layers = []
+    env_home = os.environ.get("CATALYST_ROUTING_OVERRIDE")
+    layers.append(env_home if env_home is not None else os.path.expanduser(
+        os.path.join("~", ".claude", "catalyst", "routing-override.toml")))
+    env_proj = os.environ.get("CATALYST_ROUTING_PROJECT_OVERRIDE")
+    if env_proj is not None:
+        layers.append(env_proj)
+    else:
+        found = find_project_override(cwd)
+        if found and os.path.abspath(found) not in {os.path.abspath(l) for l in layers}:
+            layers.append(found)
+    return layers
 
 
 def check_schema(tbl, path, required=True):
@@ -108,7 +185,7 @@ def check_schema(tbl, path, required=True):
     return None
 
 
-def load_table():
+def load_table(cwd=None):
     """Return (table, None) on success or (None, error_text) — never raises."""
     base_p = base_table_path()
     if tomllib is None:
@@ -125,8 +202,9 @@ def load_table():
     err = check_schema(base, base_p)
     if err:
         return None, err
-    over_p = override_path()
-    if over_p and os.path.isfile(over_p):
+    for over_p in override_paths(cwd):
+        if not over_p or not os.path.isfile(over_p):
+            continue
         try:
             with open(over_p, "rb") as f:
                 over = tomllib.load(f)
@@ -156,6 +234,148 @@ def section(table, name):
         emit_deny(f"routing table section [{name}] is malformed (expected tables) — "
                   f"fail-closed until the table is repaired")
     return sec
+
+
+def known_model_ids(table):
+    """Every model named by any [classes.*] entry.
+
+    There is no separate model registry on purpose: a model is listed in the
+    classes where it may work, and the permitted set is the union of those. A
+    model named nowhere is permitted nowhere. [roles.*] deliberately holds no
+    model lists — a second set would drift from this one. An empty union is a
+    table defect, not a licence to pass everything.
+    """
+    ids = set()
+    for entry in section(table, "classes").values():
+        for a in entry.get("allowed") or []:
+            ids.add(str(a).strip().lower())
+    if not ids:
+        emit_deny("routing table names no models in any [classes.*] entry — "
+                  "fail-closed: dispatches stay blocked until the table is "
+                  "repaired (routing home: hooks/routing-table.toml).")
+    return ids
+
+
+def declared_class(text):
+    """The single class id declared in a prompt/command, or None.
+
+    Case-insensitive (a controller writing [DISPATCH-CLASS:1B] declared a class
+    and must not be told it declared none). Two DIFFERENT ids is an ambiguity,
+    not a first-wins: silently picking one is the defect class this gate closes.
+    """
+    found = [m.group(1).strip().lower() for m in CLASS_MARKER_RE.finditer(text or "")]
+    if not found:
+        return None
+    distinct = sorted(set(found))
+    if len(distinct) > 1:
+        emit_deny(f"the prompt declares more than one dispatch class "
+                  f"({', '.join(distinct)}) — one dispatch is one case. Leave the "
+                  f"marker of the class this dispatch actually belongs to; quoting "
+                  f"another class's marker inside the brief text is what makes this "
+                  f"ambiguous.")
+    return distinct[0]
+
+
+def executables(cmd):
+    """The executable word of each shell segment (past VAR=val prefixes)."""
+    out = []
+    for seg in re.split(r"(?:\|\||&&|[;|&\n])", cmd):
+        for word in seg.split():
+            bare = os.path.basename(word.strip("\"'"))
+            if word.startswith("-"):
+                break
+            if "=" in bare:
+                continue
+            if bare in ("env", "exec", "command", "nohup", "time", "sudo"):
+                continue
+            out.append(bare.lower())
+            break
+    return out
+
+
+def names_cli_hint(cmd):
+    """Cheap, table-free: does this command launch a known vendor CLI?"""
+    return any(x in CLI_BIN_HINTS for x in executables(cmd))
+
+
+def cli_vendor(cmd, table):
+    """(vendor_name, cfg) when the command DIRECTLY launches a vendor CLI.
+
+    Only the executable position counts: the first bare word of each segment,
+    past ``VAR=val`` prefixes and ``env``. So ``grep codex notes.md`` is not a
+    codex run, while ``codex exec ...`` is — a substring match would gate the
+    former and be worse than no rule.
+    """
+    vendors = (section(table, "channels").get("cli") or {}).get("vendors") or {}
+    if not vendors:
+        return None, None
+    bins = {}
+    for name, cfg in vendors.items():
+        for bin_name in (cfg.get("bin") or [name]):
+            bins[str(bin_name).lower()] = (name, cfg)
+    for exe in executables(cmd):
+        hit = bins.get(exe)
+        if hit:
+            return hit
+    return None, None
+
+
+def hatch_admits(_model, table):
+    """The escape hatch — ONE parameter: [experiment] allow_all_models.
+
+    Purpose: run a model that has not been measured yet (a new release, a
+    channel test) without editing the ratified case tables. It relaxes WHICH
+    model may run a case; it never relaxes WHETHER a case may be delegated
+    (an empty ``allowed`` still means nobody) and never waives the explicit
+    model, the explicit effort, or the class marker.
+
+    Home: [experiment] in the table, or the machine-local override
+    ~/.claude/catalyst/routing-override.toml. Base ships it off.
+    """
+    exp = table.get("experiment")
+    if exp is None:
+        return False
+    if not isinstance(exp, dict):
+        emit_deny("routing table section [experiment] is malformed (expected a table) "
+                  "— fail-closed until it is repaired")
+    return bool(exp.get("allow_all_models"))
+
+
+def hatch_note(table):
+    """A one-line description of an ACTIVE hatch, or None."""
+    if hatch_admits(None, table):
+        return "[experiment] allow_all_models — ЛЮБАЯ модель проходит таблицы случаев"
+    return None
+
+
+def warn_hatch(table):
+    """Surface an active hatch on the dispatch itself (best-effort, non-blocking).
+
+    Never emits a permission decision: an "allow" from a PreToolUse hook would
+    also auto-approve the tool call, which must not be a side effect of a model
+    experiment. The guaranteed channel is the SessionStart slice; this is the
+    second, in-the-moment one.
+    """
+    note = hatch_note(table)
+    if note:
+        print(json.dumps({"systemMessage": "Dispatch gate: " + note + " (снять: убрать "
+                          "allow_all_models из routing-override.toml)"},
+                         ensure_ascii=False))
+
+
+def check_known_model(model, table, where):
+    """Deny a model that no case table permits anywhere."""
+    if hatch_admits(model, table):
+        return
+    if model.strip().lower() not in known_model_ids(table):
+        emit_deny(f"{where}: model '{model}' is not named in any case table "
+                  f"([classes.*] in hooks/routing-table.toml), so it is "
+                  f"permitted nowhere. Matching is EXACT: an unmeasured sibling "
+                  f"(gpt-5.6-luna vs gpt-5.6-sol, kimi-k3-256k vs kimi-k3) is a "
+                  f"different model. Measure it, then list it in the cases where it "
+                  f"is ratified. Testing an unmeasured model on purpose? Set "
+                  f"[experiment] allow_all_models = true in "
+                  f"~/.claude/catalyst/routing-override.toml.")
 
 
 def agent_dirs(cwd):
@@ -224,49 +444,62 @@ def check_dispatch(tool_input, table, cwd):
                 f"this gate closes (routing home: hooks/routing-table.toml).")
     eff = model.lower()
 
-    for ban_name, ban in section(table, "bans").items():
-        for p in ban.get("patterns") or []:
-            if str(p).lower() in eff:
-                emit_deny(f"model '{model}' (from {source}) is banned "
-                          f"(ban '{ban_name}', pattern '{p}'): {ban.get('reason', '')}")
+    check_known_model(model, table, f"dispatch of '{st}' (model from {source})")
 
+    # The declared class is the ONE gate every dispatch passes. A dispatch that
+    # lands in no case at all is checked by nothing, and that hole is what this
+    # gate exists to close — so declaring the class is mandatory, for executors
+    # and for critics/auditors/scouts alike. WHICH class it is stays the
+    # controller's decision; escalating after a failure = declare a higher one.
+    classes = section(table, "classes")
+    known = ", ".join(sorted(classes)) or "none"
+    cid = declared_class(str(tool_input.get("prompt") or ""))
+    dsp = table.get("dispatch") or {}
+    if not isinstance(dsp, dict):
+        emit_deny("routing table section [dispatch] is malformed (expected a table) "
+                  "— fail-closed until it is repaired")
+    if cid is None:
+        if not dsp.get("class_marker_required", False):
+            return
+        emit_deny(f"dispatch of '{st}' declares no class: add a "
+                  f"[dispatch-class:<id>] marker to the prompt (known: {known}). "
+                  f"An undeclared dispatch is governed by nothing. Routing home: "
+                  f"hooks/routing-table.toml [dispatch].class_marker_required.")
+    cls = classes.get(cid)
+    if cls is None:
+        emit_deny(f"declared dispatch class '{cid}' is not in the routing table "
+                  f"(known: {known}). Fix the marker or the table — a silently "
+                  f"ignored typo would be a new silent defect.")
+
+    # The agent's NAME must agree with the declared class: a critic dispatched
+    # under an executor class would otherwise buy the executor's wider model set.
     stl = st.lower()
     for role_name, role in section(table, "roles").items():
         if not any(str(m).lower() in stl for m in role.get("match") or []):
             continue
-        allowed = role.get("allowed")
-        if allowed is None:
-            continue
-        if allowed == []:
-            emit_deny(f"role '{role_name}' (subagent_type '{st}') is never delegated to "
-                      f"any model: {role.get('reason', '')}")
-        if not any(str(a).lower() in eff for a in allowed):
-            emit_deny(f"model '{model}' (from {source}) is below the floor for role "
-                      f"'{role_name}' (subagent_type '{st}'): allowed {allowed}. "
-                      f"{role.get('reason', '')}")
+        want = str(role.get("class") or "")
+        if want and want != cid:
+            emit_deny(f"subagent '{st}' matches role '{role_name}', whose class is "
+                      f"'{want}', but the dispatch declares '{cid}'. Declare "
+                      f"[dispatch-class:{want}] or dispatch a different agent — the "
+                      f"name and the class must not disagree.")
 
-    marker = CLASS_MARKER_RE.search(str(tool_input.get("prompt") or ""))
-    if marker:
-        cid = marker.group(1)
-        classes = section(table, "classes")
-        cls = classes.get(cid)
-        if cls is None:
-            emit_deny(f"declared dispatch class '{cid}' is not in the routing table "
-                      f"(known: {', '.join(sorted(classes)) or 'none'}). Fix the marker "
-                      f"or the table — a silently ignored typo would be a new silent defect.")
-        allowed = cls.get("allowed") or []
-        if not any(str(a).lower() in eff for a in allowed):
-            emit_deny(f"model '{model}' is outside declared class '{cid}' "
-                      f"({cls.get('label', '')}): allowed {allowed}. Escalating after a "
-                      f"failure? Remove the class marker or declare the higher class — "
-                      f"the classification stays the controller's decision.")
+    allowed = cls.get("allowed")
+    if allowed is None:
+        allowed = []
+    if allowed == []:
+        emit_deny(f"class '{cid}' ({cls.get('label', '')}) is never delegated to any "
+                  f"model: {cls.get('reason', '')}")
+    if eff not in {str(a).lower() for a in allowed} and not hatch_admits(model, table):
+        emit_deny(f"model '{model}' (from {source}) is outside class '{cid}' "
+                  f"({cls.get('label', '')}): allowed {allowed}. {cls.get('reason', '')}")
 
     # Agent-channel effort: proxy models must carry an explicit effort — the
     # carrier is the agent definition's frontmatter ``effort:`` field (the
     # harness sends it as output_config.effort; measured honored 2026-07-27).
     agent_cfg = section(table, "channels").get("agent") or {}
     required_for = agent_cfg.get("effort_required_for") or []
-    if any(str(p).lower() in eff for p in required_for):
+    if eff in {str(p).lower() for p in required_for}:
         effort = str(tool_input.get("effort") or "").strip().lower() \
             or str(fm["effort"] or "").strip().lower()
         if not effort:
@@ -295,9 +528,11 @@ def pins_table(table):
 
 def check_pins(model, effort, table, where):
     """Accepted-effort pins apply on every channel where model+effort are known."""
-    eff_model = model.lower()
+    if not effort:
+        return
+    eff_model = model.strip().lower()
     for pat, allowed in pins_table(table).items():
-        if str(pat).lower() in eff_model:
+        if str(pat).lower() == eff_model:
             allowed_l = [str(a).lower() for a in allowed]
             if effort not in allowed_l:
                 emit_deny(f"{where}: model '{model}' runs at {allowed} "
@@ -305,19 +540,43 @@ def check_pins(model, effort, table, where):
                           f"(routing home: hooks/routing-table.toml [pins]).")
 
 
-def check_channel_model(model, effort, table):
-    """Bans + accepted-effort pins for a model/effort pair from a Bash call."""
-    eff_model = model.lower()
-    for ban_name, ban in section(table, "bans").items():
-        for p in ban.get("patterns") or []:
-            if str(p).lower() in eff_model:
-                emit_deny(f"model '{model}' is banned (ban '{ban_name}', pattern '{p}'): "
-                          f"{ban.get('reason', '')}")
-    check_pins(model, effort, table, "proxy channel effort pin violated")
+def check_channel_model(model, effort, table, where="proxy channel"):
+    """Admission + accepted-effort pins for a model/effort pair from a Bash call."""
+    check_known_model(model, table, where)
+    check_pins(model, effort, table, f"{where} effort pin violated")
+
+
+CLI_MODEL_RE = re.compile(r"(?:--model|-m)[=\s]+[\"']?([A-Za-z0-9._\[\]-]+)")
+CLI_EFFORT_RE = re.compile(r"(?:--effort|--reasoning[-_]effort)[=\s]+[\"']?(%s)\b"
+                           % "|".join(EFFORT_WORDS))
 
 
 def check_bash(cmd, table):
     channels = section(table, "channels")
+
+    # Direct vendor CLI, launched WITHOUT the envoy companion. Same models, same
+    # ledger, so the same rules — otherwise the whole table is one `codex exec`
+    # away from being advisory.
+    vendor, vcfg = cli_vendor(cmd, table)
+    if vcfg is not None:
+        mm = CLI_MODEL_RE.search(cmd)
+        em = CLI_EFFORT_RE.search(cmd)
+        if bool(vcfg.get("effort_required", True)) and not em:
+            emit_deny(f"direct '{vendor}' CLI run without an explicit effort — a "
+                      f"vendor's silent default effort is the defect class this gate "
+                      f"closes, and running outside envoy does not change that. Add "
+                      f"--effort <level>, or go through the envoy companion "
+                      f"(routing home: hooks/routing-table.toml [channels.cli]).")
+        if mm:
+            # Admission only, no [pins]: the pins are the Agent/proxy accepted
+            # efforts, and a vendor CLI has its own ceilings (grok-CLI <= high) —
+            # the table says so where the pins are defined, and applying them
+            # here would deny a legitimate run.
+            check_known_model(mm.group(1), table, f"direct '{vendor}' CLI")
+        elif vcfg.get("model_required", False):
+            emit_deny(f"direct '{vendor}' CLI run naming no model — the CLI's default "
+                      f"model is not a routing decision. Name it with --model "
+                      f"(routing home: hooks/routing-table.toml [channels.cli]).")
 
     if ENVOY_MARK in cmd and ENVOY_TASK_RE.search(cmd):
         vm = ENVOY_VENDOR_RE.search(cmd)
@@ -355,34 +614,38 @@ def check_bash(cmd, table):
 def render_slice():
     """A compact rules slice for SessionStart — rendered from the SAME table
     the gate reads (truth 7: no second, separately maintained copy)."""
-    table, err = load_table()
+    table, err = load_table(os.getcwd())
     if err:
         print(f"!! DISPATCH ROUTING TABLE BROKEN — {err}\n"
               f"!! The dispatch gate is fail-closed: Task/Agent dispatches and "
               f"envoy/proxy calls will be DENIED until this is fixed.")
         return
+    deny = gate_mode(table) == "deny"
+    answer = ("нарушение = ОТКАЗ" if deny else
+              "нарушение НЕ блокирует: гейт напоминает, диспатч идёт — но "
+              "напоминание попадает и в контекст, так что нарушать его "
+              "бессмысленно, оно вернётся на следующем диспатче")
+    breach = "отказ" if deny else "нарушение"
     lines = [
         "<DISPATCH-ROUTING>",
-        "Маршрутизация диспатчей (hooks/routing-table.toml — PreToolUse-гейт проверяет "
-        "эту же таблицу; нарушение = отказ):",
-        "- Каждый Task/Agent-диспатч: model ЯВНО в вызове (или в определении агента); "
-        "ни там, ни там = отказ.",
+        f"Маршрутизация диспатчей (hooks/routing-table.toml — PreToolUse-гейт "
+        f"проверяет эту же таблицу; {answer}):",
+        f"- Каждый Task/Agent-диспатч: model ЯВНО в вызове (или в определении "
+        f"агента); ни там, ни там = {breach}.",
     ]
-    bans = table.get("bans") or {}
-    if bans:
-        pats = sorted({str(p) for b in bans.values() for p in (b.get("patterns") or [])})
-        lines.append("- Запрещены везде: " + ", ".join(pats) + ".")
+    classes = table.get("classes") or {}
+    if (table.get("dispatch") or {}).get("class_marker_required", False):
+        lines.append(f"- КАЖДЫЙ диспатч объявляет класс маркером "
+                     f"[dispatch-class:<id>] в промпте; без маркера = {breach}.")
+    for cid, c in classes.items():
+        allowed = c.get("allowed")
+        target = "|".join(str(a) for a in allowed) if allowed else "НЕ делегируется"
+        lines.append(f"- Класс {cid} ({c.get('label', '')}) → {target}.")
     for name, role in (table.get("roles") or {}).items():
         match = "|".join(str(m) for m in role.get("match") or [])
-        allowed = role.get("allowed")
-        target = "|".join(str(a) for a in allowed) if allowed else "НЕ делегируется"
-        lines.append(f"- Роль {match} → {target}.")
-    classes = table.get("classes") or {}
-    if classes:
-        parts = [f"{cid} → {'|'.join(str(a) for a in (c.get('allowed') or []))}"
-                 for cid, c in classes.items()]
-        lines.append("- Классы исполнения (опц. маркер [dispatch-class:<id>] в промпте): "
-                     + "; ".join(parts) + ".")
+        if role.get("class"):
+            lines.append(f"- Имя агента содержит {match} → класс {role['class']} "
+                         f"(объявить другой = {breach}).")
     agent_cfg = (table.get("channels") or {}).get("agent") or {}
     required_for = agent_cfg.get("effort_required_for") or []
     if required_for:
@@ -406,23 +669,31 @@ def render_slice():
     if proxy.get("effort_required", True):
         lines.append("- прокси-POST (127.0.0.1:8317): reasoning_effort обязан быть "
                      "виден в команде.")
-    lines.append("- Оверрайд: ~/.claude/catalyst/routing-override.toml "
-                 "(запись второго уровня перекрывает базовую целиком).")
+    lines.append("- Оверрайды (слоями, последний сильнее): база плагина < "
+                 "~/.claude/catalyst/routing-override.toml < "
+                 "<проект>/.claude/catalyst/routing-override.toml. Названная "
+                 "запись заменяет базовую целиком, неназванные сохраняются.")
+    note = hatch_note(table)
+    if note:
+        lines.append("!! ЭКСПЕРИМЕНТАЛЬНЫЙ ДОПУСК АКТИВЕН: " + note
+                     + ". Таблицы случаев в этой части НЕ действуют — это режим "
+                       "проверки неизмеренной модели, не рабочий дефолт.")
     lines.append("</DISPATCH-ROUTING>")
     print("\n".join(lines))
 
 
-def main(argv):
-    if "--render-slice" in argv:
-        render_slice()
-        return
-    try:
-        data = json.load(sys.stdin)
-    except Exception as e:  # noqa: BLE001 — protocol break must be loud
-        emit_deny(f"hook input is not valid JSON ({e}) — refusing rather than passing "
-                  f"unseen dispatches (fail-closed).")
-    if not isinstance(data, dict):
-        emit_deny("hook input is not a JSON object — refusing (fail-closed).")
+def gate_mode(table):
+    """"warn" (default) or "deny" — how a broken rule is answered."""
+    mode = str(((table or {}).get("dispatch") or {}).get("mode") or "warn").lower()
+    return "deny" if mode == "deny" else "warn"
+
+
+def evaluate(data):
+    """(violation_reason, mode) for one hook payload; (None, mode) when clean.
+
+    The single entry point for judging a payload — used by this hook and by
+    hooks/dispatch-stats.py, so the rules are never implemented twice.
+    """
     tool = str(data.get("tool_name") or data.get("tool") or "")
     tool_input = data.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -434,20 +705,52 @@ def main(argv):
         # Early exit for everything that is not a gated channel — BEFORE any
         # table read (truth 5): a broken table never blocks unrelated Bash.
         if (ENVOY_MARK not in cmd and PROXY_MARK not in cmd
-                and PROXY_CRITIQUE_MARK not in cmd):
-            return
-        table, err = load_table()
-        if err:
-            emit_deny(err + " — fail-closed: gated Bash channels are blocked until "
-                            "the table is repaired.")
-        check_bash(cmd, table)
-    elif tool in ("Task", "Agent"):
-        table, err = load_table()
-        if err:
-            emit_deny(err + " — fail-closed: dispatches are blocked until the table "
-                            "is repaired.")
-        check_dispatch(tool_input, table, cwd)
-    # Any other tool: allow silently.
+                and PROXY_CRITIQUE_MARK not in cmd
+                and not names_cli_hint(cmd)):
+            return None, "warn"
+    elif tool not in ("Task", "Agent"):
+        return None, "warn"
+
+    table, err = load_table(cwd)
+    if err:
+        # An unreadable table is not a routing choice to remind about: nothing
+        # can be judged at all, so this stays fail-closed in either mode.
+        return ("Dispatch gate: " + err + " — dispatches and gated channels are "
+                "blocked until the table is repaired."), "deny"
+    try:
+        if tool == "Bash":
+            check_bash(str(tool_input.get("command") or ""), table)
+        else:
+            check_dispatch(tool_input, table, cwd)
+    except Violation as v:
+        return v.reason, gate_mode(table)
+    return None, gate_mode(table)
+
+
+def main(argv):
+    if "--render-slice" in argv:
+        render_slice()
+        return
+    try:
+        data = json.load(sys.stdin)
+    except Exception as e:  # noqa: BLE001 — protocol break must be loud
+        print_deny(f"Dispatch gate: hook input is not valid JSON ({e}) — refusing "
+                   f"rather than passing unseen dispatches (fail-closed).")
+        return
+    if not isinstance(data, dict):
+        print_deny("Dispatch gate: hook input is not a JSON object — refusing "
+                   "(fail-closed).")
+        return
+    reason, mode = evaluate(data)
+    if reason is not None:
+        (print_deny if mode == "deny" else print_warn)(reason)
+        return
+    table, err = load_table(str(data.get("cwd") or "") or None)
+    if not err:
+        try:
+            warn_hatch(table)
+        except Violation:
+            pass
 
 
 if __name__ == "__main__":
@@ -456,4 +759,5 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001 — an internal error must not become a silent pass
-        emit_deny(f"internal gate error ({e.__class__.__name__}: {e}) — fail-closed.")
+        print_deny(f"Dispatch gate: internal gate error "
+                   f"({e.__class__.__name__}: {e}) — fail-closed.")
