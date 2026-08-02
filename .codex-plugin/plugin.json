@@ -1,6 +1,6 @@
 {
   "name": "catalyst",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "description": "Catalyst: disciplined agentic development - SDD pipeline with decision-boundary model tiering, spec hardening, premortem gates, verification, and handoffs.",
   "author": {
     "name": "Marat Karimov"

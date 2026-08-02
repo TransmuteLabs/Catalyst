@@ -100,6 +100,23 @@ rep=$(report)
 case "$rep" in *gpt-5.6-sol*) check "s6 direct CLI recorded"  0 0 ;; *) check "s6 direct CLI recorded"  0 1 ;; esac
 case "$rep" in *kimi*)        check "s6 envoy run recorded"   0 0 ;; *) check "s6 envoy run recorded"   0 1 ;; esac
 case "$rep" in *cli*)         check "s6 channel recorded"     0 0 ;; *) check "s6 channel recorded"     0 1 ;; esac
+# The marker rides in the COMMAND text on these channels, not in a ``prompt``
+# field. Reading only ``prompt`` here recorded every vendor dispatch as
+# classless, which understated the coverage signal: a fleet rotating properly
+# across cases still looked like it worked a single one.
+fresh bashcls
+sendbash 'codex exec --model gpt-5.6-sol --effort high go [dispatch-class:1a]' >/dev/null
+sendbash 'node envoy-companion.mjs task --vendor kimi --effort high go [dispatch-class:1c]' >/dev/null
+st=$(cat "$WORK/home/.claude/catalyst/stats/$SES.json" 2>/dev/null)
+case "$st" in *'"class": "1a"'*) check "s6 CLI class from command"   0 0 ;; *) check "s6 CLI class from command"   0 1 ;; esac
+case "$st" in *'"class": "1c"'*) check "s6 envoy class from command" 0 0 ;; *) check "s6 envoy class from command" 0 1 ;; esac
+case "$st" in *'"class": "?"'*)  check "s6 no classless leftover"    0 1 ;; *) check "s6 no classless leftover"    0 0 ;; esac
+# A vendor command with no marker stays "?" — the recorder reports what is
+# there; requiring the marker is the gate's job, not bookkeeping's.
+fresh bashnomark
+sendbash 'codex exec --model gpt-5.6-sol --effort high go' >/dev/null
+st=$(cat "$WORK/home/.claude/catalyst/stats/$SES.json" 2>/dev/null)
+case "$st" in *'"class": "?"'*)  check "s6 unmarked stays unknown"   0 0 ;; *) check "s6 unmarked stays unknown"   0 1 ;; esac
 
 # ---- 9: coverage — dominance alone is blind to a two-model rotation ----
 fresh rot

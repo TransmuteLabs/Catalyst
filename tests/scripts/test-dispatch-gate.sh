@@ -184,16 +184,16 @@ T="$BASE_TABLE"
 # channel — same models, same effort discipline; otherwise the whole table is
 # one `codex exec` away from advisory ----
 check "t12 direct codex without effort"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol do-it')")"
-check "t12 direct codex ratified ok"        allow "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it')")"
+check "t12 direct codex ratified ok"        allow "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1a]')")"
 check "t12 direct codex unmeasured model"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-luna --effort high do-it')")"
 check "t12 direct codex naming no model"    deny  "$(gate "$(bashcmd 'codex exec --effort high do-it')")"
-check "t12 kimi needs no effort flag"       allow "$(gate "$(bashcmd 'kimi --model kimi-k3 -p task')")"
+check "t12 kimi needs no effort flag"       allow "$(gate "$(bashcmd 'kimi --model kimi-k3 -p task [dispatch-class:1c]')")"
 check "t12 kimi unmeasured sibling denied"  deny  "$(gate "$(bashcmd 'kimi --model kimi-k3-256k -p task')")"
 check "t12 env prefix does not hide it"     deny  "$(gate "$(bashcmd 'RCH_ENABLED=0 codex exec --model gpt-5.6-sol do-it')")"
 check "t12 vendor after && still caught"    deny  "$(gate "$(bashcmd 'cd /x && codex exec --model gpt-5.6-sol do-it')")"
 # CLI ceilings are the vendor's own; [pins] are the Agent/proxy accepted efforts.
 # Applying them here would deny a legitimate run (grok-CLI tops out at high).
-check "t12 CLI does not inherit the pins"   allow "$(gate "$(bashcmd 'grok --model grok-4.5 --effort high go')")"
+check "t12 CLI does not inherit the pins"   allow "$(gate "$(bashcmd 'grok --model grok-4.5 --effort high go [dispatch-class:1a]')")"
 # only the EXECUTABLE position counts — a substring rule would gate these
 check "t12 vendor named as an argument"     allow "$(gate "$(bashcmd 'grep codex notes.md')")"
 check "t12 vendor inside a pipe filter"     allow "$(gate "$(bashcmd 'ls -la | grep glm')")"
@@ -285,22 +285,22 @@ rm -rf "$WORK/rw/.claude" "$WORK/rw/deep"
 
 # ---- truth 4: envoy/proxy without explicit effort denied where the table requires it ----
 check "t4 envoy grok effortless denied"     deny  "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok do-thing')")"
-check "t4 envoy grok with effort allowed"   allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing')")"
+check "t4 envoy grok with effort allowed"   allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing [dispatch-class:1a]')")"
 check "t4 envoy default codex effortless"   deny  "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --cwd /x do-thing')")"
-check "t4 envoy codex with effort allowed"  allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --effort xhigh do-thing')")"
-check "t4 envoy kimi needs no effort"       allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor kimi --write do-thing')")"
+check "t4 envoy codex with effort allowed"  allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --effort xhigh do-thing [dispatch-class:1a]')")"
+check "t4 envoy kimi needs no effort"       allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor kimi --write do-thing [dispatch-class:1c]')")"
 check "t4 envoy non-task subcommand passes" allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs status')")"
 check "t4 proxy without visible effort"     deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d @body.json')")"
-check "t4 proxy with inline effort allowed" allow "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"xhigh\"}')")"
+check "t4 proxy with inline effort allowed" allow "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"xhigh\"} [dispatch-class:1e]')")"
 check "t4 proxy pin glm below xhigh denied" deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"high\"}')")"
 check "t4 proxy pin, shell-escaped quotes"  deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\\\"model\\\":\\\"kimi-k3\\\",\\\"reasoning_effort\\\":\\\"max\\\"}')")"
-check "t4 proxy-critique pinned ok"         allow "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 xhigh brief.md out.md a.rs')")"
+check "t4 proxy-critique pinned ok"         allow "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 xhigh brief.md out.md a.rs [dispatch-class:critique]')")"
 check "t4 proxy-critique pin violation"     deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 high brief.md out.md a.rs')")"
 check "t4 proxy-critique unreadable form"   deny  "$(gate "$(bashcmd 'bash proxy-critique.sh')")"
 # MUTANT via override (also truth 10): grok freed from the effort requirement
 printf 'schema_version = 1\n[channels.envoy]\n[channels.envoy.vendors.grok]\neffort_required = false\n' > "$WORK/override-grok-free.toml"
 O="$WORK/override-grok-free.toml"
-check "t4 MUTANT override frees grok"       allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok do-thing')")"
+check "t4 MUTANT override frees grok"       allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok do-thing [dispatch-class:1a]')")"
 O="$WORK/absent-override.toml"
 
 # ---- truth 5: non-gated Bash passes untouched, before any table work ----
@@ -410,6 +410,42 @@ if grep -q '^model:' "$ROOT/agents/envoy-runner.md"; then
 else
   check "t9 envoy-runner carries no model field" 0 0
 fi
+
+# ---- truth 15: the class marker binds the Bash dispatch channels too ----
+# A vendor launched from Bash picks a model for a case exactly as an Agent call
+# does, so it declares its case exactly as one. Before this the mandatory marker
+# held only on Task/Agent — and the vendor path, where executor work actually
+# goes, was declared by nothing (observed live: envoy dispatches recorded with
+# class "?" while the table said the marker was required of every dispatch).
+T="$SHIPPED_TABLE"; O="$WORK/absent-override.toml"
+check "t15 envoy without marker"            deny  "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing')")"
+out=$(gate_out "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing')")
+case "$out" in *"declares no class"*) check "t15 envoy denial names the marker" 0 0 ;; *) check "t15 envoy denial names the marker" 0 1 ;; esac
+check "t15 direct CLI without marker"       deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it')")"
+out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it')")
+case "$out" in *"declares no class"*) check "t15 CLI denial names the marker" 0 0 ;; *) check "t15 CLI denial names the marker" 0 1 ;; esac
+check "t15 proxy POST without marker"       deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"xhigh\"}')")"
+check "t15 proxy-critique without marker"   deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 xhigh brief.md out.md a.rs')")"
+# The rule attaches to the dispatch channels, never to the shell at large.
+check "t15 ordinary bash needs no marker"   allow "$(gate "$(bashcmd 'cargo test --lib')")"
+check "t15 vendor word off exec position"   allow "$(gate "$(bashcmd 'grep codex notes.md')")"
+# The declared case governs the named model on these channels as it does on Agent.
+check "t15 CLI model outside its class"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1c]')")"
+out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1c]')")
+case "$out" in *"outside class '1c'"*) check "t15 CLI denial names the class" 0 0 ;; *) check "t15 CLI denial names the class" 0 1 ;; esac
+check "t15 proxy model outside its class"   deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"xhigh\"} [dispatch-class:audit]')")"
+check "t15 proxy-critique outside class"    deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 xhigh brief.md out.md a.rs [dispatch-class:audit]')")"
+# Envoy names a vendor, never a model: the case is still checked for being
+# delegable at all, which is what CAN be known from the command.
+check "t15 envoy takes a delegable class"   allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing [dispatch-class:1a]')")"
+check "t15 envoy non-delegable class"       deny  "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing [dispatch-class:adjudication]')")"
+check "t15 unknown class id on bash"        deny  "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing [dispatch-class:nope]')")"
+check "t15 two different markers on bash"   deny  "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high x [dispatch-class:1a] y [dispatch-class:1e]')")"
+check "t15 same marker twice is one case"   allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high x [dispatch-class:1a] y [dispatch-class:1a]')")"
+# MUTANT: the requirement lives in the table, not in the gate's code.
+T="$WORK/table-no-marker-req.toml"
+check "t15 MUTANT requirement off lets it"  allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing')")"
+T="$SHIPPED_TABLE"
 
 # ---- platform format + launcher sanity ----
 out=$(printf '%s' "$(task scout sonnet "[dispatch-class:scout] x")" | env -u CURSOR_PLUGIN_ROOT -u COPILOT_CLI \

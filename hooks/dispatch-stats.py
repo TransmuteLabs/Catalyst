@@ -208,9 +208,15 @@ def observe(gate, data, table):
 
     if tool == "Bash":
         cmd = str(ti.get("command") or "")
+        # On this channel the marker lives in the command text, not in a
+        # ``prompt`` field. Reading only ``prompt`` here recorded every vendor
+        # dispatch as classless, which then understated the coverage signal: a
+        # fleet rotating properly across cases still looked like it used one.
+        cm = gate.CLASS_MARKER_RE.search(cmd)
+        kls = cm.group(1).lower() if cm else "?"
         if gate.ENVOY_MARK in cmd and gate.ENVOY_TASK_RE.search(cmd):
             vm = gate.ENVOY_VENDOR_RE.search(cmd)
-            return rec(vm.group(1) if vm else "codex", "?", "envoy")
+            return rec(vm.group(1) if vm else "codex", kls, "envoy")
         vendor, cfg = None, None
         try:
             vendor, cfg = gate.cli_vendor(cmd, table)
@@ -218,13 +224,13 @@ def observe(gate, data, table):
             pass
         if cfg is not None:
             mm = gate.CLI_MODEL_RE.search(cmd)
-            return rec(mm.group(1) if mm else vendor, "?", "cli")
+            return rec(mm.group(1) if mm else vendor, kls, "cli")
         if gate.PROXY_CRITIQUE_MARK in cmd:
             m = gate.PROXY_CRITIQUE_RE.search(cmd)
-            return rec(m.group(1) if m else "?", "?", "proxy")
+            return rec(m.group(1) if m else "?", kls, "proxy")
         if gate.PROXY_MARK in cmd:
             mm = gate.PROXY_MODEL_RE.search(cmd)
-            return rec(mm.group(1) if mm else "?", "?", "proxy")
+            return rec(mm.group(1) if mm else "?", kls, "proxy")
     return None
 
 

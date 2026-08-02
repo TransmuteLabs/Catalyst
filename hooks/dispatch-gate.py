@@ -428,6 +428,55 @@ def frontmatter_fields(subagent_type, cwd):
     return fields
 
 
+def resolve_class(text, table, where):
+    """The case this dispatch declares: (cid, entry), or (None, None).
+
+    ONE rule with ONE implementation. "Every dispatch declares its case" holds
+    on the Agent channel and on every Bash dispatch channel alike; a second copy
+    of the check would drift from this one, and the drift would show up exactly
+    where it is least visible — on the vendor channels. (None, None) comes back
+    only when the table does not require the marker at all.
+    """
+    classes = section(table, "classes")
+    known = ", ".join(sorted(classes)) or "none"
+    cid = declared_class(text)
+    dsp = table.get("dispatch") or {}
+    if not isinstance(dsp, dict):
+        emit_deny("routing table section [dispatch] is malformed (expected a table) "
+                  "— fail-closed until it is repaired")
+    if cid is None:
+        if not dsp.get("class_marker_required", False):
+            return None, None
+        emit_deny(f"{where} declares no class: add a [dispatch-class:<id>] marker "
+                  f"(known: {known}). An undeclared dispatch is governed by nothing. "
+                  f"Routing home: hooks/routing-table.toml "
+                  f"[dispatch].class_marker_required.")
+    cls = classes.get(cid)
+    if cls is None:
+        emit_deny(f"declared dispatch class '{cid}' is not in the routing table "
+                  f"(known: {known}). Fix the marker or the table — a silently "
+                  f"ignored typo would be a new silent defect.")
+    return cid, cls
+
+
+def check_class_delegable(cid, cls):
+    """A case with an empty allow-list goes to nobody — on every channel."""
+    if not (cls.get("allowed") or []):
+        emit_deny(f"class '{cid}' ({cls.get('label', '')}) is never delegated to any "
+                  f"model: {cls.get('reason', '')}")
+
+
+def check_class_admits(model, source, cid, cls, table):
+    """The named model must belong to the declared case."""
+    check_class_delegable(cid, cls)
+    allowed = cls.get("allowed") or []
+    if (str(model).strip().lower() not in {str(a).lower() for a in allowed}
+            and not hatch_admits(model, table)):
+        emit_deny(f"model '{model}' (from {source}) is outside class '{cid}' "
+                  f"({cls.get('label', '')}): allowed {allowed}. "
+                  f"{cls.get('reason', '')}")
+
+
 def check_dispatch(tool_input, table, cwd):
     st = str(tool_input.get("subagent_type") or "")
     fm = frontmatter_fields(st, cwd)
@@ -451,25 +500,10 @@ def check_dispatch(tool_input, table, cwd):
     # gate exists to close — so declaring the class is mandatory, for executors
     # and for critics/auditors/scouts alike. WHICH class it is stays the
     # controller's decision; escalating after a failure = declare a higher one.
-    classes = section(table, "classes")
-    known = ", ".join(sorted(classes)) or "none"
-    cid = declared_class(str(tool_input.get("prompt") or ""))
-    dsp = table.get("dispatch") or {}
-    if not isinstance(dsp, dict):
-        emit_deny("routing table section [dispatch] is malformed (expected a table) "
-                  "— fail-closed until it is repaired")
+    cid, cls = resolve_class(str(tool_input.get("prompt") or ""), table,
+                             f"dispatch of '{st}'")
     if cid is None:
-        if not dsp.get("class_marker_required", False):
-            return
-        emit_deny(f"dispatch of '{st}' declares no class: add a "
-                  f"[dispatch-class:<id>] marker to the prompt (known: {known}). "
-                  f"An undeclared dispatch is governed by nothing. Routing home: "
-                  f"hooks/routing-table.toml [dispatch].class_marker_required.")
-    cls = classes.get(cid)
-    if cls is None:
-        emit_deny(f"declared dispatch class '{cid}' is not in the routing table "
-                  f"(known: {known}). Fix the marker or the table — a silently "
-                  f"ignored typo would be a new silent defect.")
+        return
 
     # The agent's NAME must agree with the declared class: a critic dispatched
     # under an executor class would otherwise buy the executor's wider model set.
@@ -484,15 +518,7 @@ def check_dispatch(tool_input, table, cwd):
                       f"[dispatch-class:{want}] or dispatch a different agent — the "
                       f"name and the class must not disagree.")
 
-    allowed = cls.get("allowed")
-    if allowed is None:
-        allowed = []
-    if allowed == []:
-        emit_deny(f"class '{cid}' ({cls.get('label', '')}) is never delegated to any "
-                  f"model: {cls.get('reason', '')}")
-    if eff not in {str(a).lower() for a in allowed} and not hatch_admits(model, table):
-        emit_deny(f"model '{model}' (from {source}) is outside class '{cid}' "
-                  f"({cls.get('label', '')}): allowed {allowed}. {cls.get('reason', '')}")
+    check_class_admits(model, source, cid, cls, table)
 
     # Agent-channel effort: proxy models must carry an explicit effort — the
     # carrier is the agent definition's frontmatter ``effort:`` field (the
@@ -553,12 +579,15 @@ CLI_EFFORT_RE = re.compile(r"(?:--effort|--reasoning[-_]effort)[=\s]+[\"']?(%s)\
 
 def check_bash(cmd, table):
     channels = section(table, "channels")
+    kinds = []   # the dispatch channel(s) this command uses
+    named = []   # (model, source) the command itself names
 
     # Direct vendor CLI, launched WITHOUT the envoy companion. Same models, same
     # ledger, so the same rules — otherwise the whole table is one `codex exec`
     # away from being advisory.
     vendor, vcfg = cli_vendor(cmd, table)
     if vcfg is not None:
+        kinds.append(f"direct '{vendor}' CLI run")
         mm = CLI_MODEL_RE.search(cmd)
         em = CLI_EFFORT_RE.search(cmd)
         if bool(vcfg.get("effort_required", True)) and not em:
@@ -573,6 +602,7 @@ def check_bash(cmd, table):
             # the table says so where the pins are defined, and applying them
             # here would deny a legitimate run.
             check_known_model(mm.group(1), table, f"direct '{vendor}' CLI")
+            named.append((mm.group(1), f"--model of the '{vendor}' CLI run"))
         elif vcfg.get("model_required", False):
             emit_deny(f"direct '{vendor}' CLI run naming no model — the CLI's default "
                       f"model is not a routing decision. Name it with --model "
@@ -581,6 +611,7 @@ def check_bash(cmd, table):
     if ENVOY_MARK in cmd and ENVOY_TASK_RE.search(cmd):
         vm = ENVOY_VENDOR_RE.search(cmd)
         vendor = vm.group(1).lower() if vm else "codex"
+        kinds.append(f"envoy task via vendor '{vendor}'")
         vendors = (channels.get("envoy") or {}).get("vendors") or {}
         vcfg = vendors.get(vendor)
         # Unknown vendor: conservative — require an explicit effort.
@@ -592,14 +623,17 @@ def check_bash(cmd, table):
                       f"--effort <level> (routing home: hooks/routing-table.toml).")
 
     if PROXY_CRITIQUE_MARK in cmd:
+        kinds.append("proxy-critique call")
         m = PROXY_CRITIQUE_RE.search(cmd)
         if not m or m.group(2).lower() not in EFFORT_WORDS:
             emit_deny("proxy-critique call whose model/effort cannot be read from the "
                       "command — expected form: proxy-critique.sh <model> <effort> "
                       "<brief> <out> <files...> with an explicit effort.")
         check_channel_model(m.group(1), m.group(2).lower(), table)
+        named.append((m.group(1), "the proxy-critique call"))
 
     if PROXY_MARK in cmd:
+        kinds.append("proxy chat/completions call")
         pcfg = channels.get("proxy") or {}
         if bool(pcfg.get("effort_required", True)) and "reasoning_effort" not in cmd:
             emit_deny("proxy chat/completions call without a visible reasoning_effort — "
@@ -609,6 +643,22 @@ def check_bash(cmd, table):
         em = PROXY_EFFORT_RE.search(cmd)
         if mm and em:
             check_channel_model(mm.group(1), em.group(1).lower(), table)
+            named.append((mm.group(1), "the proxy request body"))
+
+    # A vendor launched from Bash IS a dispatch: it picks a model for a case
+    # exactly as an Agent call does, so it declares its case exactly as one.
+    # The rule attaches to the recognized dispatch channels, never to the shell
+    # at large — an unrecognized command has returned by now and is not gated.
+    # Envoy names only a vendor, never a model, so there the declared case can
+    # be checked for being delegable at all, but not against a model id.
+    if not kinds:
+        return
+    cid, cls = resolve_class(cmd, table, " + ".join(kinds))
+    if cid is None:
+        return
+    check_class_delegable(cid, cls)
+    for model, source in named:
+        check_class_admits(model, source, cid, cls, table)
 
 
 def render_slice():
@@ -636,7 +686,9 @@ def render_slice():
     classes = table.get("classes") or {}
     if (table.get("dispatch") or {}).get("class_marker_required", False):
         lines.append(f"- КАЖДЫЙ диспатч объявляет класс маркером "
-                     f"[dispatch-class:<id>] в промпте; без маркера = {breach}.")
+                     f"[dispatch-class:<id>]: в промпте Task/Agent ИЛИ в тексте "
+                     f"команды вендорского канала (envoy, вендорский CLI, "
+                     f"прокси); без маркера = {breach}.")
     for cid, c in classes.items():
         allowed = c.get("allowed")
         target = "|".join(str(a) for a in allowed) if allowed else "НЕ делегируется"
