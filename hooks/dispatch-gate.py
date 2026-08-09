@@ -276,10 +276,45 @@ def declared_class(text):
     return distinct[0]
 
 
+HEREDOC_OPEN_RE = re.compile(
+    r"<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|\\?([A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+def strip_heredoc_bodies(cmd):
+    """Drop here-doc BODIES before shell segmentation.
+
+    Body text is data, not shell: a markdown row ``| kimi | ... |`` or a
+    python script fed via ``python3 - <<PY`` would otherwise be split on
+    ``|``/newlines and put a vendor name in executable position. An opener
+    whose terminator line never appears is left untouched (better to
+    over-gate than to silently swallow the rest of a command on a ``<<``
+    that was not a heredoc at all).
+    """
+    lines = cmd.split("\n")
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for m in HEREDOC_OPEN_RE.finditer(line):
+            delim = m.group(1) or m.group(2) or m.group(3)
+            dash = line[m.start():m.start() + 3] == "<<-"
+            j = i
+            while j < n:
+                term = lines[j].lstrip("\t") if dash else lines[j]
+                if term == delim:
+                    break
+                j += 1
+            if j < n:  # terminator found: skip body AND terminator (both are
+                i = j + 1  # heredoc syntax, not shell segments)
+    return "\n".join(out)
+
+
 def executables(cmd):
     """The executable word of each shell segment (past VAR=val prefixes)."""
     out = []
-    for seg in re.split(r"(?:\|\||&&|[;|&\n])", cmd):
+    for seg in re.split(r"(?:\|\||&&|[;|&\n])", strip_heredoc_bodies(cmd)):
         for word in seg.split():
             bare = os.path.basename(word.strip("\"'"))
             if word.startswith("-"):
