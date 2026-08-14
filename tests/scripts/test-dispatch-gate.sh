@@ -457,5 +457,22 @@ out=$(printf '%s' "$(bashcmd 'ls -la')" | env -u CLAUDE_PLUGIN_ROOT -u CURSOR_PL
       CATALYST_AGENT_DIRS="$WORK/agents" bash "$LAUNCHER")
 check "launcher passes plain bash"          ""    "$out"
 
+# ---- truth 16: the class has a second, structured carrier ----
+# A fork's prompt IS the directive handed to the forked self, so a marker there
+# is instruction text the fork must then ignore. `dispatch_class` carries it out
+# of band. It must behave exactly like the marker — including that two carriers
+# disagreeing is an ambiguity, not a silent first-wins.
+T="$BASE_TABLE"; O="$WORK/absent-override.toml"
+task_dc() { # task_dc <subagent_type> <model> <dispatch_class> [prompt]
+  printf '{"tool_name":"Task","tool_input":{"subagent_type":"%s","model":"%s","dispatch_class":"%s","prompt":"%s"},"cwd":"%s"}' \
+    "$1" "$2" "$3" "${4:-x}" "$WORK/rw"
+}
+check "t16 field alone declares the class"  allow "$(gate "$(task_dc nomodel opus 1b)")"
+check "t16 field agreeing with marker"      allow "$(gate "$(task_dc nomodel opus 1b "[dispatch-class:1b] x")")"
+check "t16 field disagreeing with marker"   deny  "$(gate "$(task_dc nomodel opus 1b "[dispatch-class:1c] x")")"
+check "t16 unknown class in the field"      deny  "$(gate "$(task_dc nomodel opus nosuchclass)")"
+check "t16 field buys no wider model set"   deny  "$(gate "$(task_dc nomodel opus 1a)")"
+check "t16 empty field is not a decl"       deny  "$(gate "$(task_dc nomodel opus '')")"
+
 echo "test-dispatch-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

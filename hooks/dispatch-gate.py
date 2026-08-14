@@ -463,7 +463,7 @@ def frontmatter_fields(subagent_type, cwd):
     return fields
 
 
-def resolve_class(text, table, where):
+def resolve_class(text, table, where, declared=None):
     """The case this dispatch declares: (cid, entry), or (None, None).
 
     ONE rule with ONE implementation. "Every dispatch declares its case" holds
@@ -471,10 +471,23 @@ def resolve_class(text, table, where):
     of the check would drift from this one, and the drift would show up exactly
     where it is least visible — on the vendor channels. (None, None) comes back
     only when the table does not require the marker at all.
+
+    ``declared`` is the Agent channel's structured carrier (the tool's
+    ``dispatch_class`` field). It exists because a fork has nowhere good to put
+    the marker: its prompt IS the directive handed to the forked self, so a
+    marker there becomes instruction text the fork then has to ignore. Bash
+    channels pass nothing and keep using the marker alone.
     """
     classes = section(table, "classes")
     known = ", ".join(sorted(classes)) or "none"
     cid = declared_class(text)
+    structured = (declared or "").strip().lower() or None
+    if structured and cid and structured != cid:
+        emit_deny(f"{where} declares class '{structured}' in the dispatch_class field "
+                  f"but '{cid}' in the prompt marker — one dispatch is one case. Two "
+                  f"carriers disagreeing is the same ambiguity as two markers: leave "
+                  f"whichever one is right.")
+    cid = structured or cid
     dsp = table.get("dispatch") or {}
     if not isinstance(dsp, dict):
         emit_deny("routing table section [dispatch] is malformed (expected a table) "
@@ -536,7 +549,8 @@ def check_dispatch(tool_input, table, cwd):
     # and for critics/auditors/scouts alike. WHICH class it is stays the
     # controller's decision; escalating after a failure = declare a higher one.
     cid, cls = resolve_class(str(tool_input.get("prompt") or ""), table,
-                             f"dispatch of '{st}'")
+                             f"dispatch of '{st}'",
+                             declared=str(tool_input.get("dispatch_class") or ""))
     if cid is None:
         return
 
@@ -566,7 +580,9 @@ def check_dispatch(tool_input, table, cwd):
         if not effort:
             emit_deny(f"proxy model '{model}' dispatched without an explicit effort — "
                       f"the vendor's silent default effort is the defect class this "
-                      f"gate closes. Carrier: the agent definition's frontmatter "
+                      f"gate closes. Carriers: the dispatch's own `effort` field "
+                      f"(the only one a fork has, its definition being synthetic), or "
+                      f"the agent definition's frontmatter "
                       f"`effort: low|medium|high|xhigh|max` (dispatch an effort-pinned "
                       f"agent). Routing home: hooks/routing-table.toml [channels.agent].")
         if effort not in EFFORT_WORDS:
