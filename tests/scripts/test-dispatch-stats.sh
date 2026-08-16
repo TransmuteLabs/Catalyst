@@ -123,7 +123,7 @@ fresh rot
 out=$(send a opus 1b)$(send b fable critique)$(send c opus 1b)$(send d fable critique)
 out="$out$(send e opus 1b)$(send f fable critique)$(send g opus 1b)$(send h fable critique)"
 case "$out" in *DISPATCH-FLEET*) check "s9 two-model rotation caught" 0 0 ;; *) check "s9 two-model rotation caught" 0 1 ;; esac
-case "$out" in *grok-4.5*)        check "s9 names the idle models"   0 0 ;; *) check "s9 names the idle models"   0 1 ;; esac
+case "$out" in *grok-4.6*)        check "s9 names the idle models"   0 0 ;; *) check "s9 names the idle models"   0 1 ;; esac
 
 # ---- 10: one model under two ids is one model, not fleet diversity ----
 fresh alias

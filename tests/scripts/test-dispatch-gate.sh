@@ -20,23 +20,24 @@ check() { # check <name> <expected> <actual>
 
 # ---- fixtures ----
 mkdir -p "$WORK/agents" "$WORK/rw" "$WORK/home"
-printf -- '---\nname: withmodel\ndescription: x\nmodel: glm-5.2\neffort: xhigh\n---\nbody\n' > "$WORK/agents/withmodel.md"
+printf -- '---\nname: withmodel\ndescription: x\nmodel: glm-5.3\neffort: max\n---\nbody\n' > "$WORK/agents/withmodel.md"
 printf -- '---\nname: sonnetagent\ndescription: x\nmodel: sonnet\n---\nbody\n'  > "$WORK/agents/sonnetagent.md"
 printf -- '---\nname: nomodel\ndescription: x\n---\nbody\n'                     > "$WORK/agents/nomodel.md"
 printf -- '---\nname: inheritagent\ndescription: x\nmodel: inherit\n---\nbody\n' > "$WORK/agents/inheritagent.md"
 printf -- '---\nname: pinned1a\ndescription: x\neffort: max\n---\nbody\n'        > "$WORK/agents/pinned1a.md"
-printf -- '---\nname: badeffort\ndescription: x\nmodel: glm-5.2\neffort: turbo\n---\nbody\n' > "$WORK/agents/badeffort.md"
+printf -- '---\nname: badeffort\ndescription: x\nmodel: glm-5.3\neffort: turbo\n---\nbody\n' > "$WORK/agents/badeffort.md"
 printf -- '---\nname: kimipin\ndescription: x\nmodel: kimi-k3\neffort: max\n---\nbody\n'     > "$WORK/agents/kimipin.md"
 printf -- '---\nname: kimipinok\ndescription: x\nmodel: kimi-k3\neffort: high\n---\nbody\n'  > "$WORK/agents/kimipinok.md"
 printf -- '---\nname: gptmedium\ndescription: x\nmodel: gpt-5.6-sol\neffort: medium\n---\nbody\n' > "$WORK/agents/gptmedium.md"
 # Analysis-role fixtures: model+effort are VALID, so a denial can only come from
 # the role floor — otherwise the effort rule would deny first and prove nothing.
-printf -- '---\nname: debug-glm\ndescription: x\nmodel: glm-5.2\neffort: xhigh\n---\nbody\n'  > "$WORK/agents/debug-glm.md"
-printf -- '---\nname: sleuth-grok\ndescription: x\nmodel: grok-4.5\neffort: max\n---\nbody\n' > "$WORK/agents/sleuth-grok.md"
+printf -- '---\nname: debug-glm\ndescription: x\nmodel: glm-5.3\neffort: max\n---\nbody\n'  > "$WORK/agents/debug-glm.md"
+printf -- '---\nname: sleuth-grok\ndescription: x\nmodel: grok-4.6\neffort: max\n---\nbody\n' > "$WORK/agents/sleuth-grok.md"
 printf -- '---\nname: analyzer-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/analyzer-gpt.md"
 printf -- '---\nname: debug-kimi\ndescription: x\nmodel: kimi-k3\neffort: high\n---\nbody\n' > "$WORK/agents/debug-kimi.md"
 # same model+effort as analyzer-gpt but a name the analysis patterns do NOT match
 printf -- '---\nname: scout-minimax\ndescription: x\nmodel: MiniMax-M3\neffort: high\n---\nbody\n' > "$WORK/agents/scout-minimax.md"
+printf -- '---\nname: scout-dspro\ndescription: x\nmodel: deepseek-v4-pro\neffort: high\n---\nbody\n' > "$WORK/agents/scout-dspro.md"
 printf -- '---\nname: impl-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/impl-gpt.md"
 
 # The shipped table blocks: the model rules are binding. The optional warn mode
@@ -97,7 +98,7 @@ bashcmd() {
 check "t1 no model field denied"            deny  "$(gate "$(task_nomodel nomodel)")"
 out=$(gate_out "$(task_nomodel nomodel)")
 case "$out" in *model*) check "t1 deny names the missing field" 0 0 ;; *) check "t1 deny names the missing field" 0 1 ;; esac
-check "t1 explicit model allowed"           allow "$(gate "$(task nomodel opus "[dispatch-class:1b] x")")"
+check "t1 explicit model allowed"           allow "$(gate "$(task nomodel opus "[dispatch-class:1c] x")")"
 check "t1 frontmatter model resolves"       allow "$(gate "$(task_nomodel withmodel "[dispatch-class:1e]")")"
 check "t1 frontmatter inherit = unset"      deny  "$(gate "$(task_nomodel inheritagent)")"
 check "t1 unknown agent, no model"          deny  "$(gate "$(task_nomodel ghost-agent)")"
@@ -105,11 +106,13 @@ check "t1 unknown agent, no model"          deny  "$(gate "$(task_nomodel ghost-
 # ---- truth 2: sonnet/haiku banned everywhere, incl. via frontmatter ----
 check "t2 sonnet in call denied"            deny  "$(gate "$(task scout sonnet "[dispatch-class:scout] x")")"
 check "t2 haiku in call denied"             deny  "$(gate "$(task scout claude-haiku-4-5 "[dispatch-class:scout] x")")"
-# MiniMax-M3 is admitted by [roles.scout] (§3 API inventory) and by [classes.1e],
-# both flagged as contested by CLAUDE.md 2026-07-21. It is a proxy model, so the
-# effort rule still governs it. Strike it from the table and these two flip.
-check "t2 minimax without effort denied"    deny  "$(gate "$(task scout MiniMax-M3 "[dispatch-class:scout] x")")"
-check "t2 minimax scout with effort ok"     allow "$(gate "$(task_nomodel scout-minimax "[dispatch-class:scout]")")"
+# MiniMax-M3 was struck from the table 2026-08-16 (out of rotation, CLAUDE.md
+# 2026-07-21; gone from the proxy roster 2026-08-08): unlisted anywhere = denied.
+# The positive path it used to cover (frontmatter effort on a proxy model in
+# scout) moved to a registered model, deepseek-v4-pro.
+check "t2 minimax struck from table denied" deny  "$(gate "$(task scout MiniMax-M3 "[dispatch-class:scout] x")")"
+check "t2 minimax agent fixture denied"     deny  "$(gate "$(task_nomodel scout-minimax "[dispatch-class:scout]")")"
+check "t2 dspro scout with effort ok"       allow "$(gate "$(task_nomodel scout-dspro "[dispatch-class:scout]")")"
 # Bans match by NAME: a vendor family whose id omits the vendor name (MiniMax
 # abab-*) slips a single-pattern ban — every family name must be listed.
 check "t2 minimax abab family denied"       deny  "$(gate "$(task scout abab-6.5s "[dispatch-class:scout] x")")"
@@ -136,13 +139,13 @@ check "t3 debug on kimi-k3 allowed"         allow "$(gate "$(task_nomodel debug-
 check "t3 principal-debugger on opus ok"    allow "$(gate "$(task principal-debugger opus "[dispatch-class:analysis] x")")"
 check "t3 analyst on fable allowed"         allow "$(gate "$(task session-analyst fable "[dispatch-class:analysis] x")")"
 # locate/execution paths must NOT be caught by the analysis patterns
-check "t3 non-analysis role on grok ok"     allow "$(gate "$(task pinned1a grok-4.5 "[dispatch-class:1a] x")")"
+check "t3 non-analysis role on grok ok"     allow "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] x")")"
 T="$WORK/table-no-analysis-role.toml"
 check "t3 MUTANT no-analysis lets glm"      allow "$(gate "$(task_nomodel debug-glm "[dispatch-class:1e]")")"
 T="$BASE_TABLE"
 # declared class tightens (D-02): opus is outside class 1a; typo'd class is loud
 check "t3 class 1a rejects opus"            deny  "$(gate "$(task implementer opus "[dispatch-class:1a] fix")")"
-check "t3 class 1a accepts grok"            allow "$(gate "$(task pinned1a grok-4.5 "[dispatch-class:1a] fix")")"
+check "t3 class 1a accepts grok"            allow "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] fix")")"
 check "t3 unknown class marker is loud"     deny  "$(gate "$(task implementer opus "[dispatch-class:9z] fix")")"
 # allowed lists carry MODEL names only: a vendor/channel name ("codex") would
 # admit the literal string model="codex" AND bypass effort_required_for, which
@@ -154,7 +157,7 @@ check "t3 real gpt id with effort ok"       allow "$(gate "$(printf '{"tool_name
 
 # ---- ratified-model registry: family patterns match by substring, so only an
 # exact registered id may pass — an unmeasured variant is NOT the measured model
-check "t6 gpt-5.6-luna denied"              deny  "$(gate "$(task implementer gpt-5.6-luna "[dispatch-class:1a] fix")")"
+check "t6 luna outside its one class denied" deny "$(gate "$(task implementer gpt-5.6-luna "[dispatch-class:1a] fix")")"
 check "t6 kimi-2.7 denied"                  deny  "$(gate "$(task implementer kimi-2.7 "[dispatch-class:1c] fix")")"
 check "t6 opus-4.8 string denied"           deny  "$(gate "$(task catalyst:critic opus-4.8 "[dispatch-class:critique] x")")"
 check "t6 garbage sharing a family denied"  deny  "$(gate "$(task catalyst:critic opusadjfhk "[dispatch-class:critique] x")")"
@@ -166,18 +169,18 @@ check "t6 MUTANT empty case tables deny all" deny  "$(gate "$(task catalyst:crit
 T="$BASE_TABLE"
 
 # ---- Agent-channel effort: proxy models need explicit effort + accepted pins ----
-check "ae glm without effort denied"        deny  "$(gate "$(task nomodel glm-5.2 "[dispatch-class:1e] x")")"
-out=$(gate_out "$(task nomodel glm-5.2 "[dispatch-class:1e] x")")
+check "ae glm without effort denied"        deny  "$(gate "$(task nomodel glm-5.3 "[dispatch-class:1e] x")")"
+out=$(gate_out "$(task nomodel glm-5.3 "[dispatch-class:1e] x")")
 case "$out" in *effort*) check "ae deny names effort" 0 0 ;; *) check "ae deny names effort" 0 1 ;; esac
-check "ae anthropic model exempt"           allow "$(gate "$(task nomodel opus "[dispatch-class:1b] x")")"
+check "ae anthropic model exempt"           allow "$(gate "$(task nomodel opus "[dispatch-class:1c] x")")"
 check "ae frontmatter effort accepted"      allow "$(gate "$(task_nomodel withmodel "[dispatch-class:1e]")")"
 check "ae invalid effort value denied"      deny  "$(gate "$(task_nomodel badeffort "[dispatch-class:1e]")")"
 check "ae pin kimi-k3 at max denied"        deny  "$(gate "$(task_nomodel kimipin "[dispatch-class:1c]")")"
 check "ae pin kimi-k3 at high allowed"      allow "$(gate "$(task_nomodel kimipinok "[dispatch-class:1c]")")"
 check "ae pin gpt at medium denied"         deny  "$(gate "$(task_nomodel gptmedium "[dispatch-class:1b]")")"
-check "ae pin grok below max denied"        deny  "$(gate "$(task kimipinok grok-4.5 "[dispatch-class:1a] x")")"
+check "ae pin grok below max denied"        deny  "$(gate "$(task kimipinok grok-4.6 "[dispatch-class:1a] x")")"
 T="$WORK/table-no-agent-effort.toml"
-check "ae MUTANT no-requirement table"      allow "$(gate "$(task nomodel glm-5.2 "[dispatch-class:1e] x")")"
+check "ae MUTANT no-requirement table"      allow "$(gate "$(task nomodel glm-5.3 "[dispatch-class:1e] x")")"
 T="$BASE_TABLE"
 
 # ---- truth 12: a vendor CLI launched DIRECTLY (outside envoy) is the same
@@ -193,7 +196,7 @@ check "t12 env prefix does not hide it"     deny  "$(gate "$(bashcmd 'RCH_ENABLE
 check "t12 vendor after && still caught"    deny  "$(gate "$(bashcmd 'cd /x && codex exec --model gpt-5.6-sol do-it')")"
 # CLI ceilings are the vendor's own; [pins] are the Agent/proxy accepted efforts.
 # Applying them here would deny a legitimate run (grok-CLI tops out at high).
-check "t12 CLI does not inherit the pins"   allow "$(gate "$(bashcmd 'grok --model grok-4.5 --effort high go [dispatch-class:1a]')")"
+check "t12 CLI does not inherit the pins"   allow "$(gate "$(bashcmd 'grok --model grok-4.6 --effort high go [dispatch-class:1a]')")"
 # only the EXECUTABLE position counts — a substring rule would gate these
 check "t12 vendor named as an argument"     allow "$(gate "$(bashcmd 'grep codex notes.md')")"
 check "t12 vendor inside a pipe filter"     allow "$(gate "$(bashcmd 'ls -la | grep glm')")"
@@ -212,8 +215,8 @@ for b in $tbl; do case " $hint " in *" $b "*) ;; *) missing="$missing $b" ;; esa
 case "$missing" in '') check "t12 code hint covers every vendor" 0 0 ;; *) echo "  uncovered:$missing"; check "t12 code hint covers every vendor" 0 1 ;; esac
 
 # ---- truth 13: the class marker is read exactly once and unambiguously ----
-check "t13 uppercase marker accepted"       allow "$(gate "$(task implementer opus '[DISPATCH-CLASS:1B] x')")"
-check "t13 same marker twice is fine"       allow "$(gate "$(task implementer opus '[dispatch-class:1b] x [dispatch-class:1b]')")"
+check "t13 uppercase marker accepted"       allow "$(gate "$(task implementer opus '[DISPATCH-CLASS:1C] x')")"
+check "t13 same marker twice is fine"       allow "$(gate "$(task implementer opus '[dispatch-class:1c] x [dispatch-class:1c]')")"
 check "t13 two different classes are loud"  deny  "$(gate "$(task implementer opus '[dispatch-class:1a] x [dispatch-class:1b]')")"
 out=$(gate_out "$(task implementer opus '[dispatch-class:1a] x [dispatch-class:1b]')")
 case "$out" in *1a*1b*) check "t13 ambiguity names both" 0 0 ;; *) check "t13 ambiguity names both" 0 1 ;; esac
@@ -225,12 +228,12 @@ check "t9 critic without marker denied"     deny  "$(gate "$(task catalyst:criti
 check "t9 scout without marker denied"      deny  "$(gate "$(task catalyst:scout opus)")"
 out=$(gate_out "$(task implementer opus)")
 case "$out" in *dispatch-class*) check "t9 deny names the marker" 0 0 ;; *) check "t9 deny names the marker" 0 1 ;; esac
-check "t9 marker with class ok"             allow "$(gate "$(task implementer opus "[dispatch-class:1b] x")")"
+check "t9 marker with class ok"             allow "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
 # name and declared class must agree: a critic under an executor class would
 # otherwise buy the executor's wider model set
-check "t9 critic under 1a denied"           deny  "$(gate "$(task catalyst:critic grok-4.5 "[dispatch-class:1a] x")")"
+check "t9 critic under 1a denied"           deny  "$(gate "$(task catalyst:critic grok-4.6 "[dispatch-class:1a] x")")"
 check "t9 scout under critique denied"      deny  "$(gate "$(task catalyst:scout opus "[dispatch-class:critique] x")")"
-out=$(gate_out "$(task catalyst:critic grok-4.5 "[dispatch-class:1a] x")")
+out=$(gate_out "$(task catalyst:critic grok-4.6 "[dispatch-class:1a] x")")
 case "$out" in *critique*) check "t9 mismatch names the class" 0 0 ;; *) check "t9 mismatch names the class" 0 1 ;; esac
 # no role matches "implementer", so no name/class disagreement can arise
 check "t9 unnamed agent takes any class"    allow "$(gate "$(task implementer fable "[dispatch-class:critique] x")")"
@@ -242,9 +245,9 @@ T="$BASE_TABLE"
 
 # ---- truth 10: the escape hatch — ONE parameter, for an unmeasured model ----
 printf 'schema_version = 1\n[experiment]\nallow_all_models = true\n' > "$WORK/override-hatch.toml"
-check "t10 unmeasured model denied by default" deny "$(gate "$(task implementer gpt-5.6-luna "[dispatch-class:1a] x")")"
+check "t10 unmeasured model denied by default" deny "$(gate "$(task implementer gpt-fictional "[dispatch-class:1a] x")")"
 O="$WORK/override-hatch.toml"
-check "t10 hatch admits unmeasured model"   warn "$(gate "$(task implementer gpt-5.6-luna "[dispatch-class:1a] x")")"
+check "t10 hatch admits unmeasured model"   warn "$(gate "$(task implementer gpt-fictional "[dispatch-class:1a] x")")"
 check "t10 hatch lifts the class floor"     warn "$(gate "$(task catalyst:critic sonnet "[dispatch-class:critique] x")")"
 # what the hatch must NOT do: it relaxes WHICH model, never whether a case may be
 # delegated, nor the explicit model, nor the mandatory class declaration
@@ -265,14 +268,14 @@ printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["opus"]\n' > "
 printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["fable"]\n' > "$WORK/override-proj.toml"
 O="$WORK/override-home.toml"
 check "t11 home layer retunes a class"      allow "$(gate "$(task implementer opus "[dispatch-class:1a] x")")"
-check "t11 home layer displaces the base"   deny  "$(gate "$(task pinned1a grok-4.5 "[dispatch-class:1a] x")")"
-check "t11 unnamed entries survive a layer" allow "$(gate "$(task implementer opus "[dispatch-class:1b] x")")"
+check "t11 home layer displaces the base"   deny  "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] x")")"
+check "t11 unnamed entries survive a layer" allow "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
 P="$WORK/override-proj.toml"
 check "t11 project layer beats home"        allow "$(gate "$(task implementer fable "[dispatch-class:1a] x")")"
 check "t11 project layer displaces home"    deny  "$(gate "$(task implementer opus "[dispatch-class:1a] x")")"
 P="$WORK/absent-override.toml"
 O="$WORK/absent-override.toml"
-check "t11 layers gone, base governs again" allow "$(gate "$(task pinned1a grok-4.5 "[dispatch-class:1a] x")")"
+check "t11 layers gone, base governs again" allow "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] x")")"
 # a project config is found by walking up from cwd, not only at the exact cwd
 mkdir -p "$WORK/rw/.claude/catalyst" "$WORK/rw/deep/deeper"
 printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["fable"]\n' > "$WORK/rw/.claude/catalyst/routing-override.toml"
@@ -291,11 +294,11 @@ check "t4 envoy codex with effort allowed"  allow "$(gate "$(bashcmd 'node /p/en
 check "t4 envoy kimi needs no effort"       allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor kimi --write do-thing [dispatch-class:1c]')")"
 check "t4 envoy non-task subcommand passes" allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs status')")"
 check "t4 proxy without visible effort"     deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d @body.json')")"
-check "t4 proxy with inline effort allowed" allow "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"xhigh\"} [dispatch-class:1e]')")"
-check "t4 proxy pin glm below xhigh denied" deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"high\"}')")"
+check "t4 proxy with inline effort allowed" allow "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"max\"} [dispatch-class:1e]')")"
+check "t4 proxy pin glm below max denied"   deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"high\"}')")"
 check "t4 proxy pin, shell-escaped quotes"  deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\\\"model\\\":\\\"kimi-k3\\\",\\\"reasoning_effort\\\":\\\"max\\\"}')")"
-check "t4 proxy-critique pinned ok"         allow "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 xhigh brief.md out.md a.rs [dispatch-class:critique]')")"
-check "t4 proxy-critique pin violation"     deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 high brief.md out.md a.rs')")"
+check "t4 proxy-critique pinned ok"         allow "$(gate "$(bashcmd 'proxy-critique.sh glm-5.3 max brief.md out.md a.rs [dispatch-class:critique]')")"
+check "t4 proxy-critique pin violation"     deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.3 high brief.md out.md a.rs')")"
 check "t4 proxy-critique unreadable form"   deny  "$(gate "$(bashcmd 'bash proxy-critique.sh')")"
 # MUTANT via override (also truth 10): grok freed from the effort requirement
 printf 'schema_version = 1\n[channels.envoy]\n[channels.envoy.vendors.grok]\neffort_required = false\n' > "$WORK/override-grok-free.toml"
@@ -360,7 +363,7 @@ out=$(gate_out "$(task implementer opus)")
 case "$out" in *systemMessage*) check "t14 warn is not a permission decision" 0 0 ;; *) check "t14 warn is not a permission decision" 0 1 ;; esac
 case "$out" in *permissionDecision*) check "t14 warn grants no permission" 0 1 ;; *) check "t14 warn grants no permission" 0 0 ;; esac
 case "$out" in *dispatch-class*) check "t14 warn still says what to fix" 0 0 ;; *) check "t14 warn still says what to fix" 0 1 ;; esac
-check "t14 a clean dispatch stays silent"   allow "$(gate "$(task implementer opus "[dispatch-class:1b] x")")"
+check "t14 a clean dispatch stays silent"   allow "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
 slice_warn=$(CATALYST_ROUTING_TABLE="$WORK/table-warn.toml" CATALYST_ROUTING_OVERRIDE="$O" \
   CATALYST_ROUTING_PROJECT_OVERRIDE="$WORK/absent-override.toml" python3 "$GATE" --render-slice)
 case "$slice_warn" in *"НЕ блокирует"*) check "t14 warn slice states the mode" 0 0 ;; *) check "t14 warn slice states the mode" 0 1 ;; esac
@@ -368,12 +371,12 @@ case "$slice_warn" in *отказ*) check "t14 warn slice promises no deny" 0 1 
 T="$BASE_TABLE"
 # an unreadable table is not a routing choice — fail-closed in either mode
 T="$WORK/garbage.toml"
-check "t14 broken table blocks"             deny  "$(gate "$(task implementer opus "[dispatch-class:1b] x")")"
+check "t14 broken table blocks"             deny  "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
 T="$BASE_TABLE"
 # The shipped template must be a NO-OP: a user copies it, uncomments what they
 # need, and an untouched copy must not silently change routing.
 O="$ROOT/hooks/routing-override.template.toml"
-check "t14 template is inert as override"   allow "$(gate "$(task implementer opus "[dispatch-class:1b] x")")"
+check "t14 template is inert as override"   allow "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
 check "t14 template keeps rules in force"   deny  "$(gate "$(task implementer opus)")"
 O="$WORK/absent-override.toml"
 # a hook must not litter bytecode into the plugin it reads
@@ -424,8 +427,8 @@ case "$out" in *"declares no class"*) check "t15 envoy denial names the marker" 
 check "t15 direct CLI without marker"       deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it')")"
 out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it')")
 case "$out" in *"declares no class"*) check "t15 CLI denial names the marker" 0 0 ;; *) check "t15 CLI denial names the marker" 0 1 ;; esac
-check "t15 proxy POST without marker"       deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"xhigh\"}')")"
-check "t15 proxy-critique without marker"   deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 xhigh brief.md out.md a.rs')")"
+check "t15 proxy POST without marker"       deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"max\"}')")"
+check "t15 proxy-critique without marker"   deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.3 max brief.md out.md a.rs')")"
 # The rule attaches to the dispatch channels, never to the shell at large.
 check "t15 ordinary bash needs no marker"   allow "$(gate "$(bashcmd 'cargo test --lib')")"
 check "t15 vendor word off exec position"   allow "$(gate "$(bashcmd 'grep codex notes.md')")"
@@ -433,8 +436,8 @@ check "t15 vendor word off exec position"   allow "$(gate "$(bashcmd 'grep codex
 check "t15 CLI model outside its class"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1c]')")"
 out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1c]')")
 case "$out" in *"outside class '1c'"*) check "t15 CLI denial names the class" 0 0 ;; *) check "t15 CLI denial names the class" 0 1 ;; esac
-check "t15 proxy model outside its class"   deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.2\",\"reasoning_effort\":\"xhigh\"} [dispatch-class:audit]')")"
-check "t15 proxy-critique outside class"    deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.2 xhigh brief.md out.md a.rs [dispatch-class:audit]')")"
+check "t15 proxy model outside its class"   deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"max\"} [dispatch-class:research]')")"
+check "t15 proxy-critique outside class"    deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.3 max brief.md out.md a.rs [dispatch-class:research]')")"
 # Envoy names a vendor, never a model: the case is still checked for being
 # delegable at all, which is what CAN be known from the command.
 check "t15 envoy takes a delegable class"   allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing [dispatch-class:1a]')")"
@@ -467,9 +470,9 @@ task_dc() { # task_dc <subagent_type> <model> <dispatch_class> [prompt]
   printf '{"tool_name":"Task","tool_input":{"subagent_type":"%s","model":"%s","dispatch_class":"%s","prompt":"%s"},"cwd":"%s"}' \
     "$1" "$2" "$3" "${4:-x}" "$WORK/rw"
 }
-check "t16 field alone declares the class"  allow "$(gate "$(task_dc nomodel opus 1b)")"
-check "t16 field agreeing with marker"      allow "$(gate "$(task_dc nomodel opus 1b "[dispatch-class:1b] x")")"
-check "t16 field disagreeing with marker"   deny  "$(gate "$(task_dc nomodel opus 1b "[dispatch-class:1c] x")")"
+check "t16 field alone declares the class"  allow "$(gate "$(task_dc nomodel opus 1c)")"
+check "t16 field agreeing with marker"      allow "$(gate "$(task_dc nomodel opus 1c "[dispatch-class:1c] x")")"
+check "t16 field disagreeing with marker"   deny  "$(gate "$(task_dc nomodel opus 1c "[dispatch-class:1b] x")")"
 check "t16 unknown class in the field"      deny  "$(gate "$(task_dc nomodel opus nosuchclass)")"
 check "t16 field buys no wider model set"   deny  "$(gate "$(task_dc nomodel opus 1a)")"
 check "t16 empty field is not a decl"       deny  "$(gate "$(task_dc nomodel opus '')")"
