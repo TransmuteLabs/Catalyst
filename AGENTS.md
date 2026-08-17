@@ -1,17 +1,20 @@
-# Правила для агентов
+# Rules for agents
 
-Канонический свод правил всех библиотек семьи — `../AGENTS.md` (корень папки
-Nexus, над этим репозиторием). Читать его, а не этот файл: здесь только
-указатель, потому что вендорские CLI выше git-корня не поднимаются.
+The canonical rule compendium for every library of the family lives at the
+Nexus folder root, `AGENTS.md`. The pointer chain starts one level up from
+this repository (`../AGENTS.md`) and resolves to that canon. Read the canon,
+not this file: this is only a pointer, because vendor CLIs do not climb above
+their own git root.
 
-Если канон недоступен (изолированный чекаут), минимум, который действует
-всегда:
+If the canon is unreachable (an isolated checkout), the minimum that always
+applies:
 
-- **Комментарии в коде — только констрейнты**: граница, инвариант,
-  «почему не иначе», ссылка на канонный дом правила. Нарратив (история
-  правки, пересказ диффа, «как было и почему поменяли») в код не пишется —
-  его место в сообщении коммита и в `NOTES.md` рядом с кодом.
-- **Без git-коммитов без явного задания**; писать только в файлы, названные
-  заданием.
+- **Code comments — only constraints**: a boundary, an invariant, a
+  "why not otherwise", a reference to the canonical home of the rule.
+  Narrative (edit history, a retelling of the diff, "how it was and why it
+  changed") is not written into code — its place is in the commit message
+  and in the `NOTES.md` next to the code.
+- **No git commits without an explicit assignment**; write only to the files
+  the assignment names.
 
-Архитектура и слои — в `README.md` этого репозитория.
+Architecture and layers are in this repository's `README.md`.
