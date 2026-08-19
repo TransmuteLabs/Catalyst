@@ -40,6 +40,88 @@ printf -- '---\nname: scout-minimax\ndescription: x\nmodel: MiniMax-M3\neffort: 
 printf -- '---\nname: scout-dspro\ndescription: x\nmodel: deepseek-v4-pro\neffort: high\n---\nbody\n' > "$WORK/agents/scout-dspro.md"
 printf -- '---\nname: impl-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/impl-gpt.md"
 
+# ---- fake potionbard daemon for the [limits] quota check ----
+# One AF_UNIX server; canned replies come from a JSON file re-read on every
+# connection, so scenarios retune without a restart. Each request appends
+# "REQ <provider>" to PB_LOG — scenarios assert the socket was NOT touched.
+PB_SOCK="$WORK/pb.sock"; PB_SCRIPT="$WORK/pb.json"; PB_LOG="$WORK/pb.log"
+: > "$PB_LOG"; printf '{}' > "$PB_SCRIPT"
+python3 - "$PB_SOCK" "$PB_SCRIPT" "$PB_LOG" <<'EOF' 2>/dev/null &
+import json, os, socket, sys
+srv_path, script_path, log_path = sys.argv[1:4]
+try:
+    os.unlink(srv_path)
+except OSError:
+    pass
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(srv_path)
+srv.listen(16)
+while True:
+    conn, _ = srv.accept()
+    conn.settimeout(5)
+    try:
+        data = b""
+        while b"\n" not in data:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        req = json.loads(data.split(b"\n", 1)[0].decode())
+        with open(log_path, "a") as lf:
+            lf.write("REQ %s\n" % req.get("provider", "?"))
+        with open(script_path) as sf:
+            val = json.load(sf).get(req.get("provider"), "MISSING")
+        if val == "NOREPLY":
+            pass  # the pool that never answers: connection closed silently
+        elif val == "GARBAGE":
+            conn.sendall(b"definitely not json\n")
+        elif val == "MISSING":
+            conn.sendall(json.dumps({"result": "provider_usage",
+                                     "provider": req.get("provider"),
+                                     "accounts": [], "error": None}).encode() + b"\n")
+        else:
+            conn.sendall(val.encode() + b"\n")
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+EOF
+PB_PID=$!
+trap 'kill $PB_PID 2>/dev/null; rm -rf "$WORK"' EXIT
+for _ in $(seq 1 100); do [ -S "$PB_SOCK" ] && break; sleep 0.05; done
+export POTIONBAR_SOCKET="$PB_SOCK"
+
+pb_table() { # pb_table provider=spec ...; spec: accounts "w,w;w" | NOREPLY | GARBAGE
+  python3 - "$PB_SCRIPT" "$@" <<'EOF'
+import json, sys
+dst, kvs = sys.argv[1], sys.argv[2:]
+table = {}
+for kv in kvs:
+    prov, spec = kv.split("=", 1)
+    if spec in ("NOREPLY", "GARBAGE"):
+        table[prov] = spec
+        continue
+    accounts = []
+    for acc in spec.split(";"):
+        wins = [{"label": "W%d" % i, "used_percent": float(p),
+                 "resets_at": "2099-01-0%dT00:00:00Z" % (1 + i),
+                 "window_minutes": 10080} for i, p in enumerate(acc.split(","))]
+        accounts.append({"account_email": "a@x", "plan": "pro", "windows": wins,
+                         "updated_at": "now", "error": None})
+    table[prov] = json.dumps({"result": "provider_usage", "provider": prov,
+                              "accounts": accounts})
+json.dump(table, open(dst, "w"))
+EOF
+}
+pb_count() { wc -l < "$PB_LOG" | tr -d ' '; }
+
+# Idle state for the whole legacy suite: every pool at 1% so existing
+# allow-paths stay silent while [limits] is armed.
+pb_table codex=1 xaicli=1 kimicode=1
+
 # The shipped table blocks: the model rules are binding. The optional warn mode
 # gets its own copy and its own section (t14).
 SHIPPED_TABLE="$BASE_TABLE"
@@ -476,6 +558,98 @@ check "t16 field disagreeing with marker"   deny  "$(gate "$(task_dc nomodel opu
 check "t16 unknown class in the field"      deny  "$(gate "$(task_dc nomodel opus nosuchclass)")"
 check "t16 field buys no wider model set"   deny  "$(gate "$(task_dc nomodel opus 1a)")"
 check "t16 empty field is not a decl"       deny  "$(gate "$(task_dc nomodel opus '')")"
+
+# ---- truth 17 ([limits]): potionbard quota check — last in the denial order,
+# fail-open on a dead daemon, prefix-mapped pools codex/grok/kimi only ----
+T="$BASE_TABLE"; O="$WORK/absent-override.toml"; P="$WORK/absent-override.toml"
+lim_codex='codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1a]'
+
+pb_table codex=100
+check "lim1 exhausted pool denied"           deny  "$(gate "$(bashcmd "$lim_codex")")"
+out=$(gate_out "$(bashcmd "$lim_codex")")
+case "$out" in *2099-*) check "lim1 deny carries resets_at" 0 0 ;; *) check "lim1 deny carries resets_at" 0 1 ;; esac
+
+pb_table codex=85
+check "lim2 85% warns, dispatch runs"        warn  "$(gate "$(bashcmd "$lim_codex")")"
+
+pb_table codex=1
+check "lim3 1% passes silently"              allow "$(gate "$(bashcmd "$lim_codex")")"
+
+pb_saved_sock="$POTIONBAR_SOCKET"; export POTIONBAR_SOCKET="$WORK/absent.sock"
+check "lim4 dead socket fail-opens"          warn  "$(gate "$(bashcmd "$lim_codex")")"
+export POTIONBAR_SOCKET="$pb_saved_sock"
+
+printf 'schema_version = 1\n[limits]\nenabled = false\n' > "$WORK/override-lim-off.toml"
+pb_table codex=100
+pb_n0=$(pb_count)
+O="$WORK/override-lim-off.toml"
+check "lim5 enabled=false passes"            allow "$(gate "$(bashcmd "$lim_codex")")"
+check "lim5 enabled=false touches no socket" "$pb_n0" "$(pb_count)"
+O="$WORK/absent-override.toml"
+
+pb_table codex=1
+pb_n0=$(pb_count)
+check "lim6 glm model passes"                allow "$(gate "$(task_nomodel withmodel "[dispatch-class:1e]")")"
+check "lim6 glm leaves the socket alone"     "$pb_n0" "$(pb_count)"
+
+pb_table codex=0,100
+check "lim7 windows are conjunctive"         deny  "$(gate "$(bashcmd "$lim_codex")")"
+
+pb_table "codex=100;5"
+check "lim8 accounts are alternatives"       allow "$(gate "$(bashcmd "$lim_codex")")"
+
+pb_table codex=GARBAGE
+check "lim9 garbage reply fail-opens"        warn  "$(gate "$(bashcmd "$lim_codex")")"
+
+# the quota check is LAST: an effortless run is denied for effort, not quota
+pb_table codex=100
+out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol do-it')")
+case "$out" in *effort*) check "lim10 effort denial wins the order" 0 0 ;; *) check "lim10 effort denial wins the order" 0 1 ;; esac
+case "$out" in *2099-*)  check "lim10 no quota talk there" 0 1 ;; *) check "lim10 no quota talk there" 0 0 ;; esac
+
+printf 'schema_version = 1\n[limits]\ndeny_at = 100.1\n' > "$WORK/override-lim-mutant.toml"
+O="$WORK/override-lim-mutant.toml"
+# warn, not allow: 100% is still >= warn_at — but the DENY is gone, which is
+# what proves the threshold lives in the table, not in the gate's code
+check "lim11 MUTANT deny_at=100.1 flips"     warn  "$(gate "$(bashcmd "$lim_codex")")"
+O="$WORK/absent-override.toml"
+
+# unlisted gpt-* ids ride the "gpt-" prefix; glm-* match nothing
+printf 'schema_version = 1\n[experiment]\nallow_all_models = true\n' > "$WORK/override-hatch2.toml"
+O="$WORK/override-hatch2.toml"
+pb_table codex=100
+check "lim12 unlisted gpt id hits its pool"  deny  "$(gate "$(task implementer gpt-5.9-nova "[dispatch-class:1a] x")")"
+check "lim12 daemon was asked for codex"     "REQ codex" "$(tail -n 1 "$PB_LOG")"
+pb_n0=$(pb_count)
+check "lim12 glm still unchecked"            warn  "$(gate "$(task_nomodel withmodel "[dispatch-class:1e]")")"
+check "lim12 glm leaves the socket alone"    "$pb_n0" "$(pb_count)"
+O="$WORK/absent-override.toml"
+
+# longest prefix wins: luna pinned to kimicode over the family "gpt-" = codex
+printf 'schema_version = 1\n[limits.models]\n"gpt-" = ["codex"]\n"gpt-5.6-luna" = ["kimicode"]\n' > "$WORK/override-lim-prefix.toml"
+O="$WORK/override-lim-prefix.toml"
+pb_table codex=1 kimicode=100
+check "lim13 longest prefix reroutes luna"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-luna --effort high x [dispatch-class:scout]')")"
+check "lim13 daemon asked for kimicode"      "REQ kimicode" "$(tail -n 1 "$PB_LOG")"
+check "lim13 sibling gpt goes to codex"      allow "$(gate "$(bashcmd "$lim_codex")")"
+check "lim13 daemon asked for codex"         "REQ codex" "$(tail -n 1 "$PB_LOG")"
+O="$WORK/absent-override.toml"
+
+# a model may sit in several pools: deny only when EVERY pool is exhausted,
+# and a pool that never answers BLOCKS the deny (fail-open, element-wise)
+printf 'schema_version = 1\n[limits.models]\n"gpt-" = ["codex", "opencodegokey"]\n' > "$WORK/override-lim-multi.toml"
+O="$WORK/override-lim-multi.toml"
+pb_table codex=100 opencodegokey=5
+check "lim14 live second pool admits"        allow "$(gate "$(bashcmd "$lim_codex")")"
+pb_table codex=100 opencodegokey=100
+check "lim15 all pools exhausted denies"     deny  "$(gate "$(bashcmd "$lim_codex")")"
+out=$(gate_out "$(bashcmd "$lim_codex")")
+case "$out" in *codex*opencodegokey*) check "lim15 deny names every pool" 0 0 ;; *) check "lim15 deny names every pool" 0 1 ;; esac
+pb_table codex=100 opencodegokey=NOREPLY
+check "lim16 silent pool blocks deny"        warn  "$(gate "$(bashcmd "$lim_codex")")"
+out=$(gate_out "$(bashcmd "$lim_codex")")
+case "$out" in *opencodegokey*) check "lim16 warn names the silent pool" 0 0 ;; *) check "lim16 warn names the silent pool" 0 1 ;; esac
+O="$WORK/absent-override.toml"
 
 echo "test-dispatch-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

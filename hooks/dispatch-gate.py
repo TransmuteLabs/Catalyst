@@ -35,6 +35,11 @@ Gated Bash channels: the envoy companion, the proxy POST, the proxy-critique
 wrapper, and a vendor CLI launched DIRECTLY (outside envoy) — same models and
 same ledger, so the same effort and admission rules.
 
+[limits] (last check, deliberately fail-open): a dispatch whose effective
+model or channel vendor draws on the codex/grok/kimi pools asks the live
+potionbard daemon for quota; exhaustion denies, near-exhaustion warns, a dead
+daemon never blocks the dispatch.
+
 The channel identification constants below are contract constants mirrored in
 routing-table.toml's header comment: the Bash early-exit must work even when
 the table is unreadable — a broken table blocks dispatches and gated channels,
@@ -50,6 +55,7 @@ import glob
 import json
 import os
 import re
+import socket
 import sys
 
 try:
@@ -525,7 +531,7 @@ def check_class_admits(model, source, cid, cls, table):
                   f"{cls.get('reason', '')}")
 
 
-def check_dispatch(tool_input, table, cwd):
+def check_dispatch(tool_input, table, cwd, sink=None):
     st = str(tool_input.get("subagent_type") or "")
     fm = frontmatter_fields(st, cwd)
     model = str(tool_input.get("model") or "").strip()
@@ -540,6 +546,8 @@ def check_dispatch(tool_input, table, cwd):
                 f"dispatch — silently inheriting the parent model is the defect class "
                 f"this gate closes (routing home: hooks/routing-table.toml).")
     eff = model.lower()
+    if sink is not None:
+        sink["model"] = model
 
     check_known_model(model, table, f"dispatch of '{st}' (model from {source})")
 
@@ -623,12 +631,170 @@ def check_channel_model(model, effort, table, where="proxy channel"):
     check_pins(model, effort, table, f"{where} effort pin violated")
 
 
+# --- [limits]: potionbard quota check — the LAST check, deliberately fail-open ---
+
+def _provider_list(value):
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def limits_providers(sink, table):
+    """(provider_ids, limits_conf) a dispatch's model (or channel vendor) draws on.
+
+    Prefix match is acceptable HERE only because this lookup admits nothing:
+    model admission has already run the exact [classes.*] match higher in the
+    denial order — the "matched EXACTLY" rule governs admission and is NOT
+    relaxed by this section. Longest prefix wins, so an override can pin one
+    full model id over a family prefix. A model that matches no prefix is not
+    checked at all; the vendor map applies only where no model is known.
+    """
+    lim = table.get("limits")
+    if not isinstance(lim, dict) or not lim.get("enabled", True):
+        return [], {}
+    model = str((sink or {}).get("model") or "").strip().lower()
+    if model:
+        best = None
+        for pat, provs in (lim.get("models") or {}).items():
+            p = str(pat).strip().lower()
+            if p and model.startswith(p) and (best is None or len(p) > len(best[0])):
+                best = (p, _provider_list(provs))
+        return (best[1] if best else []), lim
+    vendor = str((sink or {}).get("vendor") or "").strip().lower()
+    if vendor:
+        return _provider_list((lim.get("vendors") or {}).get(vendor)), lim
+    return [], lim
+
+
+def _provider_binding(provider, lim, deny_at):
+    """(binding, worst_window, resets_at, None) or (None, None, None, cause).
+
+    Windows of one account are conjunctive (binding = max over windows);
+    accounts are alternatives (binding = min over accounts). resets_at is the
+    nearest reset among the account's windows at or above deny_at — the one
+    the caller can wait for — falling back to the worst window's own reset.
+    """
+    sock_path = os.path.expanduser(
+        os.environ.get("POTIONBAR_SOCKET") or str(lim.get("socket") or ""))
+    try:
+        timeout = max(float(lim.get("timeout_ms", 2000)) / 1000.0, 0.001)
+    except (TypeError, ValueError):
+        timeout = 2.0
+    req = json.dumps({"method": "provider_usage", "provider": provider,
+                      "force": False})
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(sock_path)
+            s.sendall(req.encode() + b"\n")
+            buf = b""
+            while b"\n" not in buf:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+    except (OSError, ValueError) as e:
+        return None, None, None, f"{provider}: {e.__class__.__name__}: {e}"
+    line = buf.split(b"\n", 1)[0].strip()
+    try:
+        resp = json.loads(line.decode("utf-8", "replace"))
+        if not isinstance(resp, dict):
+            raise ValueError("reply is not a JSON object")
+    except (UnicodeDecodeError, ValueError) as e:
+        return None, None, None, f"{provider}: unparseable reply ({e})"
+    if resp.get("error"):
+        return None, None, None, f"{provider}: daemon error: {resp.get('error')}"
+    accounts = resp.get("accounts")
+    if not isinstance(accounts, list) or not accounts:
+        return None, None, None, f"{provider}: no accounts in the reply"
+    binding = None
+    worst = None   # (used, label, resets_at) of the chosen account's worst window
+    resets = None
+    for acc in accounts:
+        if not isinstance(acc, dict):
+            continue
+        acc_worst = None
+        acc_resets = None
+        for win in acc.get("windows") or []:
+            if not isinstance(win, dict):
+                continue
+            used = win.get("used_percent")
+            if not isinstance(used, (int, float)):
+                continue
+            used = float(used)
+            if acc_worst is None or used > acc_worst[0]:
+                acc_worst = (used, str(win.get("label") or "?"),
+                             str(win.get("resets_at") or "?"))
+            if used >= deny_at:
+                r = str(win.get("resets_at") or "?")
+                if acc_resets is None or r < acc_resets:
+                    acc_resets = r
+        if acc_worst is None:
+            continue
+        if binding is None or acc_worst[0] < binding:
+            binding = acc_worst[0]
+            worst = acc_worst
+            resets = acc_resets or acc_worst[2]
+    if binding is None:
+        return None, None, None, f"{provider}: no usable windows in the reply"
+    return binding, (worst[1], worst[0]), resets, None
+
+
+def _limits_summary(answered):
+    return "; ".join(f"{prov} {worst[1]}% (window '{worst[0]}', resets {resets})"
+                     for prov, _binding, worst, resets in answered)
+
+
+def check_limits(sink, table):
+    """The quota check is fail-open BY DESIGN: a dead daemon must not freeze
+    the fleet's dispatches; fail-closed stays with the table's own contract.
+    A model may sit in several pools — deny only when EVERY pool answered AND
+    every binding is at or above deny_at; an unanswered pool blocks the deny
+    and is named in the warn text (fail-open, element-wise).
+    """
+    providers, lim = limits_providers(sink, table)
+    if not providers:
+        return
+    try:
+        warn_at = float(lim.get("warn_at", 80.0))
+        deny_at = float(lim.get("deny_at", 99.5))
+    except (TypeError, ValueError):
+        print_warn("Dispatch gate: quota check skipped (fail-open) — [limits] "
+                   "warn_at/deny_at are not numbers")
+        return
+    answered = []
+    unanswered = []
+    for prov in providers:
+        binding, worst, resets, err = _provider_binding(prov, lim, deny_at)
+        (unanswered if err else answered).append(
+            err if err else (prov, binding, worst, resets))
+    if not answered:
+        print_warn("Dispatch gate: quota check skipped (fail-open) — "
+                   + "; ".join(unanswered))
+        return
+    best = min(a[1] for a in answered)
+    if best >= deny_at:
+        if unanswered:
+            print_warn("Dispatch gate: quota exhausted but deny is blocked by "
+                       "unanswered pools (fail-open): " + "; ".join(unanswered)
+                       + " — " + _limits_summary(answered)
+                       + ". Pick another model of the class or wait for the reset.")
+            return
+        emit_deny("model quota exhausted: " + _limits_summary(answered)
+                  + " — pick another model of the class or wait for the reset.")
+    elif best >= warn_at:
+        tail = ("; unanswered: " + "; ".join(unanswered)) if unanswered else ""
+        print_warn("Dispatch gate: quota high — " + _limits_summary(answered) + tail)
+
+
 CLI_MODEL_RE = re.compile(r"(?:--model|-m)[=\s]+[\"']?([A-Za-z0-9._\[\]-]+)")
 CLI_EFFORT_RE = re.compile(r"(?:--effort|--reasoning[-_]effort)[=\s]+[\"']?(%s)\b"
                            % "|".join(EFFORT_WORDS))
 
 
-def check_bash(cmd, table):
+def check_bash(cmd, table, sink=None):
     channels = section(table, "channels")
     kinds = []   # the dispatch channel(s) this command uses
     named = []   # (model, source) the command itself names
@@ -639,6 +805,8 @@ def check_bash(cmd, table):
     vendor, vcfg = cli_vendor(cmd, table)
     if vcfg is not None:
         kinds.append(f"direct '{vendor}' CLI run")
+        if sink is not None:
+            sink["vendor"] = str(vendor).lower()
         mm = CLI_MODEL_RE.search(cmd)
         em = CLI_EFFORT_RE.search(cmd)
         if bool(vcfg.get("effort_required", True)) and not em:
@@ -654,6 +822,8 @@ def check_bash(cmd, table):
             # here would deny a legitimate run.
             check_known_model(mm.group(1), table, f"direct '{vendor}' CLI")
             named.append((mm.group(1), f"--model of the '{vendor}' CLI run"))
+            if sink is not None:
+                sink["model"] = mm.group(1)
         elif vcfg.get("model_required", False):
             emit_deny(f"direct '{vendor}' CLI run naming no model — the CLI's default "
                       f"model is not a routing decision. Name it with --model "
@@ -663,6 +833,8 @@ def check_bash(cmd, table):
         vm = ENVOY_VENDOR_RE.search(cmd)
         vendor = vm.group(1).lower() if vm else "codex"
         kinds.append(f"envoy task via vendor '{vendor}'")
+        if sink is not None:
+            sink["vendor"] = vendor
         vendors = (channels.get("envoy") or {}).get("vendors") or {}
         vcfg = vendors.get(vendor)
         # Unknown vendor: conservative — require an explicit effort.
@@ -682,6 +854,8 @@ def check_bash(cmd, table):
                       "<brief> <out> <files...> with an explicit effort.")
         check_channel_model(m.group(1), m.group(2).lower(), table)
         named.append((m.group(1), "the proxy-critique call"))
+        if sink is not None:
+            sink["model"] = m.group(1)
 
     if PROXY_MARK in cmd:
         kinds.append("proxy chat/completions call")
@@ -695,6 +869,8 @@ def check_bash(cmd, table):
         if mm and em:
             check_channel_model(mm.group(1), em.group(1).lower(), table)
             named.append((mm.group(1), "the proxy request body"))
+            if sink is not None:
+                sink["model"] = mm.group(1)
 
     # A vendor launched from Bash IS a dispatch: it picks a model for a case
     # exactly as an Agent call does, so it declares its case exactly as one.
@@ -791,11 +967,14 @@ def gate_mode(table):
     return "deny" if mode == "deny" else "warn"
 
 
-def evaluate(data):
+def evaluate(data, with_limits=False):
     """(violation_reason, mode) for one hook payload; (None, mode) when clean.
 
     The single entry point for judging a payload — used by this hook and by
-    hooks/dispatch-stats.py, so the rules are never implemented twice.
+    hooks/dispatch-stats.py, so the rules are never implemented twice. The
+    quota check ([limits]) runs only for the PreToolUse call (with_limits=True):
+    it decides whether a dispatch may go out, and the PostToolUse recorder
+    re-using this entry must not emit quota noise for calls that already ran.
     """
     tool = str(data.get("tool_name") or data.get("tool") or "")
     tool_input = data.get("tool_input")
@@ -820,13 +999,21 @@ def evaluate(data):
         # can be judged at all, so this stays fail-closed in either mode.
         return ("Dispatch gate: " + err + " — dispatches and gated channels are "
                 "blocked until the table is repaired."), "deny"
+    sink = {}
     try:
         if tool == "Bash":
-            check_bash(str(tool_input.get("command") or ""), table)
+            check_bash(str(tool_input.get("command") or ""), table, sink)
         else:
-            check_dispatch(tool_input, table, cwd)
+            check_dispatch(tool_input, table, cwd, sink)
     except Violation as v:
         return v.reason, gate_mode(table)
+    # The quota check is LAST: every denial above keeps its existing reason and
+    # order; an external quota fact never preempts a routing rule.
+    if with_limits:
+        try:
+            check_limits(sink, table)
+        except Violation as v:
+            return v.reason, "deny"
     return None, gate_mode(table)
 
 
@@ -844,7 +1031,7 @@ def main(argv):
         print_deny("Dispatch gate: hook input is not a JSON object — refusing "
                    "(fail-closed).")
         return
-    reason, mode = evaluate(data)
+    reason, mode = evaluate(data, with_limits=True)
     if reason is not None:
         (print_deny if mode == "deny" else print_warn)(reason)
         return

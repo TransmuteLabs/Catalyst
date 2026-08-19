@@ -157,3 +157,34 @@ schema_version = 1
 #
 # [stats.aliases]
 # "claude-opus-5[1m]" = "opus"
+
+
+# ---------------------------------------------------------------------------
+# ЛИМИТЫ ПУЛА (potionbard)
+# ---------------------------------------------------------------------------
+# Финальная проверка квот у демона potionbard для пула codex/grok/kimi.
+# Названная здесь подсекция заменяет базовую ЦЕЛИКОМ (как везде): переопределяя
+# [limits.models], перечисляйте ВСЕ нужные префиксы. Пороги можно двигать
+# здесь же — мутант-тест доказывает, что вердикт живёт в таблице.
+#
+# Проверка fail-open: мёртвый демон не блокирует диспатчи. POTIONBAR_SOCKET
+# сильнее socket. Значения — СПИСКИ провайдеров (модель может быть в
+# нескольких пулах): DENY только когда исчерпаны ВСЕ, неответивший пул
+# deny блокирует и называется в warn-тексте.
+#
+# [limits]
+# enabled = true
+# socket = "~/.config/potionbar/potionbard.sock"   # env POTIONBAR_SOCKET сильнее
+# timeout_ms = 4000
+# warn_at = 80.0   # binding used_percent >= warn_at -> предупреждение
+# deny_at = 99.5   # binding used_percent >= deny_at -> отказ
+#
+# [limits.models]
+# "gpt-" = ["codex"]
+# "grok-" = ["xaicli"]
+# "kimi-" = ["kimicode"]
+#
+# [limits.vendors]
+# codex = ["codex"]
+# grok = ["xaicli"]
+# kimi = ["kimicode"]
