@@ -39,8 +39,39 @@ REM (plugin still works, just without SessionStart context injection)
 exit /b 0
 CMDBLOCK
 
-# Unix: run the named script directly
+# Unix: run the named script, forwarding to the NEWEST installed version first.
+#
+# A session resolves CLAUDE_PLUGIN_ROOT once, at start, to the version dir
+# current at that moment — so without forwarding, a gate shipped in an update
+# protects only sessions started AFTER it (incident 2026-08-19: a quota gate
+# in 0.8.12 did not guard dispatches from sessions still bound to 0.8.10).
+# Forwarding makes every versioned entry point run the newest cache copy, so
+# an update reaches live sessions without a restart. Constraints: only when
+# the parent dir is a semver cache dir (a dev checkout never forwards); one
+# hop only (env guard breaks cycles); a missing target falls through to the
+# own copy. The Windows batch half above stays version-pinned — forwarding
+# there is untestable on this installation and is named, not hidden.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_NAME="$1"
 shift
+
+if [ -z "${CATALYST_HOOK_FORWARDED:-}" ]; then
+  VER_DIR="$(dirname "$SCRIPT_DIR")"
+  CACHE_DIR="$(dirname "$VER_DIR")"
+  OWN_VER="$(basename "$VER_DIR")"
+  case "$OWN_VER" in
+    *[!0-9.]*|.*|*.) : ;;  # not a plain x.y.z cache dir - never forward
+    *)
+      LATEST="$(ls "$CACHE_DIR" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+      if [ -n "$LATEST" ] && [ "$LATEST" != "$OWN_VER" ] \
+        && [ -f "$CACHE_DIR/$LATEST/hooks/run-hook.cmd" ] \
+        && [ -f "$CACHE_DIR/$LATEST/hooks/$SCRIPT_NAME" ]; then
+        export CATALYST_HOOK_FORWARDED=1
+        exec bash "$CACHE_DIR/$LATEST/hooks/run-hook.cmd" "$SCRIPT_NAME" "$@"
+      fi
+      ;;
+  esac
+fi
+
 exec bash "${SCRIPT_DIR}/${SCRIPT_NAME}" "$@"
