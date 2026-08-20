@@ -429,6 +429,18 @@ case "$slice_mut" in *sonnet*) check "t7 MUTANT slice follows the table" 0 0 ;; 
 slice_broken=$(CATALYST_ROUTING_TABLE="$WORK/garbage.toml" CATALYST_ROUTING_OVERRIDE="$O" python3 "$GATE" --render-slice)
 case "$slice_broken" in *BROKEN*) check "t7 broken table slice warns loudly" 0 0 ;; *) check "t7 broken table slice warns loudly" 0 1 ;; esac
 
+# ---- truth 16: wave marker — form-only check, optional, one wave per dispatch ----
+check "t16 valid wave marker passes"        allow "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] [wave:w13-critics 2/3] fix")")"
+check "t16 verbatim repeat passes"          allow "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] [wave:w 1/2] fix per [wave:w 1/2]")")"
+check "t16 half-parsed marker denied"       deny  "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] [wave:w13-critics] fix")")"
+check "t16 k>N denied"                      deny  "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] [wave:w 3/2] fix")")"
+check "t16 k=0 denied"                      deny  "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] [wave:w 0/3] fix")")"
+check "t16 two different waves denied"      deny  "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] [wave:a 1/2] [wave:b 1/2] fix")")"
+# truth 5 stays stronger: an unrecognized Bash command is never judged, wave garbage included
+check "t16 plain bash with wave junk passes" allow "$(gate "$(bashcmd 'echo [wave:oops')")"
+# vendor channel inherits the same single implementation
+check "t16 envoy with bad wave denied"      deny  "$(gate "$(bashcmd 'node envoy-companion.mjs task --vendor grok --effort high \"[dispatch-class:1a] [wave:w 5/2] x\"')")"
+
 # ---- truth 14: the shipped answer to a broken rule is a REFUSAL. Only the
 # fleet observation ([stats], a different hook) is advisory — a rule about which
 # model runs a case is binding, and only a deny makes it so. The warn mode

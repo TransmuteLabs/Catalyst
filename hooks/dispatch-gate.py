@@ -80,6 +80,13 @@ CLI_BIN_HINTS = ("codex", "grok", "kimi", "glm")
 EFFORT_WORDS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 UNSET_MODELS = ("", "inherit", "default")
 CLASS_MARKER_RE = re.compile(r"\[dispatch-class:\s*([0-9A-Za-z_-]+)\s*\]", re.I)
+# A wave marker is the dispatcher's CLAIM "this call is k of N in one fan",
+# addressed to the semantic judge downstream. The gate neither requires nor
+# interprets it — it only refuses a marker whose FORM cannot be read, because
+# a half-parsed claim reaches the judge as prose and misleads silently.
+WAVE_HINT_RE = re.compile(r"\[wave\b", re.I)
+WAVE_MARKER_RE = re.compile(
+    r"\[wave:\s*([A-Za-z0-9._-]+)\s+(\d+)\s*/\s*(\d+)\s*\]", re.I)
 ENVOY_TASK_RE = re.compile(r"envoy-companion\.mjs[\"']?\s+task\b")
 ENVOY_VENDOR_RE = re.compile(r"--vendor[=\s]+[\"']?([A-Za-z0-9_-]+)")
 ENVOY_EFFORT_RE = re.compile(r"--effort[=\s]+[\"']?(%s)\b" % "|".join(EFFORT_WORDS))
@@ -280,6 +287,39 @@ def declared_class(text):
                   f"another class's marker inside the brief text is what makes this "
                   f"ambiguous.")
     return distinct[0]
+
+
+def check_wave_marker(text, where):
+    """Refuse a wave marker whose form cannot be read; require nothing else.
+
+    The marker is OPTIONAL. When present it must parse as [wave:<name> k/N]
+    with integers 1 <= k <= N, and one dispatch belongs to one wave (verbatim
+    repeats of the same marker are fine — quoting a DIFFERENT wave's marker is
+    the same ambiguity as quoting another class marker). Absence is always
+    legal: this check must never create pressure to invent wave names.
+    """
+    body = text or ""
+    hints = WAVE_HINT_RE.findall(body)
+    if not hints:
+        return
+    strict = WAVE_MARKER_RE.findall(body)
+    if len(strict) != len(hints):
+        emit_deny(f"{where} carries a wave marker the gate cannot read — the form "
+                  f"is [wave:<name> k/N] with integers 1 <= k <= N, e.g. "
+                  f"[wave:w13-critics 2/3]. The marker is optional: fix its form "
+                  f"or drop it; half-parsed, it reaches the judge as prose.")
+    distinct = sorted({(n.lower(), k, t) for n, k, t in strict})
+    if len(distinct) > 1:
+        names = ", ".join(f"[wave:{n} {k}/{t}]" for n, k, t in distinct)
+        emit_deny(f"{where} declares more than one wave ({names}) — one dispatch "
+                  f"is one position in one fan. Keep the marker of the wave this "
+                  f"dispatch actually belongs to.")
+    name, k, total = distinct[0]
+    k, total = int(k), int(total)
+    if k < 1 or total < 1 or k > total:
+        emit_deny(f"{where} carries [wave:{name} {k}/{total}], which is out of "
+                  f"bounds — k is this dispatch's position in the fan and N the "
+                  f"fan size, so 1 <= k <= N.")
 
 
 HEREDOC_OPEN_RE = re.compile(
@@ -484,6 +524,7 @@ def resolve_class(text, table, where, declared=None):
     marker there becomes instruction text the fork then has to ignore. Bash
     channels pass nothing and keep using the marker alone.
     """
+    check_wave_marker(text, where)
     classes = section(table, "classes")
     known = ", ".join(sorted(classes)) or "none"
     cid = declared_class(text)
