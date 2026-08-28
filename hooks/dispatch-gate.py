@@ -87,37 +87,6 @@ CLASS_MARKER_RE = re.compile(r"\[dispatch-class:\s*([0-9A-Za-z_-]+)\s*\]", re.I)
 WAVE_HINT_RE = re.compile(r"\[wave\b", re.I)
 WAVE_MARKER_RE = re.compile(
     r"\[wave:\s*([A-Za-z0-9._-]+)\s+(\d+)\s*/\s*(\d+)\s*\]", re.I)
-# The reasoning tier and the implementation classes: the model tier follows the
-# DECISION BOUNDARY, not the domain. A dispatch whose own text says the brief is
-# closed ("zero open questions", "follow it literally") has had its decisions
-# made by the caller BEFORE the dispatch — so an executor model does the work,
-# however dangerous the domain. Measured 2026-08-28 on 500 judge records: 30
-# dispatches carried a closed-brief phrase with opus/fable, 29 passed, 0 were
-# returned; the semantic judge accepted "the class admits this model" as the
-# answer. Defaults live here so an override that omits the keys still gets the
-# check; the table may widen or narrow both lists.
-REASONING_MODELS_DEFAULT = ("opus", "claude-opus-5[1m]", "fable", "kimi-k3")
-IMPLEMENTATION_CLASSES_DEFAULT = ("1a", "1b", "1c", "1e", "1g", "1h")
-# The caller's own words for "the decisions are already made". Analysis-side
-# classes are exempt by construction (the deciding happens inside those), so the
-# check is scoped to implementation classes, where a closed brief means closed.
-CLOSED_BRIEF_RES = (
-    re.compile(r"zero\s+open\s+questions", re.I),
-    re.compile(r"no\s+open\s+questions", re.I),
-    re.compile(r"открытых\s+вопросов\s+(в\s+н[её]м\s+)?нет", re.I),
-    re.compile(r"ноль\s+открытых\s+вопросов", re.I),
-    re.compile(r"следуй\s+(ему\s+)?букваль", re.I),
-    re.compile(r"follow\s+it\s+literally", re.I),
-    re.compile(r"бриф\s+(полон|полный|самодостаточ)", re.I),
-    re.compile(r"complete\s+brief", re.I),
-    re.compile(r"(все|каждое)\s+дизайн-решени\w*\s+(уже\s+)?принят", re.I),
-    re.compile(r"every\s+design\s+decision\s+(in\s+it\s+)?is\s+already\s+made", re.I),
-    re.compile(r"не\s+принимай\s+решени", re.I),
-)
-# The escape hatch: a named, auditable reason why reasoning is needed INSIDE the
-# task. Deliberately not a bare flag — "[reasoning-needed]" with nothing after it
-# would become a silent default the moment it is cheaper to type than to think.
-REASONING_NEEDED_RE = re.compile(r"\[reasoning-needed:\s*([^\]]{8,})\]", re.I)
 ENVOY_TASK_RE = re.compile(r"envoy-companion\.mjs[\"']?\s+task\b")
 ENVOY_VENDOR_RE = re.compile(r"--vendor[=\s]+[\"']?([A-Za-z0-9_-]+)")
 ENVOY_EFFORT_RE = re.compile(r"--effort[=\s]+[\"']?(%s)\b" % "|".join(EFFORT_WORDS))
@@ -603,45 +572,6 @@ def check_class_admits(model, source, cid, cls, table):
                   f"{cls.get('reason', '')}")
 
 
-def check_model_tier(text, model, cid, table, where):
-    """Refuse a reasoning model on a brief the caller has already closed.
-
-    Three conditions, all required: the declared class is an implementation
-    class, the effective model is in the reasoning tier, and the dispatch's own
-    text asserts the brief is complete. The gate reads only the caller's words —
-    it does not judge the task (that is the semantic judge's job); it closes the
-    one case where the caller has already testified that no decision is left.
-
-    ``[reasoning-needed: <reason>]`` passes the dispatch through. The reason is
-    not parsed: naming it is the point, and it lands in the transcript where the
-    judge and the human can weigh it.
-    """
-    dsp = table.get("dispatch") or {}
-    if not dsp.get("closed_brief_deny", True):
-        return
-    tier = {str(m).lower() for m in (dsp.get("reasoning_models")
-                                     or REASONING_MODELS_DEFAULT)}
-    impl = {str(c).lower() for c in (dsp.get("implementation_classes")
-                                     or IMPLEMENTATION_CLASSES_DEFAULT)}
-    if str(cid).lower() not in impl or str(model).strip().lower() not in tier:
-        return
-    body = text or ""
-    hit = next((rx.search(body) for rx in CLOSED_BRIEF_RES if rx.search(body)), None)
-    if hit is None:
-        return
-    if REASONING_NEEDED_RE.search(body):
-        return
-    emit_deny(
-        f"{where} puts reasoning model '{model}' on class '{cid}' while the "
-        f"dispatch itself declares the brief closed (\u00ab{hit.group(0).strip()}\u00bb). "
-        f"A closed brief means the decisions were made BEFORE the dispatch, so "
-        f"the work is executor-class however dangerous the domain — the domain "
-        f"raises the acceptance bar, not the model tier. Either dispatch an "
-        f"executor model, or name what is left to decide INSIDE the task with "
-        f"[reasoning-needed: <reason>]. Routing home: hooks/routing-table.toml "
-        f"[dispatch].reasoning_models.")
-
-
 def check_dispatch(tool_input, table, cwd, sink=None):
     st = str(tool_input.get("subagent_type") or "")
     fm = frontmatter_fields(st, cwd)
@@ -687,8 +617,6 @@ def check_dispatch(tool_input, table, cwd, sink=None):
                       f"name and the class must not disagree.")
 
     check_class_admits(model, source, cid, cls, table)
-    check_model_tier(str(tool_input.get("prompt") or ""), model, cid, table,
-                     f"dispatch of '{st}'")
 
     # Agent-channel effort: proxy models must carry an explicit effort — the
     # carrier is the agent definition's frontmatter ``effort:`` field (the
@@ -999,7 +927,6 @@ def check_bash(cmd, table, sink=None):
     check_class_delegable(cid, cls)
     for model, source in named:
         check_class_admits(model, source, cid, cls, table)
-        check_model_tier(cmd, model, cid, table, " + ".join(kinds))
 
 
 def render_slice():

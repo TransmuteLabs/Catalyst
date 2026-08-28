@@ -39,8 +39,6 @@ printf -- '---\nname: debug-kimi\ndescription: x\nmodel: kimi-k3\neffort: high\n
 printf -- '---\nname: scout-minimax\ndescription: x\nmodel: MiniMax-M3\neffort: high\n---\nbody\n' > "$WORK/agents/scout-minimax.md"
 printf -- '---\nname: scout-dspro\ndescription: x\nmodel: deepseek-v4-pro\neffort: high\n---\nbody\n' > "$WORK/agents/scout-dspro.md"
 printf -- '---\nname: impl-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/impl-gpt.md"
-# truth 17: an auditor on fable — the analysis side of the tier rule
-printf -- '---\nname: auditor-fable\ndescription: x\nmodel: fable\n---\nbody\n' > "$WORK/agents/auditor-fable.md"
 
 # ---- fake potionbard daemon for the [limits] quota check ----
 # One AF_UNIX server; canned replies come from a JSON file re-read on every
@@ -442,27 +440,6 @@ check "t16 two different waves denied"      deny  "$(gate "$(task pinned1a grok-
 check "t16 plain bash with wave junk passes" allow "$(gate "$(bashcmd 'echo [wave:oops')")"
 # vendor channel inherits the same single implementation
 check "t16 envoy with bad wave denied"      deny  "$(gate "$(bashcmd 'node envoy-companion.mjs task --vendor grok --effort high \"[dispatch-class:1a] [wave:w 5/2] x\"')")"
-
-# ---- truth 17: the model tier follows the DECISION BOUNDARY, not the domain.
-# A reasoning model on an implementation class whose dispatch declares the brief
-# closed is denied; the analysis-side classes are exempt (the deciding happens
-# inside those), and a named [reasoning-needed: ...] passes it through.
-# Control first: without the closing phrase the very same dispatch is legal —
-# so what denies is the phrase, not the class or the model.
-check "t17 opus on 1c without a closed brief"  allow "$(gate "$(task implementer opus "[dispatch-class:1c] rework the lock protocol; decide the ordering yourself")")"
-check "t17 opus on 1c with a closed brief"     deny  "$(gate "$(task implementer opus "[dispatch-class:1c] execute the brief; it is a complete brief with zero open questions")")"
-check "t17 same in Russian"                    deny  "$(gate "$(task implementer opus "[dispatch-class:1c] исполни бриф целиком: открытых вопросов нет, следуй ему буквально")")"
-check "t17 named reasoning need passes"        allow "$(gate "$(task implementer opus "[dispatch-class:1c] complete brief, zero open questions, except [reasoning-needed: T4.2 fork is left open on purpose]")")"
-check "t17 empty reasoning hatch still denies" deny  "$(gate "$(task implementer opus "[dispatch-class:1c] complete brief, zero open questions [reasoning-needed: x]")")"
-check "t17 audit class is exempt"              allow "$(gate "$(task auditor-fable fable "[dispatch-class:audit] the brief is complete, zero open questions")")"
-check "t17 executor model unaffected"          allow "$(gate "$(task withmodel glm-5.3 "[dispatch-class:1a] complete brief, zero open questions")")"
-check "t17 bash channel inherits the rule"     deny  "$(gate "$(bashcmd 'kimi --model kimi-k3 -p go [dispatch-class:1c] complete brief, zero open questions')")"
-check "t17 bash channel control"               allow "$(gate "$(bashcmd 'kimi --model kimi-k3 -p go [dispatch-class:1c] design the retry ladder')")"
-# MUTANT: the rule lives in the table, not in the gate's code
-sed 's/^closed_brief_deny = true/closed_brief_deny = false/' "$BASE_TABLE" > "$WORK/table-tier-off.toml"
-T="$WORK/table-tier-off.toml"
-check "t17 MUTANT rule off, same call passes" allow "$(gate "$(task implementer opus "[dispatch-class:1c] execute the brief; it is a complete brief with zero open questions")")"
-T="$BASE_TABLE"
 
 # ---- truth 14: the shipped answer to a broken rule is a REFUSAL. Only the
 # fleet observation ([stats], a different hook) is advisory — a rule about which
