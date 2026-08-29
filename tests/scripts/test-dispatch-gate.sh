@@ -284,6 +284,12 @@ check "t12 vendor named as an argument"     allow "$(gate "$(bashcmd 'grep codex
 check "t12 vendor inside a pipe filter"     allow "$(gate "$(bashcmd 'ls -la | grep glm')")"
 check "t12 script whose name contains it"   allow "$(gate "$(bashcmd './scripts/codex-helper.sh')")"
 check "t12 interpreter running a file"      allow "$(gate "$(bashcmd 'python3 tools/grok.py')")"
+# quoted pipes are data, not segment boundaries: a vendor token inside a
+# quoted pattern must not reach executable position (#360)
+check "t12 vendor in sq grep pattern"       allow "$(gate "$(bashcmd "grep -rln 'vendor\\\\|glm\\\\|grok' hooks/")")"
+check "t12 vendor in dq grep pattern"       allow "$(gate "$(bashcmd 'grep -E \"codex|glm|grok\" notes.md')")"
+check "t12 escaped pipe outside quotes"     allow "$(gate "$(bashcmd 'grep vendor\\|grok notes.md')")"
+check "t12 unquoted pipe still an operator" deny  "$(gate "$(bashcmd 'sort notes.md | grok summarise')")"
 sed '/^\[channels\.cli\.vendors\.codex\]/,/^model_required/d' "$BASE_TABLE" > "$WORK/table-no-cli-codex.toml"
 T="$WORK/table-no-cli-codex.toml"
 check "t12 MUTANT vendor gone from table"   allow "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol do-it')")"

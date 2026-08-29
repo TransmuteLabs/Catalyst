@@ -357,10 +357,53 @@ def strip_heredoc_bodies(cmd):
     return "\n".join(out)
 
 
+def _shell_segments(text):
+    """Split into command segments on UNQUOTED |, &, ;, newline only.
+
+    Quoted text is data, not shell structure: a raw-regex split cut inside
+    quoted arguments, so a pattern like 'a\\|glm\\|b' put a vendor token at
+    a segment head — executable position. Single quotes are literal through
+    the closing quote; a backslash elsewhere escapes the next character;
+    double quotes keep operators literal. An unterminated quote swallows
+    the tail (broken shell either way).
+    """
+    segs, buf = [], []
+    sq = dq = False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if sq:
+            buf.append(c)
+            if c == "'":
+                sq = False
+        elif c == "\\" and i + 1 < n:
+            buf.append(c)
+            buf.append(text[i + 1])
+            i += 1
+        elif dq:
+            buf.append(c)
+            if c == '"':
+                dq = False
+        elif c == "'":
+            sq = True
+            buf.append(c)
+        elif c == '"':
+            dq = True
+            buf.append(c)
+        elif c in "|&;\n":
+            segs.append("".join(buf))
+            buf = []
+        else:
+            buf.append(c)
+        i += 1
+    segs.append("".join(buf))
+    return segs
+
+
 def executables(cmd):
     """The executable word of each shell segment (past VAR=val prefixes)."""
     out = []
-    for seg in re.split(r"(?:\|\||&&|[;|&\n])", strip_heredoc_bodies(cmd)):
+    for seg in _shell_segments(strip_heredoc_bodies(cmd)):
         for word in seg.split():
             bare = os.path.basename(word.strip("\"'"))
             if word.startswith("-"):
