@@ -40,7 +40,14 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "catalyst", "stats")
-KEEP_ENTRIES = 128          # bounded file: enough for any window, never unbounded
+KEEP_ENTRIES = 9999         # bounded file, never unbounded -- but the bound must
+                            # outlive the WINDOW anyone asks about. At 128 a busy
+                            # session's oldest kept entry could land inside the last
+                            # day, and a 24h report would then silently answer for a
+                            # shorter period than it names. Measured 2026-09-02: 11 of
+                            # 14 sessions active that day sat exactly on 128. The file
+                            # stays bounded (and PRUNE_AFTER_DAYS still retires whole
+                            # files), the bound is now wider than any window reported.
 PRUNE_AFTER_DAYS = 14
 
 DEFAULTS = {
