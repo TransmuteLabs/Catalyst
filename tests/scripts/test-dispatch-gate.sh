@@ -39,6 +39,9 @@ printf -- '---\nname: debug-kimi\ndescription: x\nmodel: kimi-k3\neffort: high\n
 printf -- '---\nname: scout-minimax\ndescription: x\nmodel: MiniMax-M3\neffort: high\n---\nbody\n' > "$WORK/agents/scout-minimax.md"
 printf -- '---\nname: scout-dspro\ndescription: x\nmodel: deepseek-v4-pro\neffort: high\n---\nbody\n' > "$WORK/agents/scout-dspro.md"
 printf -- '---\nname: impl-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/impl-gpt.md"
+# quota-rule positive control: a critic-named agent on a ratified non-Anthropic
+# model — model+effort VALID, so only the quota rule could deny it
+printf -- '---\nname: gpt-sol-critic\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/gpt-sol-critic.md"
 
 # ---- fake potionbard daemon for the [limits] quota check ----
 # One AF_UNIX server; canned replies come from a JSON file re-read on every
@@ -207,9 +210,9 @@ T="$BASE_TABLE"
 
 # ---- truth 3: critic/auditor below opus denied; adjudication never delegated ----
 check "t3 critic on glm denied"             deny  "$(gate "$(task catalyst:critic glm-5.2 "[dispatch-class:critique] x")")"
-check "t3 critic on opus allowed"           allow "$(gate "$(task catalyst:critic opus "[dispatch-class:critique] x")")"
+check "t3 critic on opus allowed"           allow "$(gate "$(task catalyst:critic opus "[dispatch-class:critique] [anthropic-exception:pre-quota pin] x")")"
 check "t3 auditor on glm denied"            deny  "$(gate "$(task auditor glm-5.2 "[dispatch-class:audit] x")")"
-check "t3 auditor on fable allowed"         allow "$(gate "$(task catalyst:auditor fable "[dispatch-class:audit] x")")"
+check "t3 auditor on fable allowed"         allow "$(gate "$(task catalyst:auditor fable "[dispatch-class:audit] [anthropic-exception:pre-quota pin] x")")"
 check "t3 adjudicator never delegated"      deny  "$(gate "$(task adjudicator opus "[dispatch-class:adjudication] x")")"
 # analysis floor (§2): diagnosis is never executor-class, whatever the vendor
 check "t3 debug on glm denied (role)"       deny  "$(gate "$(task_nomodel debug-glm "[dispatch-class:analysis]")")"
@@ -218,8 +221,8 @@ check "t3 sleuth on grok allowed"           allow "$(gate "$(task_nomodel sleuth
 # (§2 keeps it and MiniMax away from diagnosis) — that is what debug-glm pins.
 check "t3 analyzer on gpt allowed"          allow "$(gate "$(task_nomodel analyzer-gpt "[dispatch-class:analysis]")")"
 check "t3 debug on kimi-k3 allowed"         allow "$(gate "$(task_nomodel debug-kimi "[dispatch-class:analysis]")")"
-check "t3 principal-debugger on opus ok"    allow "$(gate "$(task principal-debugger opus "[dispatch-class:analysis] x")")"
-check "t3 analyst on fable allowed"         allow "$(gate "$(task session-analyst fable "[dispatch-class:analysis] x")")"
+check "t3 principal-debugger on opus ok"    allow "$(gate "$(task principal-debugger opus "[dispatch-class:analysis] [anthropic-exception:pre-quota pin] x")")"
+check "t3 analyst on fable allowed"         allow "$(gate "$(task session-analyst fable "[dispatch-class:analysis] [anthropic-exception:pre-quota pin] x")")"
 # locate/execution paths must NOT be caught by the analysis patterns
 check "t3 non-analysis role on grok ok"     allow "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] x")")"
 T="$WORK/table-no-analysis-role.toml"
@@ -244,8 +247,8 @@ check "t6 kimi-2.7 denied"                  deny  "$(gate "$(task implementer ki
 check "t6 opus-4.8 string denied"           deny  "$(gate "$(task catalyst:critic opus-4.8 "[dispatch-class:critique] x")")"
 check "t6 garbage sharing a family denied"  deny  "$(gate "$(task catalyst:critic opusadjfhk "[dispatch-class:critique] x")")"
 check "t6 unregistered model, no role"      deny  "$(gate "$(task implementer gpt-fictional "[dispatch-class:1a] x")")"
-check "t6 registered opus alias allowed"    allow "$(gate "$(task catalyst:critic opus "[dispatch-class:critique] x")")"
-check "t6 registered opus-5 id allowed"     allow "$(gate "$(task catalyst:critic 'claude-opus-5[1m]' "[dispatch-class:critique] x")")"
+check "t6 registered opus alias allowed"    allow "$(gate "$(task catalyst:critic opus "[dispatch-class:critique] [anthropic-exception:pre-quota pin] x")")"
+check "t6 registered opus-5 id allowed"     allow "$(gate "$(task catalyst:critic 'claude-opus-5[1m]' "[dispatch-class:critique] [anthropic-exception:pre-quota pin] x")")"
 T="$WORK/table-no-models.toml"
 check "t6 MUTANT empty case tables deny all" deny  "$(gate "$(task catalyst:critic opus "[dispatch-class:critique] x")")"
 T="$BASE_TABLE"
@@ -324,7 +327,7 @@ check "t9 scout under critique denied"      deny  "$(gate "$(task catalyst:scout
 out=$(gate_out "$(task catalyst:critic grok-4.6 "[dispatch-class:1a] x")")
 case "$out" in *critique*) check "t9 mismatch names the class" 0 0 ;; *) check "t9 mismatch names the class" 0 1 ;; esac
 # no role matches "implementer", so no name/class disagreement can arise
-check "t9 unnamed agent takes any class"    allow "$(gate "$(task implementer fable "[dispatch-class:critique] x")")"
+check "t9 unnamed agent takes any class"    allow "$(gate "$(task implementer fable "[dispatch-class:critique] [anthropic-exception:pre-quota pin] x")")"
 check "t9 adjudication never delegated"     deny  "$(gate "$(task adjudicator opus "[dispatch-class:adjudication] x")")"
 sed 's/^class_marker_required = true/class_marker_required = false/' "$BASE_TABLE" > "$WORK/table-no-marker-req.toml"
 T="$WORK/table-no-marker-req.toml"
@@ -536,8 +539,21 @@ check "t15 vendor word off exec position"   allow "$(gate "$(bashcmd 'grep codex
 check "t15 CLI model outside its class"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1c]')")"
 out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1c]')")
 case "$out" in *"outside class '1c'"*) check "t15 CLI denial names the class" 0 0 ;; *) check "t15 CLI denial names the class" 0 1 ;; esac
-check "t15 proxy model outside its class"   deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"max\"} [dispatch-class:research]')")"
-check "t15 proxy-critique outside class"    deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.3 max brief.md out.md a.rs [dispatch-class:research]')")"
+check "t15 proxy model outside its class"   deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"kimi-k3\",\"reasoning_effort\":\"high\"} [dispatch-class:research]')")"
+check "t15 proxy-critique outside class"    deny  "$(gate "$(bashcmd 'proxy-critique.sh kimi-k3 high brief.md out.md a.rs [dispatch-class:research]')")"
+
+# ---- quota rule (ratified 2026-09-04): fable/opus in a non-executor class must
+# carry [anthropic-exception:<basis>] in the prompt; non-Anthropic models are
+# untouched. T-Q1/T-Q2/T-Q3 of brief #679. ----
+out=$(gate_out "$(task fable-critic fable "[dispatch-class:critique] review the diff")")
+case "$out" in *'"deny"'*anthropic-exception*) check "tq1 fable critic without marker denied, names the marker" 0 0 ;; *) check "tq1 fable critic without marker denied, names the marker" 0 1 ;; esac
+check "tq2 fable critic with marker allowed" allow "$(gate "$(task fable-critic fable "[dispatch-class:critique] [anthropic-exception:pair-disagreement #679] review the diff")")"
+check "tq3 non-anthropic critic untouched"  allow "$(gate "$(task_nomodel gpt-sol-critic "[dispatch-class:critique] review the diff")")"
+# Bash channel is a dispatch too (proxy/CLI name a model the same way): the
+# quota rule attaches to the recognized channels, marker in the command text.
+out=$(gate_out "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"opus\",\"reasoning_effort\":\"high\"} [dispatch-class:critique]')")
+case "$out" in *'"deny"'*anthropic-exception*) check "tq4 bash-channel opus critic without marker denied" 0 0 ;; *) check "tq4 bash-channel opus critic without marker denied" 0 1 ;; esac
+check "tq5 bash-channel opus critic with marker allowed" allow "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"opus\",\"reasoning_effort\":\"high\"} [dispatch-class:critique] [anthropic-exception:pair-disagreement #679]')")"
 # Envoy names a vendor, never a model: the case is still checked for being
 # delegable at all, which is what CAN be known from the command.
 check "t15 envoy takes a delegable class"   allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing [dispatch-class:1a]')")"

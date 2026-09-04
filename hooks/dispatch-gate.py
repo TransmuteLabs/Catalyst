@@ -615,6 +615,30 @@ def check_class_admits(model, source, cid, cls, table):
                   f"{cls.get('reason', '')}")
 
 
+def check_quota_exception(model, cid, prompt, table, where="the prompt"):
+    # Quota rule (ratified 2026-09-04): an Anthropic model in a non-executor class
+    # spends the quota the main loop already runs on; it must name its basis.
+    quota = table.get("quota")
+    if quota is None:
+        return
+    if not isinstance(quota, dict):
+        emit_deny("routing table section [quota] is not a table — fail-closed until the table is repaired")
+    guarded = {str(m).strip().lower() for m in quota.get("guarded_models") or []}
+    classes = {str(c).strip() for c in quota.get("guarded_classes") or []}
+    marker = str(quota.get("exception_marker") or "anthropic-exception")
+    if str(model or "").strip().lower() not in guarded or cid not in classes:
+        return
+    if re.search(r"\[" + re.escape(marker) + r":[^\]\s][^\]]*\]", prompt or ""):
+        return
+    emit_deny(
+        f"model '{model}' in class '{cid}' spends the Anthropic quota a second time "
+        f"(the main loop already runs on it): add [{marker}:<basis>] to {where}, "
+        f"naming why a non-Anthropic model of this class does not serve here, or "
+        f"dispatch one of the class defaults. Rule home: hooks/routing-table.toml [quota]; "
+        f"canon: MODEL-ROUTING-PLAYBOOK.md «0-квота» (ratified 2026-09-04)."
+    )
+
+
 def check_dispatch(tool_input, table, cwd, sink=None):
     st = str(tool_input.get("subagent_type") or "")
     fm = frontmatter_fields(st, cwd)
@@ -660,6 +684,7 @@ def check_dispatch(tool_input, table, cwd, sink=None):
                       f"name and the class must not disagree.")
 
     check_class_admits(model, source, cid, cls, table)
+    check_quota_exception(model, cid, str(tool_input.get("prompt") or ""), table)
 
     # Agent-channel effort: proxy models must carry an explicit effort — the
     # carrier is the agent definition's frontmatter ``effort:`` field (the
@@ -970,6 +995,7 @@ def check_bash(cmd, table, sink=None):
     check_class_delegable(cid, cls)
     for model, source in named:
         check_class_admits(model, source, cid, cls, table)
+        check_quota_exception(model, cid, cmd, table, where="the command text")
 
 
 def render_slice():
@@ -1004,6 +1030,14 @@ def render_slice():
         allowed = c.get("allowed")
         target = "|".join(str(a) for a in allowed) if allowed else "НЕ делегируется"
         lines.append(f"- Класс {cid} ({c.get('label', '')}) → {target}.")
+    quota = table.get("quota")
+    if isinstance(quota, dict) and quota:
+        qmodels = "|".join(str(m) for m in quota.get("guarded_models") or [])
+        qclasses = "|".join(str(c) for c in quota.get("guarded_classes") or [])
+        qmarker = str(quota.get("exception_marker") or "anthropic-exception")
+        lines.append(f"- Квота Anthropic (2026-09-04): {qmodels} в классах "
+                     f"{qclasses} — только с маркером [{qmarker}:<основание>] "
+                     f"в промпте; без маркера = {breach} (routing-table [quota]).")
     for name, role in (table.get("roles") or {}).items():
         match = "|".join(str(m) for m in role.get("match") or [])
         if role.get("class"):
