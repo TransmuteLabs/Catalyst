@@ -685,5 +685,19 @@ out=$(gate_out "$(bashcmd "$lim_codex")")
 case "$out" in *opencodegokey*) check "lim16 warn names the silent pool" 0 0 ;; *) check "lim16 warn names the silent pool" 0 1 ;; esac
 O="$WORK/absent-override.toml"
 
+# ---- truth 11: a grid point declares its parent class ([classes.<point>].parent) —
+# role matching and the quota rule read the point AS its parent; a point without
+# a parent stays a foreign class for the role (and unguarded for the quota).
+{ cat "$BASE_TABLE"; printf '\n[classes.crit-mech-t]\nlabel = "m"\nparent = "critique"\nallowed = ["opus"]\n[classes.exec-1n-t]\nlabel = "e"\nallowed = ["opus"]\n'; } > "$WORK/table-with-parent.toml"
+T="$WORK/table-with-parent.toml"
+check "t11 point accepted for its parent role" allow "$(gate "$(task catalyst:critic opus "[dispatch-class:crit-mech-t] [anthropic-exception:pin] x")")"
+# quota rows use a role-less agent: a critic-named one is denied by the ROLE
+# under an unpatched gate, which would hide the quota mechanism (vacuous row)
+check "t11 quota follows the parent"          deny  "$(gate "$(task implementer opus "[dispatch-class:crit-mech-t] x")")"
+check "t11 quota marker lifts the parent"     allow "$(gate "$(task implementer opus "[dispatch-class:crit-mech-t] [anthropic-exception:pin] x")")"
+check "t11 point without parent is foreign"   deny  "$(gate "$(task catalyst:critic opus "[dispatch-class:exec-1n-t] [anthropic-exception:pin] x")")"
+check "t11 parentless point stays unguarded"  allow "$(gate "$(task implementer opus "[dispatch-class:exec-1n-t] x")")"
+T="$BASE_TABLE"
+
 echo "test-dispatch-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

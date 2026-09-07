@@ -626,7 +626,8 @@ def check_quota_exception(model, cid, prompt, table, where="the prompt"):
     guarded = {str(m).strip().lower() for m in quota.get("guarded_models") or []}
     classes = {str(c).strip() for c in quota.get("guarded_classes") or []}
     marker = str(quota.get("exception_marker") or "anthropic-exception")
-    if str(model or "").strip().lower() not in guarded or cid not in classes:
+    parent = str(((table.get("classes") or {}).get(cid) or {}).get("parent") or "")
+    if str(model or "").strip().lower() not in guarded or (cid not in classes and parent not in classes):
         return
     if re.search(r"\[" + re.escape(marker) + r":[^\]\s][^\]]*\]", prompt or ""):
         return
@@ -677,7 +678,9 @@ def check_dispatch(tool_input, table, cwd, sink=None):
         if not any(str(m).lower() in stl for m in role.get("match") or []):
             continue
         want = str(role.get("class") or "")
-        if want and want != cid:
+        # A grid point declares its parent class (routing-table [classes.<point>].parent):
+        parent = str((cls or {}).get("parent") or "")
+        if want and want != cid and want != parent:
             emit_deny(f"subagent '{st}' matches role '{role_name}', whose class is "
                       f"'{want}', but the dispatch declares '{cid}'. Declare "
                       f"[dispatch-class:{want}] or dispatch a different agent — the "
