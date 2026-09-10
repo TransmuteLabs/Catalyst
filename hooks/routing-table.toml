@@ -85,19 +85,25 @@ reason = "§1e: glm-5.3 (безлимит, дисциплина флагов/г�
 # адъюдикация. Объявляются тем же маркером — обязательность одна для всех.
 # ---------------------------------------------------------------------------
 
+# 2026-09-10 (слово юзера): прокси-id `deepseek-v4-flash` (DeepSeek V4-Flash 0731)
+# → `deepseek-flash` (DeepSeek V4.1-Flash); ратифицированные клетки flash
+# (critique/audit/analysis/research ниже и точки crit-form/crit-doc/audit-form/
+# audit-mech/an-cause в машинном слое) ПЕРЕНЕСЕНЫ на новый id. Замеры в reason-
+# строках и леджере до 09-10 относятся к V4-Flash 0731. Допуски к замеру в
+# остальных точках — только в проектном override (правило 09-06).
 [classes.critique]
 label = "критика диффа / ревью / док-критика"
-allowed = ["opus", "claude-opus-5[1m]", "fable", "kimi-k3", "gpt-5.6-sol", "grok-4.6", "glm-5.3", "deepseek-v4-flash"]
+allowed = ["opus", "claude-opus-5[1m]", "fable", "kimi-k3", "gpt-5.6-sol", "grok-4.6", "glm-5.3", "deepseek-flash"]
 reason = "ядро §4: grok-4.6 ратифицирован 2026-08-13 (0 ложных, вкл. конкурентный код) — дефолтный per-task критик; glm-5.3 — второй дефолтный голос (замер FIX-163B: 9 находок, 0 ложных, уники по границам); flash — дешёвый добор веера (6 прогонов, 0 ложных); kimi — рефутации перечнями; opus — по триггерам (критичный механизм, регрессия → BASE-vs-HEAD). Дифф исполнителя критикует ДРУГАЯ модель. Состав под конкретный дифф выбирает контроллер"
 
 [classes.audit]
 label = "fresh-eyes re-audit финального состояния"
-allowed = ["opus", "claude-opus-5[1m]", "fable", "gpt-5.6-sol", "grok-4.6", "glm-5.3", "deepseek-v4-flash"]
+allowed = ["opus", "claude-opus-5[1m]", "fable", "gpt-5.6-sol", "grok-4.6", "glm-5.3", "deepseek-flash"]
 reason = "§7: пары без пересечения профилей; grok-4.6 — в СОСТАВЕ ПАРЫ grok+(fable|opus), не единственным (арены E/F); flash — измеренный аудитор (арена F 3/3 + арена посадки 150/210: единственная механизменная находка); glm-5.3 — сильный замер 2026-08-15, пара flash+glm закрывает не-Anthropic аудит; deepseek-v4-pro снят 2026-08-16 (двойной провал оси квантора)"
 
 [classes.analysis]
 label = "диагноз / root-cause / расследование"
-allowed = ["opus", "claude-opus-5[1m]", "fable", "kimi-k3", "grok-4.6", "gpt-5.6-sol", "deepseek-v4-flash"]
+allowed = ["opus", "claude-opus-5[1m]", "fable", "kimi-k3", "grok-4.6", "gpt-5.6-sol", "deepseek-flash"]
 reason = "§2: дефолт класса — веер grok+flash (арена E: оба 8/8, 0 ложных; flash 14,5 мин — лучшая цена/качество, kimi — лучшая систематизация, но дорог временем); opus/fable — по триггерам (конкуренция/локи/durability, зависания, расхождение веера, высокая цена ошибки)"
 
 [classes.scout]
@@ -107,7 +113,7 @@ reason = "§3: grok — эталон переписей; luna — сверки �
 
 [classes.research]
 label = "внешнее исследование (web, доки, чужие репозитории)"
-allowed = ["opus", "claude-opus-5[1m]", "fable", "gpt-5.6-sol", "gpt-5.6-luna", "grok-4.6", "glm-5.3", "deepseek-v4-flash", "deepseek-v4-pro"]
+allowed = ["opus", "claude-opus-5[1m]", "fable", "gpt-5.6-sol", "gpt-5.6-luna", "grok-4.6", "glm-5.3", "deepseek-flash", "deepseek-v4-pro"]
 reason = "§9: grounding-гейт (источники + уверенность + контраргументы); deepseek-v4-pro — допуск по ратификации 2026-08-16 СОХРАНЁН (база полная), но ИЗ РАБОЧЕГО ПУЛА выведен юзером 2026-08-30: боевые диспатчи НЕ маршрутизировать, политика в плейбуке. Кандидаты замера (glm-5.3, grok-4.6, flash) — в машинном оверрайде"
 
 [classes.adjudication]
@@ -170,7 +176,7 @@ class = "adjudication"
 "grok-4.6" = ["max"]                       # прокси/Agent-путь; CLI-потолок high — это envoy
 "gpt-5.6-sol" = ["high", "xhigh"]          # леджер
 "gpt-5.6-luna" = ["max"]                   # леджер (замер 2026-08-09)
-"deepseek-v4-flash" = ["high", "xhigh"]    # леджер (арены E/F)
+"deepseek-flash" = ["high", "xhigh"]    # леджер (арены E/F по V4-Flash 0731 как deepseek-v4-flash); id = DeepSeek V4.1-Flash с 2026-09-10, пины перенесены до замера на V4.1
 "deepseek-v4-pro" = ["high", "xhigh", "max"]  # допуск полный; из РАБОЧЕГО ПУЛА выведен 2026-08-30 (боевая политика — в плейбуке)
 
 # ---------------------------------------------------------------------------
@@ -183,7 +189,7 @@ class = "adjudication"
 # ---------------------------------------------------------------------------
 
 [channels.agent]
-effort_required_for = ["glm-5.3", "grok-4.6", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-luna", "deepseek-v4-flash", "deepseek-v4-pro"]
+effort_required_for = ["glm-5.3", "grok-4.6", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-luna", "deepseek-flash", "deepseek-v4-pro"]
 
 # ---------------------------------------------------------------------------
 # Bash-каналы: требования к effort (§0). Тихий дефолт вендора — дефект
