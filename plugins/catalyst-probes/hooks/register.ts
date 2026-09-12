@@ -2,19 +2,17 @@
 // call sites; env names string literals (loader scans them). process/Bun undefined.
 // One module per plugin: this file IS the core. Consultants are [probe.<id>]
 // in probes.toml — a new judge is a table + prompt.md, not a new plugin.
-// Awaited tool.call must return well under 10 000 ms. Consultation is
-// detached. $.fs.write overwrites; never RMW journal.jsonl.
+// Judge cancel: await the consult, then next(e) or {deny: reason} —
+// same as the splice. No PENDING retry. $.fs.write overwrites; never RMW journal.jsonl.
 // $.store keys max 256 chars. $.store is per-plugin across sessions: PWD
 // first for cwd; last-consultation keys include a cwd tail.
 
 const CWD_KEY = "catalyst-probes:cwd"
 const CAP_KEY = "catalyst-probes:sesscap"
-const PENDING_MSG =
-  "Adjudication is in progress for this dispatch. Wait a moment and repeat the SAME Agent/Task call unchanged. An unchanged retry is how the review completes. Do not switch to Bash or another tool."
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
-  "If the tool error says adjudication is in progress: wait briefly and repeat the SAME dispatch unchanged; an unchanged retry is how the review completes. " +
-  "If the tool error names a correction: treat that reason as a correction to apply. Reissue the dispatch only with the change it names, and never repeat the identical call — an unchanged retry cannot succeed. " +
+  "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
+  "Reissue the dispatch only with the change it names, and never repeat the identical call — an unchanged retry cannot succeed. " +
   "This review is separate from the permission system and from any routing gate, so do not attribute a cancellation to either."
 const FORM_REQ = [
   "brief_path","brief_ref","brief_head","brief_tail","report_path","fence",
@@ -627,7 +625,7 @@ async function loadWorld($: any, env: any): Promise<any> {
   }
 }
 
-async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any, key: string, firstTimeoutMs?: number): Promise<any> {
+async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any, key: string): Promise<any> {
   const id = p.id
   const cfg = p.cfg
   const tool = String((e && e.tool) || "")
@@ -727,8 +725,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         if (rung.effort) arg.effort = rung.effort
         const mt = rung.max_tokens || floorTok
         if (mt) arg.max_tokens = mt
-        let tmo = rung.timeout_ms || floorTmo
-        if (i === 0 && firstTimeoutMs && (!tmo || tmo > firstTimeoutMs)) tmo = firstTimeoutMs
+        const tmo = rung.timeout_ms || floorTmo
         if (tmo) arg.timeoutMs = tmo
         const raw = await $.model.complete(arg)
         rec["raw_" + used] = String(raw).slice(0, 500)
@@ -940,7 +937,6 @@ export function register(on: any) {
     } catch (x) {}
 
     let hardDeny: string | null = null
-    let pendingDeny = false
     let cap = 0
     try { cap = Number(await $.store.get(CAP_KEY) || 0) } catch (x) { cap = 0 }
     const capMax = 8
@@ -1038,7 +1034,6 @@ export function register(on: any) {
         const failClosed = bl3(p.cfg.fail_closed, p.id === "judge")
         if (stored && typeof stored === "object" && stored.kind) {
           if (stored.kind === "OK" || stored.kind === "WARN") continue
-          if (stored.kind === "PENDING") { pendingDeny = true; continue }
           if (stored.kind === "BLOCK" || stored.kind === "STOP" || stored.kind === "DENY") {
             if (!enforce) continue
             hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(stored.rest || stored.kind)
@@ -1050,16 +1045,8 @@ export function register(on: any) {
             continue
           }
         }
-        const WALL = 7500
-        const FIRST = 7000
-        const job = consultBg($, p, env, world, e, ctx, key, FIRST)
         let rec: any = null
-        try {
-          rec = await Promise.race([
-            job,
-            $.clock.sleep(WALL).then(() => null),
-          ])
-        } catch (x) { rec = null }
+        try { rec = await consultBg($, p, env, world, e, ctx, key) } catch (x) { rec = null }
         const kind = rec && rec.kind ? String(rec.kind) : ""
         if (kind === "OK" || kind === "WARN") continue
         if (kind === "BLOCK" || kind === "STOP" || kind === "DENY") {
@@ -1068,14 +1055,9 @@ export function register(on: any) {
           }
           continue
         }
-        if (kind === "NONE") {
-          if (failClosed) {
-            hardDeny = "Subagent dispatch cancelled: the judge obtained no verdict on any rung. This is NOT the routing-table.toml gate. Tell the human and do the work without a subagent, or retry later."
-          }
-          continue
+        if (failClosed && (kind === "NONE" || !kind)) {
+          hardDeny = "Subagent dispatch cancelled: the judge obtained no verdict on any rung. This is NOT the routing-table.toml gate. Tell the human and do the work without a subagent, or retry later."
         }
-        try { await $.store.set(key, { kind: "PENDING" }) } catch (x) {}
-        pendingDeny = true
         continue
       }
 
@@ -1091,7 +1073,6 @@ export function register(on: any) {
     }
 
     if (hardDeny) return { deny: hardDeny }
-    if (pendingDeny) return { deny: PENDING_MSG }
     return next(e)
   })
 }

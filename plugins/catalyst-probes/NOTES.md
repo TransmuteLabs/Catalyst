@@ -72,7 +72,7 @@ not a consultation.
 
 | id | trigger | act | rx |
 |---|---|---|---|
-| `judge` | main-loop Agent/Task | cancel (inverted fail-closed) | OK\|WARN\|BLOCK\|STOP\|DENY |
+| `judge` | main-loop Agent/Task | cancel (await, then run or deny) | OK\|WARN\|BLOCK\|STOP\|DENY |
 | `idle-watch` | main-loop, no live work, cooldown | nudge | SILENT\|NUDGE |
 | `form` | main-loop Write/Edit/Bash/Agent/Task/SendMessage | per-class `[probe.form.act]` | rules |
 
@@ -83,11 +83,9 @@ add a new id. `CLAUDE_PROBES_DIR` disables layering.
 
 - It does not raise the 10 s host budget (unpatchable; bytecode).
 - It does not move the proxy splices.
-- `act: cancel` waits the first ladder rung in the same `tool.call`
-  (wall 7.5 s, under the 10 s host budget). OK/WARN → the call proceeds
-  now; BLOCK → deny with the reason; no verdict yet → PENDING deny,
-  the rest of the ladder detaches, retry sees the verdict. `$.ui.log`
-  is not used for verdicts (it lands in the chat).
+- `act: cancel` is the splice: await the consult, then `next(e)` on
+  OK/WARN or `{deny: reason}` on BLOCK/NONE. No PENDING, no retry of
+  the same call. `$.ui.log` is not used for verdicts.
 - `$.fs.write` overwrites. Index lines go to `journal.jsonl.shard.<rec>`.
 
 ## Journal
