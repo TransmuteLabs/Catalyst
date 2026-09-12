@@ -307,9 +307,7 @@ async function appendJournal($: any, jpath: string, obj: any) {
     const c = rec.charAt(i)
     safe += /[A-Za-z0-9._-]/.test(c) ? c : "_"
   }
-  try { await $.fs.write(jpath + ".shard." + safe, line) } catch (x) {
-    try { $.ui.log("catalyst-probes journal: " + String(x).slice(0, 160)) } catch (y) {}
-  }
+  try { await $.fs.write(jpath + ".shard." + safe, line) } catch (x) {}
 }
 
 async function layerHit($: any, ch: string): Promise<boolean> {
@@ -629,7 +627,7 @@ async function loadWorld($: any, env: any): Promise<any> {
   }
 }
 
-async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any, key: string) {
+async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any, key: string, firstTimeoutMs?: number): Promise<any> {
   const id = p.id
   const cfg = p.cfg
   const tool = String((e && e.tool) || "")
@@ -729,7 +727,8 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         if (rung.effort) arg.effort = rung.effort
         const mt = rung.max_tokens || floorTok
         if (mt) arg.max_tokens = mt
-        const tmo = rung.timeout_ms || floorTmo
+        let tmo = rung.timeout_ms || floorTmo
+        if (i === 0 && firstTimeoutMs && (!tmo || tmo > firstTimeoutMs)) tmo = firstTimeoutMs
         if (tmo) arg.timeoutMs = tmo
         const raw = await $.model.complete(arg)
         rec["raw_" + used] = String(raw).slice(0, 500)
@@ -780,7 +779,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       jm: rec.used, rec: recName, carrier: "mod",
     })
   } catch (x) {}
-  try { $.ui.log("catalyst-probes " + id + " kind=" + rec.kind + " dt=" + rec.dtMs + " jm=" + rec.used) } catch (x) {}
+  return rec
 }
 
 async function runForm($: any, p: any, env: any, world: any, e: any): Promise<string | null> {
@@ -790,12 +789,10 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
       tool !== "Write" && tool !== "Edit" && tool !== "Bash") return null
   for (let i = 0; i < FORM_REQ.length; i++) {
     if (typeof cfg[FORM_REQ[i]] !== "string" || !cfg[FORM_REQ[i]]) {
-      try { $.ui.log("catalyst-probes form broken form-rule-missing:" + FORM_REQ[i]) } catch (x) {}
       return null
     }
   }
   if (typeof cfg.path_lines_min !== "number") {
-    try { $.ui.log("catalyst-probes form broken form-rule-missing:path_lines_min") } catch (x) {}
     return null
   }
   const evs: any[] = []
@@ -885,7 +882,6 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   if (vk !== "pass") {
     try { await $.fs.write(recPath, JSON.stringify({ ev: tool, cls, refuse: rf, warn: wn, vd })) } catch (x) {}
   }
-  try { $.ui.log("catalyst-probes form " + vk + " " + cls.join(",")) } catch (x) {}
   if (vk === "refuse") {
     let cancel = false
     for (let i = 0; i < rf.length; i++) {
@@ -977,12 +973,7 @@ export function register(on: any) {
       let fire = false
       if (p.builtin) fire = builtinTrigger(p, e, ctx)
       else if (p.cfg && p.cfg.when) fire = pred(p.cfg.when, ctx)
-      else {
-        if (p.cfg.enabled !== false) {
-          try { $.ui.log("catalyst-probes " + p.id + " skip_no_when") } catch (x) {}
-        }
-        continue
-      }
+      else continue
       if (!fire) continue
 
       if (p.cfg && p.cfg.enabled === false) {
@@ -1059,15 +1050,37 @@ export function register(on: any) {
             continue
           }
         }
+        const WALL = 7500
+        const FIRST = 7000
+        const job = consultBg($, p, env, world, e, ctx, key, FIRST)
+        let rec: any = null
+        try {
+          rec = await Promise.race([
+            job,
+            $.clock.sleep(WALL).then(() => null),
+          ])
+        } catch (x) { rec = null }
+        const kind = rec && rec.kind ? String(rec.kind) : ""
+        if (kind === "OK" || kind === "WARN") continue
+        if (kind === "BLOCK" || kind === "STOP" || kind === "DENY") {
+          if (enforce) {
+            hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(rec.rest || kind)
+          }
+          continue
+        }
+        if (kind === "NONE") {
+          if (failClosed) {
+            hardDeny = "Subagent dispatch cancelled: the judge obtained no verdict on any rung. This is NOT the routing-table.toml gate. Tell the human and do the work without a subagent, or retry later."
+          }
+          continue
+        }
         try { await $.store.set(key, { kind: "PENDING" }) } catch (x) {}
         pendingDeny = true
-        ;(async () => { await consultBg($, p, env, world, e, ctx, key) })()
         continue
       }
 
       if (p.act === "nudge" || p.act === "log_only") {
         if (cap >= capMax) {
-          try { $.ui.log("catalyst-probes " + p.id + " skip_cap") } catch (x) {}
           continue
         }
         cap++

@@ -83,8 +83,11 @@ add a new id. `CLAUDE_PROBES_DIR` disables layering.
 
 - It does not raise the 10 s host budget (unpatchable; bytecode).
 - It does not move the proxy splices.
-- `act: cancel` is inverted fail-closed: PENDING deny in 1–2 ms,
-  `$.model.complete` detached, retry sees the verdict.
+- `act: cancel` waits the first ladder rung in the same `tool.call`
+  (wall 7.5 s, under the 10 s host budget). OK/WARN → the call proceeds
+  now; BLOCK → deny with the reason; no verdict yet → PENDING deny,
+  the rest of the ladder detaches, retry sees the verdict. `$.ui.log`
+  is not used for verdicts (it lands in the chat).
 - `$.fs.write` overwrites. Index lines go to `journal.jsonl.shard.<rec>`.
 
 ## Journal
