@@ -88,8 +88,25 @@ record is the acceptance, nothing is printed to the chat.
 
 Reach measured live on 2.1.267 (the model printed the planted tokens):
 26 sections of the main-loop system prompt, 24 tool descriptions, 254
-command descriptions. A subagent's assembly carries only `env_info_model`,
-so a section rule cannot reach a subagent's prompt.
+command descriptions.
+
+A subagent's assembly is NOT the main loop's, and the three targets differ
+there — measured by clock-stamping every firing of a dispatching run:
+
+| target | main loop | subagent assembly |
+|---|---|---|
+| `section` | 26 | 1 (`env_info_model` only) |
+| `tool` | every tool | the subagent's own tools (`Read`, `Bash` for a scout) |
+| `command` | 254 | none |
+
+So a **section** rule cannot reach a subagent, while a **tool** rule
+reaches every agent that holds that tool. Write tool rules for both
+readers, or gate them.
+
+A repeated firing does NOT compound: in a dispatching run `Bash` was
+described twice and both firings carried the ORIGINAL text
+(`chars_before` equal, zero markers already present), so an `append` rule
+adds its text once per assembly, never twice.
 
 `when_env` SELECTS among the env names the module already reads —
 `CLAUDE_JUDGE`, `CLAUDE_IDLE`, `CLAUDE_FORM`, `CLAUDE_PROBES`,
