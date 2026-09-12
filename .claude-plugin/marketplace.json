@@ -9,6 +9,11 @@
       "name": "catalyst",
       "source": "./",
       "description": "Catalyst skills family: subagent-driven development pipeline with decision-boundary model tiering, file handoffs, and goal-backward verification"
+    },
+    {
+      "name": "catalyst-probes",
+      "source": "./plugins/catalyst-probes",
+      "description": "Consultation engine as a function-hooks module. Consultants are [probe.<id>] tables in probes.toml — a new judge is a table plus a prompt, not a new plugin. Pair splice-backed probes with CLAUDE_*_CARRIER=mod."
     }
   ]
 }

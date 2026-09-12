@@ -7,9 +7,12 @@ A skills family for disciplined agentic development. Form factor — small self-
 ```
 claude plugin marketplace add TransmuteLabs/Catalyst
 claude plugin install catalyst@catalyst
+claude plugin install catalyst-probes@catalyst
 ```
 
 Or interactively: `/plugin marketplace add TransmuteLabs/Catalyst`, then `/plugin install catalyst@catalyst`. Skills appear namespaced as `catalyst:<skill>` (e.g. `/catalyst:bootup`).
+
+`catalyst-probes` is the consultation engine (Claude Mods / function hooks). The module is the core; each `[probe.<id>]` in `~/.claude/probes/probes.toml` is a consultant. Adding a judge is a table plus `probes/<id>/prompt.md`, not a new plugin. Pair with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` and `CLAUDE_*_CARRIER=mod` so the binary splices stand down. See `plugins/catalyst-probes/NOTES.md`.
 
 ## The workflows
 
