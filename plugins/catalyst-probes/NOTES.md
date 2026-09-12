@@ -68,6 +68,45 @@ live toml does not need the new keys.
 `kind = "form"` is the deterministic rule probe (id `form` today). It is
 not a consultation.
 
+## Authoring a prompt
+
+`[prompt.<id>]` tables in the same `probes.toml` author the host's own
+texts at runtime. Exactly one target per table:
+
+```toml
+[prompt.house-style]
+section = "communication:L"   # or tool = "Read", or command = "commit"
+mode    = "append"            # append (default) | prepend | replace
+text    = "One short rule."   # or text_file = "house-style.md"
+when_env = "CLAUDE_JUDGE"     # optional gate, see below
+enabled = true
+```
+
+`text_file` resolves against `<probes home>/prompts/`. A rule that
+applies writes `<probes home>/prompts/records/applied-<id>.json` — that
+record is the acceptance, nothing is printed to the chat.
+
+Reach measured live on 2.1.267 (the model printed the planted tokens):
+26 sections of the main-loop system prompt, 24 tool descriptions, 254
+command descriptions. A subagent's assembly carries only `env_info_model`,
+so a section rule cannot reach a subagent's prompt.
+
+`when_env` SELECTS among the env names the module already reads —
+`CLAUDE_JUDGE`, `CLAUDE_IDLE`, `CLAUDE_FORM`, `CLAUDE_PROBES`,
+`CLAUDE_PROMPTS`. Any other name is refused and the rule does not fire
+(a typo must not let text through ungated). `CLAUDE_PROMPTS` empty = on,
+`0`/`off`/`false` disables the whole layer.
+
+`dispatch-rule` is a built-in table: the judge's cancellation rule, same
+text and same gate as splice 26 (`carrier=mod` plus `CLAUDE_JUDGE` on). A
+table of that id may retarget, change its mode or disable it; it cannot
+strip the gate.
+
+This layer replaces nothing in the image. Measured 2026-09-12: of the 901
+prompt overlays in the tweakcc home, **zero** carry our text (class
+control passing — splice 26's own rule text is present in the live image
+and absent from the pristine twin). There was never anything to port.
+
 ## Built-in ids (live toml without `on`/`act`/`rx`)
 
 | id | trigger | act | rx |

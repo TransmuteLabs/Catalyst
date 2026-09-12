@@ -2,6 +2,9 @@
 // call sites; env names string literals (loader scans them). process/Bun undefined.
 // One module per plugin: this file IS the core. Consultants are [probe.<id>]
 // in probes.toml — a new judge is a table + prompt.md, not a new plugin.
+// Prompt authorship is [prompt.<id>] in the same file: one section, tool
+// description or command description per table. The dispatch rule is a
+// built-in table so its default stays identical to the splice.
 // Judge cancel: await the consult, then next(e) or {deny: reason} —
 // same as the splice. No PENDING retry. $.fs.write overwrites; never RMW journal.jsonl.
 // $.store keys max 256 chars. $.store is per-plugin across sessions: PWD
@@ -397,6 +400,161 @@ function probesOf(parsed: any, projectParsed: any): any[] {
   return out
 }
 
+// --- Prompt layer -----------------------------------------------------------
+// [prompt.<id>] tables author the host's OWN texts at runtime: one section of
+// the system prompt, one tool description, or one command description.
+// CONSTRAINT: this ports nothing. The tweakcc overlay layer carries ZERO of our
+// text (measured 2026-09-12: 901 overlays, class `ours` = 0, with the class
+// control passing — the splice's own rule text is live=1/orig=0). The layer is
+// a NEW capability, config-driven like the consultants, and it is the only
+// prompt authorship that survives a version bump without re-extracting locators.
+// Reach measured live on 2.1.267, end to end (the model printed the tokens):
+// prompt.section 26 names (main loop; a subagent's assembly carries only
+// env_info_model), tool.describe 24, command.describe 254.
+
+function promptProfile(id: string, cfg: any): any {
+  let kind = ""
+  let target = ""
+  if (typeof cfg.section === "string" && cfg.section) { kind = "section"; target = cfg.section }
+  if (typeof cfg.tool === "string" && cfg.tool) {
+    if (kind) return { id, cfg, skip: "two_targets" }
+    kind = "tool"; target = cfg.tool
+  }
+  if (typeof cfg.command === "string" && cfg.command) {
+    if (kind) return { id, cfg, skip: "two_targets" }
+    kind = "command"; target = cfg.command
+  }
+  if (!kind) return { id, cfg, skip: "no_target" }
+  const mode = String(cfg.mode || "append").trim().toLowerCase()
+  if (mode !== "append" && mode !== "prepend" && mode !== "replace") return { id, cfg, skip: "bad_mode" }
+  return { id, cfg, kind, target, mode, text: "", gate: "", skip: "" }
+}
+
+// CONSTRAINT: the built-in rule reproduces the splice (injection 26) exactly —
+// same text, same gate (carrier `mod` plus CLAUDE_JUDGE on), same site. A
+// [prompt.dispatch-rule] table may retarget, remute or disable it, but the
+// default with no table present must stay byte-identical to the splice.
+function builtinPromptRules(): any[] {
+  return [{
+    id: "dispatch-rule", builtin: true, kind: "section", target: "communication:L",
+    mode: "append", text: COACHING, gate: "judge", cfg: {}, skip: "",
+  }]
+}
+
+function promptsOf(parsed: any, projectParsed: any): any[] {
+  const out = builtinPromptRules()
+  const g = (parsed && parsed.prompt) || {}
+  const p = (projectParsed && projectParsed.prompt) || {}
+  const ids: string[] = []
+  const gk = Object.keys(g)
+  for (let i = 0; i < gk.length; i++) ids.push(gk[i])
+  const pk = Object.keys(p)
+  for (let i = 0; i < pk.length; i++) if (ids.indexOf(pk[i]) < 0) ids.push(pk[i])
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i]
+    const cfg = shallowMerge(g[id] || {}, p[id] || {})
+    let hit = -1
+    for (let j = 0; j < out.length; j++) if (out[j].id === id) hit = j
+    if (hit >= 0) {
+      // A built-in keeps its gate; only these keys are overridable, so a table
+      // cannot silently strip the judge gate off the dispatch rule.
+      const b = out[hit]
+      b.cfg = cfg
+      if (typeof cfg.section === "string" && cfg.section) b.target = cfg.section
+      const m = String(cfg.mode || "").trim().toLowerCase()
+      if (m === "append" || m === "prepend" || m === "replace") b.mode = m
+      continue
+    }
+    out.push(promptProfile(id, cfg))
+  }
+  return out
+}
+
+function envSelected(name: string, env: any): boolean {
+  // CONSTRAINT: env names are string literals at $.env.get, so `when_env`
+  // SELECTS among the already-read bundle. An unknown name is refused rather
+  // than read — a typo must not let the text through ungated.
+  const n = String(name || "").trim().toUpperCase()
+  if (!n) return true
+  if (n === "CLAUDE_JUDGE") return envOn(env.JUDGE)
+  if (n === "CLAUDE_IDLE") return envOn(env.IDLE)
+  if (n === "CLAUDE_FORM") return formOn(env.FORM)
+  if (n === "CLAUDE_PROBES") return formOn(env.PROBES)
+  if (n === "CLAUDE_PROMPTS") return formOn(env.PROMPTS)
+  return false
+}
+
+// Cleared when the module reloads (/reload-plugins), which is also when a
+// changed text file must be picked up.
+const promptTextMemo: any = {}
+
+async function ruleText($: any, world: any, r: any): Promise<string> {
+  const inline = r.cfg && r.cfg.text
+  if (typeof inline === "string" && inline) return inline
+  const f = r.cfg && r.cfg.text_file
+  if (typeof f === "string" && f) {
+    const path = String(f).charAt(0) === "/" ? String(f) : (world.globalHome + "/prompts/" + String(f))
+    if (promptTextMemo[path] !== undefined) return promptTextMemo[path]
+    const t = await readTextNull($, path)
+    promptTextMemo[path] = t === null ? "" : String(t)
+    return promptTextMemo[path]
+  }
+  return String(r.text || "")
+}
+
+async function applyPromptRules(
+  $: any, world: any, env: any, kind: string, target: string, text: string,
+): Promise<{ text: string; applied: string[] }> {
+  const applied: string[] = []
+  if (!formOn(env.PROMPTS)) return { text, applied }
+  const rules = (world && world.prompts) || []
+  let out = String(text || "")
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i]
+    if (r.skip) continue
+    if (!bl3(r.cfg && r.cfg.enabled, true)) continue
+    if (r.kind !== kind || r.target !== target) continue
+    if (r.gate === "judge") {
+      if (env.JUDGE_CARRIER.trim().toLowerCase() !== "mod") continue
+      if (!envOn(env.JUDGE)) continue
+    }
+    if (r.cfg && r.cfg.when_env && !envSelected(String(r.cfg.when_env), env)) continue
+    const body = await ruleText($, world, r)
+    if (!body) continue
+    const before = out.length
+    if (r.mode === "replace") out = body
+    else if (r.mode === "prepend") out = body + "\n\n" + out
+    else out = out + "\n\n" + body
+    applied.push(r.id)
+    try {
+      await $.fs.write(
+        world.globalHome + "/prompts/records/applied-" + safeId(r.id) + ".json",
+        JSON.stringify({
+          t: new Date($.clock.now()).toISOString(), id: r.id, kind: r.kind,
+          target: r.target, mode: r.mode, chars_before: before, chars_after: out.length,
+          builtin: r.builtin === true,
+        }),
+      )
+    } catch (x) {}
+  }
+  return { text: out, applied }
+}
+
+// CONSTRAINT: command.describe fires 254 times per session and tool.describe 24
+// (measured 2026-09-12). Reading probes.toml per call would be 278 file reads
+// per session, so the world is memoised for a short window. Correctness never
+// depends on the memo — only cost does.
+let worldMemo: any = null
+
+async function worldFor($: any): Promise<any> {
+  const now = $.clock.now()
+  if (worldMemo && now - worldMemo.t < 5000) return worldMemo
+  const env = await envBundle($)
+  const world = await loadWorld($, env)
+  worldMemo = { t: now, env, world }
+  return worldMemo
+}
+
 const rxCache: any = {}
 function K(s: string, f: string): RegExp {
   const key = f + "|" + s
@@ -549,6 +707,8 @@ async function envBundle($: any): Promise<any> {
   try { IDLE = await $.env.get("CLAUDE_IDLE") } catch (x) {}
   let PROBES: any = ""
   try { PROBES = await $.env.get("CLAUDE_PROBES") } catch (x) {}
+  let PROMPTS: any = ""
+  try { PROMPTS = await $.env.get("CLAUDE_PROMPTS") } catch (x) {}
   let PROBES_DIR: any = ""
   try { PROBES_DIR = await $.env.get("CLAUDE_PROBES_DIR") } catch (x) {}
   let CONFIG_DIR: any = ""
@@ -568,6 +728,7 @@ async function envBundle($: any): Promise<any> {
     IDLE_CARRIER: String(IDLE_CARRIER || ""),
     IDLE: String(IDLE || ""),
     PROBES: String(PROBES || ""),
+    PROMPTS: String(PROMPTS || ""),
     PROBES_DIR: String(PROBES_DIR || "").trim(),
     CONFIG_DIR: String(CONFIG_DIR || "").trim(),
     HOME: String(HOME || ""),
@@ -622,6 +783,7 @@ async function loadWorld($: any, env: any): Promise<any> {
   return {
     globalHome, projectHome, cwd,
     probes: probesOf(gParsed, pParsed),
+    prompts: promptsOf(gParsed, pParsed),
   }
 }
 
@@ -914,12 +1076,43 @@ export function register(on: any) {
 
   on("prompt.section", async ($: any, e: any, next: any) => {
     const name = String((e && e.name) || "")
-    if (name !== "communication:L") return next(e)
-    const env = await envBundle($)
-    if (env.JUDGE_CARRIER.trim().toLowerCase() !== "mod") return next(e)
-    if (!envOn(env.JUDGE)) return next(e)
-    const text = String((e && e.text) || "") + "\n\n" + COACHING
-    return next(Object.assign({}, e, { text }))
+    let w: any = null
+    try { w = await worldFor($) } catch (x) { w = null }
+    if (!w) return next(e)
+    const r = await applyPromptRules($, w.world, w.env, "section", name, String((e && e.text) || ""))
+    if (!r.applied.length) return next(e)
+    return next(Object.assign({}, e, { text: r.text }))
+  })
+
+  // Field names measured live on 2.1.267: tool.describe carries
+  // `tool,description,provider`; command.describe carries
+  // `command,description,argumentHint,isHidden,immediate,provider`.
+  on("tool.describe", async ($: any, e: any, next: any) => {
+    const name = String((e && e.tool) || "")
+    if (!name) return next(e)
+    let w: any = null
+    try { w = await worldFor($) } catch (x) { w = null }
+    if (!w) return next(e)
+    const r = await applyPromptRules($, w.world, w.env, "tool", name, String((e && e.description) || ""))
+    if (!r.applied.length) return next(e)
+    return next(Object.assign({}, e, { description: r.text }))
+  })
+
+  on("command.describe", async ($: any, e: any, next: any) => {
+    const raw = String((e && e.command) || "")
+    if (!raw) return next(e)
+    // A table may name the command with or without the leading slash.
+    const bare = raw.charAt(0) === "/" ? raw.slice(1) : raw
+    let w: any = null
+    try { w = await worldFor($) } catch (x) { w = null }
+    if (!w) return next(e)
+    const text = String((e && e.description) || "")
+    let r = await applyPromptRules($, w.world, w.env, "command", raw, text)
+    if (!r.applied.length && bare !== raw) {
+      r = await applyPromptRules($, w.world, w.env, "command", bare, text)
+    }
+    if (!r.applied.length) return next(e)
+    return next(Object.assign({}, e, { description: r.text }))
   })
 
   on("tool.call", async ($: any, e: any, next: any) => {
