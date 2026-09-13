@@ -1029,6 +1029,16 @@ def render_slice():
                      f"[dispatch-class:<id>]: в промпте Task/Agent ИЛИ в тексте "
                      f"команды вендорского канала (envoy, вендорский CLI, "
                      f"прокси); без маркера = {breach}.")
+    # [selection].instruction — данные из таблицы (не кода): назначение
+    # работников контроллером; не дополнительная проверка допуска.
+    selection = table.get("selection")
+    if isinstance(selection, dict):
+        instruction = selection.get("instruction")
+        if isinstance(instruction, str) and instruction.strip():
+            lines.append("- Выбор работников (инструкция контроллеру, не "
+                         "дополнительная проверка допуска): " + instruction)
+    lines.append("- Модели в строках классов — допустимый пул; порядок "
+                 "allowed не задаёт приоритет.")
     for cid, c in classes.items():
         allowed = c.get("allowed")
         target = "|".join(str(a) for a in allowed) if allowed else "НЕ делегируется"

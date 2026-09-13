@@ -699,5 +699,53 @@ check "t11 point without parent is foreign"   deny  "$(gate "$(task catalyst:cri
 check "t11 parentless point stays unguarded"  allow "$(gate "$(task implementer opus "[dispatch-class:exec-1n-t] x")")"
 T="$BASE_TABLE"
 
+# ---- truth 17: [selection].instruction — норма ВЫБОРА работников в срезе.
+# Пункт есть ДАННЫЕ таблицы, а не код: слой заменяет текст целиком, пустая
+# [selection] сохраняет наследование, пустая строка прячет пункт, а таблица без
+# секции рендерится без него. Ни один из случаев не трогает ДОПУСК — гейт
+# по-прежнему проверяет только членство, и каждая строка ниже это проверяет.
+render_slice() {   # <оверрайд> [таблица]
+  CATALYST_ROUTING_TABLE="${2:-$BASE_TABLE}" CATALYST_ROUTING_OVERRIDE="$1" \
+    CATALYST_ROUTING_PROJECT_OVERRIDE="$WORK/absent-override.toml" python3 "$GATE" --render-slice
+}
+SEL_BASE='GLM (glm-5.3) имеет приоритет'
+sel=$(render_slice "$WORK/absent-override.toml")
+case "$sel" in *"$SEL_BASE"*) check "t17 base ships the selection norm" 0 0 ;; *) check "t17 base ships the selection norm" 0 1 ;; esac
+case "$sel" in *"порядок allowed не задаёт приоритет"*) check "t17 slice denies order-as-priority" 0 0 ;; *) check "t17 slice denies order-as-priority" 0 1 ;; esac
+printf 'schema_version = 1\n[selection]\ninstruction = "ВЫБОР СЛОЯ"\n' > "$WORK/override-selection.toml"
+sel=$(render_slice "$WORK/override-selection.toml")
+case "$sel" in *"ВЫБОР СЛОЯ"*) check "t17 layer text reaches the slice" 0 0 ;; *) check "t17 layer text reaches the slice" 0 1 ;; esac
+case "$sel" in *"$SEL_BASE"*) check "t17 layer replaces, not appends" 0 1 ;; *) check "t17 layer replaces, not appends" 0 0 ;; esac
+printf 'schema_version = 1\n[selection]\n' > "$WORK/override-selection-empty.toml"
+sel=$(render_slice "$WORK/override-selection-empty.toml")
+case "$sel" in *"$SEL_BASE"*) check "t17 empty [selection] keeps inheritance" 0 0 ;; *) check "t17 empty [selection] keeps inheritance" 0 1 ;; esac
+printf 'schema_version = 1\n[selection]\ninstruction = ""\n' > "$WORK/override-selection-blank.toml"
+sel=$(render_slice "$WORK/override-selection-blank.toml")
+case "$sel" in *"Выбор работников"*) check "t17 blank instruction hides the item" 0 1 ;; *) check "t17 blank instruction hides the item" 0 0 ;; esac
+case "$sel" in *dispatch-class*) check "t17 blank instruction leaves admission alone" 0 0 ;; *) check "t17 blank instruction leaves admission alone" 0 1 ;; esac
+# Копия таблицы БЕЗ секции. Вырезка объявляет свою форму: сменится форма записи —
+# стенд отказывает, а не зеленеет на нетронутом файле (вакуумная строка хуже
+# отсутствующей).
+python3 - "$BASE_TABLE" "$WORK/table-no-selection.toml" <<'PY'
+import io, sys
+lines = io.open(sys.argv[1], encoding='utf-8').read().split('\n')
+i = lines.index('[selection]')
+assert lines[i + 1].startswith('instruction = '), 'форма секции изменилась'
+del lines[i:i + 2]
+io.open(sys.argv[2], 'w', encoding='utf-8').write('\n'.join(lines))
+PY
+carved=$?
+check "t17 selection carved from the table copy" 0 "$carved"
+sel=$(render_slice "$WORK/absent-override.toml" "$WORK/table-no-selection.toml")
+case "$sel" in *"Выбор работников"*) check "t17 table without [selection] renders none" 0 1 ;; *) check "t17 table without [selection] renders none" 0 0 ;; esac
+case "$sel" in *dispatch-class*) check "t17 table without [selection] still renders classes" 0 0 ;; *) check "t17 table without [selection] still renders classes" 0 1 ;; esac
+# Допуск неизменен: норма выбора -- не гейт. Дорожки взяты те же, что у t1
+# (opus в 1c -- allow, sonnet -- deny): модель без пула не трогает проверку
+# квоты, иначе строка мерила бы состояние поддельного демона, а не выбор.
+O="$WORK/override-selection.toml"
+check "t17 selection layer keeps membership" allow "$(gate "$(task nomodel opus "[dispatch-class:1c] x")")"
+check "t17 selection layer keeps sonnet out" deny  "$(gate "$(task sonnetagent sonnet "[dispatch-class:1a] fix")")"
+O="$WORK/absent-override.toml"
+
 echo "test-dispatch-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
