@@ -460,6 +460,11 @@ check "t14 shipped blocks unratified model" deny  "$(gate "$(task implementer gp
 slice_deny=$(CATALYST_ROUTING_TABLE="$SHIPPED_TABLE" CATALYST_ROUTING_OVERRIDE="$O" \
   CATALYST_ROUTING_PROJECT_OVERRIDE="$WORK/absent-override.toml" python3 "$GATE" --render-slice)
 case "$slice_deny" in *ОТКАЗ*) check "t14 slice says refusal" 0 0 ;; *) check "t14 slice says refusal" 0 1 ;; esac
+# Положительный контроль формы, на которую пинится warn-срез ниже: в режиме
+# отказа гейт печатает ОБЕ — заголовочное "нарушение = ОТКАЗ" и по одному
+# "= отказ" на каждое правило (render_slice: breach). Без этой строки
+# отрицательная проверка ниже могла бы зеленеть на форме, которой нет вовсе.
+case "$slice_deny" in *"= отказ"*) check "t14 slice spells the breach" 0 0 ;; *) check "t14 slice spells the breach" 0 1 ;; esac
 T="$WORK/table-warn.toml"
 check "t14 warn mode does not block"        warn  "$(gate "$(task implementer opus)")"
 out=$(gate_out "$(task implementer opus)")
@@ -470,7 +475,13 @@ check "t14 a clean dispatch stays silent"   allow "$(gate "$(task implementer op
 slice_warn=$(CATALYST_ROUTING_TABLE="$WORK/table-warn.toml" CATALYST_ROUTING_OVERRIDE="$O" \
   CATALYST_ROUTING_PROJECT_OVERRIDE="$WORK/absent-override.toml" python3 "$GATE" --render-slice)
 case "$slice_warn" in *"НЕ блокирует"*) check "t14 warn slice states the mode" 0 0 ;; *) check "t14 warn slice states the mode" 0 1 ;; esac
-case "$slice_warn" in *отказ*) check "t14 warn slice promises no deny" 0 1 ;; *) check "t14 warn slice promises no deny" 0 0 ;; esac
+# КОНСТРЕЙНТ: пинится то, что печатает ГЕЙТ, а не любое вхождение слова.
+# Срез несёт и ДАННЫЕ таблицы ([selection].instruction), где «отказ
+# провайдера» означает недоступность запуска, а не отказ гейта; широкий
+# поиск слова краснел на нормативной прозе и объявлял это нарушением
+# режима. Формы гейта ровно две (render_slice): заголовочное «= ОТКАЗ» и
+# «= отказ» у каждого правила — обе обязаны отсутствовать в warn.
+case "$slice_warn" in *"= отказ"*|*ОТКАЗ*) check "t14 warn slice promises no deny" 0 1 ;; *) check "t14 warn slice promises no deny" 0 0 ;; esac
 T="$BASE_TABLE"
 # an unreadable table is not a routing choice — fail-closed in either mode
 T="$WORK/garbage.toml"
