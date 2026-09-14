@@ -88,7 +88,10 @@ record is the acceptance, nothing is printed to the chat.
 
 Reach measured live on 2.1.267 (the model printed the planted tokens):
 26 sections of the main-loop system prompt, 24 tool descriptions, 254
-command descriptions.
+command descriptions. NOT re-measured since the supported floor rose to
+2.1.270: these are that day's figures on that day's bundle, not a claim
+about the floor version — a section or description count is exactly the
+kind of figure an upstream bundle moves without announcing it.
 
 A subagent's assembly is NOT the main loop's, and the three targets differ
 there — measured by clock-stamping every firing of a dispatching run:
