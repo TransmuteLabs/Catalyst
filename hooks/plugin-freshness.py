@@ -78,6 +78,37 @@ def short(sha: str) -> str:
     return sha[:12] if sha else "(нет)"
 
 
+def relation(mirror: str, mirror_sha: str, remote_sha: str) -> str:
+    """Направление расхождения зеркала и источника, ДОКАЗАННОЕ родством.
+
+    «Не равны» само по себе не значит «зеркало отстало»: оно может быть и
+    впереди. Цена этой подмены уплачена 2026-09-14 на живом доме -- дверь
+    сказала «обновить маркетплейс», когда зеркало уже содержало тот коммит,
+    который она считала источником.
+
+    Исходы: same | mirror-contains (впереди либо кэш устарел) | mirror-behind
+    | diverged | unknown (родство не установлено -- НЕ повод угадывать).
+    """
+    if remote_sha == mirror_sha:
+        return "same"
+    # Объекта нет в хранилище зеркала -> зеркало его ТОЧНО не содержит.
+    # ls-remote объекты не приносит, так что это нормальный случай отставания.
+    rc, _ = git_out(mirror, "cat-file", "-e", remote_sha + "^{commit}")
+    if rc != 0:
+        return "mirror-behind"
+    rc, _ = git_out(mirror, "merge-base", "--is-ancestor", remote_sha, mirror_sha)
+    if rc == 0:
+        return "mirror-contains"
+    if rc != 1:
+        return "unknown"
+    rc, _ = git_out(mirror, "merge-base", "--is-ancestor", mirror_sha, remote_sha)
+    if rc == 0:
+        return "mirror-behind"
+    if rc != 1:
+        return "unknown"
+    return "diverged"
+
+
 def main() -> int:
     home = claude_home()
     inst_path = os.path.join(home, "plugins", "installed_plugins.json")
@@ -136,18 +167,35 @@ def main() -> int:
     # --- ось C: зеркало против удалённого источника --------------------------
     # Спрашивается не чаще TTL и НИКОГДА не молчит о собственной неудаче.
     if mirror_sha:
-        remote_sha, why = cached_remote(mirror)
+        remote_sha, why = cached_remote(mirror, mirror_sha)
         if remote_sha is None:
             notes.append(
                 f"ОСЬ C НЕ ИЗМЕРЕНА: удалённый источник не опрошен ({why}). "
                 f"«Источник не двигался» и «эта машина не смогла спросить» дают "
                 f"один и тот же пустой ответ -- поэтому здесь не зелёное, а "
                 f"«не измерено».")
-        elif remote_sha != mirror_sha:
-            notes.append(
-                f"ОСЬ C: зеркало маркетплейса стоит на {short(mirror_sha)}, "
-                f"удалённый источник -- на {short(remote_sha)}. Обновить "
-                f"маркетплейс, иначе переустановка принесёт те же байты.")
+        else:
+            rel = relation(mirror, mirror_sha, remote_sha)
+            if rel == "mirror-behind":
+                notes.append(
+                    f"ОСЬ C: зеркало маркетплейса стоит на {short(mirror_sha)}, "
+                    f"удалённый источник -- на {short(remote_sha)}. Обновить "
+                    f"маркетплейс, иначе переустановка принесёт те же байты.")
+            elif rel == "diverged":
+                notes.append(
+                    f"ОСЬ C: зеркало {short(mirror_sha)} и источник "
+                    f"{short(remote_sha)} РАЗОШЛИСЬ -- у каждого есть коммиты, "
+                    f"которых нет у другого. Обновление маркетплейса этого не "
+                    f"сведёт: разбираться с зеркалом руками.")
+            elif rel == "unknown":
+                notes.append(
+                    f"ОСЬ C НЕ ИЗМЕРЕНА: зеркало {short(mirror_sha)} и источник "
+                    f"{short(remote_sha)} различны, но родство не установлено -- "
+                    f"направление расхождения назвать нечем, а угаданное "
+                    f"направление хуже отсутствующего.")
+            # same / mirror-contains -- молчим: обновлять маркетплейс НЕЧЕМ.
+            # «Впереди» -- нормальное состояние сразу после пуша из дев-дома,
+            # и требовать за него действия значит звать оператора впустую.
 
     if notes:
         print("!! CATALYST: установленная копия расходится со своим источником.")
@@ -156,7 +204,7 @@ def main() -> int:
     return 0
 
 
-def cached_remote(mirror: str) -> tuple[str | None, str]:
+def cached_remote(mirror: str, mirror_sha: str) -> tuple[str | None, str]:
     """Sha удалённого HEAD с кэшем по времени. None -- НЕ измерено, с причиной."""
     path = state_path()
     now = time.time()
@@ -165,8 +213,15 @@ def cached_remote(mirror: str) -> tuple[str | None, str]:
     except (OSError, ValueError):
         st = {}
     rec = st.get(mirror) or {}
-    if rec.get("sha") and (now - float(rec.get("at", 0))) < REMOTE_TTL_S:
-        return rec["sha"], "из кэша"
+    cached = rec.get("sha")
+    if cached and (now - float(rec.get("at", 0))) < REMOTE_TTL_S:
+        # Срок -- не единственное условие годности. Значение, которое зеркало
+        # УЖЕ содержит, устарело по построению: источник с тех пор как минимум
+        # дошёл до этой точки, а мы читаем снимок «до». Именно так дверь
+        # 2026-09-14 позвала обновлять маркетплейс через 23 минуты после
+        # собственного пуша. Такой кэш не продлеваем -- спрашиваем заново.
+        if relation(mirror, mirror_sha, cached) != "mirror-contains":
+            return cached, "из кэша"
 
     rc, out = git_out(mirror, "ls-remote", "origin", "HEAD", timeout=REMOTE_TIMEOUT_S)
     if rc != 0 or not out:

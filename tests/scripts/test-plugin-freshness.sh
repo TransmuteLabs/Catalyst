@@ -159,5 +159,57 @@ else
   bad "КОНТРОЛЬ ПУСТОТЫ: прибор молчит и на разошедшемся мире без кэша -- молчание выше недействительно"
 fi
 
+# --- НАПРАВЛЕНИЕ: зеркало ВПЕРЕДИ источника -> обновлять нечего ------------
+# «Не равны» не значит «отстало». Требовать обновления маркетплейса за то, что
+# зеркало ушло вперёд, значит звать оператора впустую.
+W=$(mk_world ahead)
+git -C "$W/home/plugins/marketplaces/catalyst" config user.email t@t
+git -C "$W/home/plugins/marketplaces/catalyst" config user.name t
+echo ahead > "$W/home/plugins/marketplaces/catalyst/f"
+git -C "$W/home/plugins/marketplaces/catalyst" commit -qam ahead
+write_registries "$W" "$(mirror_sha "$W")"
+out=$(run_door "$W"); rc=$?
+if (( rc == 0 )) && [[ -z "$out" ]]; then
+  ok "зеркало впереди источника -- дверь молчит, а не зовёт обновляться"
+else
+  bad "зеркало впереди: ждали молчание, получили rc=$rc [$out]"
+fi
+
+# --- КЭШ, КОТОРЫЙ ЗЕРКАЛО УЖЕ СОДЕРЖИТ, НЕ ПРОДЛЕВАЕТСЯ --------------------
+# Живой случай 2026-09-14: дверь позвала обновлять маркетплейс через 23 минуты
+# после пуша, потому что в кэше лежал доTTL-шный sha источника, а зеркало с тех
+# пор ушло вперёд ровно до него. Срок годности тут не единственное условие:
+# значение, которое зеркало уже содержит, устарело ПО ПОСТРОЕНИЮ.
+W=$(mk_world stale_cache)
+write_registries "$W" "$(mirror_sha "$W")"
+out=$(run_door "$W"); rc=$?            # прогон 1: кладёт в кэш старый sha
+[[ -z "$out" ]] || bad "подготовка кэша: ждали молчание, получили [$out]"
+echo two > "$W/origin/f"; git -C "$W/origin" add f; git -C "$W/origin" commit -qm two
+git -C "$W/home/plugins/marketplaces/catalyst" pull -q origin main
+write_registries "$W" "$(mirror_sha "$W")"
+out=$(run_door "$W"); rc=$?            # прогон 2: кэш устарел, но «свеж» по TTL
+if (( rc == 0 )) && [[ -z "$out" ]]; then
+  ok "устаревший кэш не продлевается: дверь переспросила и молчит"
+else
+  bad "устаревший кэш: ждали молчание после переспроса, получили rc=$rc [$out]"
+fi
+
+# --- РАЗОШЛИСЬ: у каждого есть своё -----------------------------------------
+# Отличимо от отставания только когда объект источника есть локально, поэтому
+# зеркало здесь ЗАБИРАЕТ объекты, но не сливает их.
+W=$(mk_world diverged)
+M="$W/home/plugins/marketplaces/catalyst"
+git -C "$M" config user.email t@t; git -C "$M" config user.name t
+echo origin-side > "$W/origin/f"; git -C "$W/origin" add f; git -C "$W/origin" commit -qm origin-side
+git -C "$M" fetch -q origin
+echo mirror-side > "$M/f"; git -C "$M" commit -qam mirror-side
+write_registries "$W" "$(mirror_sha "$W")"
+out=$(run_door "$W"); rc=$?
+if [[ "$out" == *"РАЗОШЛИСЬ"* ]] && [[ "$out" != *"Обновить маркетплейс"* ]]; then
+  ok "разошедшиеся зеркало и источник названы своим состоянием, не отставанием"
+else
+  bad "расхождение: ждали «РАЗОШЛИСЬ» без совета обновляться, получили rc=$rc [$out]"
+fi
+
 printf '\nplugin-freshness teeth: прошло=%d провалов=%d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]
