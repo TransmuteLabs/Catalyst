@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Зубы двери свежести плагина (hooks/plugin-freshness.py).
+#
+# Каждая из трёх осей обязана краснеть СВОЕЙ названной причиной, а сошедшееся
+# состояние -- молчать. Молчание тут несёт смысл («шума в контексте нет»),
+# поэтому оно проверяется положительным контролем: тот же прибор на том же
+# прогоне обязан уметь заговорить.
+#
+# Все реестры и клоны -- СИНТЕТИЧЕСКИЕ, под своим CLAUDE_CONFIG_DIR. Живой дом
+# пользователя не читается и не пишется ни в одном случае.
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+DOOR="$(cd "$HERE/../.." && pwd)/hooks/plugin-freshness.py"
+PASS=0; FAIL=0
+
+ok()  { PASS=$((PASS+1)); printf 'ok     %s\n' "$*"; }
+bad() { FAIL=$((FAIL+1)); printf 'ПРОВАЛ %s\n' "$*"; }
+
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/freshness-teeth.XXXXXX")
+trap 'rm -rf "$ROOT"' EXIT
+
+# --- постройка синтетического мира ------------------------------------------
+# `origin` -- «удалённый источник», `mirror` -- зеркало маркетплейса,
+# `install` -- кэш установки. Три отдельных дома, ровно как в бою.
+mk_world() {   # <имя мира> -> печатает путь к CLAUDE_CONFIG_DIR
+  local w="$ROOT/$1"
+  mkdir -p "$w/origin" "$w/home/plugins/marketplaces" "$w/home/plugins/cache/catalyst/catalyst/9.9.9"
+  git -C "$w/origin" init -q
+  git -C "$w/origin" config user.email t@t; git -C "$w/origin" config user.name t
+  echo one > "$w/origin/f"; git -C "$w/origin" add f; git -C "$w/origin" commit -qm one
+  git -C "$w/origin" branch -M main
+  git clone -q "$w/origin" "$w/home/plugins/marketplaces/catalyst"
+  printf '%s' "$w"
+}
+
+mirror_sha() { git -C "$1/home/plugins/marketplaces/catalyst" rev-parse HEAD; }
+
+write_registries() {   # <мир> <sha установки> [путь установки]
+  local w="$1" sha="$2" ip="${3:-$1/home/plugins/cache/catalyst/catalyst/9.9.9}"
+  cat > "$w/home/plugins/installed_plugins.json" <<JSON
+{"version":2,"plugins":{"catalyst@catalyst":[{"scope":"user",
+ "installPath":"$ip","version":"9.9.9","gitCommitSha":"$sha"}]}}
+JSON
+  cat > "$w/home/plugins/known_marketplaces.json" <<JSON
+{"catalyst":{"source":{"source":"github","repo":"t/t"},
+ "installLocation":"$w/home/plugins/marketplaces/catalyst"}}
+JSON
+}
+
+# Код возврата берётся у САМОЙ подстановки, а не через переменную внутри неё:
+# `out=$(run_door ...)` исполняет функцию в подоболочке, и любое присваивание
+# внутри неё наружу не выходит -- та же ловушка, за которую платил корпусный
+# стенд кита.
+run_door() {   # <мир> -> stdout двери, код возврата = код двери
+  local w="$1"
+  CLAUDE_CONFIG_DIR="$w/home" CLAUDE_PLUGIN_ROOT="$w/home/plugins/cache/catalyst/catalyst/9.9.9" \
+    python3 "$DOOR"
+}
+
+# --- КОНТРОЛЬ: всё сошлось -> дверь МОЛЧИТ ----------------------------------
+W=$(mk_world converged)
+write_registries "$W" "$(mirror_sha "$W")"
+out=$(run_door "$W"); rc=$?
+if (( rc == 0 )) && [[ -z "$out" ]]; then
+  ok "КОНТРОЛЬ: три оси сошлись -- дверь молчит (rc=0)"
+else
+  bad "КОНТРОЛЬ: сошедшееся состояние должно молчать, получили rc=$rc вывод=[$out]"
+fi
+
+# --- ОСЬ A: исполняется не та копия, что учтена -----------------------------
+W=$(mk_world axis_a)
+write_registries "$W" "$(mirror_sha "$W")" "$W/home/plugins/cache/catalyst/catalyst/ДРУГАЯ"
+out=$(run_door "$W"); rc=$?
+if [[ "$out" == *"ОСЬ A"* ]] && [[ "$out" != *"ОСЬ B"* ]] && [[ "$out" != *"ОСЬ C"* ]]; then
+  ok "ОСЬ A краснеет своей причиной и НЕ тянет соседние"
+else
+  bad "ОСЬ A: ждали только её, получили [$out]"
+fi
+
+# --- ОСЬ B: установка позади зеркала ----------------------------------------
+# Зеркало двигается вперёд, запись об установке остаётся на прежнем sha.
+W=$(mk_world axis_b)
+old=$(mirror_sha "$W")
+echo two > "$W/origin/f"; git -C "$W/origin" add f; git -C "$W/origin" commit -qm two
+git -C "$W/home/plugins/marketplaces/catalyst" pull -q origin main
+write_registries "$W" "$old"
+out=$(run_door "$W"); rc=$?
+if [[ "$out" == *"ОСЬ B"* && "$out" == *"Переустановить плагин"* && "$out" != *"ОСЬ A"* ]]; then
+  ok "ОСЬ B краснеет своей причиной и называет действие"
+else
+  bad "ОСЬ B: ждали её с действием, получили [$out]"
+fi
+
+# --- ОСЬ C: зеркало позади удалённого источника -----------------------------
+# Ровно случай, измеренный 2026-09-14 в бою.
+W=$(mk_world axis_c)
+write_registries "$W" "$(mirror_sha "$W")"
+echo two > "$W/origin/f"; git -C "$W/origin" add f; git -C "$W/origin" commit -qm two
+out=$(run_door "$W"); rc=$?
+if [[ "$out" == *"ОСЬ C"* && "$out" == *"Обновить"* && "$out" != *"ОСЬ B"* ]]; then
+  ok "ОСЬ C краснеет своей причиной и называет действие"
+else
+  bad "ОСЬ C: ждали её с действием, получили [$out]"
+fi
+
+# --- ОСЬ C НЕ ИЗМЕРЕНА: источник недосягаем ---------------------------------
+# Главный зуб задачи #101: «не смог спросить» обязан быть отличим от «не
+# двигался», а не сливаться с ним в зелёное.
+W=$(mk_world axis_c_dead)
+write_registries "$W" "$(mirror_sha "$W")"
+git -C "$W/home/plugins/marketplaces/catalyst" remote set-url origin "$ROOT/нет-такого-дома"
+out=$(run_door "$W"); rc=$?
+if [[ "$out" == *"ОСЬ C НЕ ИЗМЕРЕНА"* ]] && (( rc == 0 )); then
+  ok "недосягаемый источник даёт «НЕ ИЗМЕРЕНА», а не зелёное"
+else
+  bad "ось C при мёртвом источнике: ждали «НЕ ИЗМЕРЕНА», получили rc=$rc [$out]"
+fi
+
+# --- ПРИБОР НЕ МЕРИТ: нет реестра установки ---------------------------------
+W=$(mk_world no_registry)
+write_registries "$W" "$(mirror_sha "$W")"
+rm -f "$W/home/plugins/installed_plugins.json"
+out=$(run_door "$W" 2>"$ROOT/no_registry.err"); rc=$?
+if (( rc == 2 )); then
+  ok "пропавший реестр установки -- класс 2 «прибор не мерит», не 0"
+else
+  bad "пропавший реестр: ждали код 2, получили $rc"
+fi
+
+# --- КЭШ ОСИ C: молчание по кэшу ОБЪЯСНЕНО, а не слепо --------------------
+# Мир «converged» уже спрашивал сеть в первом случае, поэтому sha источника
+# лежит в НАШЕМ доме состояния. Двигаем источник и ждём МОЛЧАНИЯ -- но
+# молчание принимается только вместе с уликой: в кэше лежит доTTL-шный sha,
+# равный зеркалу. Без этого случая молчание по кэшу и молчание по сходимости
+# были бы неотличимы, а бюджет TTL -- незамеренным.
+W="$ROOT/converged"
+STATE="$W/home/probes/catalyst/freshness.json"
+echo two > "$W/origin/f"; git -C "$W/origin" add f; git -C "$W/origin" commit -qm two
+cached=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(iter(d.values()))["sha"])' "$STATE")
+out=$(run_door "$W"); rc=$?
+if (( rc == 0 )) && [[ -z "$out" ]] && [[ "$cached" == "$(mirror_sha "$W")" ]]; then
+  ok "ось C внутри TTL молчит ПО КЭШУ -- и кэш предъявлен (${cached:0:12})"
+else
+  bad "кэш оси C: ждали молчание при кэше=$cached зеркало=$(mirror_sha "$W"), получили rc=$rc [$out]"
+fi
+
+# --- ПОЛОЖИТЕЛЬНЫЙ КОНТРОЛЬ МОЛЧАНИЯ ----------------------------------------
+# Первый случай проверял ПУСТОТУ. Пустота недействительна, пока не показано,
+# что тот же прибор на тех же реестрах умеет заговорить. Снимаем ровно одну
+# причину молчания -- кэш оси C (файл СВОЙ, синтетического мира) -- и ничего
+# больше: источник уже сдвинут выше. Заговорила дверь -> молчание обоих
+# предыдущих случаев измерено, а не приписано.
+rm -f "$STATE"
+out=$(run_door "$W")
+if [[ "$out" == *"ОСЬ C"* ]]; then
+  ok "КОНТРОЛЬ ПУСТОТЫ: снят кэш -- тот же мир заговорил осью C"
+else
+  bad "КОНТРОЛЬ ПУСТОТЫ: прибор молчит и на разошедшемся мире без кэша -- молчание выше недействительно"
+fi
+
+printf '\nplugin-freshness teeth: прошло=%d провалов=%d\n' "$PASS" "$FAIL"
+[[ $FAIL -eq 0 ]]

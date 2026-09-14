@@ -29,9 +29,20 @@ escape_for_json() {
     printf '%s' "$s"
 }
 
+# Свежесть УСТАНОВЛЕННОЙ копии против её источника. Молчит, когда всё
+# сошлось, поэтому шума в контексте нет. Отказ самого прибора сюда не
+# пробрасывается как пустота: скрипт печатает диагноз в stderr и отдаёт код 2,
+# а здесь пустая строка означает ровно «сказать нечего» -- ниже это НЕ
+# читается как «свежо», потому что блок просто не добавляется.
+freshness=$(python3 "${SCRIPT_DIR}/plugin-freshness.py" 2>/dev/null) || freshness=""
+
 intro_escaped=$(escape_for_json "$intro_content")
 slice_escaped=$(escape_for_json "$routing_slice")
-session_context="<CATALYST>\nYou have Catalyst - a disciplined layer for multi-step software work. Below is the 'using-catalyst' introduction: how its process skills route. For any specific skill, use the 'Skill' tool.\n\n${intro_escaped}\n\n${slice_escaped}\n</CATALYST>"
+freshness_escaped=""
+if [ -n "$freshness" ]; then
+  freshness_escaped="\n\n$(escape_for_json "$freshness")"
+fi
+session_context="<CATALYST>\nYou have Catalyst - a disciplined layer for multi-step software work. Below is the 'using-catalyst' introduction: how its process skills route. For any specific skill, use the 'Skill' tool.\n\n${intro_escaped}\n\n${slice_escaped}${freshness_escaped}\n</CATALYST>"
 
 # Emit only the field the current platform consumes.
 # Cursor: additional_context (snake_case). Claude Code: nested
