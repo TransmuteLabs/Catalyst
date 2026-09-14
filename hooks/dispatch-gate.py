@@ -972,17 +972,42 @@ def check_bash(cmd, table, sink=None):
     if PROXY_MARK in cmd:
         kinds.append("proxy chat/completions call")
         pcfg = channels.get("proxy") or {}
-        if bool(pcfg.get("effort_required", True)) and "reasoning_effort" not in cmd:
+        required = bool(pcfg.get("effort_required", True))
+        if required and "reasoning_effort" not in cmd:
             emit_deny("proxy chat/completions call without a visible reasoning_effort — "
                       "effort must be explicit on this channel. Inline the request body "
                       "(\"reasoning_effort\": \"...\") or use the proxy-critique wrapper.")
         mm = PROXY_MODEL_RE.search(cmd)
         em = PROXY_EFFORT_RE.search(cmd)
-        if mm and em:
-            check_channel_model(mm.group(1), em.group(1).lower(), table)
+        # The model is named INDEPENDENTLY of whether the effort can be read.
+        # Binding the two (the old `if mm and em:`) made an unreadable effort
+        # skip admission, the accepted-effort pins, the class admission and the
+        # quota exception all at once: measured 2026-09-14, a body carrying
+        # "reasoning_effort": 42 (digits — PROXY_EFFORT_RE reads letters only)
+        # and a model named in no case table reached the proxy, which answered
+        # it itself. The same body with a readable effort was denied. Admission
+        # must not depend on a sibling field being parseable.
+        if mm:
             named.append((mm.group(1), "the proxy request body"))
             if sink is not None:
                 sink["model"] = mm.group(1)
+        # A present-but-unreadable value is not an absent value: the check above
+        # sees the field and stays silent, so this channel needs its own door.
+        if required and "reasoning_effort" in cmd and not em:
+            emit_deny("proxy chat/completions call whose reasoning_effort is present but "
+                      "unreadable — the value must be a quoted word "
+                      f"({'|'.join(EFFORT_WORDS)}). A number, an empty string or a shell "
+                      "variable leaves the effort undeclared while looking declared.")
+        effort = em.group(1).lower() if em else ""
+        # Value check, as on the Agent and proxy-critique channels: the pins
+        # below reject an unknown value ONLY for a model that has a [pins] row,
+        # so without this a typo passes verbatim for any model that has none.
+        if effort and effort not in EFFORT_WORDS:
+            emit_deny(f"effort '{effort}' on the proxy channel is not a valid level "
+                      f"({'|'.join(EFFORT_WORDS)}) — an unknown value is forwarded to the "
+                      f"vendor verbatim, where it degrades to a silent default.")
+        if mm:
+            check_channel_model(mm.group(1), effort, table)
 
     # A vendor launched from Bash IS a dispatch: it picks a model for a case
     # exactly as an Agent call does, so it declares its case exactly as one.

@@ -413,6 +413,17 @@ check "t4 proxy without visible effort"     deny  "$(gate "$(bashcmd 'curl -s ht
 check "t4 proxy with inline effort allowed" allow "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"max\"} [dispatch-class:1e]')")"
 check "t4 proxy pin glm below max denied"   deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"high\"}')")"
 check "t4 proxy pin, shell-escaped quotes"  deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\\\"model\\\":\\\"kimi-k3\\\",\\\"reasoning_effort\\\":\\\"max\\\"}')")"
+# The effort VALUE is checked on this channel too, not only against [pins]:
+# a model with no [pins] row (opus) had nothing rejecting a typo, so an unknown
+# level reached the vendor verbatim and degraded to its silent default.
+check "t4 proxy effort typo denied"         deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"opus\",\"reasoning_effort\":\"hgih\"} [dispatch-class:audit-mech] [anthropic-exception:pair-disagreement #679]')")"
+# A present-but-unreadable value is not an absent one: the "no visible effort"
+# door above sees the field and stays silent. Measured 2026-09-14: such a body
+# also skipped model admission, the pins, the class admission and the quota
+# exception, because all four hung on the effort being parseable.
+check "t4 proxy numeric effort denied"      deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\": 42} [dispatch-class:1e]')")"
+check "t4 proxy empty effort denied"        deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"\"} [dispatch-class:1e]')")"
+check "t4 proxy unreadable effort, unknown model still denied" deny "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"catalyst-probe-not-a-model\",\"reasoning_effort\": 42} [dispatch-class:1e]')")"
 check "t4 proxy-critique pinned ok"         allow "$(gate "$(bashcmd 'proxy-critique.sh glm-5.3 max brief.md out.md a.rs [dispatch-class:critique]')")"
 check "t4 proxy-critique pin violation"     deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.3 high brief.md out.md a.rs')")"
 check "t4 proxy-critique unreadable form"   deny  "$(gate "$(bashcmd 'bash proxy-critique.sh')")"
