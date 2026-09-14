@@ -35,9 +35,15 @@ printf -- '---\nname: debug-glm\ndescription: x\nmodel: glm-5.3\neffort: max\n--
 printf -- '---\nname: sleuth-grok\ndescription: x\nmodel: grok-4.6\neffort: max\n---\nbody\n' > "$WORK/agents/sleuth-grok.md"
 printf -- '---\nname: analyzer-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/analyzer-gpt.md"
 printf -- '---\nname: debug-kimi\ndescription: x\nmodel: kimi-k3\neffort: high\n---\nbody\n' > "$WORK/agents/debug-kimi.md"
+# a model the table KNOWS (it rides exec-1n/1w/2, an-system, crit-mech …) but
+# that the old id `analysis` does not carry: the only fixture able to pin the
+# CLASS door of the analysis floor. debug-kimi cannot — kimi-k3 left every
+# class, so its denial comes from the unknown-model door instead (measured).
+printf -- '---\nname: debug-gpt6\ndescription: x\nmodel: gpt-6-astra\neffort: high\n---\nbody\n' > "$WORK/agents/debug-gpt6.md"
 # same model+effort as analyzer-gpt but a name the analysis patterns do NOT match
 printf -- '---\nname: scout-minimax\ndescription: x\nmodel: MiniMax-M3\neffort: high\n---\nbody\n' > "$WORK/agents/scout-minimax.md"
-printf -- '---\nname: scout-dspro\ndescription: x\nmodel: deepseek-v4-pro\neffort: high\n---\nbody\n' > "$WORK/agents/scout-dspro.md"
+# grid 09-07 keeps glm-5.3-flash in scout (deepseek-v4-pro left every class)
+printf -- '---\nname: scout-glmflash\ndescription: x\nmodel: glm-5.3-flash\neffort: high\n---\nbody\n' > "$WORK/agents/scout-glmflash.md"
 printf -- '---\nname: impl-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/impl-gpt.md"
 # quota-rule positive control: a critic-named agent on a ratified non-Anthropic
 # model — model+effort VALID, so only the quota rule could deny it
@@ -133,6 +139,10 @@ sed 's/^mode = "deny"/mode = "warn"/' "$SHIPPED_TABLE" > "$WORK/table-warn.toml"
 # Mutant tables: one rule removed each (everything else intact).
 # Admission lives in the case tables: naming sonnet in one must ADMIT it.
 { cat "$BASE_TABLE"; printf '\n[classes.mutantonly]\nlabel = "m"\nallowed = ["sonnet"]\n'; } > "$WORK/table-with-sonnet.toml"
+# kimi-k3 left every class in the grid (its channel, envoy, was closed
+# 2026-09-05) — its [pins] row is pinned against this fixture class, same
+# mutant-table pattern as above
+{ cat "$BASE_TABLE"; printf '\n[classes.kimionly]\nlabel = "m"\nallowed = ["kimi-k3"]\n'; } > "$WORK/table-with-kimi.toml"
 sed '/^\[channels\.agent\]/,/^effort_required_for/d' "$BASE_TABLE" > "$WORK/table-no-agent-effort.toml"
 sed '/^\[roles\.analysis\]/,/^class/d' "$BASE_TABLE" > "$WORK/table-no-analysis-role.toml"
 # No case table names any model -> nothing is admitted anywhere.
@@ -183,7 +193,7 @@ bashcmd() {
 check "t1 no model field denied"            deny  "$(gate "$(task_nomodel nomodel)")"
 out=$(gate_out "$(task_nomodel nomodel)")
 case "$out" in *model*) check "t1 deny names the missing field" 0 0 ;; *) check "t1 deny names the missing field" 0 1 ;; esac
-check "t1 explicit model allowed"           allow "$(gate "$(task nomodel opus "[dispatch-class:1c] x")")"
+check "t1 explicit model allowed"           allow "$(gate "$(task nomodel opus "[dispatch-class:exec-2] x")")"
 check "t1 frontmatter model resolves"       allow "$(gate "$(task_nomodel withmodel "[dispatch-class:1e]")")"
 check "t1 frontmatter inherit = unset"      deny  "$(gate "$(task_nomodel inheritagent)")"
 check "t1 unknown agent, no model"          deny  "$(gate "$(task_nomodel ghost-agent)")"
@@ -194,10 +204,10 @@ check "t2 haiku in call denied"             deny  "$(gate "$(task scout claude-h
 # MiniMax-M3 was struck from the table 2026-08-16 (out of rotation, CLAUDE.md
 # 2026-07-21; gone from the proxy roster 2026-08-08): unlisted anywhere = denied.
 # The positive path it used to cover (frontmatter effort on a proxy model in
-# scout) moved to a registered model, deepseek-v4-pro.
+# scout) moved to a registered model: glm-5.3-flash under the grid.
 check "t2 minimax struck from table denied" deny  "$(gate "$(task scout MiniMax-M3 "[dispatch-class:scout] x")")"
 check "t2 minimax agent fixture denied"     deny  "$(gate "$(task_nomodel scout-minimax "[dispatch-class:scout]")")"
-check "t2 dspro scout with effort ok"       allow "$(gate "$(task_nomodel scout-dspro "[dispatch-class:scout]")")"
+check "t2 glmflash scout with effort ok"    allow "$(gate "$(task_nomodel scout-glmflash "[dispatch-class:scout]")")"
 # Bans match by NAME: a vendor family whose id omits the vendor name (MiniMax
 # abab-*) slips a single-pattern ban — every family name must be listed.
 check "t2 minimax abab family denied"       deny  "$(gate "$(task scout abab-6.5s "[dispatch-class:scout] x")")"
@@ -210,19 +220,28 @@ T="$BASE_TABLE"
 
 # ---- truth 3: critic/auditor below opus denied; adjudication never delegated ----
 check "t3 critic on glm denied"             deny  "$(gate "$(task catalyst:critic glm-5.2 "[dispatch-class:critique] x")")"
-check "t3 critic on opus allowed"           allow "$(gate "$(task catalyst:critic opus "[dispatch-class:critique] [anthropic-exception:pre-quota pin] x")")"
+check "t3 critic on opus allowed"           allow "$(gate "$(task catalyst:critic opus "[dispatch-class:crit-mech] [anthropic-exception:pre-quota pin] x")")"
 check "t3 auditor on glm denied"            deny  "$(gate "$(task auditor glm-5.2 "[dispatch-class:audit] x")")"
-check "t3 auditor on fable allowed"         allow "$(gate "$(task catalyst:auditor fable "[dispatch-class:audit] [anthropic-exception:pre-quota pin] x")")"
+check "t3 auditor on fable allowed"         allow "$(gate "$(task catalyst:auditor fable "[dispatch-class:audit-mech] [anthropic-exception:pre-quota pin] x")")"
 check "t3 adjudicator never delegated"      deny  "$(gate "$(task adjudicator opus "[dispatch-class:adjudication] x")")"
-# analysis floor (§2): diagnosis is never executor-class, whatever the vendor
-check "t3 debug on glm denied (role)"       deny  "$(gate "$(task_nomodel debug-glm "[dispatch-class:analysis]")")"
+# analysis floor (§2): diagnosis is never executor-class, whatever the vendor.
+# Grid 09-07: glm-5.3 entered analysis (points 423/693), kimi-k3 left it —
+# debug-glm pins the allow. The DENY side needs two fixtures, not one, because
+# two different doors are involved and only one of them is the floor:
+#   * debug-gpt6 — a model the table KNOWS, denied BY THE CLASS: that is the
+#     floor itself, and the check below also asserts the reason names the class.
+#   * debug-kimi — a model that left every class, denied by the unknown-model
+#     door. Worth pinning (the grid retired it) but it does NOT pin the floor:
+#     measured 2026-09-14, its denial text says «not named in any case table».
+check "t3 debug on glm allowed (role)"       allow "$(gate "$(task_nomodel debug-glm "[dispatch-class:analysis]")")"
 check "t3 sleuth on grok allowed"           allow "$(gate "$(task_nomodel sleuth-grok "[dispatch-class:analysis]")")"
-# kimi/grok/gpt were admitted into analysis by the user 2026-08-01. glm stays out
-# (§2 keeps it and MiniMax away from diagnosis) — that is what debug-glm pins.
-check "t3 analyzer on gpt allowed"          allow "$(gate "$(task_nomodel analyzer-gpt "[dispatch-class:analysis]")")"
-check "t3 debug on kimi-k3 allowed"         allow "$(gate "$(task_nomodel debug-kimi "[dispatch-class:analysis]")")"
-check "t3 principal-debugger on opus ok"    allow "$(gate "$(task principal-debugger opus "[dispatch-class:analysis] [anthropic-exception:pre-quota pin] x")")"
-check "t3 analyst on fable allowed"         allow "$(gate "$(task session-analyst fable "[dispatch-class:analysis] [anthropic-exception:pre-quota pin] x")")"
+check "t3 analyzer on gpt allowed"          allow "$(gate "$(task_nomodel analyzer-gpt "[dispatch-class:an-system]")")"
+check "t3 known model outside analysis"     deny  "$(gate "$(task_nomodel debug-gpt6 "[dispatch-class:analysis]")")"
+out=$(gate_out "$(task_nomodel debug-gpt6 "[dispatch-class:analysis]")")
+case "$out" in *"outside class 'analysis'"*) check "t3 floor deny names the class" 0 0 ;; *) check "t3 floor deny names the class" 0 1 ;; esac
+check "t3 debug on kimi-k3 denied"          deny  "$(gate "$(task_nomodel debug-kimi "[dispatch-class:analysis]")")"
+check "t3 principal-debugger on opus ok"    allow "$(gate "$(task principal-debugger opus "[dispatch-class:an-system] [anthropic-exception:pre-quota pin] x")")"
+check "t3 analyst on fable allowed"         allow "$(gate "$(task session-analyst fable "[dispatch-class:an-system] [anthropic-exception:pre-quota pin] x")")"
 # locate/execution paths must NOT be caught by the analysis patterns
 check "t3 non-analysis role on grok ok"     allow "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] x")")"
 T="$WORK/table-no-analysis-role.toml"
@@ -237,8 +256,8 @@ check "t3 unknown class marker is loud"     deny  "$(gate "$(task implementer op
 # lists no such pattern. The real id is gpt-5.6-sol and needs an effort.
 check "t3 vendor name is not a model"       deny  "$(gate "$(task implementer codex "[dispatch-class:1a] fix")")"
 check "t3 vendor name denied in analysis"   deny  "$(gate "$(task debug-agent codex "[dispatch-class:analysis] x")")"
-check "t3 real gpt id needs effort"         deny  "$(gate "$(task implementer gpt-5.6-sol "[dispatch-class:1a] fix")")"
-check "t3 real gpt id with effort ok"       allow "$(gate "$(printf '{"tool_name":"Task","tool_input":{"subagent_type":"impl-gpt","prompt":"[dispatch-class:1b] fix"},"cwd":"%s"}' "$WORK/rw")")"
+check "t3 real gpt id needs effort"         deny  "$(gate "$(task implementer gpt-5.6-sol "[dispatch-class:exec-1n] fix")")"
+check "t3 real gpt id with effort ok"       allow "$(gate "$(printf '{"tool_name":"Task","tool_input":{"subagent_type":"impl-gpt","prompt":"[dispatch-class:exec-1n] fix"},"cwd":"%s"}' "$WORK/rw")")"
 
 # ---- ratified-model registry: family patterns match by substring, so only an
 # exact registered id may pass — an unmeasured variant is NOT the measured model
@@ -247,8 +266,8 @@ check "t6 kimi-2.7 denied"                  deny  "$(gate "$(task implementer ki
 check "t6 opus-4.8 string denied"           deny  "$(gate "$(task catalyst:critic opus-4.8 "[dispatch-class:critique] x")")"
 check "t6 garbage sharing a family denied"  deny  "$(gate "$(task catalyst:critic opusadjfhk "[dispatch-class:critique] x")")"
 check "t6 unregistered model, no role"      deny  "$(gate "$(task implementer gpt-fictional "[dispatch-class:1a] x")")"
-check "t6 registered opus alias allowed"    allow "$(gate "$(task catalyst:critic opus "[dispatch-class:critique] [anthropic-exception:pre-quota pin] x")")"
-check "t6 registered opus-5 id allowed"     allow "$(gate "$(task catalyst:critic 'claude-opus-5[1m]' "[dispatch-class:critique] [anthropic-exception:pre-quota pin] x")")"
+check "t6 registered opus alias allowed"    allow "$(gate "$(task catalyst:critic opus "[dispatch-class:crit-mech] [anthropic-exception:pre-quota pin] x")")"
+check "t6 registered opus-5 id allowed"     allow "$(gate "$(task catalyst:critic 'claude-opus-5[1m]' "[dispatch-class:crit-mech] [anthropic-exception:pre-quota pin] x")")"
 T="$WORK/table-no-models.toml"
 check "t6 MUTANT empty case tables deny all" deny  "$(gate "$(task catalyst:critic opus "[dispatch-class:critique] x")")"
 T="$BASE_TABLE"
@@ -257,12 +276,16 @@ T="$BASE_TABLE"
 check "ae glm without effort denied"        deny  "$(gate "$(task nomodel glm-5.3 "[dispatch-class:1e] x")")"
 out=$(gate_out "$(task nomodel glm-5.3 "[dispatch-class:1e] x")")
 case "$out" in *effort*) check "ae deny names effort" 0 0 ;; *) check "ae deny names effort" 0 1 ;; esac
-check "ae anthropic model exempt"           allow "$(gate "$(task nomodel opus "[dispatch-class:1c] x")")"
+check "ae anthropic model exempt"           allow "$(gate "$(task nomodel opus "[dispatch-class:exec-2] x")")"
 check "ae frontmatter effort accepted"      allow "$(gate "$(task_nomodel withmodel "[dispatch-class:1e]")")"
 check "ae invalid effort value denied"      deny  "$(gate "$(task_nomodel badeffort "[dispatch-class:1e]")")"
-check "ae pin kimi-k3 at max denied"        deny  "$(gate "$(task_nomodel kimipin "[dispatch-class:1c]")")"
-check "ae pin kimi-k3 at high allowed"      allow "$(gate "$(task_nomodel kimipinok "[dispatch-class:1c]")")"
-check "ae pin gpt at medium denied"         deny  "$(gate "$(task_nomodel gptmedium "[dispatch-class:1b]")")"
+# kimi-k3 rides the fixture class (grid 09-07): the pins still bind wherever
+# the model is admissible at all
+T="$WORK/table-with-kimi.toml"
+check "ae pin kimi-k3 at max denied"        deny  "$(gate "$(task_nomodel kimipin "[dispatch-class:kimionly]")")"
+check "ae pin kimi-k3 at high allowed"      allow "$(gate "$(task_nomodel kimipinok "[dispatch-class:kimionly]")")"
+T="$BASE_TABLE"
+check "ae pin gpt at medium denied"         deny  "$(gate "$(task_nomodel gptmedium "[dispatch-class:exec-1n]")")"
 check "ae pin grok below max denied"        deny  "$(gate "$(task kimipinok grok-4.6 "[dispatch-class:1a] x")")"
 T="$WORK/table-no-agent-effort.toml"
 check "ae MUTANT no-requirement table"      allow "$(gate "$(task nomodel glm-5.3 "[dispatch-class:1e] x")")"
@@ -272,10 +295,12 @@ T="$BASE_TABLE"
 # channel — same models, same effort discipline; otherwise the whole table is
 # one `codex exec` away from advisory ----
 check "t12 direct codex without effort"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol do-it')")"
-check "t12 direct codex ratified ok"        allow "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1a]')")"
+check "t12 direct codex ratified ok"        allow "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:exec-1n]')")"
 check "t12 direct codex unmeasured model"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-luna --effort high do-it')")"
 check "t12 direct codex naming no model"    deny  "$(gate "$(bashcmd 'codex exec --effort high do-it')")"
-check "t12 kimi needs no effort flag"       allow "$(gate "$(bashcmd 'kimi --model kimi-k3 -p task [dispatch-class:1c]')")"
+T="$WORK/table-with-kimi.toml"
+check "t12 kimi needs no effort flag"       allow "$(gate "$(bashcmd 'kimi --model kimi-k3 -p task [dispatch-class:kimionly]')")"
+T="$BASE_TABLE"
 check "t12 kimi unmeasured sibling denied"  deny  "$(gate "$(bashcmd 'kimi --model kimi-k3-256k -p task')")"
 check "t12 env prefix does not hide it"     deny  "$(gate "$(bashcmd 'RCH_ENABLED=0 codex exec --model gpt-5.6-sol do-it')")"
 check "t12 vendor after && still caught"    deny  "$(gate "$(bashcmd 'cd /x && codex exec --model gpt-5.6-sol do-it')")"
@@ -306,8 +331,8 @@ for b in $tbl; do case " $hint " in *" $b "*) ;; *) missing="$missing $b" ;; esa
 case "$missing" in '') check "t12 code hint covers every vendor" 0 0 ;; *) echo "  uncovered:$missing"; check "t12 code hint covers every vendor" 0 1 ;; esac
 
 # ---- truth 13: the class marker is read exactly once and unambiguously ----
-check "t13 uppercase marker accepted"       allow "$(gate "$(task implementer opus '[DISPATCH-CLASS:1C] x')")"
-check "t13 same marker twice is fine"       allow "$(gate "$(task implementer opus '[dispatch-class:1c] x [dispatch-class:1c]')")"
+check "t13 uppercase marker accepted"       allow "$(gate "$(task implementer opus '[DISPATCH-CLASS:EXEC-2] x')")"
+check "t13 same marker twice is fine"       allow "$(gate "$(task implementer opus '[dispatch-class:exec-2] x [dispatch-class:exec-2]')")"
 check "t13 two different classes are loud"  deny  "$(gate "$(task implementer opus '[dispatch-class:1a] x [dispatch-class:1b]')")"
 out=$(gate_out "$(task implementer opus '[dispatch-class:1a] x [dispatch-class:1b]')")
 case "$out" in *1a*1b*) check "t13 ambiguity names both" 0 0 ;; *) check "t13 ambiguity names both" 0 1 ;; esac
@@ -319,7 +344,7 @@ check "t9 critic without marker denied"     deny  "$(gate "$(task catalyst:criti
 check "t9 scout without marker denied"      deny  "$(gate "$(task catalyst:scout opus)")"
 out=$(gate_out "$(task implementer opus)")
 case "$out" in *dispatch-class*) check "t9 deny names the marker" 0 0 ;; *) check "t9 deny names the marker" 0 1 ;; esac
-check "t9 marker with class ok"             allow "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
+check "t9 marker with class ok"             allow "$(gate "$(task implementer opus "[dispatch-class:exec-2] x")")"
 # name and declared class must agree: a critic under an executor class would
 # otherwise buy the executor's wider model set
 check "t9 critic under 1a denied"           deny  "$(gate "$(task catalyst:critic grok-4.6 "[dispatch-class:1a] x")")"
@@ -327,7 +352,7 @@ check "t9 scout under critique denied"      deny  "$(gate "$(task catalyst:scout
 out=$(gate_out "$(task catalyst:critic grok-4.6 "[dispatch-class:1a] x")")
 case "$out" in *critique*) check "t9 mismatch names the class" 0 0 ;; *) check "t9 mismatch names the class" 0 1 ;; esac
 # no role matches "implementer", so no name/class disagreement can arise
-check "t9 unnamed agent takes any class"    allow "$(gate "$(task implementer fable "[dispatch-class:critique] [anthropic-exception:pre-quota pin] x")")"
+check "t9 unnamed agent takes any class"    allow "$(gate "$(task implementer fable "[dispatch-class:crit-mech] [anthropic-exception:pre-quota pin] x")")"
 check "t9 adjudication never delegated"     deny  "$(gate "$(task adjudicator opus "[dispatch-class:adjudication] x")")"
 sed 's/^class_marker_required = true/class_marker_required = false/' "$BASE_TABLE" > "$WORK/table-no-marker-req.toml"
 T="$WORK/table-no-marker-req.toml"
@@ -360,7 +385,7 @@ printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["fable"]\n' > 
 O="$WORK/override-home.toml"
 check "t11 home layer retunes a class"      allow "$(gate "$(task implementer opus "[dispatch-class:1a] x")")"
 check "t11 home layer displaces the base"   deny  "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] x")")"
-check "t11 unnamed entries survive a layer" allow "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
+check "t11 unnamed entries survive a layer" allow "$(gate "$(task implementer opus "[dispatch-class:exec-2] x")")"
 P="$WORK/override-proj.toml"
 check "t11 project layer beats home"        allow "$(gate "$(task implementer fable "[dispatch-class:1a] x")")"
 check "t11 project layer displaces home"    deny  "$(gate "$(task implementer opus "[dispatch-class:1a] x")")"
@@ -471,7 +496,7 @@ out=$(gate_out "$(task implementer opus)")
 case "$out" in *systemMessage*) check "t14 warn is not a permission decision" 0 0 ;; *) check "t14 warn is not a permission decision" 0 1 ;; esac
 case "$out" in *permissionDecision*) check "t14 warn grants no permission" 0 1 ;; *) check "t14 warn grants no permission" 0 0 ;; esac
 case "$out" in *dispatch-class*) check "t14 warn still says what to fix" 0 0 ;; *) check "t14 warn still says what to fix" 0 1 ;; esac
-check "t14 a clean dispatch stays silent"   allow "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
+check "t14 a clean dispatch stays silent"   allow "$(gate "$(task implementer opus "[dispatch-class:exec-2] x")")"
 slice_warn=$(CATALYST_ROUTING_TABLE="$WORK/table-warn.toml" CATALYST_ROUTING_OVERRIDE="$O" \
   CATALYST_ROUTING_PROJECT_OVERRIDE="$WORK/absent-override.toml" python3 "$GATE" --render-slice)
 case "$slice_warn" in *"НЕ блокирует"*) check "t14 warn slice states the mode" 0 0 ;; *) check "t14 warn slice states the mode" 0 1 ;; esac
@@ -490,7 +515,7 @@ T="$BASE_TABLE"
 # The shipped template must be a NO-OP: a user copies it, uncomments what they
 # need, and an untouched copy must not silently change routing.
 O="$ROOT/hooks/routing-override.template.toml"
-check "t14 template is inert as override"   allow "$(gate "$(task implementer opus "[dispatch-class:1c] x")")"
+check "t14 template is inert as override"   allow "$(gate "$(task implementer opus "[dispatch-class:exec-2] x")")"
 check "t14 template keeps rules in force"   deny  "$(gate "$(task implementer opus)")"
 O="$WORK/absent-override.toml"
 # a hook must not litter bytecode into the plugin it reads
@@ -556,15 +581,15 @@ check "t15 proxy-critique outside class"    deny  "$(gate "$(bashcmd 'proxy-crit
 # ---- quota rule (ratified 2026-09-04): fable/opus in a non-executor class must
 # carry [anthropic-exception:<basis>] in the prompt; non-Anthropic models are
 # untouched. T-Q1/T-Q2/T-Q3 of brief #679. ----
-out=$(gate_out "$(task fable-critic fable "[dispatch-class:critique] review the diff")")
+out=$(gate_out "$(task fable-critic fable "[dispatch-class:crit-mech] review the diff")")
 case "$out" in *'"deny"'*anthropic-exception*) check "tq1 fable critic without marker denied, names the marker" 0 0 ;; *) check "tq1 fable critic without marker denied, names the marker" 0 1 ;; esac
-check "tq2 fable critic with marker allowed" allow "$(gate "$(task fable-critic fable "[dispatch-class:critique] [anthropic-exception:pair-disagreement #679] review the diff")")"
-check "tq3 non-anthropic critic untouched"  allow "$(gate "$(task_nomodel gpt-sol-critic "[dispatch-class:critique] review the diff")")"
+check "tq2 fable critic with marker allowed" allow "$(gate "$(task fable-critic fable "[dispatch-class:crit-mech] [anthropic-exception:pair-disagreement #679] review the diff")")"
+check "tq3 non-anthropic critic untouched"  allow "$(gate "$(task_nomodel gpt-sol-critic "[dispatch-class:crit-doc] review the diff")")"
 # Bash channel is a dispatch too (proxy/CLI name a model the same way): the
 # quota rule attaches to the recognized channels, marker in the command text.
-out=$(gate_out "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"opus\",\"reasoning_effort\":\"high\"} [dispatch-class:critique]')")
+out=$(gate_out "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"opus\",\"reasoning_effort\":\"high\"} [dispatch-class:audit-mech]')")
 case "$out" in *'"deny"'*anthropic-exception*) check "tq4 bash-channel opus critic without marker denied" 0 0 ;; *) check "tq4 bash-channel opus critic without marker denied" 0 1 ;; esac
-check "tq5 bash-channel opus critic with marker allowed" allow "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"opus\",\"reasoning_effort\":\"high\"} [dispatch-class:critique] [anthropic-exception:pair-disagreement #679]')")"
+check "tq5 bash-channel opus critic with marker allowed" allow "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"opus\",\"reasoning_effort\":\"high\"} [dispatch-class:audit-mech] [anthropic-exception:pair-disagreement #679]')")"
 # Envoy names a vendor, never a model: the case is still checked for being
 # delegable at all, which is what CAN be known from the command.
 check "t15 envoy takes a delegable class"   allow "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing [dispatch-class:1a]')")"
@@ -597,9 +622,9 @@ task_dc() { # task_dc <subagent_type> <model> <dispatch_class> [prompt]
   printf '{"tool_name":"Task","tool_input":{"subagent_type":"%s","model":"%s","dispatch_class":"%s","prompt":"%s"},"cwd":"%s"}' \
     "$1" "$2" "$3" "${4:-x}" "$WORK/rw"
 }
-check "t16 field alone declares the class"  allow "$(gate "$(task_dc nomodel opus 1c)")"
-check "t16 field agreeing with marker"      allow "$(gate "$(task_dc nomodel opus 1c "[dispatch-class:1c] x")")"
-check "t16 field disagreeing with marker"   deny  "$(gate "$(task_dc nomodel opus 1c "[dispatch-class:1b] x")")"
+check "t16 field alone declares the class"  allow "$(gate "$(task_dc nomodel opus exec-2)")"
+check "t16 field agreeing with marker"      allow "$(gate "$(task_dc nomodel opus exec-2 "[dispatch-class:exec-2] x")")"
+check "t16 field disagreeing with marker"   deny  "$(gate "$(task_dc nomodel opus exec-2 "[dispatch-class:exec-1n] x")")"
 check "t16 unknown class in the field"      deny  "$(gate "$(task_dc nomodel opus nosuchclass)")"
 check "t16 field buys no wider model set"   deny  "$(gate "$(task_dc nomodel opus 1a)")"
 check "t16 empty field is not a decl"       deny  "$(gate "$(task_dc nomodel opus '')")"
@@ -607,7 +632,7 @@ check "t16 empty field is not a decl"       deny  "$(gate "$(task_dc nomodel opu
 # ---- truth 17 ([limits]): potionbard quota check — last in the denial order,
 # fail-open on a dead daemon, prefix-mapped pools codex/grok/kimi only ----
 T="$BASE_TABLE"; O="$WORK/absent-override.toml"; P="$WORK/absent-override.toml"
-lim_codex='codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1a]'
+lim_codex='codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:exec-1n]'
 
 pb_table codex=100
 check "lim1 exhausted pool denied"           deny  "$(gate "$(bashcmd "$lim_codex")")"
@@ -674,7 +699,7 @@ O="$WORK/absent-override.toml"
 printf 'schema_version = 1\n[limits.models]\n"gpt-" = ["codex"]\n"gpt-5.6-luna" = ["kimicode"]\n' > "$WORK/override-lim-prefix.toml"
 O="$WORK/override-lim-prefix.toml"
 pb_table codex=1 kimicode=100
-check "lim13 longest prefix reroutes luna"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-luna --effort high x [dispatch-class:scout]')")"
+check "lim13 longest prefix reroutes luna"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-luna --effort high x [dispatch-class:res-fact]')")"
 check "lim13 daemon asked for kimicode"      "REQ kimicode" "$(tail -n 1 "$PB_LOG")"
 check "lim13 sibling gpt goes to codex"      allow "$(gate "$(bashcmd "$lim_codex")")"
 check "lim13 daemon asked for codex"         "REQ codex" "$(tail -n 1 "$PB_LOG")"
@@ -708,6 +733,39 @@ check "t11 quota follows the parent"          deny  "$(gate "$(task implementer 
 check "t11 quota marker lifts the parent"     allow "$(gate "$(task implementer opus "[dispatch-class:crit-mech-t] [anthropic-exception:pin] x")")"
 check "t11 point without parent is foreign"   deny  "$(gate "$(task catalyst:critic opus "[dispatch-class:exec-1n-t] [anthropic-exception:pin] x")")"
 check "t11 parentless point stays unguarded"  allow "$(gate "$(task implementer opus "[dispatch-class:exec-1n-t] x")")"
+T="$BASE_TABLE"
+
+# ---- brief #138: the RATIFIED GRID ships in the base table (CLASS-GRID-SPEC
+# 2026-09-07). Three teeth on the ISOLATED base (overrides absent, as gate()
+# sets them): T1 a grid executor point admits its cheap carrier at all; T2/T3
+# the quota guard must SEE a grid point through its `parent` — a point listed
+# without `parent` is invisible to [quota] and the same Anthropic dispatch is
+# silently admitted, so the parent is load-bearing, not documentation.
+check "t138 T1 exec-0p admits glm-5.3"        allow "$(gate "$(task_nomodel withmodel "[dispatch-class:exec-0p]")")"
+out=$(gate_out "$(task_nomodel withmodel "[dispatch-class:exec-0p]")")
+case "$out" in '') check "t138 T1 admits silently" 0 0 ;; *) check "t138 T1 admits silently" 0 1 ;; esac
+out=$(gate_out "$(task catalyst:critic fable "[dispatch-class:crit-mech] review the diff")")
+case "$out" in *'"deny"'*quota*|*'"deny"'*anthropic-exception*) check "t138 T2 fable crit-mech without marker denied by quota" 0 0 ;; *) check "t138 T2 fable crit-mech without marker denied by quota" 0 1 ;; esac
+check "t138 T3 same dispatch with marker allowed" allow "$(gate "$(task catalyst:critic fable "[dispatch-class:crit-mech] [anthropic-exception:проверка] review the diff")")"
+# role-free twin of T2: the same quota denial on an agent whose name matches no
+# role, so the mutant below cannot flip to a ROLE denial and hide the quota
+out=$(gate_out "$(task implementer fable "[dispatch-class:crit-mech] review the diff")")
+case "$out" in *'"deny"'*quota*|*'"deny"'*anthropic-exception*) check "t138 T2 twin role-free denied by quota" 0 0 ;; *) check "t138 T2 twin role-free denied by quota" 0 1 ;; esac
+# MUTANTS: the rules live in the table, not in the gate's code.
+sed '/^\[classes\.exec-0p\]/,/^allowed = /d' "$BASE_TABLE" > "$WORK/table-no-exec-0p.toml"
+T="$WORK/table-no-exec-0p.toml"
+check "t138 T1 MUTANT class gone from base"   deny  "$(gate "$(task_nomodel withmodel "[dispatch-class:exec-0p]")")"
+T="$BASE_TABLE"
+python3 - "$BASE_TABLE" "$WORK/table-no-parent-crit-mech.toml" <<'PY'
+import io, sys
+src, dst = sys.argv[1], sys.argv[2]
+lines = io.open(src, encoding='utf-8').read().split('\n')
+i = lines.index('[classes.crit-mech]')
+del lines[lines.index('parent = "critique"', i)]
+io.open(dst, 'w', encoding='utf-8').write('\n'.join(lines))
+PY
+T="$WORK/table-no-parent-crit-mech.toml"
+check "t138 T2 MUTANT parent gone admits it"  allow "$(gate "$(task implementer fable "[dispatch-class:crit-mech] review the diff")")"
 T="$BASE_TABLE"
 
 # ---- truth 17: [selection].instruction — норма ВЫБОРА работников в срезе.
@@ -754,7 +812,7 @@ case "$sel" in *dispatch-class*) check "t17 table without [selection] still rend
 # (opus в 1c -- allow, sonnet -- deny): модель без пула не трогает проверку
 # квоты, иначе строка мерила бы состояние поддельного демона, а не выбор.
 O="$WORK/override-selection.toml"
-check "t17 selection layer keeps membership" allow "$(gate "$(task nomodel opus "[dispatch-class:1c] x")")"
+check "t17 selection layer keeps membership" allow "$(gate "$(task nomodel opus "[dispatch-class:exec-2] x")")"
 check "t17 selection layer keeps sonnet out" deny  "$(gate "$(task sonnetagent sonnet "[dispatch-class:1a] fix")")"
 O="$WORK/absent-override.toml"
 
