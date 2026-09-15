@@ -55,9 +55,13 @@ trap 'rm -rf "$ROOTDIR"' EXIT
 # --- синтетический дом проб ---------------------------------------------------
 # Лестница из ОДНОЙ ступени: предмет приёмки -- что ступень отвечает и вердикт
 # действует; спуск по лестнице мерит другой прибор.
-mk_home() {   # <имя> <enforce> -> печатает путь к дому проб
+mk_home() {   # <имя> <enforce> [модель...] -> печатает путь к дому проб
   local name="$1"
   local enforce="$2"
+  shift 2
+  # Без явного перечня -- лестница из ОДНОЙ боевой ступени.
+  local rungs=("$@")
+  [ "${#rungs[@]}" -gt 0 ] || rungs=("$RUNG")
   local h="$ROOTDIR/$name/probes"
   mkdir -p "$h/judge/records"
   cat > "$h/probes.toml" <<TOML
@@ -71,11 +75,16 @@ context_chars = 20000
 dispatch_chars = 4000
 fail_closed = true
 enforce = ${enforce}
+TOML
+  local m
+  for m in "${rungs[@]}"; do
+    cat >> "$h/probes.toml" <<TOML
 
 [[probe.judge.models]]
-model = "${RUNG}"
+model = "${m}"
 context_chars = 20000
 TOML
+  done
   cat > "$h/judge/prompt.md" <<'PROMPT'
 Ты судья диспатчей. Тебе дают текст задачи для субагента.
 
@@ -194,6 +203,37 @@ if [ "$n3" -eq 0 ]; then
 else
   bad "разоружённый судья всё равно записал $n3 улик -- арминг ни на что не влияет"
 fi
+
+# --- 4. лестница: ВЫРОЖДЕНИЕ ВЕЕРА обязано быть ВИДНО в улике ---------------
+# Цена незакрытого: четверо суток веер держался на последней ступени, а гейты
+# были зелёными -- «вердикт получен» не отличалось от «первая ступень мертва».
+# Здесь первая ступень заведомо негодна (имени нет ни у одного провайдера), и
+# стенд требует, чтобы улика назвала ОБЕ ступени, отказ первой и переход ко
+# второй. Прибор, который этого не покажет, не сможет покраснеть и в бою.
+DEAD_RUNG="${CATALYST_JUDGE_DEAD_RUNG:-нет-такой-модели-зонд}"
+H4=$(mk_home ladder true "$DEAD_RUNG" "$RUNG")
+run_session ladder "$H4" "разберись с логами"
+l4=$(python3 - "$H4/judge/records" "$DEAD_RUNG" "$RUNG" <<'PY'
+import json, os, sys
+d, dead, good = sys.argv[1], sys.argv[2], sys.argv[3]
+if not os.path.isdir(d) or not os.listdir(d):
+    print("ПУСТО"); raise SystemExit(0)
+r = json.load(open(os.path.join(d, sorted(os.listdir(d))[0])))
+ladder = r.get("ladder") or []
+# Отказ ПЕРВОЙ ступени: либо исключение, либо ответ нулевой длины. Пустой
+# ответ и отказ -- разные явления, но для «ступень не послужила» равны.
+dead_failed = ("err_" + dead) in r or r.get("rawLen_" + dead) == 0
+print("%s|%s|%s|%s" % (len(ladder), ladder[:1] == [dead], dead_failed, r.get("used")))
+PY
+)
+case "$l4" in
+  "2|True|True|$RUNG")
+    ok "лестница: улика назвала обе ступени, отказ первой и переход ко второй" ;;
+  ПУСТО)
+    bad "лестница НЕ ИЗМЕРЯЛА: улик нет вовсе" ;;
+  *)
+    bad "вырождение веера НЕ наблюдаемо: '$l4' (ждали '2|True|True|$RUNG')" ;;
+esac
 
 printf '\nприёмка судьи: зелёных %s, красных %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
