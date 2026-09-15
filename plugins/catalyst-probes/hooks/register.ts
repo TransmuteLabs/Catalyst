@@ -920,15 +920,30 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     for (let i = 0; i < ladder.length; i++) {
       const rung = ladder[i]
       used = rung.model
+      const rungT0 = await nowMs($)
       try {
         const arg: any = { model: rung.model, prompt: full }
+        // CONSTRAINT: эффорт поверхностью НЕ доставляется -- перехват тела
+        // запроса (2026-09-15) показал ключи РОВНО max_tokens/messages/
+        // metadata/model/system, тогда как запрос главного хода той же сессии
+        // несёт thinking. Аргумент оставлен: он ничего не ломает и оживёт, если
+        // поверхность заведёт поле. Дом эффорта для носителя мод -- патч.
         if (rung.effort) arg.effort = rung.effort
         const mt = rung.max_tokens || floorTok
-        if (mt) arg.max_tokens = mt
+        // CONSTRAINT: канонический потолок зовётся maxTokens и ПЕРЕБИВАЕТ
+        // max_tokens (замерено на проводе: оба поля читаются, при паре
+        // побеждает camelCase; на провод уходит запрошенное + 2048 резерва, а
+        // без поля -- 256 + 2048). Запасная дорога не опора: поверхность не
+        // монотонна -- часы на 2.1.272 уже сменили природу (#185).
+        if (mt) arg.maxTokens = mt
         const tmo = rung.timeout_ms || floorTmo
         if (tmo) arg.timeoutMs = tmo
         const raw = await $.model.complete(arg)
         const rawS = String(raw)
+        // CONSTRAINT: длительность нужна НА СТУПЕНЬ, а не на улику целиком:
+        // пустой ответ быстрой ступени и пустой ответ после долгого молчания --
+        // разные явления, а суммарный dtMs их не разделяет (замер #153).
+        rec["ms_" + used] = await nowMs($) - rungT0
         // CONSTRAINT: своя обрезка не имеет права маскировать потолок
         // провайдера. При обрезке в 500 медиана непустых ответов нижних
         // ступеней равнялась ровно 500 -- упор в потолок ПРИБОРА неотличим от
@@ -939,6 +954,9 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         verdict = parseVerdict(rawS, p.rx)
         if (verdict) break
       } catch (x) {
+        // Длительность ОТКАЗА мерится тем же полем: мгновенный отказ по
+        // бюджету и отказ после ожидания провайдера -- разные явления.
+        rec["ms_" + used] = await nowMs($) - rungT0
         rec["err_" + used] = String(x).slice(0, 240)
       }
     }
