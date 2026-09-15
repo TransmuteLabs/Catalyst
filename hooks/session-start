@@ -30,11 +30,22 @@ escape_for_json() {
 }
 
 # Свежесть УСТАНОВЛЕННОЙ копии против её источника. Молчит, когда всё
-# сошлось, поэтому шума в контексте нет. Отказ самого прибора сюда не
-# пробрасывается как пустота: скрипт печатает диагноз в stderr и отдаёт код 2,
-# а здесь пустая строка означает ровно «сказать нечего» -- ниже это НЕ
-# читается как «свежо», потому что блок просто не добавляется.
-freshness=$(python3 "${SCRIPT_DIR}/plugin-freshness.py" 2>/dev/null) || freshness=""
+# сошлось, поэтому шума в контексте нет.
+#
+# CONSTRAINT: stderr прибора НЕ гасить и его код НЕ терять. Прибор отдаёт 2
+# «не могу мерить» и пишет причину в stderr; форма `$(... 2>/dev/null) || x=""`
+# превращала оба в пустую строку, и отказ прибора становился неотличим от
+# «всё сошлось» -- то есть дверь молчала ровно в том случае, ради которого
+# заведена (ПУСТО ≠ НОЛЬ). Громкая строка в контекст -- та же дисциплина, что
+# у среза маршрутизации выше.
+freshness_errfile=$(mktemp "${TMPDIR:-/tmp}/catalyst-freshness.XXXXXX")
+freshness_rc=0
+freshness=$(python3 "${SCRIPT_DIR}/plugin-freshness.py" 2>"$freshness_errfile") || freshness_rc=$?
+freshness_err=$(cat "$freshness_errfile")
+rm -f "$freshness_errfile"
+if [ "$freshness_rc" -ne 0 ]; then
+  freshness="!! PLUGIN FRESHNESS UNMEASURED (код ${freshness_rc}): ${freshness_err:-прибор не назвал причины}. Установленная копия могла отстать от репозитория, и этого сейчас никто не знает -- мерить вручную: python3 \"${SCRIPT_DIR}/plugin-freshness.py\""
+fi
 
 intro_escaped=$(escape_for_json "$intro_content")
 slice_escaped=$(escape_for_json "$routing_slice")

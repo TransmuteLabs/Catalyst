@@ -211,5 +211,97 @@ else
   bad "расхождение: ждали «РАЗОШЛИСЬ» без совета обновляться, получили rc=$rc [$out]"
 fi
 
+# --- ЗУБЫ ВЫЗЫВАЮЩЕГО: отказ прибора обязан быть ВИДЕН ----------------------
+# Прибор пишет диагноз в stderr и отдаёт код 2. Пока вызывающий гасил stderr и
+# терял код (`$(... 2>/dev/null) || x=""`), отказ был неотличим от «всё
+# сошлось»: дверь молчала ровно в том случае, ради которого заведена. Здесь
+# мерится ВЫЗЫВАЮЩИЙ (hooks/session-start), а не прибор.
+REPO="$(cd "$HERE/../.." && pwd)"
+LOUD='PLUGIN FRESHNESS UNMEASURED'
+
+mk_plugin() {   # <имя> <код прибора> <stdout прибора> -> путь копии плагина
+  # CONSTRAINT: присваивания РАЗНЕСЕНЫ. В `local a=$1 p=$ROOT/$a` правая часть
+  # второго читает ещё не присвоенное имя (bash 3.2 -- живой интерпретатор на
+  # darwin), и под `set -u` это отказ «unbound variable», а не пустая строка.
+  local name="$1"
+  local rc="$2"
+  local out="$3"
+  local p="$ROOT/$name"
+  mkdir -p "$p/skills/using-catalyst"
+  cp -R "$REPO/hooks" "$p/hooks"
+  cp "$REPO/skills/using-catalyst/SKILL.md" "$p/skills/using-catalyst/SKILL.md"
+  {
+    printf '#!/usr/bin/env python3\nimport sys\n'
+    printf 'sys.stderr.write("plugin-freshness: ПРИБОР НЕ МЕРИТ -- синтетический отказ зуба\\n")\n'
+    printf 'sys.stdout.write(%s)\n' "\"\"\"$out\"\"\""
+    printf 'sys.exit(%s)\n' "$rc"
+  } > "$p/hooks/plugin-freshness.py"
+  chmod +x "$p/hooks/plugin-freshness.py"
+  printf '%s' "$p"
+}
+
+run_start() {   # <путь копии> -> stdout хука
+  CLAUDE_PLUGIN_ROOT="$1" bash "$1/hooks/session-start"
+}
+
+P=$(mk_plugin caller-refused 2 "")
+out=$(run_start "$P"); rc=$?
+if [[ $rc -eq 0 && "$out" == *"$LOUD"* && "$out" == *"ПРИБОР НЕ МЕРИТ"* ]]; then
+  ok "отказ прибора объявлен в контексте вместе со своей причиной"
+else
+  bad "отказ прибора: ждали громкую строку с причиной, получили rc=$rc [$out]"
+fi
+
+# Положительный контроль молчания: тот же путь при исправном приборе обязан
+# НЕ вносить громкую строку -- иначе первое утверждение держалось бы на том,
+# что строка есть всегда.
+P=$(mk_plugin caller-silent 0 "")
+out=$(run_start "$P"); rc=$?
+if [[ $rc -eq 0 && "$out" != *"$LOUD"* ]]; then
+  ok "исправный молчащий прибор не вносит громкой строки"
+else
+  bad "молчание: громкая строка появилась там, где мерить удалось [rc=$rc]"
+fi
+
+# Положительный контроль дороги: находка прибора обязана ДОЕХАТЬ до контекста.
+P=$(mk_plugin caller-speaks 0 "ОТСТАЛА УСТАНОВКА: синтетическая находка зуба")
+out=$(run_start "$P"); rc=$?
+if [[ $rc -eq 0 && "$out" == *"ОТСТАЛА УСТАНОВКА"* && "$out" != *"$LOUD"* ]]; then
+  ok "находка исправного прибора доезжает до контекста сессии"
+else
+  bad "находка прибора не доехала до контекста [rc=$rc]"
+fi
+
+# Отрицательный контроль: вернуть вызывающему прежнюю форму -- первое
+# утверждение обязано покраснеть, иначе оно ничего не сторожит.
+P=$(mk_plugin caller-control 2 "")
+python3 - "$P/hooks/session-start" <<'MUT'
+import sys
+p = sys.argv[1]
+t = open(p, encoding='utf-8').read()
+NEEDLE = 'freshness=$(python3 "${SCRIPT_DIR}/plugin-freshness.py" 2>"$freshness_errfile") || freshness_rc=$?'
+if t.count(NEEDLE) != 1:
+    sys.stderr.write('МУТАЦИЯ НЕ ПРИМЕНИЛАСЬ: якорь найден %d раз\n' % t.count(NEEDLE))
+    sys.exit(2)
+open(p, 'w', encoding='utf-8').write(t.replace(
+    NEEDLE,
+    'freshness=$(python3 "${SCRIPT_DIR}/plugin-freshness.py" 2>/dev/null) || freshness=""', 1))
+MUT
+mrc=$?
+if [[ $mrc -ne 0 ]]; then
+  printf 'ОТКАЗ: контроль вызывающего НЕ ИЗМЕРЯЛ -- мутация не применилась (код %s)\n' "$mrc" >&2
+  exit 2
+fi
+if ! bash -n "$P/hooks/session-start"; then
+  printf 'ОТКАЗ: контроль вызывающего НЕ ИЗМЕРЯЛ -- мутация сломала разбор жертвы\n' >&2
+  exit 2
+fi
+out=$(run_start "$P"); rc=$?
+if [[ "$out" != *"$LOUD"* ]]; then
+  ok "контроль краснит утверждение своей причиной: прежняя форма глушит отказ"
+else
+  bad "контроль НЕ покраснел: громкая строка держится и без правки вызывающего"
+fi
+
 printf '\nplugin-freshness teeth: прошло=%d провалов=%d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]
