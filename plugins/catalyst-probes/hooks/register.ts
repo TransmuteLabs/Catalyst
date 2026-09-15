@@ -18,7 +18,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // CONSTRAINT: версия дублируется в .claude-plugin/plugin.json НАМЕРЕННО --
 // манифест читает установщик, константу -- улика; расхождение ловит зуб в
 // tests/units.test.ts, сверяющий константу с манифестом.
-export const MOD_VERSION = "0.1.11"
+export const MOD_VERSION = "0.1.12"
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
@@ -129,6 +129,33 @@ export function resolvePath(p: string, home: string, cwd: string): string {
   return (cwd || ".") + "/" + s
 }
 
+// CONSTRAINT: делит только запятая ВЕРХНЕГО уровня -- внутри кавычек, вложенных
+// [...] и вложенных {...} запятая не делит. Глубина обязана считать ОБЕ пары
+// скобок: пока считались только квадратные, одна строка
+// `models = [{ model = "m", effort = "max" }]` рвалась по запятой внутри
+// таблицы, и в модель ступени уезжал кусок `{ model = "m"` (измерено 15.09).
+function splitTop(s: string): string[] {
+  const items: string[] = []
+  let cur = ""
+  let depth = 0
+  let quote = ""
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charAt(i)
+    if (quote) {
+      cur += c
+      if (c === quote) quote = ""
+      continue
+    }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue }
+    if (c === "[" || c === "{") depth++
+    if (c === "]" || c === "}") depth--
+    if (c === "," && depth === 0) { items.push(cur); cur = ""; continue }
+    cur += c
+  }
+  items.push(cur)
+  return items
+}
+
 export function parseVal(raw: string): any {
   let s = String(raw || "").trim()
   if (s.slice(0, 3) === "'''" || s.slice(0, 3) === '"""') {
@@ -147,34 +174,39 @@ export function parseVal(raw: string): any {
   if (s.charAt(0) === "[") {
     const m = /^\[([\s\S]*)\]\s*(?:#.*)?$/.exec(s)
     if (m) {
-      // CONSTRAINT: делит только запятая ВЕРХНЕГО уровня -- внутри кавычек и
-      // вложенных [...] запятая не делит; элемент разбирается тем же parseVal,
-      // числа остаются числами (listOf приводит к строке сам).
+      // CONSTRAINT: элемент разбирается тем же parseVal, числа остаются числами
+      // (listOf приводит к строке сам).
       const out: any[] = []
-      const items: string[] = []
-      let cur = ""
-      let depth = 0
-      let quote = ""
-      for (let i = 0; i < m[1].length; i++) {
-        const c = m[1].charAt(i)
-        if (quote) {
-          cur += c
-          if (c === quote) quote = ""
-          continue
-        }
-        if (c === '"' || c === "'") { quote = c; cur += c; continue }
-        if (c === "[") depth++
-        if (c === "]") depth--
-        if (c === "," && depth === 0) { items.push(cur); cur = ""; continue }
-        cur += c
-      }
-      items.push(cur)
+      const items = splitTop(m[1])
       for (let i = 0; i < items.length; i++) {
         const el = items[i].trim()
         if (!el) continue
         out.push(parseVal(el))
       }
       return out
+    }
+  }
+  // CONSTRAINT: inline-таблица -- законная форма TOML и единственная, какой
+  // ступень записывается ОДНОЙ строкой. Пока её не было, такая строка молча
+  // разваливалась на куски-строки, а мусор доезжал до провайдера именем модели.
+  // Пара без `=` НЕ роняет разбор и не исчезает: она уходит в __unread той же
+  // дорогой, что и непрочитанная строка файла.
+  if (s.charAt(0) === "{") {
+    const m = /^\{([\s\S]*)\}\s*(?:#.*)?$/.exec(s)
+    if (m) {
+      const obj: any = {}
+      const items = splitTop(m[1])
+      const bad: string[] = []
+      for (let i = 0; i < items.length; i++) {
+        const el = items[i].trim()
+        if (!el) continue
+        const kv = /^(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.-]+))\s*=\s*([\s\S]*)$/.exec(el)
+        if (!kv) { bad.push(el.slice(0, 200)); continue }
+        const k = kv[1] != null ? kv[1] : (kv[2] != null ? kv[2] : kv[3])
+        obj[k] = parseVal(kv[4])
+      }
+      if (bad.length) obj.__unread = bad
+      return obj
     }
   }
   const hash = s.indexOf("#")
@@ -184,6 +216,29 @@ export function parseVal(raw: string): any {
   if (/^-?\d+$/.test(s)) return parseInt(s, 10)
   if (/^-?\d+\.\d+$/.test(s)) return parseFloat(s)
   return s
+}
+
+// CONSTRAINT: непрочитанная пара внутри inline-таблицы обязана попасть в ТОТ ЖЕ
+// счётчик, что и непрочитанная СТРОКА файла. Свой счётчик у вложенной формы
+// разошёлся бы с cfgUnread молча, а cfgUnread -- единственная улика конфига.
+// Отметка снимается с узла: разобранная ступень не имеет права нести служебное
+// поле дальше в конфиг.
+function unreadDeep(v: any, sink: string[]): number {
+  if (!v || typeof v !== "object") return 0
+  let n = 0
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) n += unreadDeep(v[i], sink)
+    return n
+  }
+  const u = v.__unread
+  if (Array.isArray(u)) {
+    n += u.length
+    for (let i = 0; i < u.length; i++) if (sink.length < 20) sink.push(String(u[i]))
+    delete v.__unread
+  }
+  const ks = Object.keys(v)
+  for (let i = 0; i < ks.length; i++) n += unreadDeep(v[ks[i]], sink)
+  return n
 }
 
 export function parseToml(src: string): any {
@@ -234,9 +289,13 @@ export function parseToml(src: string): any {
           if (!d[k] || typeof d[k] !== "object" || Array.isArray(d[k])) d[k] = {}
           d = d[k]
         }
-        d[path[path.length - 1]] = parseVal(kv[4])
+        const v = parseVal(kv[4])
+        unreadN += unreadDeep(v, unread)
+        d[path[path.length - 1]] = v
       } else {
-        current[kv[1] != null ? kv[1] : kv[2]] = parseVal(kv[4])
+        const v = parseVal(kv[4])
+        unreadN += unreadDeep(v, unread)
+        current[kv[1] != null ? kv[1] : kv[2]] = v
       }
     } else {
       unreadN++
@@ -268,16 +327,50 @@ function listOf(cfg: any, key: string): string[] {
   return out
 }
 
-export function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] {
+// CONSTRAINT: ось эффорта -- ЗАКРЫТЫЙ перечень канона (MODEL-ROUTING-PLAYBOOK.md
+// §"Effort в Agent-канале": `effort: low|medium|high|xhigh|max`). Сравнение
+// строгое и регистрозависимое: значение уезжает провайдеру ДОСЛОВНО (шаг 31
+// патча несёт его как reasoning_effort, замер 15.09), поэтому "High" -- такое же
+// негодное поле в теле запроса, как "higj".
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+
+// CONSTRAINT: сравнение СТРОГОЕ (===), и это единственная защита от «всего, что
+// приводится»: конфиг -- разобранный TOML, где `effort = 3` даёт число, а чужой
+// производитель JSON может дать объект с toString. Отдельной проверки типа тут
+// нет намеренно -- она была бы мёртвой: её снятие набор зубов не красит
+// (измерено 15.09). Заменять === на == запрещено.
+export function effortOk(v: any): boolean {
+  for (let i = 0; i < EFFORTS.length; i++) if (EFFORTS[i] === v) return true
+  return false
+}
+
+// CONSTRAINT: отметка -- ОТДЕЛЬНАЯ функция, потому что вызывающий её живёт за
+// $ и зубами не покрывается: инлайн-строка в consultBg снималась мутацией молча
+// (измерено 15.09). Ставится ДО вызова модели -- негодный эффорт обязан быть
+// назван и тогда, когда ступень упала по другой причине.
+export function markEffort(rec: any, used: string, rung: any): void {
+  if (rung && rung.effortBad) rec["effortBad_" + used] = rung.effortBad
+}
+
+export function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: string; effortBad?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] {
   const raw = cfg && cfg.models
-  const out: { model: string; effort?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] = []
+  const out: { model: string; effort?: string; effortBad?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] = []
   if (Array.isArray(raw) && raw.length) {
     for (let i = 0; i < raw.length; i++) {
       const x = raw[i]
       if (typeof x === "string" && x) out.push({ model: x })
       else if (x && typeof x === "object" && x.model) {
         const r: any = { model: String(x.model) }
-        if (x.effort) r.effort = String(x.effort)
+        // CONSTRAINT: у max_tokens проверка значения была (num), у эффорта не
+        // было вовсе -- негодное значение уезжало провайдеру дословно (#141).
+        // Негодное НЕ доезжает и НАЗЫВАЕТСЯ уликой (effortBad_<модель>): молча
+        // уронить поле значит сделать опечатку в ступени неотличимой от
+        // ступени без эффорта.
+        if (x.effort) {
+          const ev = String(x.effort)
+          if (effortOk(ev)) r.effort = ev
+          else r.effortBad = ev.slice(0, 64)
+        }
         if (x.max_tokens != null) r.max_tokens = num(x.max_tokens, 0, 1)
         if (x.timeout_ms != null) r.timeout_ms = num(x.timeout_ms, 0, 1)
         if (x.context_chars != null) r.context_chars = num(x.context_chars, 0, 1)
@@ -1030,6 +1123,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       const rung = ladder[i]
       used = rung.model
       const rungCtxN = rungCtx(rung, cfg)
+      markEffort(rec, used, rung)
       const full = buildFull(rungCtxN)
       const rungT0 = await nowMs($)
       try {

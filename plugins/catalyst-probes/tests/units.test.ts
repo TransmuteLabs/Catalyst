@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs"
 import {
   bl3, num, clip, classesOf, normTmp, resolvePath,
   parseVal, parseToml, rungsOf, rungCtx, parseVerdict,
-  verdictKey, memoUsable,
+  verdictKey, memoUsable, effortOk, EFFORTS, markEffort,
   MOD_VERSION,
 } from "../hooks/register.ts"
 
@@ -164,6 +164,42 @@ test("parseVal: вложенные массивы не рушат верхний
   assert.deepEqual(parseVal('[["a"], ["b"]]'), [["a"], ["b"]])
 })
 
+// --- parseVal: inline-таблицы (ступень одной строкой) --------------------------
+
+// CONSTRAINT: контроль -- запятая ВНУТРИ таблицы. Пока глубина считала только
+// квадратные скобки, этот вход давал четыре куска-строки вместо двух таблиц, и
+// в модель ступени уезжало `{ model = "a"`.
+test("parseVal: массив inline-таблиц -- запятая внутри {} не делит", () => {
+  assert.deepEqual(
+    parseVal('[{ model = "a", effort = "max" }, { model = "b", effort = "high" }]'),
+    [{ model: "a", effort: "max" }, { model: "b", effort: "high" }])
+})
+
+test("parseVal: одиночная inline-таблица со всеми типами значений", () => {
+  assert.deepEqual(
+    parseVal('{ model = "m", max_tokens = 8000, fail_closed = true, tags = ["a", "b"] }'),
+    { model: "m", max_tokens: 8000, fail_closed: true, tags: ["a", "b"] })
+})
+
+test("parseVal: пустая inline-таблица", () => {
+  assert.deepEqual(parseVal("{}"), {})
+  assert.deepEqual(parseVal("{ }"), {})
+})
+
+test("parseVal: вложенная inline-таблица", () => {
+  assert.deepEqual(parseVal('{ a = { b = "c" }, d = 1 }'), { a: { b: "c" }, d: 1 })
+})
+
+test("parseVal: запятая внутри кавычек внутри таблицы не делит", () => {
+  assert.deepEqual(parseVal('{ note = "a, b", model = "m" }'), { note: "a, b", model: "m" })
+})
+
+// CONSTRAINT: пара без `=` не имеет права ни ронять разбор, ни исчезать --
+// годные пары остаются, негодная уходит в __unread.
+test("parseVal: пара без знака равенства -- в __unread, соседи целы", () => {
+  assert.deepEqual(parseVal('{ model = "m", мусор }'), { model: "m", __unread: ["мусор"] })
+})
+
 // --- parseToml ----------------------------------------------------------------
 
 test("parseToml: вложенная секция", () => {
@@ -226,6 +262,43 @@ test("parseToml: __unreadN считает ВСЕ строки, __unread хран
   assert.equal(t.__unread.length, 20)
 })
 
+// CONSTRAINT: непрочитанная пара ВНУТРИ inline-таблицы обязана попасть в тот же
+// счётчик, что и непрочитанная строка файла -- cfgUnread собирается из
+// __unreadN КОРНЯ, и отдельный счётчик у вложенной формы был бы невидим.
+test("parseToml: непрочитанная пара inline-таблицы уходит в корневой __unreadN", () => {
+  const t = parseToml('[s]\nmodels = [{ model = "m", мусор }]\n')
+  assert.equal(t.__unreadN, 1)
+  assert.deepEqual(t.__unread, ["мусор"])
+  assert.deepEqual(t.s.models, [{ model: "m" }])
+})
+
+test("parseToml: строка и вложенная пара считаются ОДНИМ счётчиком", () => {
+  const t = parseToml('[s]\nсвоя мусорная строка\nmodels = [{ model = "m", мусор }]\n')
+  assert.equal(t.__unreadN, 2)
+})
+
+// CONSTRAINT: служебная отметка не имеет права уехать в конфиг ступени --
+// иначе мусорная пара стала бы полем разобранной модели.
+test("parseToml: __unread снят с узла ступени", () => {
+  const t = parseToml('[s]\nmodels = [{ model = "m", мусор }]\n')
+  assert.equal("__unread" in t.s.models[0], false)
+})
+
+test("parseToml: ступени inline-формой разбираются как array-of-tables", () => {
+  const inline = parseToml('[probe.judge]\nmodels = [{ model = "a", effort = "max" }, { model = "b", effort = "high" }]\n')
+  const aot = parseToml([
+    "[probe.judge]",
+    "[[probe.judge.models]]",
+    'model = "a"',
+    'effort = "max"',
+    "[[probe.judge.models]]",
+    'model = "b"',
+    'effort = "high"',
+  ].join("\n"))
+  assert.deepEqual(inline.probe.judge.models, aot.probe.judge.models)
+  assert.deepEqual(rungsOf(inline.probe.judge, ""), rungsOf(aot.probe.judge, ""))
+})
+
 // --- rungsOf: лестница ступеней ------------------------------------------------
 
 test("rungsOf: три модели -- три ступени по порядку", () => {
@@ -268,6 +341,98 @@ test("rungsOf: объектная ступень несёт effort и лимит
 
 test("rungsOf: одиночный cfg.model без models -- одна ступень", () => {
   assert.deepEqual(rungsOf({ model: "x" }, ""), [{ model: "x" }])
+})
+
+// --- effortOk / негодный эффорт ступени (#141) ---------------------------------
+
+test("effortOk: ось канона целиком годна", () => {
+  assert.deepEqual(EFFORTS, ["low", "medium", "high", "xhigh", "max"])
+  for (const v of EFFORTS) assert.equal(effortOk(v), true)
+})
+
+// CONSTRAINT: регистр и пробел -- ЧАСТЬ значения: поле уезжает провайдеру
+// дословно, поэтому послабление здесь вернуло бы ровно тот дефект, который
+// правка закрывает.
+test("effortOk: негодные формы -- false", () => {
+  for (const v of ["High", "HIGH", "higj", "extra-high", " high", "high ", "", "ultra"])
+    assert.equal(effortOk(v), false)
+})
+
+// CONSTRAINT: предикат сравнивает СТРОГО, поэтому не-строка отвергается без
+// отдельной проверки типа; зуб пинит поведение, а не наличие проверки.
+test("effortOk: не-строка -- false, даже если приводится к годному", () => {
+  assert.equal(effortOk({ toString: () => "high" }), false)
+  assert.equal(effortOk(["high"]), false)
+  assert.equal(effortOk(3), false)
+  assert.equal(effortOk(null), false)
+  assert.equal(effortOk(undefined), false)
+})
+
+test("rungsOf: негодный эффорт НЕ уезжает, а называется effortBad", () => {
+  assert.deepEqual(
+    rungsOf({ models: [{ model: "m", effort: "higj", max_tokens: 100 }] }, ""),
+    [{ model: "m", effortBad: "higj", max_tokens: 100 }])
+  assert.deepEqual(
+    rungsOf({ models: [{ model: "m", effort: "HIGH" }] }, ""),
+    [{ model: "m", effortBad: "HIGH" }])
+})
+
+test("rungsOf: числовой эффорт -- негодный, а не приведённый к строке", () => {
+  const r = rungsOf({ models: [{ model: "m", effort: 3 }] }, "")
+  assert.equal(r[0].effort, undefined)
+  assert.equal(r[0].effortBad, "3")
+})
+
+// CONSTRAINT: ручка модели наследует ПЕРВУЮ ступень целиком -- отметка о
+// негодном эффорте обязана ехать вместе с ней, иначе замер через
+// CLAUDE_JUDGE_MODEL терял бы диагноз конфига.
+test("rungsOf: modelEnv наследует и отметку негодного эффорта", () => {
+  assert.deepEqual(
+    rungsOf({ models: [{ model: "a", effort: "ultra" }] }, "env-model"),
+    [{ model: "env-model", effortBad: "ultra" }])
+})
+
+// CONSTRAINT: улика -- единственная дорога, по которой негодный эффорт
+// становится видимым; без этих зубов снятие отметки было молчаливым.
+test("markEffort: негодный эффорт попадает в улику полем по модели", () => {
+  const rec: any = {}
+  markEffort(rec, "glm-5.3", { model: "glm-5.3", effortBad: "higj" })
+  assert.deepEqual(rec, { "effortBad_glm-5.3": "higj" })
+})
+
+test("markEffort: годная ступень улику не трогает", () => {
+  const rec: any = { a: 1 }
+  markEffort(rec, "m", { model: "m", effort: "max" })
+  markEffort(rec, "m", null)
+  assert.deepEqual(rec, { a: 1 })
+})
+
+test("markEffort: разные ступени -- разные поля", () => {
+  const rec: any = {}
+  markEffort(rec, "a", { effortBad: "x" })
+  markEffort(rec, "b", { effortBad: "y" })
+  assert.deepEqual(rec, { effortBad_a: "x", effortBad_b: "y" })
+})
+
+test("rungsOf: годный эффорт отметки не порождает", () => {
+  const r = rungsOf({ models: [{ model: "m", effort: "xhigh" }] }, "")
+  assert.equal(r[0].effort, "xhigh")
+  assert.equal("effortBad" in (r[0] as any), false)
+})
+
+// CONSTRAINT: ось пинится литералом и зубом выше. Сверки с БОЕВЫМ
+// ~/.claude/probes/probes.toml здесь нет намеренно: зуб, читающий файл вне
+// дерева, мерит машину, а не код, и краснеет от чужой правки конфига.
+test("rungsOf: разбор ступени с эффортом из TOML, конец в конец", () => {
+  const cfg = parseToml([
+    "[probe.judge]",
+    'models = [{ model = "glm-5.3", effort = "max" }, { model = "m2", effort = "turbo" }]',
+  ].join("\n"))
+  const rungs = rungsOf((cfg as any).probe.judge, "")
+  assert.equal(rungs.length, 2)
+  assert.equal(rungs[0].effort, "max")
+  assert.equal(rungs[1].effort, undefined)
+  assert.equal(rungs[1].effortBad, "turbo")
 })
 
 // --- rungCtx: потолок контекста ступени ----------------------------------------
