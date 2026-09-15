@@ -56,7 +56,7 @@ function formOn(v: any): boolean {
   return !(s === "0" || s === "false" || s === "off" || s === "no")
 }
 
-function bl3(v: any, defaultTrue: boolean): boolean {
+export function bl3(v: any, defaultTrue: boolean): boolean {
   if (v === undefined || v === null) return defaultTrue
   if (v === false || v === 0) return false
   const s = String(v).trim().toLowerCase()
@@ -64,13 +64,13 @@ function bl3(v: any, defaultTrue: boolean): boolean {
   return true
 }
 
-function num(v: any, fallback: number, floor: number): number {
+export function num(v: any, fallback: number, floor: number): number {
   const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10)
   if (!(n >= floor)) return fallback
   return n
 }
 
-function clip(q: string, n: number): string {
+export function clip(q: string, n: number): string {
   const s = String(q ?? "")
   return s.length > n ? s.slice(0, n) : s
 }
@@ -94,7 +94,7 @@ function safeId(id: string): string {
   return s || "p"
 }
 
-function classesOf(prompt: string): string[] {
+export function classesOf(prompt: string): string[] {
   const found = String(prompt).match(/\[dispatch-class:[\w-]+\]/g) || []
   const set: string[] = []
   for (let i = 0; i < found.length; i++) {
@@ -111,18 +111,18 @@ function parentDir(p: string): string {
   return trimmed.slice(0, i)
 }
 
-function normTmp(p: string): string {
+export function normTmp(p: string): string {
   return String(p || "").replace(/^\/private\/tmp\b/, "/tmp")
 }
 
-function resolvePath(p: string, home: string, cwd: string): string {
+export function resolvePath(p: string, home: string, cwd: string): string {
   let s = String(p)
   if (s.charAt(0) === "~") s = home + s.slice(1)
   if (s.charAt(0) === "/") return s
   return (cwd || ".") + "/" + s
 }
 
-function parseVal(raw: string): any {
+export function parseVal(raw: string): any {
   let s = String(raw || "").trim()
   if (s.slice(0, 3) === "'''" || s.slice(0, 3) === '"""') {
     const q = s.slice(0, 3)
@@ -156,7 +156,7 @@ function parseVal(raw: string): any {
   return s
 }
 
-function parseToml(src: string): any {
+export function parseToml(src: string): any {
   const root: any = {}
   let current: any = root
   function nav(keys: string[], asArray: boolean): any {
@@ -208,7 +208,7 @@ function listOf(cfg: any, key: string): string[] {
   return out
 }
 
-function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] {
+export function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] {
   if (modelEnv) return [{ model: modelEnv }]
   const raw = cfg && cfg.models
   const out: { model: string; effort?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] = []
@@ -231,7 +231,7 @@ function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: string; 
   return out
 }
 
-function parseVerdict(raw: string, rx: string): { kind: string; rest: string } | null {
+export function parseVerdict(raw: string, rx: string): { kind: string; rest: string } | null {
   const vocab = String(rx || "OK|WARN|BLOCK").replace(/\s+/g, "")
   let re: RegExp
   try { re = new RegExp("^(" + vocab + "):\\s*(.*)$") } catch (x) {

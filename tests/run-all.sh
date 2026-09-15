@@ -13,7 +13,7 @@
 # не имеет права быть невидимым в сводке.
 set -u
 
-EXPECTED_STANDS=7
+EXPECTED_STANDS=8
 
 if [ "${CATALYST_STANDS:-}" = "off" ]; then
   printf 'CATALYST_STANDS=off: прогон стендов ПРОПУЩЕН по явной ручке\n'
