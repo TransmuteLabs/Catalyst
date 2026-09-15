@@ -37,9 +37,11 @@ Or interactively: `/plugin marketplace add TransmuteLabs/Catalyst`, then `/plugi
 ## Maintenance
 
 - `scripts/lint.py` — free deterministic checks (frontmatter, size budgets, dangling pointers, map/index/norms integrity). Run before committing family edits.
+- `.githooks/pre-commit` — plugin acceptance door: a commit touching a plugin (`plugins/<name>/` or the root tree `skills/`, `agents/`, `commands/`, `hooks/`, `.claude-plugin/`, or any of the three mirror manifests) must raise that plugin's `version` (`ВЕРСИЯ_НЕ_ПОДНЯТА`), pass `claude plugin validate` (`ВАЛИДАТОР_ОТКАЗАЛ`), keep every `*.ts` under `<plugin>/hooks/` parseable by bun (`СИНТАКСИС_МОДУЛЯ`), and keep the four root manifests (`.claude-plugin`, `.codex-plugin`, `.cursor-plugin`, `.kimi-plugin`) on one version (`ЗЕРКАЛА_РАЗОШЛИСЬ`). A missing `claude`/`bun` is itself a refusal (`ПРИБОР_НЕДОСТУПЕН`). Opt-out handle: `CATALYST_PLUGIN_GATE=off` (the skip is announced, never silent). Git hooks don't survive clones, and the door never enables itself — per clone: `git config core.hooksPath .githooks`.
 - `norms.yaml` — the seam registry: every family-wide norm's single normative home + its mirrors; on divergence the home governs.
 - `scripts/gen-index.py` — regenerates `tests/pressure/INDEX.md` from `map.tsv` + `proves.tsv`.
 - `tests/scripts/test-scripts.sh` — fast shell tests for the family scripts (<1s, no live sessions).
+- `tests/scripts/test-plugin-gate.sh` — teeth for the plugin acceptance door: nine synthetic-repo cases (each `git init` under `mktemp`), every red case failing on its own named reason.
 - References carry `read-on:`/`home-of:` frontmatter — the read-triggers and norm ownership as data, checked by lint.
 
 ## Learn by example

@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Дверь приёмки плагина: правка кода плагина едет в бой только через
+# объявленную `version` (`claude plugin update` сверяет версию, не sha).
+#
+# CONSTRAINT: каталог именно .githooks, НЕ hooks/ -- hooks/ занят хуками
+# Claude Code (session-start, plugin-freshness.py), это другое понятие «hook».
+#
+# CONSTRAINT: git-хуки не переносятся клоном; дверь сама себя не включает --
+# включение: git config core.hooksPath .githooks
+#
+# CONSTRAINT: ось B и ось C читают РАБОЧЕЕ ДЕРЕВО, а не индекс -- дверь
+# заявляет ровно то, что проверила: staged-копия и рабочая могут расходиться.
+#
+# CONSTRAINT: гейт синтаксиса -- bun, НЕ tsc: tsc перехватывается
+# PreToolUse-хуком rch и уезжает в удалённую сборку (инцидент RCH-I011),
+# то есть код приходит из дороги, а не из проверки.
+#
+# CONSTRAINT: недоступный прибор -- ОТКАЗ, не тихий пропуск: пустой результат
+# без прибора не равен нулю находок.
+set -u
+
+fail() { printf 'дверь приёмки плагина: ОТКАЗ %s\n' "$1"; exit 1; }
+
+json_version() {   # version из JSON на stdin; rc=1, если JSON не читается
+  python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("version", ""))
+except Exception:
+    sys.exit(1)'
+}
+
+staged=$(git diff --cached --name-only)
+[ -n "$staged" ] || exit 0
+
+# Классификация: plugins/<name>/... -> плагин <name>; skills/, agents/,
+# commands/, hooks/, .claude-plugin/ -> корневой плагин catalyst (дом ".").
+plugins=""
+root_touched=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in
+    plugins/*/?*)
+      name="${f#plugins/}"; name="${name%%/*}"
+      p="plugins/$name"
+      case " $plugins " in *" $p "*) ;; *) plugins="$plugins $p";; esac
+      ;;
+    skills/*|agents/*|commands/*|hooks/*|.claude-plugin/*) root_touched=1 ;;
+    # CONSTRAINT: зеркала манифеста тоже будят дверь -- ось D сторожит именно
+    # их, и правка ОДНОГО зеркала обязана её поднять, иначе расхождение версий
+    # уезжает молча (norms.yaml: дом управляет, зеркало -- баг).
+    .codex-plugin/*|.cursor-plugin/*|.kimi-plugin/*) root_touched=1 ;;
+  esac
+done <<EOF
+$staged
+EOF
+
+[ -n "$plugins" ] || [ "$root_touched" = 1 ] || exit 0
+
+if [ "${CATALYST_PLUGIN_GATE:-}" = "off" ]; then
+  printf 'CATALYST_PLUGIN_GATE=off: дверь приёмки плагина ПРОПУЩЕНА по явной ручке\n'
+  exit 0
+fi
+
+# Список корней: каталоги плагинов плюс корень репозитория для корневого.
+dirs="$plugins"
+[ "$root_touched" = 1 ] && dirs="$dirs ."
+
+# --- ОСЬ A: код изменён -> version обязана отличаться от HEAD -----------------
+for d in $dirs; do
+  manifest="$d/.claude-plugin/plugin.json"
+  [ "$d" = "." ] && manifest=".claude-plugin/plugin.json"
+  has_code=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$f" = "$manifest" ] && continue
+    if [ "$d" = "." ]; then
+      case "$f" in
+        skills/*|agents/*|commands/*|hooks/*|.claude-plugin/*) has_code=1; break ;;
+      esac
+    else
+      case "$f" in "$d"/*) has_code=1; break ;; esac
+    fi
+  done <<EOF
+$staged
+EOF
+  [ "$has_code" = 1 ] || continue
+  staged_v=$(git show ":$manifest" 2>/dev/null | json_version) || continue
+  git rev-parse -q --verify HEAD >/dev/null 2>&1 || continue
+  git show "HEAD:$manifest" >/dev/null 2>&1 || continue   # нет в HEAD -- новый плагин, не отказ
+  head_v=$(git show "HEAD:$manifest" 2>/dev/null | json_version) || continue
+  if [ "$staged_v" = "$head_v" ]; then
+    fail "ВЕРСИЯ_НЕ_ПОДНЯТА: $d -- код изменён, а version в .claude-plugin/plugin.json ($staged_v) не отличается от HEAD"
+  fi
+done
+
+# --- ОСЬ B: ценз валидатора ---------------------------------------------------
+command -v claude >/dev/null 2>&1 || fail "ПРИБОР_НЕДОСТУПЕН: claude не найден в PATH -- это «не измерено», а не «чисто»"
+for d in $dirs; do
+  out=$(claude plugin validate "$d" 2>&1)
+  if [ $? -ne 0 ]; then
+    printf 'дверь приёмки плагина: ОТКАЗ ВАЛИДАТОР_ОТКАЗАЛ: claude plugin validate %s\n' "$d"
+    printf '%s\n' "$out"
+    exit 1
+  fi
+done
+
+# --- ОСЬ C: синтаксис каждого *.ts под <плагин>/hooks/ ------------------------
+command -v bun >/dev/null 2>&1 || fail "ПРИБОР_НЕДОСТУПЕН: bun не найден в PATH -- это «не измерено», а не «чисто»"
+for d in $dirs; do
+  ts_files=$(find "$d/hooks" -type f -name '*.ts' 2>/dev/null)
+  [ -n "$ts_files" ] || continue
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    out=$(bun build --no-bundle --target=bun --outfile=/dev/null "$f" 2>&1)
+    if [ $? -ne 0 ]; then
+      printf 'дверь приёмки плагина: ОТКАЗ СИНТАКСИС_МОДУЛЯ: %s\n' "$f"
+      printf '%s\n' "$out"
+      exit 1
+    fi
+  done <<EOF
+$ts_files
+EOF
+done
+
+# --- ОСЬ D: зеркала манифеста корневого плагина -------------------------------
+if [ "$root_touched" = 1 ]; then
+  mirrors=".claude-plugin/plugin.json .codex-plugin/plugin.json .cursor-plugin/plugin.json .kimi-plugin/plugin.json"
+  first=""
+  diverged=0
+  listing=""
+  for m in $mirrors; do
+    v=$(git show ":$m" 2>/dev/null | json_version) || v="ОТСУТСТВУЕТ"
+    [ -n "$first" ] || first="$v"
+    [ "$v" = "$first" ] || diverged=1
+    listing="$listing
+  $m → $v"
+  done
+  if [ "$diverged" = 1 ]; then
+    printf 'дверь приёмки плагина: ОТКАЗ ЗЕРКАЛА_РАЗОШЛИСЬ (норма norms.yaml: дом управляет, зеркало -- баг):%s\n' "$listing"
+    exit 1
+  fi
+fi
+
+printf 'дверь приёмки плагина: прошло (версия/валидатор/синтаксис/зеркала) -- %s\n' "$dirs"
+exit 0

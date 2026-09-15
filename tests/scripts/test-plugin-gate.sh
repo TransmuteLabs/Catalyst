@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# Зубы двери приёмки плагина (.githooks/pre-commit).
+#
+# CONSTRAINT: каждый красный случай обязан краснеть СВОЕЙ названной причиной
+# и НЕ тянуть чужие -- иначе зуб зеленеет на чужой поломке.
+#
+# CONSTRAINT: живой репозиторий не читается и не пишется ни в одном случае:
+# каждый случай строит свой git init во временном каталоге; валидатору
+# подставляется синтетический CLAUDE_CONFIG_DIR.
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+DOOR="$(cd "$HERE/../.." && pwd)/.githooks/pre-commit"
+PASS=0; FAIL=0
+
+ok()  { PASS=$((PASS+1)); printf 'ok     %s\n' "$*"; }
+bad() { FAIL=$((FAIL+1)); printf 'ПРОВАЛ %s\n' "$*"; }
+
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/plugin-gate-teeth.XXXXXX")
+trap 'rm -rf "$ROOT"' EXIT
+
+REASONS="ВЕРСИЯ_НЕ_ПОДНЯТА ВАЛИДАТОР_ОТКАЗАЛ СИНТАКСИС_МОДУЛЯ ЗЕРКАЛА_РАЗОШЛИСЬ ПРИБОР_НЕДОСТУПЕН"
+
+# Код возврата берётся у САМОЙ подстановки: run_door исполняется в подоболочке,
+# присваивания внутри неё наружу не выходят.
+run_door() {   # <репо> [VAR=val ...] -> stdout двери, код возврата = код двери
+  local r="$1"; shift
+  (cd "$r" && env CLAUDE_CONFIG_DIR="$r/home" "$@" bash "$DOOR")
+}
+
+check_only() {   # <ожидаемая причина> <вывод двери>
+  local exp="$1" out="$2" r
+  for r in $REASONS; do
+    if [[ "$r" == "$exp" ]]; then
+      [[ "$out" == *"$r"* ]] || { printf 'причина %s не названа; ' "$r"; return 1; }
+    else
+      [[ "$out" != *"$r"* ]] || { printf 'тянется чужая причина %s; ' "$r"; return 1; }
+    fi
+  done
+  return 0
+}
+
+mini_manifest() {   # <файл> <версия>
+  cat > "$1" <<EOF2
+{
+  "name": "mini",
+  "version": "$2",
+  "description": "synthetic plugin for the gate teeth",
+  "author": {"name": "t"}
+}
+EOF2
+}
+
+root_manifest() {   # <файл> <версия>
+  cat > "$1" <<EOF2
+{
+  "name": "catalyst",
+  "version": "$2",
+  "description": "synthetic root",
+  "author": {"name": "t"}
+}
+EOF2
+}
+
+register_one() {   # валидный модуль с одним событием (форма обязательна валидатору)
+  cat > "$1" <<'EOF2'
+export function register(on: any) {
+  on("session.start", async ($: any, e: any, next: any) => {
+    const v = await $.env.get("MINI_PROBE")
+    next(e)
+    return {}
+  })
+}
+EOF2
+}
+
+register_two() {   # валидное ИЗМЕНЕНИЕ кода: добавлено второе событие
+  cat > "$1" <<'EOF2'
+export function register(on: any) {
+  on("session.start", async ($: any, e: any, next: any) => {
+    const v = await $.env.get("MINI_PROBE")
+    next(e)
+    return {}
+  })
+  on("prompt.section", async ($: any, e: any, next: any) => {
+    next(e)
+    return {}
+  })
+}
+EOF2
+}
+
+register_mutant() {   # измеренная мутация: неизвестное событие -> валидатор даёт rc=1
+  cat > "$1" <<'EOF2'
+export function register(on: any) {
+  on("session.end", async ($: any, e: any, next: any) => {
+    next(e)
+    return {}
+  })
+}
+EOF2
+}
+
+mk_world() {   # <имя мира> -> путь репо; зеркала в базе СОШЛИСЬ (0.1.0 везде)
+  local r="$ROOT/$1"
+  mkdir -p "$r/home" \
+    "$r/plugins/mini/.claude-plugin" "$r/plugins/mini/hooks" \
+    "$r/.claude-plugin" "$r/.codex-plugin" "$r/.cursor-plugin" "$r/.kimi-plugin" \
+    "$r/skills" "$r/docs"
+  mini_manifest "$r/plugins/mini/.claude-plugin/plugin.json" 0.1.0
+  printf '{\n  "modules": ["./register.ts"]\n}\n' > "$r/plugins/mini/hooks/hooks.json"
+  register_one "$r/plugins/mini/hooks/register.ts"
+  root_manifest "$r/.claude-plugin/plugin.json" 0.1.0
+  printf '{"name":"catalyst","version":"0.1.0"}\n' > "$r/.codex-plugin/plugin.json"
+  printf '{"name":"catalyst","version":"0.1.0"}\n' > "$r/.cursor-plugin/plugin.json"
+  printf '{"name":"catalyst","version":"0.1.0"}\n' > "$r/.kimi-plugin/plugin.json"
+  printf 'skill\n' > "$r/skills/s.md"
+  printf 'doc\n' > "$r/docs/d.md"
+  git -C "$r" init -q
+  git -C "$r" config user.email t@t
+  git -C "$r" config user.name t
+  git -C "$r" add plugins .claude-plugin .codex-plugin .cursor-plugin .kimi-plugin skills docs
+  git -C "$r" commit -qm base
+  printf '%s' "$r"
+}
+
+# --- 1. КОНТРОЛЬ: плагины не затронуты -> дверь МОЛЧИТ ------------------------
+R=$(mk_world quiet)
+printf 'doc more\n' > "$R/docs/d.md"
+git -C "$R" add docs/d.md
+out=$(run_door "$R"); rc=$?
+if (( rc == 0 )) && [[ -z "$out" ]]; then
+  ok "1) коммит трогает только docs/ -- дверь молчит, rc=0"
+else
+  bad "1) незатронутые плагины: ждали молчание rc=0, получили rc=$rc [$out]"
+fi
+
+# --- 2. КОНТРОЛЬ: всё поднято и сошлось -> rc=0 -------------------------------
+R=$(mk_world green)
+register_two "$R/plugins/mini/hooks/register.ts"
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.1
+git -C "$R" add plugins/mini
+out=$(run_door "$R"); rc=$?
+if (( rc == 0 )); then
+  ok "2) версия поднята, валидатор зелёный, синтаксис цел, зеркала сошлись -- rc=0"
+else
+  bad "2) зелёный мир: ждали rc=0, получили rc=$rc [$out]"
+fi
+
+# --- 3. ОСЬ A: код изменён, версия та же -> ВЕРСИЯ_НЕ_ПОДНЯТА -----------------
+R=$(mk_world axis_a)
+register_two "$R/plugins/mini/hooks/register.ts"
+git -C "$R" add plugins/mini
+out=$(run_door "$R"); rc=$?
+why=$(check_only "ВЕРСИЯ_НЕ_ПОДНЯТА" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]]; then
+  ok "3) код без бампа -- ВЕРСИЯ_НЕ_ПОДНЯТА и только она"
+else
+  bad "3) ось A: rc=$rc $why[$out]"
+fi
+
+# --- 4. ОСЬ A НЕ краснеет, когда изменён ТОЛЬКО plugin.json -------------------
+R=$(mk_world manifest_only)
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.1
+git -C "$R" add plugins/mini/.claude-plugin/plugin.json
+out=$(run_door "$R"); rc=$?
+if (( rc == 0 )) && [[ "$out" != *"ВЕРСИЯ_НЕ_ПОДНЯТА"* ]]; then
+  ok "4) изменён только plugin.json -- ось A молчит"
+else
+  bad "4) только манифест: ждали rc=0 без ВЕРСИЯ_НЕ_ПОДНЯТА, получили rc=$rc [$out]"
+fi
+
+# --- 5. ОСЬ B: неизвестное событие в модуле -> ВАЛИДАТОР_ОТКАЗАЛ --------------
+R=$(mk_world axis_b)
+register_mutant "$R/plugins/mini/hooks/register.ts"
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.1
+git -C "$R" add plugins/mini
+out=$(run_door "$R"); rc=$?
+why=$(check_only "ВАЛИДАТОР_ОТКАЗАЛ" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *"is not an event"* ]]; then
+  ok "5) on(\"session.end\") -- ВАЛИДАТОР_ОТКАЗАЛ с дословным выводом прибора"
+else
+  bad "5) ось B: rc=$rc $why[$out]"
+fi
+
+# --- 6. ОСЬ C: битый TS вне modules валидатора -> СИНТАКСИС_МОДУЛЯ -------------
+R=$(mk_world axis_c)
+printf 'function broken( {\n' > "$R/plugins/mini/hooks/broken.ts"
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.1
+git -C "$R" add plugins/mini
+out=$(run_door "$R"); rc=$?
+why=$(check_only "СИНТАКСИС_МОДУЛЯ" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]]; then
+  ok "6) битый *.ts под hooks/ -- СИНТАКСИС_МОДУЛЯ и только она"
+else
+  bad "6) ось C: rc=$rc $why[$out]"
+fi
+
+# --- 7. ОСЬ D: зеркала разведены -> ЗЕРКАЛА_РАЗОШЛИСЬ -------------------------
+R=$(mk_world axis_d)
+printf 'skill more\n' > "$R/skills/s.md"
+root_manifest "$R/.claude-plugin/plugin.json" 0.2.0
+git -C "$R" add skills .claude-plugin
+out=$(run_door "$R"); rc=$?
+why=$(check_only "ЗЕРКАЛА_РАЗОШЛИСЬ" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *".codex-plugin/plugin.json → 0.1.0"* ]]; then
+  ok "7) версия дома 0.2.0 против зеркал 0.1.0 -- ЗЕРКАЛА_РАЗОШЛИСЬ с перечнем файл→версия"
+else
+  bad "7) ось D: rc=$rc $why[$out]"
+fi
+
+# --- 8. ПРИБОР_НЕДОСТУПЕН: PATH без claude -> отказ, не тихий пропуск ----------
+R=$(mk_world no_tool)
+register_two "$R/plugins/mini/hooks/register.ts"
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.1
+git -C "$R" add plugins/mini
+out=$(run_door "$R" PATH="/usr/bin:/bin"); rc=$?
+why=$(check_only "ПРИБОР_НЕДОСТУПЕН" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]]; then
+  ok "8) PATH без claude -- ПРИБОР_НЕДОСТУПЕН (rc=1), не молчаливый пропуск"
+else
+  bad "8) недоступный прибор: rc=$rc $why[$out]"
+fi
+
+# --- 9. Ручка CATALYST_PLUGIN_GATE=off: пропуск ОБЪЯВЛЕН ----------------------
+R=$(mk_world bypass)
+register_two "$R/plugins/mini/hooks/register.ts"
+git -C "$R" add plugins/mini
+out=$(run_door "$R" CATALYST_PLUGIN_GATE=off); rc=$?
+if (( rc == 0 )) && [[ "$out" == *"ПРОПУЩЕНА"* ]]; then
+  ok "9) ручка off на красном дереве -- rc=0 И строка, объявляющая пропуск"
+else
+  bad "9) ручка off: ждали rc=0 со строкой объявления, получили rc=$rc [$out]"
+fi
+
+# --- 10. ОСЬ D будится правкой ТОЛЬКО зеркала --------------------------------
+# Без этого случая дверь сторожит зеркала лишь когда затронут корневой плагин,
+# и правка одного зеркала проходит молча -- ровно тот класс, что дал #181.
+R=$(mk_world mirror_only)
+printf '{"name":"catalyst","version":"0.2.0"}\n' > "$R/.codex-plugin/plugin.json"
+git -C "$R" add .codex-plugin
+out=$(run_door "$R"); rc=$?
+why=$(check_only "ЗЕРКАЛА_РАЗОШЛИСЬ" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *".codex-plugin/plugin.json → 0.2.0"* ]]; then
+  ok "10) правка ТОЛЬКО зеркала будит дверь -- ЗЕРКАЛА_РАЗОШЛИСЬ и только она"
+else
+  bad "10) зеркало в одиночку: rc=$rc $why[$out]"
+fi
+
+printf '\nplugin-gate teeth: прошло=%d провалов=%d\n' "$PASS" "$FAIL"
+[[ $FAIL -eq 0 ]]
