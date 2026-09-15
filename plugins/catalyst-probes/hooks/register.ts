@@ -26,6 +26,22 @@ const FORM_REQ = [
   "trailer_a","trailer_b","write_redirect","heredoc",
 ]
 
+// CONSTRAINT: часы поверхности читать ТОЛЬКО отсюда. На 2.1.272 хост-функция
+// часов отдаёт нечисловое значение (улики с 13:01 15.09 несут `t0:{}`, улики до этой
+// минуты -- миллисекунды), и каждое арифметическое действие над ним даёт NaN
+// МОЛЧА: длительность становится null, окно мемоизации не закрывается никогда,
+// а `new Date(x).toISOString()` бросает и уносит с собой строку журнала под
+// глухим catch. Отказ часов не скрывается -- он помечается в улике (clockBad).
+let clockBad = false
+
+function nowMs($: any): number {
+  let v: any = null
+  try { v = $.clock.now() } catch (x) { v = null }
+  if (typeof v === "number" && isFinite(v)) return v
+  clockBad = true
+  return Date.now()
+}
+
 function envOn(v: any): boolean {
   const s = String(v ?? "").trim().toLowerCase()
   return !(s === "" || s === "0" || s === "false" || s === "off" || s === "no")
@@ -302,7 +318,7 @@ async function readTextNull($: any, path: string): Promise<string | null> {
 
 async function appendJournal($: any, jpath: string, obj: any) {
   const line = JSON.stringify(obj) + "\n"
-  const rec = String((obj && (obj.rec || obj.t)) || ("t" + String($.clock.now())))
+  const rec = String((obj && (obj.rec || obj.t)) || ("t" + String(nowMs($))))
   let safe = ""
   for (let i = 0; i < rec.length; i++) {
     const c = rec.charAt(i)
@@ -530,7 +546,7 @@ async function applyPromptRules(
       await $.fs.write(
         world.globalHome + "/prompts/records/applied-" + safeId(r.id) + ".json",
         JSON.stringify({
-          t: new Date($.clock.now()).toISOString(), id: r.id, kind: r.kind,
+          t: new Date(nowMs($)).toISOString(), id: r.id, kind: r.kind,
           target: r.target, mode: r.mode, chars_before: before, chars_after: out.length,
           builtin: r.builtin === true,
         }),
@@ -547,7 +563,7 @@ async function applyPromptRules(
 let worldMemo: any = null
 
 async function worldFor($: any): Promise<any> {
-  const now = $.clock.now()
+  const now = nowMs($)
   if (worldMemo && now - worldMemo.t < 5000) return worldMemo
   const env = await envBundle($)
   const world = await loadWorld($, env)
@@ -908,14 +924,21 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         const tmo = rung.timeout_ms || floorTmo
         if (tmo) arg.timeoutMs = tmo
         const raw = await $.model.complete(arg)
-        rec["raw_" + used] = String(raw).slice(0, 500)
-        verdict = parseVerdict(String(raw), p.rx)
+        const rawS = String(raw)
+        // CONSTRAINT: своя обрезка не имеет права маскировать потолок
+        // провайдера. При обрезке в 500 медиана непустых ответов нижних
+        // ступеней равнялась ровно 500 -- упор в потолок ПРИБОРА неотличим от
+        // упора в потолок МОДЕЛИ, и базовая линия для #182 была непригодна.
+        // Длина берётся ДО обрезки и хранится своим полем.
+        rec["rawLen_" + used] = rawS.length
+        rec["raw_" + used] = rawS.slice(0, 2000)
+        verdict = parseVerdict(rawS, p.rx)
         if (verdict) break
       } catch (x) {
         rec["err_" + used] = String(x).slice(0, 240)
       }
     }
-    rec.dtMs = $.clock.now() - t0
+    rec.dtMs = nowMs($) - t0
     rec.used = used
     if (verdict) {
       rec.kind = verdict.kind
@@ -934,12 +957,13 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     }
   } catch (x) {
     rec.threw = String(x).slice(0, 400)
-    rec.dtMs = $.clock.now() - t0
+    rec.dtMs = nowMs($) - t0
     rec.kind = "NONE"
     if (p.pending || p.act === "cancel") {
       try { await $.store.set(key, { kind: "NONE", threw: rec.threw, dtMs: rec.dtMs }) } catch (y) {}
     }
   }
+  if (clockBad) rec.clockBad = true
   if (cfg.record !== false) {
     try { await $.fs.write(recPath, JSON.stringify(rec)) } catch (x) {}
   }
@@ -955,7 +979,16 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       verdict: (kind + ": " + rest).slice(0, 400),
       jm: rec.used, rec: recName, carrier: "mod", sid: rec.sid,
     })
-  } catch (x) {}
+  } catch (x) {
+    // CONSTRAINT: отказ журнальной дороги НЕ молчит. Улика уже на диске, и
+    // причина дописывается в неё вторым заходом: пока catch был глухим, потеря
+    // строки обнаруживалась только сличением двух домов, и ровно это скрывало
+    // поломку часов поверхности от её начала до разбора #184.
+    try {
+      rec.journalErr = String((x && (x as any).message) || x).slice(0, 240)
+      if (cfg.record !== false) await $.fs.write(recPath, JSON.stringify(rec))
+    } catch (y) {}
+  }
   return rec
 }
 
@@ -1045,7 +1078,7 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   const cnts = cls.map((c3) => c3 + "×" + rf.concat(wn).filter((x) => x.c === c3).length).join(", ")
   const vd = (vk === "pass" ? "PASS" : vk === "warn" ? "WARN" : "REFUSE") + ": " +
     (vk === "pass" ? lbl : cnts + " — " + lbl + " — " + (src3 ? src3.c : "") + " :" + (src3 ? src3.n : "") + " " + (src3 ? src3.q : ""))
-  const t0 = $.clock.now()
+  const t0 = nowMs($)
   const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
   const jpath = world.globalHome + "/form/journal.jsonl"
   const recPath = world.globalHome + "/form/records/" + recName
@@ -1140,7 +1173,7 @@ export function register(on: any) {
     const world = await loadWorld($, env)
     const prompt = String((e && e.prompt) || "")
     const agent = String((e && e.subagent_type) || "")
-    const t0 = $.clock.now()
+    const t0 = nowMs($)
     let live = 0
     try {
       const lst = await $.agent.list()

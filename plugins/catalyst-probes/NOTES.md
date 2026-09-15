@@ -151,3 +151,33 @@ add a new id. `CLAUDE_PROBES_DIR` disables layering.
 
 `~/.claude/probes/<id>/journal.jsonl` via shards;
 `~/.claude/probes/<id>/records/mod-*.json` are the durable records.
+
+## Host clock (2026-09-15)
+
+`$.clock.now()` is read through `nowMs($)` and nowhere else. On 2.1.272 the host
+function returns a non-number: every record written after the binary was swapped
+carries `"t0":{}` and `"dtMs":null`, while records from the minutes before it
+carry milliseconds. Arithmetic on that value yields NaN silently — the duration
+became null, the world memo window never closed (so the per-call file reads the
+memo exists to avoid came back), and `new Date(x).toISOString()` threw inside the
+journal block, where a silent `catch` swallowed it. The shard was then never
+written: 42 records lost their journal line, and every one of them had `t0:{}`
+while all 179 records with a numeric `t0` kept theirs.
+
+`nowMs` validates the host value and falls back to `Date.now()`, marking the
+record with `clockBad` so the fallback is never invisible. The journal `catch`
+now appends its reason to the already-written record (`journalErr`) instead of
+staying mute — losing a line used to be detectable only by comparing two homes,
+which is exactly what hid this defect.
+
+The host-side question — what the function actually returns, and whether this is
+an upstream regression of the mod surface — is measured separately (task #185);
+`nowMs` is correct either way.
+
+## Own truncation of model replies
+
+`raw_<model>` is cut at 2000 chars and the pre-cut length is kept in
+`rawLen_<model>`. At the previous cut of 500 the median non-empty reply of the
+lower rungs was exactly 500 — a ceiling of the INSTRUMENT is indistinguishable
+from a ceiling of the MODEL, and the baseline for the token-cap work was
+unusable.
