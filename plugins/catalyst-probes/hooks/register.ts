@@ -12,6 +12,10 @@
 
 const CWD_KEY = "catalyst-probes:cwd"
 const CAP_KEY = "catalyst-probes:sesscap"
+// CONSTRAINT: версия дублируется в .claude-plugin/plugin.json НАМЕРЕННО --
+// манифест читает установщик, константу -- улика; расхождение ловит зуб в
+// tests/units.test.ts, сверяющий константу с манифестом.
+export const MOD_VERSION = "0.1.10"
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
@@ -140,10 +144,33 @@ export function parseVal(raw: string): any {
   if (s.charAt(0) === "[") {
     const m = /^\[([\s\S]*)\]\s*(?:#.*)?$/.exec(s)
     if (m) {
-      const out: string[] = []
-      const reQ = /"([^"]*)"/g
-      let q: RegExpExecArray | null
-      while ((q = reQ.exec(m[1]))) out.push(q[1])
+      // CONSTRAINT: делит только запятая ВЕРХНЕГО уровня -- внутри кавычек и
+      // вложенных [...] запятая не делит; элемент разбирается тем же parseVal,
+      // числа остаются числами (listOf приводит к строке сам).
+      const out: any[] = []
+      const items: string[] = []
+      let cur = ""
+      let depth = 0
+      let quote = ""
+      for (let i = 0; i < m[1].length; i++) {
+        const c = m[1].charAt(i)
+        if (quote) {
+          cur += c
+          if (c === quote) quote = ""
+          continue
+        }
+        if (c === '"' || c === "'") { quote = c; cur += c; continue }
+        if (c === "[") depth++
+        if (c === "]") depth--
+        if (c === "," && depth === 0) { items.push(cur); cur = ""; continue }
+        cur += c
+      }
+      items.push(cur)
+      for (let i = 0; i < items.length; i++) {
+        const el = items[i].trim()
+        if (!el) continue
+        out.push(parseVal(el))
+      }
       return out
     }
   }
@@ -177,6 +204,14 @@ export function parseToml(src: string): any {
     return d[last]
   }
   const lines = String(src || "").split("\n")
+  // CONSTRAINT: непрочитанная строка не имеет права исчезать бесследно: у мода
+  // нет ни console, ни канала журнала -- улика (cfgUnread) единственная дорога,
+  // по которой такая строка становится видимой.
+  // CONSTRAINT: счёт отделён от хранения: хранятся первые 20 строк, считается
+  // каждая -- потолок хранилища не имеет права быть потолком измерения (иначе
+  // «20» неотличимо от «20 и больше»).
+  const unread: string[] = []
+  let unreadN = 0
   for (let i = 0; i < lines.length; i++) {
     const s = lines[i].trim()
     if (!s || s.charAt(0) === "#") continue
@@ -184,8 +219,30 @@ export function parseToml(src: string): any {
     if (aa) { current = nav(aa[1].split("."), true); continue }
     const sec = /^\[(.+)\]$/.exec(s)
     if (sec) { current = nav(sec[1].split("."), false); continue }
-    const kv = /^([A-Za-z0-9_]+)\s*=\s*(.*)$/.exec(s)
-    if (kv) current[kv[1]] = parseVal(kv[2])
+    // CONSTRAINT: ключ в кавычках -- ОДИН ключ (точки внутри НЕ делят, канон
+    // TOML); голый ключ с точками -- путь, узлы создаются как в nav.
+    const kv = /^(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.-]+))\s*=\s*([\s\S]*)$/.exec(s)
+    if (kv) {
+      if (kv[3] != null) {
+        const path = kv[3].split(".")
+        let d: any = current
+        for (let j = 0; j < path.length - 1; j++) {
+          const k = path[j]
+          if (!d[k] || typeof d[k] !== "object" || Array.isArray(d[k])) d[k] = {}
+          d = d[k]
+        }
+        d[path[path.length - 1]] = parseVal(kv[4])
+      } else {
+        current[kv[1] != null ? kv[1] : kv[2]] = parseVal(kv[4])
+      }
+    } else {
+      unreadN++
+      if (unread.length < 20) unread.push(s.slice(0, 200))
+    }
+  }
+  if (unread.length) {
+    root.__unread = unread
+    root.__unreadN = unreadN
   }
   return root
 }
@@ -209,7 +266,6 @@ function listOf(cfg: any, key: string): string[] {
 }
 
 export function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] {
-  if (modelEnv) return [{ model: modelEnv }]
   const raw = cfg && cfg.models
   const out: { model: string; effort?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] = []
   if (Array.isArray(raw) && raw.length) {
@@ -228,7 +284,22 @@ export function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: s
   }
   if (!out.length && cfg && cfg.model) out.push({ model: String(cfg.model) })
   if (!out.length) out.push({ model: "glm-5.3" })
+  if (modelEnv) {
+    // CONSTRAINT: ручка меняет МОДЕЛЬ, не лимиты -- ступень наследует потолки
+    // первой ступени конфига.
+    const first: any = { ...out[0] }
+    first.model = modelEnv
+    return [first]
+  }
   return out
+}
+
+// CONSTRAINT: context_chars ступени разбирался, но не действовал -- потолок
+// считался один раз на весь вызов. Потолок обязан быть СВОЙ у каждой ступени:
+// иначе назначенный ступени контекст неотличим от общего.
+export function rungCtx(rung: any, cfg: any): number {
+  const base = num(cfg && cfg.context_chars, 24000, 0) || 24000
+  return num(rung && rung.context_chars, base, 0) || base
 }
 
 export function parseVerdict(raw: string, rx: string): { kind: string; rest: string } | null {
@@ -818,8 +889,10 @@ async function loadWorld($: any, env: any): Promise<any> {
       if (pt.text) pParsed = parseToml(pt.text)
     }
   }
+  const cfgUnread = ((gParsed && gParsed.__unreadN) || 0) +
+                    ((pParsed && pParsed.__unreadN) || 0)
   return {
-    globalHome, projectHome, cwd,
+    globalHome, projectHome, cwd, cfgUnread,
     probes: probesOf(gParsed, pParsed),
     prompts: promptsOf(gParsed, pParsed),
   }
@@ -835,7 +908,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
   const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
   const recPath = world.globalHome + "/" + id + "/records/" + recName
   const jpath = world.globalHome + "/" + id + "/journal.jsonl"
-  const rec: any = { id: e && e.tool_use_id, probe: id, tool, agent, t0, carrier: "mod", sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
+  const rec: any = { id: e && e.tool_use_id, probe: id, tool, agent, t0, carrier: "mod", mod: MOD_VERSION, sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
   try {
     let sys = ""
     if (id === "judge" && env.JUDGE_PROMPT) {
@@ -879,10 +952,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       }
     }
     rec.att = att
+    if (world && world.cfgUnread) rec.cfgUnread = world.cfgUnread
 
     let msgs: any[] = []
     try { msgs = await $.session.messages() } catch (x) { msgs = [] }
-    const ctxN = num(cfg.context_chars, 24000, 0) || 24000
     const ctxLines: string[] = []
     if (Array.isArray(msgs)) {
       for (let i = 0; i < msgs.length; i++) {
@@ -893,23 +966,29 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         ctxLines.push(kind + ": " + text.slice(0, 2000))
       }
     }
-    const context = ctxLines.join("\n").slice(-ctxN)
-    const dchars = num(cfg.dispatch_chars, 16000, 0) || 16000
-    const parts: string[] = []
-    parts.push("=== SESSION SO FAR ===\n" + context)
-    if (p.id === "judge" || (Array.isArray(cfg.show) && cfg.show.indexOf("dispatch") >= 0) || p.act === "cancel") {
-      parts.push("=== DISPATCH ===\n" + JSON.stringify({
-        tool, subagent_type: agent, model: e && e.model, prompt: prompt.slice(0, dchars),
-      }))
+    const ctxAll = ctxLines.join("\n")
+    // CONSTRAINT: потолок контекста -- СВОЙ у каждой ступени (rungCtx): промт
+    // собирается в цикле ступеней, общая обрезка ВНЕ цикла давала всем ступеням
+    // один и тот же текст.
+    const buildFull = (ctxN: number): string => {
+      const context = ctxAll.slice(-ctxN)
+      const dchars = num(cfg.dispatch_chars, 16000, 0) || 16000
+      const parts: string[] = []
+      parts.push("=== SESSION SO FAR ===\n" + context)
+      if (p.id === "judge" || (Array.isArray(cfg.show) && cfg.show.indexOf("dispatch") >= 0) || p.act === "cancel") {
+        parts.push("=== DISPATCH ===\n" + JSON.stringify({
+          tool, subagent_type: agent, model: e && e.model, prompt: prompt.slice(0, dchars),
+        }))
+      }
+      if (p.id === "idle-watch" || (Array.isArray(cfg.show) && cfg.show.indexOf("fleet") >= 0)) {
+        parts.push("=== FLEET ===\n" + JSON.stringify({ live_works: ctx.live_works, tool }))
+      }
+      if (Array.isArray(cfg.show) && cfg.show.indexOf("tool") >= 0 && p.id !== "idle-watch") {
+        parts.push("=== TOOL ===\n" + tool)
+      }
+      const user = parts.join("\n\n")
+      return (sys ? sys + "\n\n" : "") + user
     }
-    if (p.id === "idle-watch" || (Array.isArray(cfg.show) && cfg.show.indexOf("fleet") >= 0)) {
-      parts.push("=== FLEET ===\n" + JSON.stringify({ live_works: ctx.live_works, tool }))
-    }
-    if (Array.isArray(cfg.show) && cfg.show.indexOf("tool") >= 0 && p.id !== "idle-watch") {
-      parts.push("=== TOOL ===\n" + tool)
-    }
-    const user = parts.join("\n\n")
-    const full = (sys ? sys + "\n\n" : "") + user
     const modelEnv = p.id === "judge" ? env.JUDGE_MODEL : ""
     const ladder = rungsOf(cfg, modelEnv)
     rec.ladder = ladder.map((r: any) => r.model)
@@ -920,6 +999,8 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     for (let i = 0; i < ladder.length; i++) {
       const rung = ladder[i]
       used = rung.model
+      const rungCtxN = rungCtx(rung, cfg)
+      const full = buildFull(rungCtxN)
       const rungT0 = await nowMs($)
       try {
         const arg: any = { model: rung.model, prompt: full }
@@ -950,6 +1031,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         // упора в потолок МОДЕЛИ, и базовая линия для #182 была непригодна.
         // Длина берётся ДО обрезки и хранится своим полем.
         rec["rawLen_" + used] = rawS.length
+        rec["ctxN_" + used] = rungCtxN
         rec["raw_" + used] = rawS.slice(0, 2000)
         verdict = parseVerdict(rawS, p.rx)
         if (verdict) break
@@ -957,6 +1039,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         // Длительность ОТКАЗА мерится тем же полем: мгновенный отказ по
         // бюджету и отказ после ожидания провайдера -- разные явления.
         rec["ms_" + used] = await nowMs($) - rungT0
+        rec["ctxN_" + used] = rungCtxN
         rec["err_" + used] = String(x).slice(0, 240)
       }
     }

@@ -8,9 +8,11 @@
 // generic :393, form :386 ("" -- parseVerdict falls back at :235).
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import {
   bl3, num, clip, classesOf, normTmp, resolvePath,
-  parseVal, parseToml, rungsOf, parseVerdict,
+  parseVal, parseToml, rungsOf, rungCtx, parseVerdict,
+  MOD_VERSION,
 } from "../hooks/register.ts"
 
 const RX_JUDGE = "OK|WARN|BLOCK|STOP|DENY"
@@ -132,8 +134,33 @@ test("parseVal: двойные кавычки разворачивают \\n и 
   assert.equal(parseVal('"a\\"b"'), 'a"b')
 })
 
-test("parseVal: массив из чисел даёт ПУСТОЙ массив (режутся только кавычки)", () => {
-  assert.deepEqual(parseVal("[1, 2]"), [])
+test("parseVal: массив из чисел -- числа остаются числами", () => {
+  assert.deepEqual(parseVal("[1, 2]"), [1, 2])
+})
+
+test("parseVal: массив в одинарных кавычках", () => {
+  assert.deepEqual(parseVal("['a', 'b']"), ["a", "b"])
+})
+
+test("parseVal: массив булевых литералов", () => {
+  assert.deepEqual(parseVal("[true, false]"), [true, false])
+})
+
+test("parseVal: пустые массивы -- [] и [ ]", () => {
+  assert.deepEqual(parseVal("[]"), [])
+  assert.deepEqual(parseVal("[ ]"), [])
+})
+
+test("parseVal: хвостовая запятая не плодит элемент", () => {
+  assert.deepEqual(parseVal('["a",]'), ["a"])
+})
+
+test("parseVal: запятая ВНУТРИ кавычек не делит", () => {
+  assert.deepEqual(parseVal('["a, b", "c"]'), ["a, b", "c"])
+})
+
+test("parseVal: вложенные массивы не рушат верхний уровень", () => {
+  assert.deepEqual(parseVal('[["a"], ["b"]]'), [["a"], ["b"]])
 })
 
 // --- parseToml ----------------------------------------------------------------
@@ -164,6 +191,40 @@ test("parseToml: повтор секции НЕ затирает ранее пр
   assert.deepEqual(parseToml("[a]\nx = 1\n[a]\ny = 2\n"), { a: { x: 1, y: 2 } })
 })
 
+test("parseToml: ключ с дефисом", () => {
+  assert.deepEqual(parseToml("[s]\nmy-key = 1\n"), { s: { "my-key": 1 } })
+})
+
+test("parseToml: ключ в двойных кавычках -- ОДИН ключ, точки внутри НЕ делят", () => {
+  assert.deepEqual(parseToml('[s]\n"a.b" = 1\n'), { s: { "a.b": 1 } })
+})
+
+test("parseToml: ключ в одинарных кавычках", () => {
+  assert.deepEqual(parseToml("[s]\n'a.b' = 1\n"), { s: { "a.b": 1 } })
+})
+
+test("parseToml: голый точечный ключ -- путь", () => {
+  assert.deepEqual(parseToml("[s]\na.b = 1\n"), { s: { a: { b: 1 } } })
+})
+
+test("parseToml: мусорная строка попадает в __unread", () => {
+  const t = parseToml("[s]\nx = 1\nэто мусор\n")
+  assert.deepEqual(t.__unread, ["это мусор"])
+})
+
+test("parseToml: чистый конфиг НЕ заводит __unread", () => {
+  const t = parseToml("[s]\nx = 1\n")
+  assert.ok(!("__unread" in t))
+  assert.ok(!("__unreadN" in t))
+})
+
+test("parseToml: __unreadN считает ВСЕ строки, __unread хранит первые 20", () => {
+  const junk = Array.from({ length: 25 }, (_, i) => "мусор " + (i + 1)).join("\n")
+  const t = parseToml(junk + "\n")
+  assert.equal(t.__unreadN, 25)
+  assert.equal(t.__unread.length, 20)
+})
+
 // --- rungsOf: лестница ступеней ------------------------------------------------
 
 test("rungsOf: три модели -- три ступени по порядку", () => {
@@ -181,7 +242,21 @@ test("rungsOf: непустой modelEnv замораживает лестниц
   assert.deepEqual(
     rungsOf({ models: ["a", "b"] }, "env-model"),
     [{ model: "env-model" }])
+  assert.deepEqual(rungsOf({ model: "x" }, "env-model"), [{ model: "env-model" }])
+})
+
+test("rungsOf: modelEnv наследует effort и лимиты ПЕРВОЙ ступени конфига", () => {
+  assert.deepEqual(
+    rungsOf({ models: [
+      { model: "a", effort: "high", max_tokens: 100, timeout_ms: 2000, context_chars: 1000 },
+      { model: "b", max_tokens: 500 },
+    ] }, "env-model"),
+    [{ model: "env-model", effort: "high", max_tokens: 100, timeout_ms: 2000, context_chars: 1000 }])
+})
+
+test("rungsOf: modelEnv при пустом конфиге -- ровно [{ model: modelEnv }]", () => {
   assert.deepEqual(rungsOf({}, "env-model"), [{ model: "env-model" }])
+  assert.deepEqual(rungsOf(null, "env-model"), [{ model: "env-model" }])
 })
 
 test("rungsOf: объектная ступень несёт effort и лимиты", () => {
@@ -192,6 +267,26 @@ test("rungsOf: объектная ступень несёт effort и лимит
 
 test("rungsOf: одиночный cfg.model без models -- одна ступень", () => {
   assert.deepEqual(rungsOf({ model: "x" }, ""), [{ model: "x" }])
+})
+
+// --- rungCtx: потолок контекста ступени ----------------------------------------
+
+test("rungCtx: ступень со своим context_chars", () => {
+  assert.equal(rungCtx({ context_chars: 1000 }, { context_chars: 500 }), 1000)
+})
+
+test("rungCtx: ступень без него -- уровень пробы", () => {
+  assert.equal(rungCtx({}, { context_chars: 500 }), 500)
+})
+
+test("rungCtx: ни ступени, ни пробы -- 24000", () => {
+  assert.equal(rungCtx({}, {}), 24000)
+  assert.equal(rungCtx(null, null), 24000)
+})
+
+test("rungCtx: нечисло на ступени -- уровень пробы; нечисло у пробы -- 24000", () => {
+  assert.equal(rungCtx({ context_chars: "abc" }, { context_chars: 700 }), 700)
+  assert.equal(rungCtx({}, { context_chars: "abc" }), 24000)
 })
 
 // --- parseVerdict ---------------------------------------------------------------
@@ -280,4 +375,11 @@ test("resolvePath: тильда, абсолютный и относительн�
 test("resolvePath: пустой cwd даёт ./; пустой путь не расширяется", () => {
   assert.equal(resolvePath("rel", "/H", ""), "./rel")
   assert.equal(resolvePath("", "/H", "/C"), "/C/")
+})
+
+// --- MOD_VERSION: константа сходится с манифестом --------------------------------
+
+test("MOD_VERSION: сходится с version манифеста plugin.json", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"))
+  assert.equal(MOD_VERSION, manifest.version)
 })
