@@ -13,6 +13,7 @@ import {
   bl3, num, clip, classesOf, normTmp, resolvePath,
   parseVal, parseToml, rungsOf, rungCtx, parseVerdict,
   verdictKey, memoUsable, effortOk, EFFORTS, markEffort,
+  readComplete, blocksLine,
   MOD_VERSION,
 } from "../hooks/register.ts"
 
@@ -601,4 +602,96 @@ test("memoUsable: t числовой строкой -- false", () => {
 test("memoUsable: свежий t с kind OK/WARN -- false (одобрения не кэшируются)", () => {
   assert.equal(memoUsable({ kind: "OK", t: 950 }, 1000, 100), false)
   assert.equal(memoUsable({ kind: "WARN", t: 950 }, 1000, 100), false)
+})
+
+// --- readComplete: две формы ответа модели (#190) -----------------------------
+// CONSTRAINT: ожидания запинены ОТ КОДА -- шаг 31 патча отдаёт конверт
+// {text, stopReason, blocks:[{type,len}], usage}, а образ без шага возвращает
+// прежнюю строку (склейку текстовых блоков). Обе формы законны.
+
+test("readComplete: строка -- текст, detailed=false, причин нет", () => {
+  const a = readComplete("BLOCK: нет предмета")
+  assert.equal(a.text, "BLOCK: нет предмета")
+  assert.equal(a.detailed, false)
+  assert.equal(a.stopReason, null)
+  assert.equal(a.blocks, null)
+  assert.equal(a.outTok, null)
+})
+
+test("readComplete: ПУСТАЯ строка старого образа -- пустой текст, но НЕ измеренный ноль", () => {
+  const a = readComplete("")
+  assert.equal(a.text, "")
+  assert.equal(a.detailed, false)
+  assert.equal(a.blocks, null)
+})
+
+test("readComplete: null/undefined -- пустой текст без конверта", () => {
+  for (const v of [null, undefined]) {
+    const a = readComplete(v)
+    assert.equal(a.text, "")
+    assert.equal(a.detailed, false)
+    assert.equal(a.stopReason, null)
+  }
+})
+
+test("readComplete: конверт с пустым текстом -- ИЗМЕРЕННЫЙ ноль и причина", () => {
+  const a = readComplete({
+    text: "", stopReason: "max_tokens",
+    blocks: [{ type: "thinking", len: 4096 }],
+    usage: { output_tokens: 4096 },
+  })
+  assert.equal(a.detailed, true)
+  assert.equal(a.text, "")
+  assert.equal(a.stopReason, "max_tokens")
+  assert.equal(a.outTok, 4096)
+  assert.deepEqual(a.blocks, [{ type: "thinking", len: 4096 }])
+})
+
+test("readComplete: конверт опознаётся по любому из трёх своих полей", () => {
+  assert.equal(readComplete({ text: "x", stopReason: "end_turn" }).detailed, true)
+  assert.equal(readComplete({ text: "x", blocks: [] }).detailed, true)
+  assert.equal(readComplete({ text: "x", usage: {} }).detailed, true)
+})
+
+test("readComplete: ЧУЖОЙ объект без полей конверта не становится текстом", () => {
+  // Без этой ветки String(объект) дал бы "[object Object]" в роли ответа модели.
+  const a = readComplete({ foo: 1 })
+  assert.equal(a.text, "")
+  assert.equal(a.detailed, false)
+})
+
+test("readComplete: нестроковый stopReason и нечисловой usage не подделываются", () => {
+  const a = readComplete({ text: "x", stopReason: 7, usage: { output_tokens: "12" }, blocks: [] })
+  assert.equal(a.detailed, true)
+  assert.equal(a.stopReason, null)
+  assert.equal(a.outTok, null)
+})
+
+test("readComplete: blocks -- только объекты, тип и длина нормализуются", () => {
+  const a = readComplete({ text: "", blocks: [{ type: "text" }, "мусор", { len: 5 }] })
+  assert.deepEqual(a.blocks, [{ type: "text", len: 0 }, { type: "?", len: 5 }])
+})
+
+test("readComplete: blocks не массив -- поля нет вовсе (нечем измерить)", () => {
+  const a = readComplete({ text: "", blocks: "нет", stopReason: "end_turn" })
+  assert.equal(a.detailed, true)
+  assert.equal(a.blocks, null)
+})
+
+test("readComplete: нестроковый text при живом конверте -- пусто, не подделка", () => {
+  const a = readComplete({ text: 42, stopReason: "end_turn" })
+  assert.equal(a.text, "")
+  assert.equal(a.detailed, true)
+})
+
+// --- blocksLine: улика однострочна ---------------------------------------------
+
+test("blocksLine: перечень типов с длинами через запятую", () => {
+  assert.equal(blocksLine([{ type: "thinking", len: 4096 }, { type: "text", len: 0 }]),
+    "thinking:4096,text:0")
+})
+
+test("blocksLine: пустой массив -- пустая строка; null -- тоже", () => {
+  assert.equal(blocksLine([]), "")
+  assert.equal(blocksLine(null), "")
 })

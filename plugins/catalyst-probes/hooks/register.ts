@@ -18,7 +18,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // CONSTRAINT: версия дублируется в .claude-plugin/plugin.json НАМЕРЕННО --
 // манифест читает установщик, константу -- улика; расхождение ловит зуб в
 // tests/units.test.ts, сверяющий константу с манифестом.
-export const MOD_VERSION = "0.1.12"
+export const MOD_VERSION = "0.1.13"
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
@@ -396,6 +396,69 @@ export function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: s
 export function rungCtx(rung: any, cfg: any): number {
   const base = num(cfg && cfg.context_chars, 24000, 0) || 24000
   return num(rung && rung.context_chars, base, 0) || base
+}
+
+// CONSTRAINT: разбор ответа модели -- ОТДЕЛЬНАЯ чистая функция, потому что
+// точка её вызова живёт за $ и зубами не покрывается (урок #141: инлайн-строка
+// в consultBg снималась мутацией молча).
+//
+// CONSTRAINT: форм ответа ДВЕ, и различать их обязан мод, а не оператор.
+// Штатный $.model.complete отдаёт СКЛЕЙКУ текстовых блоков (замер байтами
+// #190: flatMap по content с фильтром type==="text"), поэтому пустая строка
+// означает сразу три разных мира -- модель промолчала, ответ состоял из
+// нетекстовых блоков (thinking/tool_use), ответ оборвался по потолку. Шаг 31
+// патча по полю detail:true отдаёт полный конверт {text, stopReason, blocks,
+// usage}; образ БЕЗ этого шага поле не знает и возвращает строку, поэтому
+// detailed=false -- законное состояние, а не отказ.
+export type ModelAnswer = {
+  text: string
+  stopReason: string | null
+  blocks: { type: string; len: number }[] | null
+  outTok: number | null
+  detailed: boolean
+}
+
+export function readComplete(raw: any): ModelAnswer {
+  const flat: ModelAnswer = { text: "", stopReason: null, blocks: null, outTok: null, detailed: false }
+  if (raw === null || raw === undefined) return flat
+  if (typeof raw === "object") {
+    // CONSTRAINT: конверт опознаётся по СВОИМ полям, а не по типу: объект без
+    // них -- чужая форма, и String(объект) дал бы "[object Object]" в роли
+    // ответа модели. Пустой text при живом конверте -- ИЗМЕРЕННЫЙ ноль, его
+    // и надо отличать от немощи прибора.
+    const hasEnvelope = "stopReason" in raw || "blocks" in raw || "usage" in raw
+    if (hasEnvelope) {
+      const out: ModelAnswer = { text: "", stopReason: null, blocks: null, outTok: null, detailed: true }
+      if (typeof raw.text === "string") out.text = raw.text
+      if (typeof raw.stopReason === "string") out.stopReason = raw.stopReason
+      if (Array.isArray(raw.blocks)) {
+        const bs: { type: string; len: number }[] = []
+        for (let i = 0; i < raw.blocks.length; i++) {
+          const b = raw.blocks[i]
+          if (b && typeof b === "object") {
+            bs.push({ type: String(b.type ?? "?"), len: num(b.len, 0, 0) })
+          }
+        }
+        out.blocks = bs
+      }
+      const u = raw.usage
+      if (u && typeof u === "object" && typeof u.output_tokens === "number") out.outTok = u.output_tokens
+      return out
+    }
+    return flat
+  }
+  flat.text = String(raw)
+  return flat
+}
+
+// Блоки -- ОДНОЙ строкой для улики: протокол «ключ<TAB>значение» обязан
+// оставаться однострочным, а перечень типов блоков и есть ответ на вопрос
+// «чем был занят ответ, если текста в нём нет».
+export function blocksLine(blocks: { type: string; len: number }[] | null): string {
+  if (!blocks) return ""
+  const out: string[] = []
+  for (let i = 0; i < blocks.length; i++) out.push(blocks[i].type + ":" + blocks[i].len)
+  return out.join(",")
 }
 
 export function parseVerdict(raw: string, rx: string): { kind: string; rest: string } | null {
@@ -1148,8 +1211,13 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         if (mt) arg.maxTokens = mt
         const tmo = rung.timeout_ms || floorTmo
         if (tmo) arg.timeoutMs = tmo
-        const raw = await $.model.complete(arg)
-        const rawS = String(raw)
+        // CONSTRAINT: detail просят ВСЕГДА. Образ со шагом 31 отдаёт конверт
+        // {text, stopReason, blocks, usage}; образ без него поля не знает и
+        // возвращает прежнюю строку -- readComplete различает обе формы, и
+        // мод остаётся годен на обоих образах (#190).
+        arg.detail = true
+        const ans = readComplete(await $.model.complete(arg))
+        const rawS = ans.text
         // CONSTRAINT: длительность нужна НА СТУПЕНЬ, а не на улику целиком:
         // пустой ответ быстрой ступени и пустой ответ после долгого молчания --
         // разные явления, а суммарный dtMs их не разделяет (замер #153).
@@ -1162,6 +1230,18 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         rec["rawLen_" + used] = rawS.length
         rec["ctxN_" + used] = rungCtxN
         rec["raw_" + used] = rawS.slice(0, 2000)
+        // CONSTRAINT: причина пустоты пишется ВСЕГДА, когда образ её отдал --
+        // и только тогда. Отсутствие полей на старом образе означает «нечем
+        // было измерить», а нули означали бы измеренный ноль (ПУСТО != НОЛЬ).
+        if (ans.detailed) {
+          rec["detail_" + used] = true
+          if (ans.stopReason !== null) rec["stop_" + used] = ans.stopReason
+          if (ans.blocks !== null) {
+            rec["blocks_" + used] = blocksLine(ans.blocks)
+            rec["blockN_" + used] = ans.blocks.length
+          }
+          if (ans.outTok !== null) rec["outTok_" + used] = ans.outTok
+        }
         verdict = parseVerdict(rawS, p.rx)
         if (verdict) break
       } catch (x) {

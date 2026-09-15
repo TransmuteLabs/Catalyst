@@ -187,3 +187,23 @@ one mod, one file, run against both images.
 lower rungs was exactly 500 — a ceiling of the INSTRUMENT is indistinguishable
 from a ceiling of the MODEL, and the baseline for the token-cap work was
 unusable.
+
+## Why an empty reply is three different worlds
+
+`$.model.complete` hands the mod only the CONCATENATION of the text blocks
+(measured in the image's bytes: a flatMap over `content` keeping `type ===
+"text"`), so an empty string means one of three things and the mod could not
+tell them apart: the model stayed silent, the reply consisted of non-text
+blocks (thinking / tool_use), or the reply was cut off at the token ceiling.
+The patch's step 31 therefore accepts `detail: true` and returns the full
+envelope `{text, stopReason, blocks:[{type,len}], usage}` from the same point
+where the text was being flattened.
+
+The mod asks for `detail` ALWAYS. An image WITHOUT step 31 does not know the
+field and returns the old string, so `readComplete` (a pure exported function —
+the call site lives behind `$` and no tooth reaches it) accepts both forms and
+reports which one it saw. The record carries `detail_<model>`, `stop_<model>`,
+`blocks_<model>` (one line, `type:len` comma-separated), `blockN_<model>` and
+`outTok_<model>` — and carries them ONLY when the image actually answered with
+the envelope: absent fields mean "there was nothing to measure with", while
+zeros would mean a measured zero.
