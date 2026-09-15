@@ -26,17 +26,21 @@ const FORM_REQ = [
   "trailer_a","trailer_b","write_redirect","heredoc",
 ]
 
-// CONSTRAINT: часы поверхности читать ТОЛЬКО отсюда. На 2.1.272 хост-функция
-// часов отдаёт нечисловое значение (улики с 13:01 15.09 несут `t0:{}`, улики до этой
-// минуты -- миллисекунды), и каждое арифметическое действие над ним даёт NaN
-// МОЛЧА: длительность становится null, окно мемоизации не закрывается никогда,
-// а `new Date(x).toISOString()` бросает и уносит с собой строку журнала под
-// глухим catch. Отказ часов не скрывается -- он помечается в улике (clockBad).
+// CONSTRAINT: часы поверхности ЖДУТ и читаются ТОЛЬКО отсюда. Часы стали
+// АСИНХРОННЫМИ: на 2.1.270 вызов возвращал число, на 2.1.272 -- промис
+// (замерено зондом clock-probe: `[object Promise]`, `JSON.stringify` даёт `{}`,
+// после `await` -- миллисекунды). Вызов без ожидания не отказывает, а молча
+// отдаёт объект: улики с 13:01 15.09 несут `t0:{}` вместо миллисекунд,
+// арифметика даёт NaN, окно мемоизации не закрывается никогда, а
+// `new Date(x).toISOString()` бросает и уносит с собой строку журнала под
+// глухим catch. Фолбэк на платформенные часы оставлен на случай, когда
+// поверхность отдаст непригодное и после ожидания, и он не скрывается --
+// улика помечается `clockBad`.
 let clockBad = false
 
-function nowMs($: any): number {
+async function nowMs($: any): Promise<number> {
   let v: any = null
-  try { v = $.clock.now() } catch (x) { v = null }
+  try { v = await $.clock.now() } catch (x) { v = null }
   if (typeof v === "number" && isFinite(v)) return v
   clockBad = true
   return Date.now()
@@ -318,7 +322,7 @@ async function readTextNull($: any, path: string): Promise<string | null> {
 
 async function appendJournal($: any, jpath: string, obj: any) {
   const line = JSON.stringify(obj) + "\n"
-  const rec = String((obj && (obj.rec || obj.t)) || ("t" + String(nowMs($))))
+  const rec = String((obj && (obj.rec || obj.t)) || ("t" + String(await nowMs($))))
   let safe = ""
   for (let i = 0; i < rec.length; i++) {
     const c = rec.charAt(i)
@@ -546,7 +550,7 @@ async function applyPromptRules(
       await $.fs.write(
         world.globalHome + "/prompts/records/applied-" + safeId(r.id) + ".json",
         JSON.stringify({
-          t: new Date(nowMs($)).toISOString(), id: r.id, kind: r.kind,
+          t: new Date(await nowMs($)).toISOString(), id: r.id, kind: r.kind,
           target: r.target, mode: r.mode, chars_before: before, chars_after: out.length,
           builtin: r.builtin === true,
         }),
@@ -563,7 +567,7 @@ async function applyPromptRules(
 let worldMemo: any = null
 
 async function worldFor($: any): Promise<any> {
-  const now = nowMs($)
+  const now = await nowMs($)
   if (worldMemo && now - worldMemo.t < 5000) return worldMemo
   const env = await envBundle($)
   const world = await loadWorld($, env)
@@ -938,7 +942,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         rec["err_" + used] = String(x).slice(0, 240)
       }
     }
-    rec.dtMs = nowMs($) - t0
+    rec.dtMs = await nowMs($) - t0
     rec.used = used
     if (verdict) {
       rec.kind = verdict.kind
@@ -957,7 +961,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     }
   } catch (x) {
     rec.threw = String(x).slice(0, 400)
-    rec.dtMs = nowMs($) - t0
+    rec.dtMs = await nowMs($) - t0
     rec.kind = "NONE"
     if (p.pending || p.act === "cancel") {
       try { await $.store.set(key, { kind: "NONE", threw: rec.threw, dtMs: rec.dtMs }) } catch (y) {}
@@ -1078,7 +1082,7 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   const cnts = cls.map((c3) => c3 + "×" + rf.concat(wn).filter((x) => x.c === c3).length).join(", ")
   const vd = (vk === "pass" ? "PASS" : vk === "warn" ? "WARN" : "REFUSE") + ": " +
     (vk === "pass" ? lbl : cnts + " — " + lbl + " — " + (src3 ? src3.c : "") + " :" + (src3 ? src3.n : "") + " " + (src3 ? src3.q : ""))
-  const t0 = nowMs($)
+  const t0 = await nowMs($)
   const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
   const jpath = world.globalHome + "/form/journal.jsonl"
   const recPath = world.globalHome + "/form/records/" + recName
@@ -1173,7 +1177,7 @@ export function register(on: any) {
     const world = await loadWorld($, env)
     const prompt = String((e && e.prompt) || "")
     const agent = String((e && e.subagent_type) || "")
-    const t0 = nowMs($)
+    const t0 = await nowMs($)
     let live = 0
     try {
       const lst = await $.agent.list()

@@ -154,25 +154,31 @@ add a new id. `CLAUDE_PROBES_DIR` disables layering.
 
 ## Host clock (2026-09-15)
 
-`$.clock.now()` is read through `nowMs($)` and nowhere else. On 2.1.272 the host
-function returns a non-number: every record written after the binary was swapped
-carries `"t0":{}` and `"dtMs":null`, while records from the minutes before it
-carry milliseconds. Arithmetic on that value yields NaN silently — the duration
+`$.clock.now()` is awaited, and read through `nowMs($)` and nowhere else. The
+host clock became ASYNCHRONOUS: on 2.1.270 the call returned a number, on 2.1.272
+it returns a promise (measured with the clock-probe mod: `[object Promise]`,
+`JSON.stringify` gives `{}`, and after `await` it is milliseconds). An unawaited
+call does not fail — it silently hands back the promise object: every record
+written after the binary was swapped carries `"t0":{}` and `"dtMs":null`, while
+records from the minutes before it carry milliseconds. Arithmetic on that value
+yields NaN silently — the duration
 became null, the world memo window never closed (so the per-call file reads the
 memo exists to avoid came back), and `new Date(x).toISOString()` threw inside the
 journal block, where a silent `catch` swallowed it. The shard was then never
 written: 42 records lost their journal line, and every one of them had `t0:{}`
 while all 179 records with a numeric `t0` kept theirs.
 
-`nowMs` validates the host value and falls back to `Date.now()`, marking the
-record with `clockBad` so the fallback is never invisible. The journal `catch`
+`nowMs` awaits the host clock, validates what comes back, and falls back to
+`Date.now()` only if that is still unusable — marking the record with `clockBad`
+so the fallback is never invisible. The journal `catch`
 now appends its reason to the already-written record (`journalErr`) instead of
 staying mute — losing a line used to be detectable only by comparing two homes,
 which is exactly what hid this defect.
 
-The host-side question — what the function actually returns, and whether this is
-an upstream regression of the mod surface — is measured separately (task #185);
-`nowMs` is correct either way.
+This is a surface change on the upstream side, not a broken host: returning a
+promise is a legitimate shape, and the caller is the one that has to wait for it.
+The probe that established this lives in the session scratchpad (clock-probe):
+one mod, one file, run against both images.
 
 ## Own truncation of model replies
 
