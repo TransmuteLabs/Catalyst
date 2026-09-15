@@ -555,6 +555,24 @@ async function worldFor($: any): Promise<any> {
   return worldMemo
 }
 
+// Отсутствие поля sid и есть чинимый дефект: неудача обязана быть ВИДНА
+// значением, а не отсутствием ключа. Настоящий sid — имя файла транскрипта
+// (UUID), спутать нельзя.
+const SID_UNAVAILABLE = "sid-unavailable"
+
+// Идентификатор сессии в пределах процесса неизменен, поэтому кэш без TTL.
+// Неудачу НЕ запоминаем: отказ поверхности может быть разовым, а memo живёт
+// весь процесс — запомненный sentinel навсегда отнял бы поле.
+let sidMemo: string | null = null
+
+async function sidFor($: any): Promise<string> {
+  if (sidMemo) return sidMemo
+  let v: any = null
+  try { v = await $.session.id() } catch (x) { v = null }
+  if (typeof v === "string" && v) { sidMemo = v; return v }
+  return SID_UNAVAILABLE
+}
+
 const rxCache: any = {}
 function K(s: string, f: string): RegExp {
   const key = f + "|" + s
@@ -797,7 +815,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
   const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
   const recPath = world.globalHome + "/" + id + "/records/" + recName
   const jpath = world.globalHome + "/" + id + "/journal.jsonl"
-  const rec: any = { id: e && e.tool_use_id, probe: id, tool, agent, t0, carrier: "mod", projectHome: world.projectHome, globalHome: world.globalHome }
+  const rec: any = { id: e && e.tool_use_id, probe: id, tool, agent, t0, carrier: "mod", sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
   try {
     let sys = ""
     if (id === "judge" && env.JUDGE_PROMPT) {
@@ -935,7 +953,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       t: new Date(t0).toISOString(),
       probe: id, tool, agent, ms: rec.dtMs, outcome: oc,
       verdict: (kind + ": " + rest).slice(0, 400),
-      jm: rec.used, rec: recName, carrier: "mod",
+      jm: rec.used, rec: recName, carrier: "mod", sid: rec.sid,
     })
   } catch (x) {}
   return rec
@@ -1034,7 +1052,7 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   try {
     await appendJournal($, jpath, {
       t: new Date(t0).toISOString(), tool, outcome: vk, verdict: clip(vd, 400),
-      cls, jm: "rules", tries: 0, rec: recName, carrier: "mod", probe: "form",
+      cls, jm: "rules", tries: 0, rec: recName, carrier: "mod", sid: await sidFor($), probe: "form",
       skipped: sk.slice(0, 8),
     })
   } catch (x) {}
@@ -1171,7 +1189,7 @@ export function register(on: any) {
           try {
             await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
               t: new Date(t0).toISOString(), tool, agent, outcome: "skip_disabled",
-              rec: recName, carrier: "mod", ms: 0, probe: "judge",
+              rec: recName, carrier: "mod", sid: await sidFor($), ms: 0, probe: "judge",
             })
           } catch (x) {}
         }
@@ -1212,7 +1230,7 @@ export function register(on: any) {
           try {
             await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
               t: new Date(t0).toISOString(), tool, agent, outcome: "skip",
-              rec: recName, carrier: "mod", reason: by, cls, ms: 0, probe: "judge",
+              rec: recName, carrier: "mod", sid: await sidFor($), reason: by, cls, ms: 0, probe: "judge",
             })
           } catch (x) {}
           continue
