@@ -36,6 +36,11 @@ staged=$(git diff --cached --name-only)
 # commands/, hooks/, .claude-plugin/ -> корневой плагин catalyst (дом ".").
 plugins=""
 root_touched=0
+# CONSTRAINT: оснастка (стенды, скрипты, сама дверь) поднимает ТОЛЬКО стадию 5,
+# не оси A--D: она не входит ни в один плагин, и требовать за неё бамп версии
+# было бы неверно. Но гонять стенды за неё обязательно -- иначе правка, ломающая
+# стенд, проходит молча, и дверь слепа ровно к своей собственной поломке.
+harness_touched=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
@@ -49,12 +54,13 @@ while IFS= read -r f; do
     # их, и правка ОДНОГО зеркала обязана её поднять, иначе расхождение версий
     # уезжает молча (norms.yaml: дом управляет, зеркало -- баг).
     .codex-plugin/*|.cursor-plugin/*|.kimi-plugin/*) root_touched=1 ;;
+    tests/*|scripts/*|.githooks/*) harness_touched=1 ;;
   esac
 done <<EOF
 $staged
 EOF
 
-[ -n "$plugins" ] || [ "$root_touched" = 1 ] || exit 0
+[ -n "$plugins" ] || [ "$root_touched" = 1 ] || [ "$harness_touched" = 1 ] || exit 0
 
 if [ "${CATALYST_PLUGIN_GATE:-}" = "off" ]; then
   printf 'CATALYST_PLUGIN_GATE=off: дверь приёмки плагина ПРОПУЩЕНА по явной ручке\n'
@@ -93,6 +99,11 @@ EOF
   fi
 done
 
+# CONSTRAINT: приборы осей B и C спрашиваются, только если есть что ими мерить.
+# Коммит одной оснастки не трогает ни один плагин -- требовать за него claude и
+# bun значило бы краснить ПРИБОР_НЕДОСТУПЕН там, где мерить и нечего.
+if [ -n "$dirs" ]; then
+
 # --- ОСЬ B: ценз валидатора ---------------------------------------------------
 command -v claude >/dev/null 2>&1 || fail "ПРИБОР_НЕДОСТУПЕН: claude не найден в PATH -- это «не измерено», а не «чисто»"
 for d in $dirs; do
@@ -122,6 +133,8 @@ $ts_files
 EOF
 done
 
+fi   # конец блока осей B и C
+
 # --- ОСЬ D: зеркала манифеста корневого плагина -------------------------------
 if [ "$root_touched" = 1 ]; then
   mirrors=".claude-plugin/plugin.json .codex-plugin/plugin.json .cursor-plugin/plugin.json .kimi-plugin/plugin.json"
@@ -141,5 +154,33 @@ if [ "$root_touched" = 1 ]; then
   fi
 fi
 
-printf 'дверь приёмки плагина: прошло (версия/валидатор/синтаксис/зеркала) -- %s\n' "$dirs"
+# --- СТАДИЯ 5 (СТЕНДЫ): агрегатор tests/run-all.sh ----------------------------
+# CONSTRAINT: стадия будится тем же классификатором, что оси A--D (проверено
+# выходом на классификации выше) -- коммит вне дерева семьи сюда не доходит.
+# CONSTRAINT: rc=2 агрегатора -- тот же класс, что отсутствующий файл: мерить
+# не получилось, а это отказ, а не тихий пропуск.
+if [ ! -f tests/run-all.sh ]; then
+  fail "ПРИБОР_НЕДОСТУПЕН: tests/run-all.sh не найден -- стенды не позваны, это «не измерено», а не «чисто»"
+fi
+stands_out=$(bash tests/run-all.sh 2>&1)
+stands_rc=$?
+if [ "$stands_rc" -eq 1 ]; then
+  printf 'дверь приёмки плагина: ОТКАЗ СТЕНД_КРАСЕН: стенд семьи красен\n'
+  printf '%s\n' "$stands_out"
+  exit 1
+fi
+if [ "$stands_rc" -ne 0 ]; then
+  printf 'дверь приёмки плагина: ОТКАЗ ПРИБОР_НЕДОСТУПЕН: агрегатор стендов вернул rc=%s (мерить не получилось)\n' "$stands_rc"
+  printf '%s\n' "$stands_out"
+  exit 1
+fi
+
+# CONSTRAINT: дверь называет, ЧТО проверила. Пустой список плагинов означает
+# коммит одной оснастки: оси A--D не запускались, и объявить их пройденными
+# было бы ложью.
+if [ -n "$dirs" ]; then
+  printf 'дверь приёмки плагина: прошло (версия/валидатор/синтаксис/зеркала/стенды) --%s\n' "$dirs"
+else
+  printf 'дверь приёмки плагина: затронута только оснастка -- прошло (стенды); оси плагина не запускались\n'
+fi
 exit 0

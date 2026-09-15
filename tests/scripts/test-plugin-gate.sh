@@ -19,7 +19,7 @@ bad() { FAIL=$((FAIL+1)); printf 'ПРОВАЛ %s\n' "$*"; }
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/plugin-gate-teeth.XXXXXX")
 trap 'rm -rf "$ROOT"' EXIT
 
-REASONS="ВЕРСИЯ_НЕ_ПОДНЯТА ВАЛИДАТОР_ОТКАЗАЛ СИНТАКСИС_МОДУЛЯ ЗЕРКАЛА_РАЗОШЛИСЬ ПРИБОР_НЕДОСТУПЕН"
+REASONS="ВЕРСИЯ_НЕ_ПОДНЯТА ВАЛИДАТОР_ОТКАЗАЛ СИНТАКСИС_МОДУЛЯ ЗЕРКАЛА_РАЗОШЛИСЬ ПРИБОР_НЕДОСТУПЕН СТЕНД_КРАСЕН"
 
 # Код возврата берётся у САМОЙ подстановки: run_door исполняется в подоболочке,
 # присваивания внутри неё наружу не выходят.
@@ -116,6 +116,11 @@ mk_world() {   # <имя мира> -> путь репо; зеркала в ба�
   printf '{"name":"catalyst","version":"0.1.0"}\n' > "$r/.kimi-plugin/plugin.json"
   printf 'skill\n' > "$r/skills/s.md"
   printf 'doc\n' > "$r/docs/d.md"
+  # CONSTRAINT: в мире обязан жить зелёный стаб tests/run-all.sh -- пятая стадия
+  # двери зовёт агрегатор по рабочему дереву; без стаба каждый случай, дошедший
+  # до стадии, краснел бы ПРИБОР_НЕДОСТУПЕН. Красные случаи подменяют стаб.
+  mkdir -p "$r/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$r/tests/run-all.sh"
   git -C "$r" init -q
   git -C "$r" config user.email t@t
   git -C "$r" config user.name t
@@ -245,6 +250,80 @@ if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *".codex-plugin/plugin.json 
   ok "10) правка ТОЛЬКО зеркала будит дверь -- ЗЕРКАЛА_РАЗОШЛИСЬ и только она"
 else
   bad "10) зеркало в одиночку: rc=$rc $why[$out]"
+fi
+
+# --- 11. СТАДИЯ 5: агрегатор красен -> СТЕНД_КРАСЕН ----------------------------
+# Пробуждение через skills/ требует одновременного подъёма дома и трёх зеркал
+# (0.1.1 везде), иначе краснеет ось A или D раньше стадии.
+R=$(mk_world stands_red)
+printf 'skill more\n' > "$R/skills/s.md"
+root_manifest "$R/.claude-plugin/plugin.json" 0.1.1
+printf '{"name":"catalyst","version":"0.1.1"}\n' > "$R/.codex-plugin/plugin.json"
+printf '{"name":"catalyst","version":"0.1.1"}\n' > "$R/.cursor-plugin/plugin.json"
+printf '{"name":"catalyst","version":"0.1.1"}\n' > "$R/.kimi-plugin/plugin.json"
+printf '#!/usr/bin/env bash\nprintf "run-all: стендов 1, зелёных 0, красных 1\\n"\nexit 1\n' > "$R/tests/run-all.sh"
+git -C "$R" add skills .claude-plugin .codex-plugin .cursor-plugin .kimi-plugin
+out=$(run_door "$R"); rc=$?
+why=$(check_only "СТЕНД_КРАСЕН" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *"красных 1"* ]]; then
+  ok "11) красный агрегатор -- СТЕНД_КРАСЕН и только она, вывод дословно"
+else
+  bad "11) стадия стендов: rc=$rc $why[$out]"
+fi
+
+# --- 12. СТАДИЯ 5: агрегатор отсутствует -> ПРИБОР_НЕДОСТУПЕН ------------------
+R=$(mk_world stands_missing)
+printf 'skill more\n' > "$R/skills/s.md"
+root_manifest "$R/.claude-plugin/plugin.json" 0.1.1
+printf '{"name":"catalyst","version":"0.1.1"}\n' > "$R/.codex-plugin/plugin.json"
+printf '{"name":"catalyst","version":"0.1.1"}\n' > "$R/.cursor-plugin/plugin.json"
+printf '{"name":"catalyst","version":"0.1.1"}\n' > "$R/.kimi-plugin/plugin.json"
+rm "$R/tests/run-all.sh"
+git -C "$R" add skills .claude-plugin .codex-plugin .cursor-plugin .kimi-plugin
+out=$(run_door "$R"); rc=$?
+why=$(check_only "ПРИБОР_НЕДОСТУПЕН" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *"tests/run-all.sh"* ]]; then
+  ok "12) tests/run-all.sh отсутствует -- ПРИБОР_НЕДОСТУПЕН, не молчаливый пропуск"
+else
+  bad "12) нет агрегатора: rc=$rc $why[$out]"
+fi
+
+# --- 13. СТАДИЯ 5 спит на коммите вне дерева семьи -----------------------------
+# Положительный контроль -- случай 11: та же дверь на семейном коммите печатает
+# строку агрегатора; здесь её быть не обязано.
+R=$(mk_world stands_docs)
+printf 'doc more\n' > "$R/docs/d.md"
+git -C "$R" add docs/d.md
+out=$(run_door "$R"); rc=$?
+if (( rc == 0 )) && [[ "$out" != *"run-all"* ]]; then
+  ok "13) коммит только docs/ -- стенды не гоняются, строки агрегатора нет"
+else
+  bad "13) docs-only: ждали rc=0 без строки агрегатора, получили rc=$rc [$out]"
+fi
+
+# --- 14. ОСНАСТКА будит СТАДИЮ 5, но НЕ оси плагина --------------------------
+# Без этого случая дверь слепа к своей собственной поломке: правка стенда или
+# самой двери не гоняла бы стенды, и коммит, ломающий стенд, проходил бы молча.
+R=$(mk_world harness_only)
+printf '#!/usr/bin/env bash\necho "run-all probe: заведомо красный стенд"\nexit 1\n' > "$R/tests/run-all.sh"
+git -C "$R" add tests
+out=$(run_door "$R"); rc=$?
+why=$(check_only "СТЕНД_КРАСЕН" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]]; then
+  ok "14) правка одной оснастки будит стадию 5 -- СТЕНД_КРАСЕН и только она"
+else
+  bad "14) оснастка в одиночку: rc=$rc $why[$out]"
+fi
+
+# --- 15. ОСНАСТКА без плагина: оси A--D не запускаются, приборы не требуются ---
+R=$(mk_world harness_green)
+printf 'echo tweak\n' >> "$R/tests/run-all.sh"
+git -C "$R" add tests
+out=$(run_door "$R" PATH="/usr/bin:/bin"); rc=$?
+if (( rc == 0 )) && [[ "$out" == *"только оснастка"* ]] && [[ "$out" != *"ПРИБОР_НЕДОСТУПЕН"* ]]; then
+  ok "15) оснастка без плагина -- оси A--D не запускались, claude/bun не требуются"
+else
+  bad "15) оснастка без плагина: ждали rc=0 с объявлением, получили rc=$rc [$out]"
 fi
 
 printf '\nplugin-gate teeth: прошло=%d провалов=%d\n' "$PASS" "$FAIL"
