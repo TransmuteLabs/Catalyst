@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Напоминание ровно в момент, когда расхождение рождается.
+#
+# Измерено 2026-09-15 (#188): реестр установки отставал от зеркала маркетплейса
+# на целый бамп -- коммит и пуш не влекут активации, а сторож свежести
+# (hooks/plugin-freshness.py) зовётся лишь на старте сессии, и круглосуточная
+# сессия не видит расхождения до следующего старта. Этот хук говорит о бампе
+# версии сразу, в коммите, который его сделал.
+#
+# CONSTRAINT: post-commit не имеет права мешать коммиту -- хук НИЧЕГО не
+# запускает сам и всегда возвращает 0; любой собственный отказ глушится,
+# а не краснит.
+#
+# CONSTRAINT: --root и -m --first-parent обязательны, и это ИЗМЕРЕНО на этом
+# репозитории: без них `git diff-tree` печатает ПУСТО на первичном коммите
+# (45 файлов против 0) и на коммите слияния (2 против 0) -- бамп версии в таком
+# коммите напоминания не получил бы. На обычном коммите обе формы совпадают.
+set -u
+
+git diff-tree --no-commit-id --name-only -r --root -m --first-parent HEAD | while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in
+    plugins/*/.claude-plugin/plugin.json) ;;
+    *) continue ;;
+  esac
+  plugin="${f#plugins/}"
+  plugin="${plugin%%/*}"
+  v=$(git show "HEAD:$f" 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("version", "?"))
+except Exception:
+    print("?")')
+  [ -n "$v" ] || v="?"
+  printf 'post-commit: версия %s поднята до v%s -- сам коммит её ещё НЕ активировал\n' "$plugin" "$v"
+  printf 'post-commit: после пуша активировать: scripts/ship-plugin.sh %s\n' "$plugin"
+done
+
+exit 0
