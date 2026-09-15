@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs"
 import {
   bl3, num, clip, classesOf, normTmp, resolvePath,
   parseVal, parseToml, rungsOf, rungCtx, parseVerdict,
+  verdictKey, memoUsable,
   MOD_VERSION,
 } from "../hooks/register.ts"
 
@@ -382,4 +383,57 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 test("MOD_VERSION: сходится с version манифеста plugin.json", () => {
   const manifest = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"))
   assert.equal(MOD_VERSION, manifest.version)
+})
+
+// --- verdictKey: сессионная и текстовая грань вердиктного кэша -------------------
+
+test("verdictKey: разный sid даёт разные ключи", () => {
+  assert.notEqual(
+    verdictKey("judge", "sid-a", "Agent", "scout", "один текст"),
+    verdictKey("judge", "sid-b", "Agent", "scout", "один текст"))
+})
+
+test("verdictKey: разный текст даёт разные ключи", () => {
+  assert.notEqual(
+    verdictKey("judge", "sid", "Agent", "scout", "текст один"),
+    verdictKey("judge", "sid", "Agent", "scout", "текст два"))
+})
+
+test("verdictKey: длина ключа <= 256 на длинном тексте и длинном sid", () => {
+  const long = "x".repeat(10000)
+  assert.ok(verdictKey("judge", "sid", "Agent", "scout", long).length <= 256)
+  assert.ok(verdictKey("judge", long, "Agent", "scout", long).length <= 256)
+})
+
+// --- memoUsable: годность записи вердиктного кэша ---------------------------------
+
+test("memoUsable: undefined -- false", () => {
+  assert.equal(memoUsable(undefined, 1000, 100), false)
+})
+
+test("memoUsable: объект без t (форма всех прежних ключей) -- false", () => {
+  assert.equal(memoUsable({ kind: "BLOCK", rest: "r", used: "m", dtMs: 5 }, 1000, 100), false)
+})
+
+test("memoUsable: t старше ttl -- false; ровно на границе ttl -- годен", () => {
+  assert.equal(memoUsable({ kind: "BLOCK", t: 899 }, 1000, 100), false)
+  assert.equal(memoUsable({ kind: "BLOCK", t: 900 }, 1000, 100), true)
+})
+
+test("memoUsable: свежий t с kind BLOCK -- true", () => {
+  assert.equal(memoUsable({ kind: "BLOCK", t: 950, rest: "r" }, 1000, 100), true)
+})
+
+// CONSTRAINT: t обязан быть ЧИСЛОМ, а не всем, что вычитается. Без явной
+// проверки числа строка "950" прошла бы приведением и оживила запись, а стор
+// -- общий JSON, куда значение могло лечь от другого производителя. Отрицательный
+// контроль 15.09: снятие Number.isFinite оставляло набор зубов ЗЕЛЁНЫМ.
+test("memoUsable: t числовой строкой -- false", () => {
+  assert.equal(memoUsable({ kind: "BLOCK", t: "950" }, 1000, 100), false)
+  assert.equal(memoUsable({ kind: "BLOCK", t: "2026-09-15T00:00:00Z" }, 1000, 100), false)
+})
+
+test("memoUsable: свежий t с kind OK/WARN -- false (одобрения не кэшируются)", () => {
+  assert.equal(memoUsable({ kind: "OK", t: 950 }, 1000, 100), false)
+  assert.equal(memoUsable({ kind: "WARN", t: 950 }, 1000, 100), false)
 })

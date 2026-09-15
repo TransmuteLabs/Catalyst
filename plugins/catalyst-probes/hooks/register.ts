@@ -12,10 +12,13 @@
 
 const CWD_KEY = "catalyst-probes:cwd"
 const CAP_KEY = "catalyst-probes:sesscap"
+// CONSTRAINT: умолчание срока жизни вердиктного кэша живёт в ОДНОМ доме --
+// чтение в tool.call и порог уборки в session.start обязаны совпадать.
+const VERDICT_TTL_MS_DEFAULT = 120000
 // CONSTRAINT: версия дублируется в .claude-plugin/plugin.json НАМЕРЕННО --
 // манифест читает установщик, константу -- улика; расхождение ловит зуб в
 // tests/units.test.ts, сверяющий константу с манифестом.
-export const MOD_VERSION = "0.1.10"
+export const MOD_VERSION = "0.1.11"
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
@@ -865,8 +868,25 @@ function lastKey(id: string, cwd: string): string {
   return "catalyst-probes:last:" + safeId(id) + ":" + String(cwd || "").slice(-80)
 }
 
-function verdictKey(id: string, tool: string, agent: string, prompt: string): string {
-  return ("v:" + safeId(id) + ":" + tool + "|" + agent + "|" + String(prompt.length) + "|" + fnv1a(prompt)).slice(0, 256)
+// CONSTRAINT: sid ограничивает вердиктный кэш сессией отправителя. При
+// недоступном sid (SID_UNAVAILABLE) ключ вырождается в общий для всех
+// таких сессий -- тогда единственная граница кэша это срок годности
+// записи, и это НАМЕРЕННО.
+export function verdictKey(id: string, sid: string, tool: string, agent: string, prompt: string): string {
+  return ("v:" + safeId(id) + ":" + sid + ":" + tool + "|" + agent + "|" + String(prompt.length) + "|" + fnv1a(prompt)).slice(0, 256)
+}
+
+// CONSTRAINT: запись без конечного t -- форма всех ключей, писанных до
+// сессионной границы, -- годной не признаётся НИКОГДА. Одобрения (OK/WARN)
+// не кэшируются вовсе, поэтому годное мемо -- всегда отказ или NONE.
+// CONSTRAINT: параметр НЕ может зваться nowMs -- это имя модульного помощника,
+// принимающего $, и затенение делает сканер загрузчика неоднозначным:
+// `claude plugin validate` отбивает ВЕСЬ модуль («declared more than once»),
+// а зубы, bun build и набор стендов при этом остаются зелёными (измерено 15.09).
+export function memoUsable(stored: any, atMs: number, ttlMs: number): boolean {
+  if (!stored || typeof stored !== "object" || !stored.kind) return false
+  if (stored.kind === "OK" || stored.kind === "WARN") return false
+  return Number.isFinite(stored.t) && (atMs - stored.t) <= ttlMs
 }
 
 async function loadWorld($: any, env: any): Promise<any> {
@@ -898,6 +918,16 @@ async function loadWorld($: any, env: any): Promise<any> {
   }
 }
 
+// CONSTRAINT: имя и путь улики одним домом -- улика консульта и улика
+// попадания в кэш обязаны строиться побайтно одной формой.
+function modRecName(e: any): string {
+  return "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
+}
+
+function modRecPath(world: any, id: string, e: any): string {
+  return world.globalHome + "/" + id + "/records/" + modRecName(e)
+}
+
 async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any, key: string): Promise<any> {
   const id = p.id
   const cfg = p.cfg
@@ -905,8 +935,8 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
   const agent = String((e && e.subagent_type) || "")
   const prompt = String((e && e.prompt) || "")
   const t0 = ctx.now
-  const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
-  const recPath = world.globalHome + "/" + id + "/records/" + recName
+  const recName = modRecName(e)
+  const recPath = modRecPath(world, id, e)
   const jpath = world.globalHome + "/" + id + "/journal.jsonl"
   const rec: any = { id: e && e.tool_use_id, probe: id, tool, agent, t0, carrier: "mod", mod: MOD_VERSION, sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
   try {
@@ -1004,18 +1034,23 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       const rungT0 = await nowMs($)
       try {
         const arg: any = { model: rung.model, prompt: full }
-        // CONSTRAINT: эффорт поверхностью НЕ доставляется -- перехват тела
-        // запроса (2026-09-15) показал ключи РОВНО max_tokens/messages/
-        // metadata/model/system, тогда как запрос главного хода той же сессии
-        // несёт thinking. Аргумент оставлен: он ничего не ломает и оживёт, если
-        // поверхность заведёт поле. Дом эффорта для носителя мод -- патч.
+        // CONSTRAINT: эффорт доставляется штатно (образ 2.1.272, замер
+        // 2026-09-15): шаг 31 патча принимает effort в сигнатуре мод-API и
+        // передаёт отправителю как extraBodyParams:{reasoning_effort:<effort>};
+        // отправитель деструктурирует поле и вливает его в тело запроса
+        // единственным spread'ом рядом с metadata/thinking/betas. Канал тот
+        // же, каким пользуется встроенный классификатор auto_mode, --
+        // значение эффорта доезжает до провайдера дословно.
         if (rung.effort) arg.effort = rung.effort
         const mt = rung.max_tokens || floorTok
         // CONSTRAINT: канонический потолок зовётся maxTokens и ПЕРЕБИВАЕТ
         // max_tokens (замерено на проводе: оба поля читаются, при паре
-        // побеждает camelCase; на провод уходит запрошенное + 2048 резерва, а
-        // без поля -- 256 + 2048). Запасная дорога не опора: поверхность не
-        // монотонна -- часы на 2.1.272 уже сменили природу (#185).
+        // побеждает camelCase). Прибавка резерва условна: она берётся из
+        // IJ(model) образа и равна 2048 ТОЛЬКО для моделей, отнесённых к
+        // rejects_disabled_thinking; для прочих моделей прибавка 0, а без
+        // поля на провод уходит умолчание 256. Запасная дорога не опора:
+        // поверхность не монотонна -- часы на 2.1.272 уже сменили природу
+        // (#185).
         if (mt) arg.maxTokens = mt
         const tmo = rung.timeout_ms || floorTmo
         if (tmo) arg.timeoutMs = tmo
@@ -1048,8 +1083,11 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     if (verdict) {
       rec.kind = verdict.kind
       rec.rest = verdict.rest
-      if (p.pending || p.act === "cancel") {
-        try { await $.store.set(key, { kind: verdict.kind, rest: verdict.rest, used, dtMs: rec.dtMs }) } catch (x) {}
+      // CONSTRAINT: кэш -- только отказ: одобренный диспатч исполняется,
+      // шторм повторов бывает после отказа, кэш OK/WARN не защищал ни от
+      // чего и молча гасил суд для всех будущих сессий.
+      if ((p.pending || p.act === "cancel") && verdict.kind !== "OK" && verdict.kind !== "WARN") {
+        try { await $.store.set(key, { kind: verdict.kind, rest: verdict.rest, used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {}
       }
       if (verdict.kind === "NUDGE" && p.act === "nudge") {
         try { await $.ui.toast((id) + ": " + verdict.rest.slice(0, 200)) } catch (x) { rec.toastErr = String(x).slice(0, 160) }
@@ -1057,7 +1095,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     } else {
       rec.kind = "NONE"
       if (p.pending || p.act === "cancel") {
-        try { await $.store.set(key, { kind: "NONE", used, dtMs: rec.dtMs }) } catch (x) {}
+        try { await $.store.set(key, { kind: "NONE", used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {}
       }
     }
   } catch (x) {
@@ -1065,7 +1103,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     rec.dtMs = await nowMs($) - t0
     rec.kind = "NONE"
     if (p.pending || p.act === "cancel") {
-      try { await $.store.set(key, { kind: "NONE", threw: rec.threw, dtMs: rec.dtMs }) } catch (y) {}
+      try { await $.store.set(key, { kind: "NONE", threw: rec.threw, t: await nowMs($), dtMs: rec.dtMs }) } catch (y) {}
     }
   }
   if (clockBad) rec.clockBad = true
@@ -1227,6 +1265,44 @@ function builtinTrigger(p: any, e: any, ctx: any): boolean {
 export function register(on: any) {
   on("session.start", async ($: any, e: any, next: any) => {
     try { if (e && e.cwd) await $.store.set(CWD_KEY, String(e.cwd)) } catch (x) {}
+    // CONSTRAINT: разовая уборка отравленных вердиктных ключей судьи --
+    // записи без t (форма до сессионной границы) и протухшие сверх срока
+    // умолчания. Префикс v:judge: обязателен: стор общий, чужих ключей не
+    // трогаем. Отказ уборки не красит и не прерывает session.start.
+    try {
+      const sid = await sidFor($)
+      const world = await loadWorld($, await envBundle($))
+      const all = await $.store.keys()
+      const t0 = await nowMs($)
+      // CONSTRAINT: уборка сносит РОВНО то, что чтение уже не признаёт годным,
+      // и потому зовёт тот же самый предикат memoUsable с тем же сроком. Свой
+      // экземпляр условия здесь разошёлся бы с чтением молча: при настроенном
+      // verdict_cache_ms длиннее умолчания уборка сносила бы ещё живые записи.
+      let ttlMs = VERDICT_TTL_MS_DEFAULT
+      for (let i = 0; i < world.probes.length; i++) {
+        const p = world.probes[i]
+        if (p.id !== "judge") continue
+        ttlMs = num(p.cfg && p.cfg.verdict_cache_ms, VERDICT_TTL_MS_DEFAULT, 1)
+        break
+      }
+      let removed = 0
+      let scanned = 0
+      for (let i = 0; i < all.length && removed < 400; i++) {
+        const k = String(all[i])
+        if (k.indexOf("v:judge:") !== 0) continue
+        scanned++
+        let v: any
+        try { v = await $.store.get(k) } catch (x) { v = undefined }
+        if (memoUsable(v, t0, ttlMs)) continue
+        try { await $.store.delete(k); removed++ } catch (x) {}
+      }
+      try {
+        await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
+          t: new Date(t0).toISOString(), outcome: "store_sweep", removed, scanned,
+          ttlMs, probe: "judge", carrier: "mod", sid,
+        })
+      } catch (x) {}
+    } catch (x) {}
     return next(e)
   })
 
@@ -1279,6 +1355,7 @@ export function register(on: any) {
     const prompt = String((e && e.prompt) || "")
     const agent = String((e && e.subagent_type) || "")
     const t0 = await nowMs($)
+    const sid = await sidFor($)
     let live = 0
     try {
       const lst = await $.agent.list()
@@ -1287,7 +1364,9 @@ export function register(on: any) {
 
     let hardDeny: string | null = null
     let cap = 0
-    try { cap = Number(await $.store.get(CAP_KEY) || 0) } catch (x) { cap = 0 }
+    // CONSTRAINT: счётчик сессионный по ключу -- бессрочный кросс-сессионный
+    // ключ навсегда хоронил ветку nudge/log_only на значении capMax.
+    try { cap = Number(await $.store.get(CAP_KEY + ":" + sid) || 0) } catch (x) { cap = 0 }
     const capMax = 8
 
     for (let i = 0; i < world.probes.length; i++) {
@@ -1376,13 +1455,33 @@ export function register(on: any) {
       }
 
       if (p.act === "cancel" || p.pending) {
-        const key = verdictKey(p.id, tool, agent, prompt)
+        const key = verdictKey(p.id, sid, tool, agent, prompt)
+        const ttlMs = num(p.cfg && p.cfg.verdict_cache_ms, VERDICT_TTL_MS_DEFAULT, 1)
         let stored: any
         try { stored = await $.store.get(key) } catch (x) { stored = undefined }
         const enforce = p.id === "judge" ? (env.JUDGE === "enforce" || bl3(p.cfg.enforce, true)) : bl3(p.cfg.enforce, true)
         const failClosed = bl3(p.cfg.fail_closed, p.id === "judge")
-        if (stored && typeof stored === "object" && stored.kind) {
-          if (stored.kind === "OK" || stored.kind === "WARN") continue
+        if (memoUsable(stored, t0, ttlMs)) {
+          // CONSTRAINT: попадание в кэш обязано оставлять тот же след, что и
+          // консульт, -- без улики и строки журнала оно отменяло суд молча.
+          const recName = modRecName(e)
+          const ageMs = t0 - stored.t
+          let recErr = ""
+          try {
+            await $.fs.write(modRecPath(world, p.id, e), JSON.stringify({
+              id: e && e.tool_use_id, probe: p.id, tool, agent, t0, carrier: "mod",
+              mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
+              used: stored.used, dtMs: stored.dtMs,
+            }))
+          } catch (x) { recErr = String(x).slice(0, 240) }
+          try {
+            const jline: any = {
+              t: new Date(t0).toISOString(), tool, agent, outcome: "memo", rec: recName,
+              carrier: "mod", sid, kind: String(stored.kind), ageMs, ms: 0, probe: p.id,
+            }
+            if (recErr) jline.recErr = recErr
+            await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", jline)
+          } catch (x) {}
           if (stored.kind === "BLOCK" || stored.kind === "STOP" || stored.kind === "DENY") {
             if (!enforce) continue
             hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(stored.rest || stored.kind)
@@ -1415,7 +1514,7 @@ export function register(on: any) {
           continue
         }
         cap++
-        try { await $.store.set(CAP_KEY, cap) } catch (x) {}
+        try { await $.store.set(CAP_KEY + ":" + sid, cap) } catch (x) {}
         try { await $.store.set(lastKey(p.id, world.cwd), t0) } catch (x) {}
         ;(async () => { await consultBg($, p, env, world, e, ctx, "") })()
       }
