@@ -847,6 +847,24 @@ async function settleStep(g: any): Promise<any> {
   return n.value
 }
 
+// CONSTRAINT: дрен с уликой кусков: settleStep теряет всё, что ступень выдала
+// до финала, а зубам на «выдачу до отказа/броска» нужен именно кусок, дошедший
+// до вызывающего. Бросок несёт ФЛАГ, а не истинность значения.
+async function drainStep(g: any): Promise<{ threw: boolean; error: any; value: any; chunks: any[] }> {
+  const out = { threw: false, error: undefined as any, value: undefined as any, chunks: [] as any[] }
+  if (g == null) { out.value = g; return out }
+  if (typeof g.next !== "function") {
+    out.value = typeof g.then === "function" ? await g : g
+    return out
+  }
+  for (;;) {
+    let n: any
+    try { n = await g.next() } catch (x) { out.threw = true; out.error = x; return out }
+    if (n.done) { out.value = n.value; return out }
+    out.chunks.push(n.value)
+  }
+}
+
 function failoverToml(): string {
   return [
     "[failover]",
@@ -1124,5 +1142,158 @@ describe("failover: agent.spawn + turn.step", () => {
     expect(seenAll, "пройдены все ступени лестницы").toEqual(["busy-model", "glm-5.3", "grok-4.6"])
     expect(caught, "ложный бросок последней ступени уезжает вызывающему").toBe(0)
     expect(returned, "проглоченный бросок не подменяется пустым возвратом").toBe("НЕ ВЕРНУЛО")
+  })
+
+  // CONSTRAINT: кусок обязан пройти СКВОЗЬ движок до делегации мода (граница
+  // харнеса, которую пинит этот зуб): движок пропускает выдачу тестового хука
+  // ТОЛЬКО в протокольной форме -- kind из (text, thinking, tool, input, stop,
+  // engine), text-кусок обязан нести { index, text }; бесформенный кусок
+  // заставляет движок СКИНУТЬ хук целиком («test's turn.step hook was
+  // skipped», измерено 2026-09-16). Если движок буферизует выдачу и с годным
+  // куском, мод видит ноль выданных кусков, лестница склеивает ступени и зуб
+  // краснеет -- молча позеленеть он не может.
+  test("rung emitted a chunk then refused: empty first result out, second rung NOT called", async ($, on) => {
+    const kept = wired(
+      on,
+      100_000_000,
+      {},
+      { [HOME + "/probes.toml"]: failoverToml() },
+    )
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-fail-emit-ref",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      if (e.model === "busy-model") {
+        yield { kind: "text", index: 0, text: "partial-emit-ref" }
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-second", toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn({
+      tool_use_id: "tu-spawn-emit-ref",
+      prompt: "[dispatch-class:exec-0p] emit then refuse",
+      description: "emit then refuse",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(spawned.agentId).toBe("ag-fail-emit-ref")
+
+    const out = await drainStep($.turn.step({
+      turnId: "turn-fail-emit-ref",
+      index: 0,
+      model: "busy-model",
+      messageCount: 1,
+      agentId: spawned.agentId,
+    }))
+
+    expect(out.chunks.length, "кусок первой ступени дошёл до вызывающего").toBe(1)
+    expect(out.chunks[0] && out.chunks[0].text, "дошёл именно её кусок").toBe("partial-emit-ref")
+    expect(seen, "перехода с выдавшей ступени нет: вторая НЕ звалась").toEqual(["busy-model"])
+    expect(out.threw).toBe(false)
+    expect(out.value && out.value.answer, "наружу ушёл ПУСТОЙ результат первой ступени").toBe("")
+    expect(out.value && out.value.usage).toBe(null)
+
+    const lines = kept.writes
+      .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
+      .map(w => JSON.parse(String(w.text)))
+    expect(lines, "ровно одна попытка").toHaveLength(1)
+    expect(lines[0].modelRequested).toBe("busy-model")
+    expect(lines[0].outcome, "отказ после выдачи -- отдельное состояние, не empty").toBe("empty_after_emit")
+    expect(lines[0].emitted).toBe(1)
+  })
+
+  // CONSTRAINT: прямой вызов хука мода, не $.turn.step: движок гасит бросок
+  // тестового хука и подставляет свой объект (измерено -- соседний зуб про
+  // ложный бросок), и бросок после выдачи иначе не доехал бы до лестницы как
+  // бросок. Ступень НЕ последняя: старое поведение гасило бы бросок и звало
+  // следующую.
+  test("rung emitted a chunk then threw: the throw goes out, second rung NOT called", async () => {
+    const steps: Record<string, any> = {}
+    register((ev: string, ...rest: any[]) => {
+      steps[ev] = rest[rest.length - 1]
+    })
+    const ladder = ["glm-5.3", "grok-4.6"]
+
+    const seen: string[] = []
+    const emitThenThrow = (req: any) => (async function* () {
+      seen.push(String(req.model))
+      if (req.model === "busy-model") {
+        yield { delta: "partial-emit-throw" }
+        throw new Error("emit-then-throw")
+      }
+      return {
+        turnId: req.turnId, index: req.index, answer: "from-second", toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: req.model },
+      }
+    })()
+
+    failoverBindSet("ag-unit-emit-throw", {
+      ladder, subagentType: "glm-executor", class: "exec-0p", sticky: null,
+    })
+    const out = await drainStep(steps["turn.step"]({}, {
+      turnId: "turn-unit-emit-throw", index: 0, model: "busy-model",
+      messageCount: 1, agentId: "ag-unit-emit-throw",
+    }, emitThenThrow))
+
+    expect(out.chunks, "кусок дошёл до вызывающего ДО броска").toEqual([{ delta: "partial-emit-throw" }])
+    expect(out.threw, "бросок уехал наружу немедленно").toBe(true)
+    expect(String(out.error && out.error.message), "уехал именно бросок ступени").toBe("emit-then-throw")
+    expect(seen, "ступень не последняя, но уже выдала: следующая НЕ звалась").toEqual(["busy-model"])
+  })
+
+  // CONSTRAINT: стережёт от чрезмерного лечения: запрет перехода обязан
+  // касаться ТОЛЬКО выдавшей ступени -- молчащая отказывает как раньше.
+  test("silent refusal: ladder still moves to the second rung", async () => {
+    const steps: Record<string, any> = {}
+    register((ev: string, ...rest: any[]) => {
+      steps[ev] = rest[rest.length - 1]
+    })
+    const ladder = ["glm-5.3", "grok-4.6"]
+
+    const seen: string[] = []
+    const silentRefusal = (req: any) => (async function* () {
+      seen.push(String(req.model))
+      if (req.model === "busy-model") {
+        return {
+          turnId: req.turnId, index: req.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: req.turnId, index: req.index, answer: "from-second", toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: req.model },
+      }
+    })()
+
+    failoverBindSet("ag-unit-silent-refusal", {
+      ladder, subagentType: "glm-executor", class: "exec-0p", sticky: null,
+    })
+    const out = await drainStep(steps["turn.step"]({}, {
+      turnId: "turn-unit-silent-refusal", index: 0, model: "busy-model",
+      messageCount: 1, agentId: "ag-unit-silent-refusal",
+    }, silentRefusal))
+
+    expect(out.chunks, "первая ступень молчала").toEqual([])
+    expect(out.threw).toBe(false)
+    expect(seen, "переход с молчащей ступени законен").toEqual(["busy-model", "glm-5.3"])
+    expect(out.value && out.value.answer, "ответ второй ступени вернулся").toBe("from-second")
   })
 })

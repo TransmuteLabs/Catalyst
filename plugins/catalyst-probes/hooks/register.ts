@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.21"
+export const MOD_VERSION = "0.1.22"
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 const COACHING =
@@ -1704,11 +1704,35 @@ function builtinTrigger(p: any, e: any, ctx: any): boolean {
   return false
 }
 
+// CONSTRAINT: «выдача» определяется ровно ЗДЕСЬ -- счёт кусков, прошедших из
+// источника в делегацию yield* наружу, -- и нигде больше в файле: второе
+// место разойдётся молча. Счёт растёт при ИЗЪЯТИИ куска из источника: yield*
+// отдаёт его вызывающему тем же шагом, без точки, где счёт и выдача могли бы
+// разойтись.
+function countEmitted(src: any, emitted: { n: number }): any {
+  return {
+    [Symbol.asyncIterator]: () => {
+      const it: any = src[Symbol.asyncIterator]()
+      const wrap: any = {
+        next: async () => {
+          const r = await it.next()
+          if (!r.done) emitted.n++
+          return r
+        },
+      }
+      if (typeof it.return === "function") wrap.return = (v: any) => it.return(v)
+      if (typeof it.throw === "function") wrap.throw = (x: any) => it.throw(x)
+      return wrap
+    },
+  }
+}
+
 // CONSTRAINT: turn.step STREAMS -- простая async роняет загрузку ВСЕГО модуля.
 // next() бывает генератором или значением; ветка по Symbol.asyncIterator.
-async function* driveNext(n: any): AsyncGenerator<any, any, any> {
+async function* driveNext(n: any, emitted?: { n: number }): AsyncGenerator<any, any, any> {
   if (n != null && typeof n[Symbol.asyncIterator] === "function") {
-    return yield* n
+    if (emitted == null) return yield* n
+    return yield* countEmitted(n, emitted)
   }
   return n
 }
@@ -2010,11 +2034,19 @@ export function register(on: any) {
       // они неотличимы от «не бросали»: ступень объявила бы отказ успехом,
       // залипла на ней и вернула null вызывающему.
       let didThrow = false
+      // CONSTRAINT: кусок, уже ушедший наружу, находится у сессии -- отмены
+      // нет. Ступень, выдавшая хотя бы один кусок, СОСТОЯЛАСЬ: переход с неё
+      // запрещён и при отказе носителя, и при броске, иначе к ответу одной
+      // модели приклеится хвост другой.
+      const emitted = { n: 0 }
       try {
-        res = yield* driveNext(next(req))
+        res = yield* driveNext(next(req), emitted)
       } catch (x) { threw = x; didThrow = true }
       const t1 = await nowMs($)
-      const outcome = didThrow ? "threw" : (isCarrierRefusal(res) ? "empty" : "ok")
+      const afterEmit = emitted.n > 0
+      const outcome = didThrow
+        ? (afterEmit ? "threw_after_emit" : "threw")
+        : (isCarrierRefusal(res) ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
       const recKey = String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt)
       try {
         let sid = ""
@@ -2033,6 +2065,7 @@ export function register(on: any) {
             attempt,
             modelRequested: model,
             outcome,
+            emitted: emitted.n,
             dtMs: t1 - t0,
             laddered: model !== original,
           })
@@ -2041,19 +2074,23 @@ export function register(on: any) {
       if (didThrow) {
         // CONSTRAINT: исключение носителя гасится ТОЛЬКО пока есть следующая
         // ступень. На последней оно уезжает вызывающему нетронутым: съеденное
-        // исключение неотличимо от пустого ответа.
+        // исключение неотличимо от пустого ответа. Выдавшая ступень бросает
+        // ту же дисциплину независимо от номера: её куски уже у сессии.
         lastThrow = threw
         sawThrow = true
-        if (attempt === plan.length - 1) throw threw
+        if (afterEmit || attempt === plan.length - 1) throw threw
         continue
       }
       lastRes = res
       lastThrow = null
       sawThrow = false
-      if (!isCarrierRefusal(res)) {
-        bind.sticky = model
-        return res
-      }
+      const refusal = isCarrierRefusal(res)
+      if (!refusal) bind.sticky = model
+      // CONSTRAINT: отказ носителя ПОСЛЕ выдачи уезжает вызывающему как есть:
+      // куски первой ступени уже у сессии, вторая приклеила бы к ним чужой
+      // хвост. До первой выдачи поведение прежнее -- отказ ведёт на следующую
+      // ступень.
+      if (afterEmit || !refusal) return res
     }
     if (sawThrow) throw lastThrow
     return lastRes
