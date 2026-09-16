@@ -40,6 +40,8 @@
   3 -- НЕ ИЗМЕРЕНО: файлы нашлись, но ни одной таблицы [failover.*] не
        разобрано (ПУСТО != НОЛЬ).
 """
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -574,6 +576,74 @@ def self_check():
               and "НЕ ИЗМЕРЕНО" not in vl1,
               f"строка={vl1!r}")
 
+        main_root = os.path.join(work, "main-root")
+        main_home = os.path.join(work, "main-home")
+        main_table = os.path.join(main_root, "hooks", "routing-table.toml")
+
+        def capture_main(argv, env=None):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(argv, root=main_root, env={} if env is None else env,
+                          home=main_home)
+            return rc, out.getvalue(), err.getvalue()
+
+        def main_tooth(number, name, result, expected):
+            tooth(f"#231 ветвь {number}: {name}", result == expected,
+                  f"получено={result!r}, ожидалось={expected!r}")
+
+        main_tooth(1, "--registry без пути", capture_main(["--registry"]),
+                   (2, "", "ПРИБОР НЕДОСТУПЕН: --registry без пути\n"))
+        main_tooth(2, "таблица отсутствует", capture_main([]),
+                   (2, "", "ПРИБОР НЕДОСТУПЕН: таблица маршрутизации не найдена: "
+                    f"{main_table}\n"))
+
+        os.makedirs(os.path.dirname(main_table))
+        with open(table_valid, encoding="utf-8") as src, open(
+                main_table, "w", encoding="utf-8") as dst:
+            dst.write(src.read())
+
+        main_tooth(3, "ошибка выбора реестра",
+                   capture_main([], env={ENV_REGISTRY_VAR: fake_explicit}),
+                   (2, "", f"ПРИБОР НЕДОСТУПЕН: env {ENV_REGISTRY_VAR} указывает "
+                    f"на отсутствующий файл: {fake_explicit} "
+                    "(понизить указ до следующего кандидата прибор не вправе)\n"))
+        sibling = os.path.join(work, "Catalyst-CC-Patch", "probes", "probes.toml")
+        live = os.path.join(main_home, ".claude", "probes", "probes.toml")
+        main_tooth(4, "реестр отсутствует, оба кандидата названы", capture_main([]),
+                   (2, "", "ПРИБОР НЕДОСТУПЕН: реестр probes.toml не найден. "
+                    "Искал по порядку:\n"
+                    f"  - соседний канон: {sibling}\n  - боевой: {live}\n"))
+
+        bad_shape = reg("failover = 42\n")
+        main_tooth(5, "отказ проверки лестниц",
+                   capture_main(["--registry", bad_shape]),
+                   (2, "", f"ПРИБОР НЕДОСТУПЕН: реестр {bad_shape}: секция "
+                    "[failover] не таблица -- форма лестниц не разобрана\n"))
+        bad_rungs = reg('[failover.class.exec-0n]\n'
+                        'models = ["glm-5.3-flash", "opus"]\n')
+        expected_violations = (
+            "НАРУШЕНИЕ правило-1-допуск: клетка exec-0n, ступень glm-5.3-flash — "
+            "вне допуска клетки: нет в [classes.exec-0n].allowed "
+            "(hooks/routing-table.toml)\n"
+            "НАРУШЕНИЕ правило-2-антропик: клетка exec-0n, ступень opus — "
+            "Anthropic-носитель в лестнице запрещён: автоматический переход "
+            "на него обошёл бы маркер [anthropic-exception:…] молча\n"
+        )
+        main_tooth(6, "нарушения отдельными строками",
+                   capture_main(["--registry", bad_rungs]),
+                   (1, expected_violations, ""))
+        empty = reg('[probe.x]\ny = 1\n')
+        main_tooth(7, "пустой предмет не измерен",
+                   capture_main(["--registry", empty]),
+                   (3, f"НЕ ИЗМЕРЕНО: в реестре {empty} не разобрано ни одной "
+                    "таблицы [failover.*] — пустой результат без предмета нулём "
+                    "не считается\n", ""))
+        valid = reg('[failover.class.exec-0n]\n'
+                    'models = [{model = "glm-5.3", effort = "max"}]\n')
+        main_tooth(8, "зелёный итог",
+                   capture_main([], env={ENV_REGISTRY_VAR: valid}),
+                   (0, verdict_line(valid, 1, 1, 1) + "\n", ""))
+
     for i, (name, ok, detail) in enumerate(teeth, 1):
         if ok:
             print(f"зуб {i} {name}: зелёный")
@@ -586,11 +656,13 @@ def self_check():
     return 1
 
 
-def main(argv):
+def main(argv, root=None, env=None, home=None):
+    root = tool_root() if root is None else root
+    envd = os.environ if env is None else env
+    homed = os.path.expanduser("~") if home is None else home
     if "--self-check" in argv:
         return self_check()
 
-    root = tool_root()
     table_path = os.path.join(root, "hooks", "routing-table.toml")
     explicit_reg = None
     if "--registry" in argv:
@@ -608,7 +680,7 @@ def main(argv):
     if explicit_reg is not None:
         registry_path = explicit_reg
     else:
-        registry_path, attempts, err = resolve_registry(root)
+        registry_path, attempts, err = resolve_registry(root, env=envd, home=homed)
         if err is not None:
             print(f"ПРИБОР НЕДОСТУПЕН: {err}", file=sys.stderr)
             return 2
