@@ -928,6 +928,133 @@ describe("failover: agent.spawn + turn.step", () => {
     expect(lines[1].outcome).toBe("ok")
   })
 
+  // CONSTRAINT: выключатель пинится только при ЖИВОЙ привязке: при enabled=false
+  // agent.spawn привязку не заводит вовсе, и turn.step выходит раньше проверки
+  // (register.ts:1982) -- наивный зуб был бы вакуумным. Поэтому probes.toml
+  // подменяется МЕЖДУ spawn и step (fs.read берёт files на каждый вызов), а
+  // часы уводятся за окно мемо мира (5000 мс, register.ts:909-916): иначе шаг
+  // прочёл бы мир, который загрузил spawn, и лестница поехала бы по-честному.
+  test("enabled=false mid-flight: one next, the original model, zero journal lines", async ($, on) => {
+    const onToml = failoverToml()
+    const offToml = failoverToml().replace("enabled = true", "enabled = false")
+    const files: Record<string, string> = {}
+    files[HOME + "/probes.toml"] = onToml
+    const kept = wired(on, 80_000_000, {}, files)
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-fail-off",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-original", toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn({
+      tool_use_id: "tu-spawn-off",
+      prompt: "[dispatch-class:exec-0p] switch watch",
+      description: "switch watch",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(spawned.agentId).toBe("ag-fail-off")
+
+    files[HOME + "/probes.toml"] = offToml
+    await kept.clock!.advance(6000)
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-fail-off",
+      index: 0,
+      model: "busy-model",
+      messageCount: 1,
+      agentId: spawned.agentId,
+    }))
+
+    expect(res && res.answer, "выключенный мод отвечает результатом самой ступени").toBe("from-original")
+    expect(seen, "ровно один next, и с ИСХОДНОЙ моделью").toEqual(["busy-model"])
+    const lines = kept.writes
+      .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
+      .map(w => JSON.parse(String(w.text)))
+    expect(lines, "ноль записей журнала: именно ноль, а не «нет второй»").toHaveLength(0)
+  })
+
+  // CONSTRAINT: липкость видна только ПОРЯДКОМ моделей в next: ответ второго
+  // шага одинаков в обеих ветках (ступень в конце концов отвечает), поэтому
+  // предмет -- с чего второй шаг начал, а не чем кончил.
+  test("a successful rung is sticky: the next step of the SAME agent starts from it", async ($, on) => {
+    const kept = wired(
+      on,
+      90_000_000,
+      {},
+      { [HOME + "/probes.toml"]: failoverToml() },
+    )
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-fail-sticky",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      if (e.model === "busy-model") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn({
+      tool_use_id: "tu-spawn-sticky",
+      prompt: "[dispatch-class:exec-0p] sticky watch",
+      description: "sticky watch",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(spawned.agentId).toBe("ag-fail-sticky")
+
+    const first = await settleStep($.turn.step({
+      turnId: "turn-sticky-1",
+      index: 0,
+      model: "busy-model",
+      messageCount: 1,
+      agentId: spawned.agentId,
+    }))
+    expect(first && first.answer, "первый шаг отвечает удачная ступень").toBe("from-glm-5.3")
+
+    const second = await settleStep($.turn.step({
+      turnId: "turn-sticky-2",
+      index: 0,
+      model: "busy-model",
+      messageCount: 1,
+      agentId: spawned.agentId,
+    }))
+    expect(second && second.answer, "второй шаг тоже отвечает ступень").toBe("from-glm-5.3")
+    expect(seen, "второй шаг начался с УДАЧНОЙ модели, а не с исходной").toEqual([
+      "busy-model",
+      "glm-5.3",
+      "glm-5.3",
+    ])
+  })
+
   // CONSTRAINT: ложный бросок носителя до этой ступени НЕ ДОЕЗЖАЕТ ни одной
   // дорогой, доступной зубу на поведении -- обе границы ИЗМЕРЕНЫ 2026-09-16:
   //  (1) харнес гасит бросок тестового хука и подставляет свой объект
