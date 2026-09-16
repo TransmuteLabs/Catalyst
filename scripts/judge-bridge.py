@@ -38,6 +38,9 @@
 #
 # CONSTRAINT: перечень доставляемого на usbox читается из ОДНОГО места --
 # структура DEPLOY ниже; второго списка доставляемых файлов нет и не бывает.
+# Источник записи -- строковый литерал либо вызываемое, читающее свой дом в
+# момент подъёма; содержимое доставляемого мост НЕ разбирает -- единственный
+# дом правила вырезки секций судьи это стенд живой приёмки.
 #
 # Коды возврата: 0 -- мост служил, положительный контроль был зелёным,
 #                снят сигналом/таймером с уборкой за собой;
@@ -50,11 +53,16 @@
 #          ANTHROPIC_BASE_URL=http://127.0.0.1:18317 \
 #          bash tests/scripts/test-judge-serves.sh
 import argparse
+import hashlib
+import os
+import posixpath
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -249,8 +257,66 @@ def main():
 main()
 '''
 
+# Имя записи боевого конфига проб: файл кладётся в <remote_dir>/probes/,
+# родительский каталог создаёт сама команда доставки (deploy_command ниже).
+PROBES_NAME = 'probes/probes.toml'
+
+
+def probes_config_src():
+    """Источник записи PROBES_NAME: боевой probes.toml, дом читается при
+    вызове -- то есть в момент подъёма моста, а не при импорте модуля.
+
+    CONSTRAINT: формула дома -- та же, что у живого стенда судьи
+    (${CLAUDE_PROBES_HOME:-$HOME/.claude/probes}); жёсткий путь увёз бы
+    чужой веер на машине с переопределённым домом, и приёмка молча
+    измерила бы не то. CONSTRAINT: файл доставляется ДОСЛОВНО, байт-в-байт,
+    без разбора; нет файла или не читается -- Refusal с названным путём:
+    молчаливый подъём без конфига запрещён (мост существует ради живой
+    приёмки судьи, без её конфига он бессмыслен). Проверок содержимого
+    здесь НЕТ -- есть ли в файле [probe.judge], знает только стенд.
+    """
+    home = (os.environ.get('CLAUDE_PROBES_HOME')
+            or os.path.expanduser('~/.claude/probes'))
+    path = os.path.join(home, 'probes.toml')
+    try:
+        with open(path, 'rb') as f:
+            return f.read()
+    except OSError as exc:
+        raise Refusal('нет боевого конфига проб для доставки: %s: %s'
+                      % (path, exc))
+
+
 # Единственное место, где перечислено доставляемое на usbox.
-DEPLOY = ((DISPATCHER_NAME, DISPATCHER_SRC),)
+DEPLOY = (
+    (DISPATCHER_NAME, DISPATCHER_SRC),
+    (PROBES_NAME, probes_config_src),
+)
+
+
+def deploy_entries():
+    """DEPLOY с развёрнутыми источниками: вызываемое читается В МОМЕНТ
+    вызова. Единственное место разворачивания -- подъём и самопроверка
+    ходят через эту функцию, отдельной копии идиомы нет."""
+    return [(name, src() if callable(src) else src) for name, src in DEPLOY]
+
+
+def deploy_command(remote_dir, name):
+    """Команда доставки одной записи DEPLOY (строка для ssh на usbox).
+
+    CONSTRAINT: родительский каталог создаётся В ТОЙ ЖЕ строке ДО cat > --
+    имя записи может быть вложенным (probes/probes.toml); отдельного mkdir
+    на подъёме нет и не бывает, иначе список путей доставки жил бы вторым
+    домом рядом с DEPLOY.
+    """
+    path = '%s/%s' % (remote_dir, name)
+    return 'mkdir -p %s && cat > %s' % (
+        shlex.quote(posixpath.dirname(path)), shlex.quote(path))
+
+
+def cleanup_command(remote_dir):
+    """Команда уборки (строка для ssh): каталог целиком, рекурсивно --
+    внутри лежат и вложенный probes/, и диспетчер."""
+    return 'rm -rf %s' % shlex.quote(remote_dir)
 
 
 class Refusal(Exception):
@@ -371,8 +437,9 @@ class Bridge:
             raise Refusal('ssh %s не поднимается: rc=%d stderr=%r'
                           % (self.host, r.returncode, r.stderr.strip()[:200]))
 
-        # 3. Свой временный каталог на usbox и доставка диспетчера (перечень
-        #    файлов -- только DEPLOY, других доставок нет).
+        # 3. Свой временный каталог на usbox и доставка файлов моста
+        #    (перечень -- только DEPLOY, других доставок нет; боевой конфиг
+        #    проб читается источником записи ЗДЕСЬ, в момент подъёма).
         r = ssh_or_refuse(self.host,
                           'mktemp -d "${TMPDIR:-/tmp}/judge-bridge.XXXXXX"',
                           'временный каталог')
@@ -380,18 +447,20 @@ class Bridge:
             raise Refusal('временный каталог на %s не создан: rc=%d stderr=%r'
                           % (self.host, r.returncode, r.stderr.strip()[:200]))
         self.remote_dir = r.stdout.strip()
-        for name, src in DEPLOY:
+        for name, data in deploy_entries():
             try:
+                # stdin байтами: конфиг проб идёт байт-в-байт, без перекодировки
                 r = subprocess.run(
                     ['ssh'] + SSH_OPTS + [self.host,
-                                          'cat > %s/%s' % (shlex.quote(self.remote_dir), name)],
-                    input=src, text=True, capture_output=True, timeout=60)
+                                          deploy_command(self.remote_dir, name)],
+                    input=data if isinstance(data, bytes) else data.encode('utf-8'),
+                    capture_output=True, timeout=60)
             except subprocess.TimeoutExpired:
                 raise Refusal('доставка %s на %s не завершилась за 60 с' % (name, self.host))
             if r.returncode != 0:
                 raise Refusal('доставка %s на %s отказала: rc=%d stderr=%r'
                               % (name, self.host, r.returncode,
-                                 r.stderr.strip()[:200]))
+                                 r.stderr.decode('utf-8', 'replace').strip()[:200]))
 
         # 4. Старт диспетчера (nohup: переживает ssh-сеанс) и ожидание READY.
         #    CONSTRAINT: редиректы стоят ВНУТРИ скобок на самой exec-команде --
@@ -462,6 +531,12 @@ class Bridge:
         print('judge-bridge: положительный контроль: http=200 '
               'http://127.0.0.1:%d%s' % (self.args.client_port,
                                          self.args.control_path))
+        # Готовая строка запуска живой приёмки: путь прогонного дома случайный
+        # (mktemp), собирать его из головы дежурный не обязан.
+        print('judge-bridge: живая приёмка судьи на usbox: CATALYST_JUDGE_LIVE=1 '
+              'ANTHROPIC_BASE_URL=http://127.0.0.1:%d CLAUDE_PROBES_HOME=%s/probes '
+              'bash tests/scripts/test-judge-ladder-live.sh'
+              % (self.args.client_port, self.remote_dir))
 
     def _wait_dispatcher_ready(self, timeout):
         deadline = time.monotonic() + timeout
@@ -553,8 +628,7 @@ class Bridge:
                 ssh_run(self.host, 'kill %d 2>/dev/null || true'
                         % self.dispatcher_pid, timeout=30)
                 time.sleep(0.5)
-            ssh_run(self.host, 'rm -rf %s' % shlex.quote(self.remote_dir),
-                    timeout=60)
+            ssh_run(self.host, cleanup_command(self.remote_dir), timeout=60)
             r = ssh_run(self.host, 'test -e %s && echo LEFT || echo GONE'
                         % shlex.quote(self.remote_dir), timeout=30)
             state = r.stdout.strip() or ('НЕ ПРОВЕРЕН (rc=%d)' % r.returncode)
@@ -564,6 +638,217 @@ class Bridge:
             alive_now = len(self.workers)
         print('judge-bridge: остановка: каналов поднято всего %d, причина: %s'
               % (self.spawned, getattr(self, '_stop_reason', 'снятие')))
+
+
+# --- самопроверка (--self-check) ---------------------------------------------
+#
+# CONSTRAINT: самопроверка офлайнова -- ни ssh, ни сети, ни чтения/записи
+# боевого дома проб: все зубы гоняются на синтетических домах во временном
+# каталоге, CLAUDE_PROBES_HOME внутри зубов указывает туда же.
+# CONSTRAINT: число зубов НИГДЕ не объявлено -- самопроверка печатает
+# фактически прогнанное число, а ожидаемое знает только стенд
+# (tests/scripts/test-judge-bridge.sh): молча выпавший зуб даёт там
+# НЕ ИЗМЕРЕНО, а не зелёный.
+
+SYNTH_PROBES_TOML = '''# синтетический дом проб самопроверки моста
+# секции, которых судья не читает ([defaults], [probe.other]), обязаны
+# присутствовать: зуб «байт-в-байт» меряет, что мост их не вырезает
+[defaults]
+model = "selfcheck-default"
+
+[probe.other]
+model = "selfcheck-other"
+
+[probe.judge]
+fail_closed = true
+
+[[probe.judge.models]]
+model = "selfcheck-rung"
+effort = "low"
+context_chars = 1000
+'''.encode('utf-8')
+
+MARKER_ENV_HOME = (
+    '# метка ENV: файл из подложного дома CLAUDE_PROBES_HOME\n').encode('utf-8')
+MARKER_DEFAULT_HOME = (
+    '# метка DEFAULT: файл из подложного умолчания $HOME/.claude/probes\n'
+).encode('utf-8')
+
+
+class _env:
+    """Временная подмена переменных окружения; восстановление всегда."""
+
+    def __init__(self, **kv):
+        self.kv = kv
+        self.saved = {}
+
+    def __enter__(self):
+        for k, v in self.kv.items():
+            self.saved[k] = os.environ.get(k)
+            os.environ[k] = v
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        return False
+
+
+def _config_data():
+    """Данные записи PROBES_NAME тем же разворачиванием, что и подъём."""
+    for name, src in DEPLOY:
+        if name == PROBES_NAME:
+            return src() if callable(src) else src
+    raise AssertionError('записи %s нет в DEPLOY' % PROBES_NAME)
+
+
+def _tooth_deploy_manifest():
+    got = sorted(name for name, _ in DEPLOY)
+    want = sorted((DISPATCHER_NAME, PROBES_NAME))
+    if got != want:
+        raise AssertionError('перечень DEPLOY %r не равен ровно двум записям %r'
+                             % (got, want))
+
+
+def _tooth_config_verbatim(home):
+    with _env(CLAUDE_PROBES_HOME=home):
+        data = _config_data()
+    with open(os.path.join(home, 'probes.toml'), 'rb') as f:
+        house = f.read()
+    if hashlib.sha256(data).digest() != hashlib.sha256(house).digest():
+        raise AssertionError(
+            'доставляемый конфиг не байт-в-байт дому: sha256 источника %s..., '
+            'дома %s... -- мост начал разбирать/фильтровать содержимое'
+            % (hashlib.sha256(data).hexdigest()[:16],
+               hashlib.sha256(house).hexdigest()[:16]))
+
+
+def _tooth_missing_refusal(home):
+    want = os.path.join(home, 'probes.toml')
+    with _env(CLAUDE_PROBES_HOME=home):
+        try:
+            _config_data()
+        except Refusal as exc:
+            if want not in str(exc):
+                raise AssertionError('отказ не называет путь: %r (ждали %r)'
+                                     % (str(exc), want))
+            return
+    raise AssertionError('нет файла %s -- источник не отказал (тихий подъём '
+                         'без конфига)' % want)
+
+
+def _tooth_env_home(env_home, fake_home):
+    with _env(CLAUDE_PROBES_HOME=env_home, HOME=fake_home):
+        data = _config_data()
+    if data != MARKER_ENV_HOME:
+        raise AssertionError('доставлен не подложный дом CLAUDE_PROBES_HOME '
+                             '(получено %.60r) -- вернулся жёсткий путь '
+                             'умолчания' % (data,))
+
+
+def _tooth_nested_delivery(root):
+    # Зуб ИСПОЛНЯЕТ ту самую строку, которую мост отдаёт ssh, локальным
+    # sh -c: пин формы записи («в строке есть mkdir») запрещён -- меряет
+    # только исполнение.
+    remote = os.path.join(root, 'remote-stand-in')
+    target = os.path.join(remote, 'probes', 'probes.toml')
+    r = subprocess.run(['sh', '-c', deploy_command(remote, PROBES_NAME)],
+                       input=SYNTH_PROBES_TOML, capture_output=True)
+    if r.returncode != 0:
+        raise AssertionError('команда доставки не создаёт вложенный путь: '
+                             'rc=%d stderr=%r'
+                             % (r.returncode,
+                                r.stderr.decode('utf-8', 'replace')[:200]))
+    if not os.path.isfile(target):
+        raise AssertionError('после команды доставки нет файла %s' % target)
+    with open(target, 'rb') as f:
+        if f.read() != SYNTH_PROBES_TOML:
+            raise AssertionError('доставленное содержимое не равно источнику')
+
+
+def _tooth_nested_cleanup(root):
+    # Тот же приём: строка уборки исполняется локальным sh -c на фикстуре с
+    # probes/probes.toml внутри.
+    top = os.path.join(root, 'cleanup-fixture')
+    os.makedirs(os.path.join(top, 'probes'))
+    with open(os.path.join(top, 'probes', 'probes.toml'), 'wb') as f:
+        f.write(SYNTH_PROBES_TOML)
+    r = subprocess.run(['sh', '-c', cleanup_command(top)],
+                       capture_output=True)
+    if r.returncode != 0:
+        raise AssertionError('команда уборки отказала: rc=%d stderr=%r'
+                             % (r.returncode,
+                                r.stderr.decode('utf-8', 'replace')[:200]))
+    if os.path.exists(top):
+        raise AssertionError('после команды уборки каталог %s ещё стоит -- '
+                             'уборка перестала быть рекурсивной' % top)
+
+
+def _mkprobes(parent, content):
+    os.makedirs(parent)
+    with open(os.path.join(parent, 'probes.toml'), 'wb') as f:
+        f.write(content)
+    return parent
+
+
+def _self_check_run(root):
+    home_rich = _mkprobes(os.path.join(root, 'rich-home'), SYNTH_PROBES_TOML)
+    home_env = _mkprobes(os.path.join(root, 'env-home'), MARKER_ENV_HOME)
+    _mkprobes(os.path.join(root, 'fake-home', '.claude', 'probes'),
+              MARKER_DEFAULT_HOME)
+    home_empty = os.path.join(root, 'empty-home')
+    os.makedirs(home_empty)
+    teeth = (
+        ('перечень доставляемого ровно две записи: диспетчер и probes/probes.toml',
+         lambda: _tooth_deploy_manifest()),
+        ('доставляемый конфиг байт-в-байт равен дому',
+         lambda: _tooth_config_verbatim(home_rich)),
+        ('нет файла в доме -- отказ с названным путём',
+         lambda: _tooth_missing_refusal(home_empty)),
+        ('CLAUDE_PROBES_HOME перебивает умолчание',
+         lambda: _tooth_env_home(home_env, os.path.join(root, 'fake-home'))),
+        ('команда доставки создаёт вложенный путь',
+         lambda: _tooth_nested_delivery(root)),
+        ('команда уборки сносит вложенное',
+         lambda: _tooth_nested_cleanup(root)),
+    )
+    red = []
+    for name, fn in teeth:
+        try:
+            fn()
+        except AssertionError as exc:
+            red.append((name, str(exc)))
+        except Exception as exc:
+            # зуб обязан падать своей проверкой; падение прибора внутри зуба --
+            # тоже красный, но с честной маркировкой причины
+            red.append((name, 'зуб упал не своей проверкой: %r' % (exc,)))
+    if red:
+        for name, why in red:
+            print('judge-bridge: самопроверка: КРАСЕН зуб «%s»: %s'
+                  % (name, why))
+        return 1
+    print('judge-bridge: самопроверка: зубов %d, все зелены' % len(teeth))
+    return 0
+
+
+def self_check():
+    """0 -- все зубы зелены, 1 -- зуб красный, 2 -- прибор недоступен."""
+    if shutil.which('sh') is None:
+        print('judge-bridge: самопроверка: ПРИБОР НЕДОСТУПЕН: нет sh для '
+              'исполнения команд доставки/уборки')
+        return 2
+    try:
+        root = tempfile.mkdtemp(prefix='judge-bridge-selfcheck.')
+    except OSError as exc:
+        print('judge-bridge: самопроверка: ПРИБОР НЕДОСТУПЕН: временный '
+              'каталог не создан: %r' % exc)
+        return 2
+    try:
+        return _self_check_run(root)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def main():
@@ -587,7 +872,14 @@ def main():
                     help='секунд держать мост; 0 -- до сигнала (умолчание 0)')
     ap.add_argument('--control-path', default='/',
                     help='путь положительного контроля (умолчание /)')
+    ap.add_argument('--self-check', action='store_true',
+                    help='офлайн-самопроверка: без ssh, без сети, без боевого '
+                         'дома проб (синтетические дома во временном каталоге)')
     args = ap.parse_args()
+
+    if args.self_check:
+        # До разбора --platform: самопроверке не нужны ни площадка, ни ssh.
+        sys.exit(self_check())
 
     try:
         host, port = args.platform.split(':')
