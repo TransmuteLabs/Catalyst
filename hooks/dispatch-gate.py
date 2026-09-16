@@ -824,9 +824,22 @@ def _provider_binding(provider, lim, deny_at):
     binding = None
     worst = None   # (used, label, resets_at) of the chosen account's worst window
     resets = None
+    # CONSTRAINT: the daemon reports WHY an account has no windows in the
+    # account's own `error` field. Dropping it leaves the operator with a
+    # generic "no usable windows", which is indistinguishable between an
+    # expired provider token, a provider that stopped reporting limits, and a
+    # genuinely empty reply — three causes with three different repairs.
+    causes = []
     for acc in accounts:
         if not isinstance(acc, dict):
             continue
+        acc_err = str(acc.get("error") or "").strip()
+        if acc_err:
+            # The daemon's own text usually already names the provider; a second
+            # copy of the name reads as two different providers failing.
+            head = provider + ":"
+            causes.append(acc_err[len(head):].strip()
+                          if acc_err.startswith(head) else acc_err)
         acc_worst = None
         acc_resets = None
         for win in acc.get("windows") or []:
@@ -850,6 +863,8 @@ def _provider_binding(provider, lim, deny_at):
             worst = acc_worst
             resets = acc_resets or acc_worst[2]
     if binding is None:
+        if causes:
+            return None, None, None, f"{provider}: {'; '.join(causes)}"
         return None, None, None, f"{provider}: no usable windows in the reply"
     return binding, (worst[1], worst[0]), resets, None
 

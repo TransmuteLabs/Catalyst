@@ -113,6 +113,16 @@ for kv in kvs:
     if spec in ("NOREPLY", "GARBAGE"):
         table[prov] = spec
         continue
+    # An account the daemon could not read: zero windows. ERR:<text> carries the
+    # daemon's own cause (expired token, provider stopped reporting); EMPTYWIN is
+    # the same shape with no cause at all — two different operator repairs.
+    if spec.startswith("ERR:") or spec == "EMPTYWIN":
+        err = spec[4:] if spec.startswith("ERR:") else None
+        table[prov] = json.dumps({"result": "provider_usage", "provider": prov,
+                                  "accounts": [{"account_email": None, "plan": None,
+                                                "windows": [], "updated_at": None,
+                                                "error": err}]})
+        continue
     accounts = []
     for acc in spec.split(";"):
         wins = [{"label": "W%d" % i, "used_percent": float(p),
@@ -731,6 +741,21 @@ check "lim16 silent pool blocks deny"        warn  "$(gate "$(bashcmd "$lim_code
 out=$(gate_out "$(bashcmd "$lim_codex")")
 case "$out" in *opencodegokey*) check "lim16 warn names the silent pool" 0 0 ;; *) check "lim16 warn names the silent pool" 0 1 ;; esac
 O="$WORK/absent-override.toml"
+
+# an account WITHOUT windows carries the daemon's own cause in account.error:
+# dropping it leaves one generic phrase for an expired token, a provider that
+# stopped reporting limits, and a genuinely empty reply -- three repairs.
+pb_table codex="ERR:codex: token expired (CLI refreshes it while running)"
+check "lim17 account error is fail-open"      warn  "$(gate "$(bashcmd "$lim_codex")")"
+out=$(gate_out "$(bashcmd "$lim_codex")")
+case "$out" in *"token expired"*) check "lim17 warn carries the daemon cause" 0 0 ;; *) check "lim17 warn carries the daemon cause" 0 1 ;; esac
+case "$out" in *"no usable windows"*) check "lim17 generic phrase is replaced" 0 1 ;; *) check "lim17 generic phrase is replaced" 0 0 ;; esac
+case "$out" in *"codex: codex:"*) check "lim17 provider named once" 0 1 ;; *) check "lim17 provider named once" 0 0 ;; esac
+pb_table codex=EMPTYWIN
+check "lim18 causeless empty is fail-open"    warn  "$(gate "$(bashcmd "$lim_codex")")"
+out=$(gate_out "$(bashcmd "$lim_codex")")
+case "$out" in *"no usable windows"*) check "lim18 causeless keeps the generic phrase" 0 0 ;; *) check "lim18 causeless keeps the generic phrase" 0 1 ;; esac
+pb_table codex=1 xaicli=1 kimicode=1
 
 # ---- truth 11: a grid point declares its parent class ([classes.<point>].parent) —
 # role matching and the quota rule read the point AS its parent; a point without
