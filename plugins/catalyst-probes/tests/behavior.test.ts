@@ -1,5 +1,5 @@
 // Behavior teeth for plugins/catalyst-probes on the official harness
-// (`claude plugin test`): each of the mod's six subscribed events is driven
+// (`claude plugin test`): each of the mod's eight subscribed events is driven
 // through the engine's `$`, and the assertions check both what the handler
 // answered and which `$` calls it made (fs.write paths, store, model.complete).
 //
@@ -833,5 +833,98 @@ describe("session boundary", () => {
     expect(records).toHaveLength(2)
     expect(records[0].clockBad, "the outage is seen in the first session").toBe(true)
     expect(records[1].clockBad, "the flag died with the session").toBeUndefined()
+  })
+})
+
+async function settleStep(g: any): Promise<any> {
+  if (g == null) return g
+  if (typeof g.next !== "function") {
+    if (typeof g.then === "function") return await g
+    return g
+  }
+  let n = await g.next()
+  while (!n.done) n = await g.next()
+  return n.value
+}
+
+function failoverToml(): string {
+  return [
+    "[failover]",
+    "enabled = true",
+    "",
+    "[failover.default]",
+    'models = ["glm-5.3", "grok-4.6"]',
+    "",
+    "[failover.agent.glm-executor]",
+    'models = ["glm-5.3", "grok-4.6"]',
+    "",
+  ].join("\n")
+}
+
+describe("failover: agent.spawn + turn.step", () => {
+  test("empty first model yields the second result and two protocol lines", async ($, on) => {
+    const kept = wired(
+      on,
+      70_000_000,
+      {},
+      { [HOME + "/probes.toml"]: failoverToml() },
+    )
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-fail-1",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      if (e.model === "busy-model") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-second", toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn({
+      tool_use_id: "tu-spawn-1",
+      prompt: "[dispatch-class:exec-0p] do the work",
+      description: "work",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(spawned.agentId).toBe("ag-fail-1")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-fail-1",
+      index: 0,
+      model: "busy-model",
+      messageCount: 1,
+      agentId: spawned.agentId,
+    }))
+
+    expect(res && res.answer, "the hook returned the SECOND result").toBe("from-second")
+    expect(seen, "first next was the incoming model, second a ladder rung").toEqual([
+      "busy-model",
+      "glm-5.3",
+    ])
+
+    const lines = kept.writes
+      .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
+      .map(w => JSON.parse(String(w.text)))
+    expect(lines, "protocol has two records").toHaveLength(2)
+    expect(lines[0].modelRequested).toBe("busy-model")
+    expect(lines[1].modelRequested).toBe("glm-5.3")
+    expect(lines[0].modelRequested).not.toBe(lines[1].modelRequested)
+    expect(lines[0].outcome).toBe("empty")
+    expect(lines[1].outcome).toBe("ok")
   })
 })

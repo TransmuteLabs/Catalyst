@@ -15,6 +15,9 @@ import {
   verdictKey, memoUsable, effortOk, EFFORTS, markEffort,
   readComplete, blocksLine,
   MOD_VERSION,
+  failoverLadder, nextFailoverModel, failoverAttemptModels,
+  isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP,
+  failoverBindSet, failoverBindGet, failoverBindReset,
 } from "../hooks/register.ts"
 
 const RX_JUDGE = "OK|WARN|BLOCK|STOP|DENY"
@@ -540,7 +543,7 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.18")
+  expect(MOD_VERSION).toBe("0.1.19")
 })
 
 // --- verdictKey: сессионная и текстовая грань вердиктного кэша -------------------
@@ -684,4 +687,84 @@ test("blocksLine: перечень типов с длинами через за�
 test("blocksLine: пустой массив -- пустая строка; null -- тоже", () => {
   expect(blocksLine([])).toBe("")
   expect(blocksLine(null)).toBe("")
+})
+
+// --- failover: лестница, пропуск, потолок, признак отказа ---------------------
+
+const FAILOVER_TOML = `[failover.default]
+models = ["d1", "d2"]
+
+[failover.class.exec-0p]
+models = ["c1", "c2"]
+
+[failover.agent.glm-executor]
+models = ["a1", "a2", "a3"]
+`
+
+test("failoverLadder: ключ agent выигрывает у class и default", () => {
+  const fo = parseToml(FAILOVER_TOML).failover
+  expect(failoverLadder(fo, "glm-executor", "exec-0p")).toStrictEqual(["a1", "a2", "a3"])
+})
+
+test("failoverLadder: ключ class выигрывает, когда agent-таблицы нет", () => {
+  const fo = parseToml(FAILOVER_TOML).failover
+  expect(failoverLadder(fo, "other-agent", "exec-0p")).toStrictEqual(["c1", "c2"])
+})
+
+test("failoverLadder: default, когда нет ни agent, ни class", () => {
+  const fo = parseToml(FAILOVER_TOML).failover
+  expect(failoverLadder(fo, "other-agent", "exec-1n")).toStrictEqual(["d1", "d2"])
+})
+
+test("failoverLadder: нет ни одной таблицы -- пустая лестница", () => {
+  expect(failoverLadder(undefined, "glm-executor", "exec-0p")).toStrictEqual([])
+  expect(failoverLadder({}, "glm-executor", "exec-0p")).toStrictEqual([])
+})
+
+test("nextFailoverModel: пропуск уже отказавшей модели", () => {
+  expect(nextFailoverModel(["glm-5.3", "grok-4.6"], ["glm-5.3"])).toBe("grok-4.6")
+  expect(nextFailoverModel(["glm-5.3", "grok-4.6"], ["glm-5.3", "grok-4.6"])).toBe(null)
+  expect(nextFailoverModel(["a", "b", "c"], ["b"])).toBe("a")
+})
+
+test("failoverAttemptModels: потолок трёх вызовов", () => {
+  const seq = failoverAttemptModels("incoming", null, ["m1", "m2", "m3", "m4", "m5"])
+  expect(seq).toStrictEqual(["incoming", "m1", "m2"])
+  expect(seq.length).toBe(FAILOVER_MAX_NEXT)
+})
+
+test("isCarrierRefusal: usage null и stopReason null -- отказ носителя", () => {
+  expect(isCarrierRefusal({
+    turnId: "t", index: 0, answer: "", toolUses: [],
+    stopReason: null, usage: null,
+  })).toBe(true)
+})
+
+test("isCarrierRefusal: честный пустой текст не считается отказом", () => {
+  expect(isCarrierRefusal({
+    turnId: "t", index: 0, answer: "", toolUses: [],
+    stopReason: "end_turn",
+    usage: { input_tokens: 10, output_tokens: 4, model: "glm-5.3" },
+  })).toBe(false)
+  expect(isCarrierRefusal({
+    turnId: "t", index: 0, answer: "", toolUses: [],
+    stopReason: null,
+    usage: { input_tokens: 10, output_tokens: 4, model: "glm-5.3" },
+  })).toBe(false)
+  expect(isCarrierRefusal({
+    turnId: "t", index: 0, answer: "", toolUses: [],
+    stopReason: "end_turn",
+    usage: null,
+  })).toBe(false)
+})
+
+test("failover binds: потолок 512, вытеснение старейших", () => {
+  failoverBindReset()
+  for (let i = 0; i < FAILOVER_BIND_CAP + 1; i++) {
+    failoverBindSet("id-" + i, { ladder: ["m"], subagentType: "t", class: "", sticky: null })
+  }
+  expect(failoverBindGet("id-0")).toBe(undefined)
+  expect(failoverBindGet("id-1") && failoverBindGet("id-1").ladder).toStrictEqual(["m"])
+  expect(failoverBindGet("id-" + FAILOVER_BIND_CAP) && failoverBindGet("id-" + FAILOVER_BIND_CAP).ladder).toStrictEqual(["m"])
+  failoverBindReset()
 })

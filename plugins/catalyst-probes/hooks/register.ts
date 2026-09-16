@@ -20,7 +20,9 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.18"
+export const MOD_VERSION = "0.1.19"
+export const FAILOVER_MAX_NEXT = 3
+export const FAILOVER_BIND_CAP = 512
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
@@ -143,6 +145,66 @@ export function classesOf(prompt: string): string[] {
     if (set.indexOf(c) < 0) set.push(c)
   }
   return set
+}
+
+function modelsList(table: any): string[] {
+  const raw = table && table.models
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  for (let i = 0; i < raw.length; i++) {
+    if (typeof raw[i] === "string" && raw[i]) out.push(raw[i])
+  }
+  return out
+}
+
+export function failoverLadder(fo: any, subagentType: string, classId: string): string[] {
+  if (!fo || typeof fo !== "object") return []
+  const fromAgent = modelsList(fo.agent && subagentType ? fo.agent[subagentType] : null)
+  if (fromAgent.length) return fromAgent
+  const fromClass = modelsList(fo.class && classId ? fo.class[classId] : null)
+  if (fromClass.length) return fromClass
+  return modelsList(fo.default)
+}
+
+export function nextFailoverModel(ladder: string[], failed: string[]): string | null {
+  const rows = Array.isArray(ladder) ? ladder : []
+  const skip = Array.isArray(failed) ? failed : []
+  for (let i = 0; i < rows.length; i++) {
+    const m = rows[i]
+    if (!m) continue
+    let seen = false
+    for (let j = 0; j < skip.length; j++) if (skip[j] === m) { seen = true; break }
+    if (!seen) return m
+  }
+  return null
+}
+
+export function failoverAttemptModels(incoming: string, sticky: string | null, ladder: string[]): string[] {
+  const out: string[] = []
+  const used: string[] = []
+  let cur = (sticky && String(sticky)) || String(incoming || "")
+  while (out.length < FAILOVER_MAX_NEXT) {
+    if (!cur || used.indexOf(cur) >= 0) {
+      const n = nextFailoverModel(ladder, used)
+      if (!n) break
+      cur = n
+      continue
+    }
+    out.push(cur)
+    used.push(cur)
+    const n = nextFailoverModel(ladder, used)
+    if (!n) break
+    cur = n
+  }
+  return out
+}
+
+export function isCarrierRefusal(res: any): boolean {
+  if (!res || typeof res !== "object") return false
+  // CONSTRAINT: оба поля. answer==="" не признак: честный ответ из
+  // thinking-блоков несёт пустой текст при живом usage (домен #190).
+  // Совпадение имени модели (usage.model) успехом не считается.
+  return res.usage === null && res.stopReason === null
 }
 
 function parentDir(p: string): string {
@@ -889,6 +951,28 @@ function K(s: string, f: string): RegExp {
 let epoch = 0
 let sweepDone = false
 
+const failoverBinds = new Map<string, any>()
+
+export function failoverBindReset(): void {
+  failoverBinds.clear()
+}
+
+export function failoverBindSet(agentId: string, rec: any): void {
+  const id = String(agentId || "")
+  if (!id || !rec) return
+  if (failoverBinds.has(id)) failoverBinds.delete(id)
+  failoverBinds.set(id, rec)
+  while (failoverBinds.size > FAILOVER_BIND_CAP) {
+    const oldest = failoverBinds.keys().next().value
+    if (oldest === undefined) break
+    failoverBinds.delete(oldest)
+  }
+}
+
+export function failoverBindGet(agentId: string): any {
+  return failoverBinds.get(String(agentId || ""))
+}
+
 function newSession() {
   epoch++
   sidMemo = null
@@ -897,6 +981,7 @@ function newSession() {
   rxCache = {}
   clockBad = false
   sweepDone = false
+  failoverBindReset()
 }
 
 function formKind(p: string, t: string, c: any): string | null {
@@ -1138,6 +1223,18 @@ async function loadWorld($: any, env: any): Promise<any> {
     globalHome, projectHome, cwd, cfgUnread,
     probes: probesOf(gParsed, pParsed),
     prompts: promptsOf(gParsed, pParsed),
+    failover: failoverOf(gParsed, pParsed),
+  }
+}
+
+function failoverOf(gParsed: any, pParsed: any): any {
+  const g = (gParsed && gParsed.failover) || {}
+  const p = (pParsed && pParsed.failover) || {}
+  return {
+    enabled: p.enabled !== undefined ? p.enabled : g.enabled,
+    default: shallowMerge(g.default || {}, p.default || {}),
+    class: shallowMerge(g.class || {}, p.class || {}),
+    agent: shallowMerge(g.agent || {}, p.agent || {}),
   }
 }
 
@@ -1607,6 +1704,15 @@ function builtinTrigger(p: any, e: any, ctx: any): boolean {
   return false
 }
 
+// CONSTRAINT: turn.step STREAMS -- простая async роняет загрузку ВСЕГО модуля.
+// next() бывает генератором или значением; ветка по Symbol.asyncIterator.
+async function* driveNext(n: any): AsyncGenerator<any, any, any> {
+  if (n != null && typeof n[Symbol.asyncIterator] === "function") {
+    return yield* n
+  }
+  return n
+}
+
 export function register(on: any) {
   on("session.start", async ($: any, e: any, next: any) => {
     try { if (e && e.cwd) await $.store.set(CWD_KEY, String(e.cwd)) } catch (x) {}
@@ -1845,5 +1951,103 @@ export function register(on: any) {
 
     if (hardDeny) return { deny: hardDeny }
     return next(e)
+  })
+
+  on("agent.spawn", async ($: any, e: any, next: any) => {
+    const subagentType = String((e && e.subagentType) || "")
+    const cls = classesOf(String((e && e.prompt) || ""))
+    const classId = cls.length ? cls[0] : ""
+    let world: any = null
+    try {
+      const w = await worldFor($)
+      world = w && w.world
+    } catch (x) { world = null }
+    const result = await next(e)
+    if (!result || result.deny || !result.agentId) return result
+    if (!world || !world.failover || !bl3(world.failover.enabled, true)) return result
+    const ladder = failoverLadder(world.failover, subagentType, classId)
+    if (!ladder.length) return result
+    failoverBindSet(String(result.agentId), {
+      ladder, subagentType, class: classId, sticky: null,
+    })
+    return result
+  })
+
+  on("turn.step", async function* ($: any, e: any, next: any) {
+    const aid = e && e.agentId
+    if (aid == null || aid === "") {
+      return yield* driveNext(next(e))
+    }
+    const bind = failoverBindGet(String(aid))
+    if (!bind || !bind.ladder || !bind.ladder.length) {
+      return yield* driveNext(next(e))
+    }
+    let world: any = null
+    try {
+      const w = await worldFor($)
+      world = w && w.world
+    } catch (x) { world = null }
+    if (world && world.failover && !bl3(world.failover.enabled, true)) {
+      return yield* driveNext(next(e))
+    }
+    const original = String(e.model || "")
+    // CONSTRAINT: порядок ступеней строит failoverAttemptModels -- ТА ЖЕ функция,
+    // которую пинят зубы. Второй копии порядка в бою не держать: она разойдётся
+    // молча, и зелёные зубы будут удостоверять не то, что исполняется.
+    const plan = failoverAttemptModels(original, bind.sticky, bind.ladder)
+    if (!plan.length) return yield* driveNext(next(e))
+    let lastRes: any = null
+    let lastThrow: any = null
+    for (let attempt = 0; attempt < plan.length; attempt++) {
+      const model = plan[attempt]
+      const t0 = await nowMs($)
+      const req = model === original ? e : Object.assign({}, e, { model })
+      let res: any = null
+      let threw: any = null
+      try {
+        res = yield* driveNext(next(req))
+      } catch (x) { threw = x }
+      const t1 = await nowMs($)
+      const outcome = threw ? "threw" : (isCarrierRefusal(res) ? "empty" : "ok")
+      const recKey = String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt)
+      try {
+        let sid = ""
+        try { sid = await sidFor($) } catch (x) { sid = "" }
+        const jpath = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
+        if (jpath) {
+          await appendJournal($, jpath, {
+            t: new Date(t1).toISOString(),
+            sid,
+            rec: recKey,
+            agentId: String(aid),
+            subagentType: bind.subagentType,
+            class: bind.class,
+            turnId: e.turnId,
+            index: e.index,
+            attempt,
+            modelRequested: model,
+            outcome,
+            dtMs: t1 - t0,
+            laddered: model !== original,
+          })
+        }
+      } catch (x) {}
+      if (threw) {
+        // CONSTRAINT: исключение носителя гасится ТОЛЬКО пока есть следующая
+        // ступень. На последней оно уезжает вызывающему нетронутым: съеденное
+        // исключение неотличимо от пустого ответа.
+        lastThrow = threw
+        if (attempt === plan.length - 1) throw threw
+        continue
+      }
+      lastRes = res
+      lastThrow = null
+      if (!isCarrierRefusal(res)) {
+        bind.sticky = model
+        return res
+      }
+    }
+    if (lastThrow) throw lastThrow
+    return lastRes
   })
 }
