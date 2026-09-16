@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.15"
+export const MOD_VERSION = "0.1.16"
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
@@ -53,6 +53,38 @@ async function nowMs($: any): Promise<number> {
   if (typeof v === "number" && isFinite(v)) return v
   clockBad = true
   return Date.now()
+}
+
+// CONSTRAINT: временную границу ступени держит ЭТОТ сторож, а не одна лишь
+// просьба `arg.timeoutMs`. Ту границу исполняет образ (шаг 31 патча), и её
+// нет вовсе, когда поле не доехало; а переход по лестнице в runProbe делается
+// ТОЛЬКО через catch -- поэтому вызов, который не вернулся и не бросил,
+// останавливал лестницу навсегда: измерено 2026-09-16, диспатч не стартовал
+// час при живом прокси и работающих ступенях.
+// Гонка НЕ отменяет висящий запрос (мод-API сигнала отмены не принимает:
+// `complete(request)` и только) -- она освобождает лестницу, оставляя запрос
+// доживать в фоне.
+async function raceDeadline($: any, work: Promise<any>, ms: number, label: string, rec: any): Promise<any> {
+  if (!(typeof ms === "number" && isFinite(ms) && ms > 0)) return await work
+  let wait: Promise<void> | null = null
+  try { wait = $.clock.sleep(ms) } catch (x) { wait = null }
+  // CONSTRAINT: часы поверхности могут быть недоступны. Тогда сторожа нет, и
+  // это ОБЪЯВЛЯЕТСЯ полем улики, а не подменяется молчаливым ожиданием без
+  // границы: отсутствие поля означало бы «граница была», ПУСТО != НОЛЬ.
+  if (!wait) { rec.deadlineBlind = true; return await work }
+  // CONSTRAINT: часы отказывают ОТКЛОНЁННЫМ ПРОМИСОМ, а не броском (замер
+  // 2026-09-16: зуб с отключёнными часами терял ОБЕ ответившие ступени) --
+  // try выше ловит только синхронную форму. Отказ прибора не вправе гасить
+  // ступень: несостоявшееся ожидание становится вечным, и гонку решает работа.
+  const armed = wait.then(
+    () => { throw new Error("rung-deadline " + label + " " + ms + "ms") },
+    (x: any) => {
+      rec.deadlineBlind = true
+      rec.deadlineBlindErr = String((x && x.message) || x).slice(0, 160)
+      return new Promise<never>(() => {})
+    },
+  )
+  return await Promise.race([work, armed])
 }
 
 function envOn(v: any): boolean {
@@ -485,6 +517,13 @@ function outcomeOf(kind: string): string {
   if (kind === "OK" || kind === "WARN" || kind === "SILENT" || kind === "NUDGE") return "ok"
   if (kind === "BLOCK" || kind === "STOP" || kind === "DENY") return "block"
   if (kind === "NONE") return "block_no_verdict"
+  // CONSTRAINT: «никто не ответил ВОВРЕМЯ» ПРОПУСКАЕТ диспатч, а не запрещает
+  // его (решение юзера 2026-09-16: таймаут -> следующая ступень -> никто не
+  // ответил -> пропустить). Это отказ ПРИБОРА, а не вердикт о задаче, и его
+  // ценой не может быть остановка работы: судья, который молчит, не вправе
+  // запрещать. NONE остаётся за другим случаем -- ступени ОТВЕТИЛИ, но ни в
+  // одном ответе не нашлось вердикта.
+  if (kind === "TIMEOUT") return "skip"
   if (kind === "SKIP") return "skip"
   return "skip"
 }
@@ -1246,7 +1285,25 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     let used = ""
     const floorTok = num(cfg.max_tokens, 8000, 1)
     const floorTmo = p.id === "judge" ? num(env.JUDGE_TIMEOUT, num(cfg.timeout_ms, 0, 1), 1) : num(cfg.timeout_ms, 0, 1)
+    // CONSTRAINT: предел есть и у СУДА целиком, не только у ступени. Три
+    // ступени, каждая в своём пределе, дают тройное ожидание, и диспатч всё это
+    // время не стартует. Умолчание равно сумме ступенчатых бюджетов -- без
+    // настройки поведение не меняется, настройка `total_timeout_ms` его
+    // ужимает.
+    const totalTmo = num(cfg.total_timeout_ms, floorTmo * (ladder.length || 1), 1)
+    const hardStop = floorTmo ? t0 + totalTmo : 0
+    // CONSTRAINT: улика кладётся на диск ДО лестницы и переписывается после.
+    // Пока запись была только в конце, зависший суд не оставлял следа ВОВСЕ:
+    // инцидент 2026-09-16 (час ожидания) не виден ни в одной из 47 записей
+    // своего окна, и диагностировать вис по уликам было нечем.
+    if (cfg.record !== false) {
+      try { await $.fs.write(recPath, JSON.stringify(Object.assign({}, rec, { inflight: true }))) } catch (x) {}
+    }
     for (let i = 0; i < ladder.length; i++) {
+      // CONSTRAINT: предел суда проверяется ПЕРЕД ступенью, а не после неё:
+      // иначе последняя ступень стартует за миг до истечения и держит диспатч
+      // весь свой бюджет сверх общего.
+      if (hardStop && await nowMs($) >= hardStop) { rec.deadlineHit = true; break }
       const rung = ladder[i]
       used = rung.model
       const rungCtxN = rungCtx(rung, cfg)
@@ -1284,7 +1341,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         // прежнему миру: вердикт не выносится, в кэш не пишется, лестница
         // прекращается. Молчаливый выброс запрещён (ПУСТО -- НЕ НОЛЬ):
         // ступень помечается полем staleEpoch в улике.
-        const ans = readComplete(await $.model.complete(arg))
+        const ans = readComplete(await raceDeadline($, $.model.complete(arg), tmo, used, rec))
         if (epoch !== epCall) {
           rec.staleEpoch = true
           rec["ms_" + used] = await nowMs($) - rungT0
@@ -1322,7 +1379,13 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         // бюджету и отказ после ожидания провайдера -- разные явления.
         rec["ms_" + used] = await nowMs($) - rungT0
         rec["ctxN_" + used] = rungCtxN
-        rec["err_" + used] = String(x).slice(0, 240)
+        const es = String(x)
+        rec["err_" + used] = es.slice(0, 240)
+        // CONSTRAINT: отказ ПО ВРЕМЕНИ считается отдельно от отказа провайдера.
+        // Смешать их значит потерять различие между «ступень отказала» и
+        // «ступень не ответила»: первое -- вердикт о канале, второе -- о
+        // приборе, и исход у них РАЗНЫЙ (block_no_verdict против skip).
+        if (es.indexOf("rung-deadline") >= 0) rec.rungTimeouts = num(rec.rungTimeouts, 0, 0) + 1
       }
     }
     rec.dtMs = await nowMs($) - t0
@@ -1345,8 +1408,16 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         try { await $.ui.toast((id) + ": " + verdict.rest.slice(0, 200)) } catch (x) { rec.toastErr = String(x).slice(0, 160) }
       }
     } else {
-      rec.kind = "NONE"
-      if (p.pending || p.act === "cancel") {
+      // CONSTRAINT: исход зависит от ПРИЧИНЫ молчания. Ступени, не ответившие
+      // в срок, и исчерпанный предел суда дают TIMEOUT -> пропуск; ступени,
+      // ответившие без вердикта, остаются NONE -> запрет. Пока имя было одно
+      // на оба случая, вис был неотличим от отказа и ЗАПРЕЩАЛ диспатч.
+      const timedOut = rec.deadlineHit === true || num(rec.rungTimeouts, 0, 0) > 0
+      rec.kind = timedOut ? "TIMEOUT" : "NONE"
+      // CONSTRAINT: в кэш отказов кладётся только NONE. TIMEOUT -- состояние
+      // канала, а не свойство диспатча: закэшировав его, мы гасили бы будущие
+      // суды по причине, которой уже нет.
+      if (!timedOut && (p.pending || p.act === "cancel")) {
         try { await $.store.set(key, { kind: "NONE", used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {}
       }
     }

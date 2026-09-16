@@ -8,6 +8,7 @@
 // starts its clock 6000 ms past the previous one — otherwise a test would read
 // the world its neighbour loaded.
 import { describe, expect, mock, test } from "claude-code/testing"
+import type { MockClock } from "claude-code/testing"
 import type { Args, On } from "claude-code"
 
 // CONSTRAINT: версия берётся импортом, а не литералом: дом версии — register.ts
@@ -53,6 +54,34 @@ type Kept = {
   completes: Args<"model.complete">[]
   toasts: string[]
   store: StoreView
+  // CONSTRAINT: часы стенда движутся ТОЛЬКО рукой теста, и ожидание ступени
+  // держится, пока тест их не двинет. Зубу про предел ступени нужен этот рычаг;
+  // ветка clockBreak часов не заводит вовсе, поэтому поле пустует.
+  clock: MockClock | null
+}
+
+// CONSTRAINT: улика пишется ДВАЖДЫ -- предварительно, до лестницы (поле
+// `inflight`), и начисто после вердикта. На реальной ФС второй write
+// ПЕРЕЗАПИСЫВАЕТ файл, здесь же копятся события, поэтому предметом проверки
+// служит ПОСЛЕДНЯЯ запись пути: первая описывает суд, который ещё идёт.
+// Предварительная запись существует затем, чтобы зависший суд оставлял след --
+// до неё вис не был виден ничем (инцидент 2026-09-16: час ожидания, ноль
+// записей в своём окне).
+const RECORD_RE = /\/judge\/records\/mod-[\w.-]+\.json$/
+
+function lastRecord(kept: Kept): Args<"fs.write"> | undefined {
+  const all = kept.writes.filter(w => RECORD_RE.test(w.path))
+  return all.length ? all[all.length - 1] : undefined
+}
+
+// Последняя запись КАЖДОГО пути: столько улик, сколько судов, независимо от
+// числа промежуточных записей.
+function finalRecords(kept: Kept): any[] {
+  const byPath = new Map<string, any>()
+  for (const w of kept.writes) {
+    if (RECORD_RE.test(w.path)) byPath.set(w.path, JSON.parse(String(w.text)))
+  }
+  return Array.from(byPath.values())
 }
 
 // Wires everything the mod touches beneath it: the clock, the env, the store
@@ -79,17 +108,18 @@ function wired(
 ): Kept {
   // The harness refuses a second on("clock.now"), so an outage tooth takes
   // over the clock entirely: the mod reads $.clock.now() and nothing else.
+  let clock: MockClock | null = null
   if (opts.clockBreak) {
     on("clock.now", () => (opts.clockBreak && opts.clockBreak()
       ? { deny: "clock.now: scripted outage" }
       : { value: now }))
   } else {
-    mock.clock(on, { now })
+    clock = mock.clock(on, { now })
   }
   mock.env(on, { CLAUDE_PROBES_DIR: HOME, PWD: "/work", ...env })
   const store = storeOf(on, stored)
 
-  const kept: Kept = { writes: [], reads: [], completes: [], toasts: [], store }
+  const kept: Kept = { writes: [], reads: [], completes: [], toasts: [], store, clock }
 
   on("fs.read", (_$, e) => {
     kept.reads.push(e.path)
@@ -205,7 +235,7 @@ describe("tool.call", () => {
 
     // the consult left its record and its journal line (the sweep's shard
     // line now comes first in the same journal, so match by outcome)
-    const record = kept.writes.find(w => /\/judge\/records\/mod-[\w.-]+\.json$/.test(w.path))
+    const record = lastRecord(kept)
     expect(record?.text).toContain('"kind":"BLOCK"')
     expect(record?.text).toContain('"carrier":"mod"')
     expect(record?.text).toContain('"mod":"' + MOD_VERSION + '"')
@@ -214,6 +244,178 @@ describe("tool.call", () => {
       w.text.includes('"outcome":"block"'),
     )
     expect(journal?.text).toContain('"outcome":"block"')
+  })
+})
+
+// Инцидент 2026-09-16: диспатч не стартовал ЧАС при живом прокси и рабочих
+// ступенях. Переход по лестнице делался только через catch, а вызов, который
+// не вернулся и не бросил, не давал ни того, ни другого.
+describe("dispatch judge: a rung that never answers", () => {
+  const TOML = '[probe.judge]\nmodels = ["m1", "m2"]\ntimeout_ms = 5000\n'
+  const FILES = {
+    [HOME + "/probes.toml"]: TOML,
+    [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+  }
+  const DISPATCH = "[dispatch-class:exec-0p] make tea"
+  const callIt = ($: any) => $.tool.call({
+    tool: "Agent",
+    description: "brew",
+    prompt: DISPATCH,
+    subagent_type: "scout",
+  })
+  // Висящая ступень -- промис, который не разрешится ничем. Предел наступает
+  // не по реальному времени, а рукой теста: часы стенда держат ожидание, пока
+  // тест их не двинет, поэтому зуб не тратит ни секунды простоя.
+  const neverAnswers = () => new Promise<void>(() => {})
+  const RUNG_TMO = 5000
+
+  test("a silent rung does not stop the ladder: the next rung's verdict stands", async ($, on) => {
+    let call = 0
+    const kept = wired(
+      on, 1_006_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" }, FILES, {},
+      ["OK: closed brief"],
+      { onComplete: async () => { call++; if (call === 1) await neverAnswers() } },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const running = callIt($)
+    await kept.clock!.settle()
+    await kept.clock!.advance(RUNG_TMO)
+    const res = await running
+
+    expect(res, "the dispatch runs on the second rung's OK").toEqual({ result: "ran" })
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.kind, "the verdict came from the rung that answered").toBe("OK")
+    expect(rec.used, "the ladder moved on").toBe("m2")
+    expect(
+      rec.rungTimeouts,
+      "the silent rung is counted as a timeout, not as a provider refusal",
+    ).toBe(1)
+  })
+
+  test("no rung answers in time: the dispatch is LET THROUGH, not cancelled", async ($, on) => {
+    const kept = wired(
+      on, 1_018_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" }, FILES, {}, [],
+      { onComplete: () => neverAnswers() },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const running = callIt($)
+    await kept.clock!.settle()
+    // по пределу на каждую из двух ступеней: общий предел равен их сумме, и
+    // вторая ступень обязана стартовать -- лестница не имеет права встать на
+    // первом молчании.
+    await kept.clock!.advance(RUNG_TMO)
+    await kept.clock!.advance(RUNG_TMO)
+    const res = await running
+
+    expect(res, "a judge that cannot speak must not forbid").toEqual({ result: "ran" })
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.kind, "silence by time has its own name").toBe("TIMEOUT")
+    expect(rec.rungTimeouts, "every rung was waited out").toBe(2)
+    expect(
+      kept.store.sets.filter(s => s.key.indexOf("v:judge:") === 0),
+      "a timeout is a state of the channel and is never cached",
+    ).toEqual([])
+    // Журнал -- второй дом исхода, и сводки флота читают ИМЕННО его: молчание
+    // по времени обязано числиться пропуском, иначе агрегат покажет запреты,
+    // которых судья не выносил.
+    // в том же журнале первой идёт строка свипа хранилища -- она тоже помечена
+    // probe:judge, поэтому отбор идёт по полю вердикта, а не по имени пробы.
+    const line = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/judge/journal.jsonl") &&
+      w.text.includes('"verdict":'),
+    )
+    expect(String(line?.text || ""), "the journal calls it a skip").toContain('"outcome":"skip"')
+    expect(String(line?.text || ""), "and names the reason").toContain("TIMEOUT")
+  })
+
+  test("rungs that answer without a verdict still cancel: NONE is not TIMEOUT", async ($, on) => {
+    const kept = wired(
+      on, 1_034_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" }, FILES, {},
+      ["ответ мимо формата", "и этот мимо"],
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const res = await callIt($)
+
+    // У молчания по времени и у ответа без вердикта РАЗНЫЕ исходы: первое
+    // пропускает, второе по-прежнему запрещает своей формулировкой.
+    expect(
+      String((res as any)?.deny || ""),
+      "answering without a verdict keeps the old refusal",
+    ).toContain("no verdict on any rung")
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.kind).toBe("NONE")
+    expect(rec.rungTimeouts, "nothing timed out here").toBeUndefined()
+  })
+
+  test("the evidence exists BEFORE the ladder: a consult in flight leaves a record", async ($, on) => {
+    const kept = wired(on, 1_040_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" }, FILES, {}, ["OK: fine"])
+    on("tool.call", () => ({ result: "ran" }))
+
+    await callIt($)
+
+    const all = kept.writes.filter(w => RECORD_RE.test(w.path))
+    expect(all.length, "the record is written twice: in flight, then final").toBe(2)
+    expect(
+      JSON.parse(String(all[0].text)).inflight,
+      "a hung consult is visible from outside while it hangs",
+    ).toBe(true)
+    expect(JSON.parse(String(all[0].text)).ladder).toEqual(["m1", "m2"])
+    expect(
+      JSON.parse(String(all[all.length - 1].text)).inflight,
+      "the final record is not marked in flight",
+    ).toBeUndefined()
+  })
+
+  test("total_timeout_ms ends the trial: the next rung is never started", async ($, on) => {
+    const kept = wired(
+      on, 1_046_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      {
+        [HOME + "/probes.toml"]:
+          '[probe.judge]\nmodels = ["m1", "m2"]\ntimeout_ms = 5000\ntotal_timeout_ms = 5000\n',
+        [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+      },
+      {}, [], { onComplete: () => neverAnswers() },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const running = callIt($)
+    await kept.clock!.settle()
+    await kept.clock!.advance(RUNG_TMO)
+    const res = await running
+
+    expect(res, "an exhausted trial lets the dispatch through").toEqual({ result: "ran" })
+    expect(
+      kept.completes.map(c => c.model),
+      "the ladder is cut at the trial's deadline, not walked to the end",
+    ).toEqual(["m1"])
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.deadlineHit, "the trial's own deadline is named in the evidence").toBe(true)
+    expect(rec.kind).toBe("TIMEOUT")
+  })
+
+  test("no clock beneath the guard: the rung still counts, and the blindness is declared", async ($, on) => {
+    // Часы поверхности могут быть недоступны -- тогда сторожа времени нет. Это
+    // НЕ повод потерять ответившую ступень: отказ прибора объявляется полем
+    // улики, а вердикт ступени принимается (ПУСТО != НОЛЬ).
+    const kept = wired(
+      on, 1_052_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" }, FILES, {},
+      ["BLOCK: no subject"], { clockBreak: () => false },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const res = await callIt($)
+
+    expect(
+      String((res as any)?.deny || ""),
+      "the rung answered and its verdict stands",
+    ).toContain("cancelled by the dispatch judge")
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.kind).toBe("BLOCK")
+    expect(rec.deadlineBlind, "the missing guard is on the record").toBe(true)
+    expect(rec.rungTimeouts, "a blind guard is not a timeout").toBeUndefined()
   })
 })
 
@@ -423,7 +625,7 @@ describe("session boundary", () => {
       kept.store.sets.filter(s => s.key.indexOf("v:judge:") === 0),
       "a stale verdict is never cached",
     ).toEqual([])
-    const record = kept.writes.find(w => /\/judge\/records\/mod-[\w.-]+\.json$/.test(w.path))
+    const record = lastRecord(kept)
     expect(
       record && JSON.parse(String(record.text)).staleEpoch,
       "the evidence names the stale epoch instead of dropping the rung silently",
@@ -524,7 +726,7 @@ describe("session boundary", () => {
       kept.store.sets.filter(s => s.key.indexOf("v:judge:") === 0),
       "nothing is filed under the stale sid's key",
     ).toEqual([])
-    const record = kept.writes.find(w => /\/judge\/records\/mod-[\w.-]+\.json$/.test(w.path))
+    const record = lastRecord(kept)
     expect(
       record && JSON.parse(String(record.text)).staleEpoch,
       "the evidence names the stale epoch",
@@ -565,9 +767,7 @@ describe("session boundary", () => {
       subagent_type: "scout",
     })
 
-    const records = kept.writes
-      .filter(w => /\/judge\/records\/mod-[\w.-]+\.json$/.test(w.path))
-      .map(w => JSON.parse(String(w.text)))
+    const records = finalRecords(kept)
     expect(records).toHaveLength(2)
     expect(records[0].clockBad, "the outage is seen in the first session").toBe(true)
     expect(records[1].clockBad, "the flag died with the session").toBeUndefined()
