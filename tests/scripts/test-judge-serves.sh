@@ -21,6 +21,12 @@
 # пользователя не читается и не пишется ни в одном случае.
 set -u
 
+# CONSTRAINT: неизвестный аргумент отвергается ДО опт-ина и любой живой оснастки.
+if [ "$#" -ne 0 ]; then
+  printf 'ОТКАЗ ПРИБОРА: неизвестный аргумент: %s; стенд принимает только запуск без аргументов\n' "$1" >&2
+  exit 2
+fi
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 PLUGIN="$ROOT/plugins/catalyst-probes"
@@ -427,7 +433,8 @@ fi
 # --- 11. уборка отравленных ключей стора, с положительным контролем ----------
 # Прогон А -- случай 8 выше: его CLAUDE_CONFIG_DIR уже создал стор
 # plugins/store/catalyst-probes_*.json. Ключи кладутся МЕЖДУ прогонами,
-# прогон Б в ТОМ ЖЕ CLAUDE_CONFIG_DIR поднимает session.start-уборку.
+# прогон Б в ТОМ ЖЕ CLAUDE_CONFIG_DIR обязан вызвать первую консультацию
+# судьи одним диспатчем: уборка живёт в консультации, не в session.start.
 # CONSTRAINT: без ключа СВЕЖИЙ случай проходил бы и на уборке, сносящей ВСЁ,
 # -- проверка «порча исчезла» сама по себе вакуумна.
 H11=$(mk_home sweep true)
@@ -450,10 +457,16 @@ PY
 then
   unmeasured "11 (уборка стора): не удалось дописать ключи в стор: $STORE"
 else
-  run_body "$ROOTDIR/sweep" "$H11" "$ROOTDIR/multi/config" 2 \
-    "Скажи одним словом ok и остановись. Больше ничего не делай."
-  if [ -z "$(journal_files "$H11")" ]; then
-    unmeasured "11 (уборка стора): прогон Б не поднял мод -- журнала дома проб нет вовсе"
+  d11_before=$(dispatches "$ROOTDIR/multi")
+  run_body "$ROOTDIR/sweep" "$H11" "$ROOTDIR/multi/config" 3 \
+    "Сделай РОВНО ОДИН диспатч через инструмент Task (subagent_type: general-purpose) с задачей ДОСЛОВНО: «разберись с логами». Больше ничего не делай. Независимо от результата диспатча остановись, повторных диспатчей не делай."
+  d11_after=$(dispatches "$ROOTDIR/multi")
+  d11=$((d11_after - d11_before))
+  r11=$(sweep_removed "$H11")
+  if [ "$r11" -eq -1 ]; then
+    unmeasured "11 (уборка стора): строки store_sweep в журнале прогона Б нет. Возможные причины: диспатч не состоялся, консультация судьи не началась, уборка или запись журнала не завершилась."
+  elif [ "$d11" -ne 1 ]; then
+    bad "11: прогон Б сделал диспатчей $d11 вместо одного"
   else
     v11=$(python3 - "$STORE" <<'PY'
 import json, sys
@@ -461,15 +474,12 @@ store = json.load(open(sys.argv[1]))
 print("%s|%s" % ("v:judge:ПОРЧА" not in store, "v:judge:СВЕЖИЙ" in store))
 PY
 )
-    r11=$(sweep_removed "$H11")
     if [ "$v11" != "True|True" ]; then
       bad "11: уборка снесла не то: ПОРЧА исчезла/СВЕЖИЙ уцелел = '$v11'"
-    elif [ "$r11" -eq -1 ]; then
-      bad "11: строки store_sweep в журнале нет -- уборка не видна"
     elif [ "$r11" -lt 1 ]; then
       bad "11: store_sweep прошёл, но removed=$r11 -- отравленный ключ не снесён"
     else
-      ok "11: уборка стора: ПОРЧА снесена, СВЕЖИЙ уцелел, store_sweep removed=$r11"
+      ok "11: уборка стора: ПОРЧА снесена, СВЕЖИЙ уцелел, store_sweep removed=$r11, диспатчей $d11"
     fi
   fi
 fi
