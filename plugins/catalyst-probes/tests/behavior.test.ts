@@ -13,7 +13,7 @@ import type { Args, On } from "claude-code"
 
 // CONSTRAINT: версия берётся импортом, а не литералом: дом версии — register.ts
 // и .claude-plugin/plugin.json, их сверяет tests/scripts/test-mod-units.sh.
-import { MOD_VERSION, failoverBindSet, register, sessionExecutorsReset, verdictKey } from "../hooks/register.ts"
+import { MOD_VERSION, FAILOVER_FOLD_PERIOD_MS, failoverBindSet, failoverFoldReset, register, sessionExecutorsReset, verdictKey } from "../hooks/register.ts"
 
 const HOME = "/probes-home"
 const SID = "sid-behavior-1"
@@ -111,6 +111,7 @@ function wired(
 ): Kept {
   // The harness refuses a second on("clock.now"), so an outage tooth takes
   // over the clock entirely: the mod reads $.clock.now() and nothing else.
+  failoverFoldReset()
   let clock: MockClock | null = null
   if (opts.clockBreak) {
     on("clock.now", () => (opts.clockBreak && opts.clockBreak()
@@ -2045,5 +2046,187 @@ describe("failover: объявленный эффорт ступени (#223)", 
     // строку. Считать только объекты значило бы оставить тот же молчаливый
     // пропуск для прочих опечаток реестра.
     expect(lines[0].rungsDropped, "в улике счётчик отброшенных").toBe(2)
+  })
+})
+
+// CONSTRAINT (#227-A): зубы свёртки идут движковым маршрутом ($.turn.step +
+// wired), потому что прямому вызову хука op-существительные отказаны.
+// Таймерные зубы двигают mock.clock — `claude plugin test` для clock.every
+// моковая среда (измерено #175: «no implementation for clock.every»); живое
+// поведение every уже снято отдельной пробой и здесь не переоткрывается.
+describe("failover: свёртка скучных улик (#227-A)", () => {
+  function foldToml(): string {
+    return [
+      "[failover]",
+      "enabled = true",
+      "",
+      "[failover.default]",
+      'models = ["glm-5.3", "grok-4.6"]',
+      "",
+    ].join("\n")
+  }
+
+  function foldShards(kept: Kept): Args<"fs.write">[] {
+    return kept.writes.filter(w =>
+      String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
+  }
+
+  function foldLines(kept: Kept): any[] {
+    return foldShards(kept).map(w => JSON.parse(String(w.text)))
+  }
+
+  function spawnSpec(agentId: string) {
+    return {
+      tool_use_id: "tu-" + agentId,
+      prompt: "[dispatch-class:exec-0p] fold boring",
+      description: agentId,
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    }
+  }
+
+  function okBody(e: any) {
+    return {
+      turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+      stopReason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+    }
+  }
+
+  function emptyBody(e: any) {
+    return {
+      turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+      stopReason: null, usage: null,
+    }
+  }
+
+  test("#227-A зуб 1: скучный шаг файла не создаёт", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 230_000_000, {}, { [HOME + "/probes.toml"]: foldToml() })
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "glm-5.3"),
+      agentId: "ag-227a-1",
+    }))
+    on("turn.step", async function* (_$, e) { return okBody(e) })
+    const spawned = await $.agent.spawn(spawnSpec("ag-227a-1"))
+    expect(spawned.agentId).toBe("ag-227a-1")
+    await settleStep($.turn.step({
+      turnId: "turn-227a-1a", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    const afterSticky = foldShards(kept).length
+    const res = await settleStep($.turn.step({
+      turnId: "turn-227a-1b", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    expect(res && res.answer).toBe("from-glm-5.3")
+    expect(foldShards(kept).length, "скучный ok без лестницы файла не создаёт").toBe(afterSticky)
+  })
+
+  test("#227-A зуб 2: полная улика сбрасывает агрегат ПЕРЕД собой", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 231_000_000, {}, { [HOME + "/probes.toml"]: foldToml() })
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "glm-5.3"),
+      agentId: "ag-227a-2",
+    }))
+    let n = 0
+    on("turn.step", async function* (_$, e) {
+      n++
+      if (n <= 3) return okBody(e)
+      if (e.model === "glm-5.3") return emptyBody(e)
+      return okBody(e)
+    })
+    const spawned = await $.agent.spawn(spawnSpec("ag-227a-2"))
+    await settleStep($.turn.step({
+      turnId: "turn-227a-2a", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    const afterSticky = foldShards(kept).length
+    await settleStep($.turn.step({
+      turnId: "turn-227a-2b", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    await settleStep($.turn.step({
+      turnId: "turn-227a-2c", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    expect(foldShards(kept).length, "два скучных шага файлов не создали").toBe(afterSticky)
+
+    await settleStep($.turn.step({
+      turnId: "turn-227a-2d", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    const lines = foldLines(kept)
+    const rest = lines.slice(afterSticky)
+    expect(rest.length, "агрегат + отказ + переход").toBe(3)
+    expect(rest[0].fold, "первая запись каталога после скучных — агрегат").toBe(true)
+    expect(rest[0].n, "агрегат унёс оба скучных шага").toBe(2)
+    expect(rest[1].outcome).toBe("empty")
+    expect(rest[2].outcome).toBe("ok")
+    expect(rest[2].laddered).toBe(true)
+  })
+
+  test("#227-A зуб 3: тик мок-часов пишет один агрегатный шард с верным n", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 232_000_000, {}, { [HOME + "/probes.toml"]: foldToml() })
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "glm-5.3"),
+      agentId: "ag-227a-3",
+    }))
+    on("turn.step", async function* (_$, e) { return okBody(e) })
+    const spawned = await $.agent.spawn(spawnSpec("ag-227a-3"))
+    await settleStep($.turn.step({
+      turnId: "turn-227a-3a", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    const afterSticky = foldShards(kept).length
+    await settleStep($.turn.step({
+      turnId: "turn-227a-3b", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    await settleStep($.turn.step({
+      turnId: "turn-227a-3c", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    expect(foldShards(kept).length).toBe(afterSticky)
+    await kept.clock!.advance(FAILOVER_FOLD_PERIOD_MS)
+    const rest = foldLines(kept).slice(afterSticky)
+    expect(rest, "один агрегатный шард").toHaveLength(1)
+    expect(rest[0].fold, "агрегат отличим полем fold").toBe(true)
+    expect(rest[0].n).toBe(2)
+    expect(rest[0].sticky, "агрегат называет липкую ступень").toBe("glm-5.3")
+  })
+
+  test("#227-A зуб 4: тик при нулевом счётчике файла не создаёт", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 233_000_000, {}, { [HOME + "/probes.toml"]: foldToml() })
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "glm-5.3"),
+      agentId: "ag-227a-4",
+    }))
+    on("turn.step", async function* (_$, e) { return okBody(e) })
+    const spawned = await $.agent.spawn(spawnSpec("ag-227a-4"))
+    await settleStep($.turn.step({
+      turnId: "turn-227a-4a", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    await settleStep($.turn.step({
+      turnId: "turn-227a-4b", index: 0, model: "glm-5.3",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    await kept.clock!.advance(FAILOVER_FOLD_PERIOD_MS)
+    const lines = foldLines(kept)
+    const folds = lines.filter((l: any) => l.fold === true)
+    expect(folds, "первый тик унёс накопленное").toHaveLength(1)
+    expect(folds[0].n).toBe(1)
+    const afterFirst = foldShards(kept).length
+    await kept.clock!.advance(FAILOVER_FOLD_PERIOD_MS)
+    expect(foldShards(kept).length, "второй тик при нуле не пишет").toBe(afterFirst)
   })
 })

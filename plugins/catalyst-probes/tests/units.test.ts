@@ -18,6 +18,9 @@ import {
   failoverLadder, nextFailoverModel, failoverAttemptModels,
   isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP,
   failoverBindSet, failoverBindGet, failoverBindReset,
+  FAILOVER_FOLD_PERIOD_MS, failoverAttemptIsBoring,
+  failoverFoldCount, failoverFoldNote, failoverFoldFlush, failoverFoldReset,
+  failoverFoldObserve,
 } from "../hooks/register.ts"
 
 const RX_JUDGE = "OK|WARN|BLOCK|STOP|DENY"
@@ -543,7 +546,7 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.26")
+  expect(MOD_VERSION).toBe("0.1.28")
 })
 
 // --- verdictKey: сессионная и текстовая грань вердиктного кэша -------------------
@@ -767,4 +770,151 @@ test("failover binds: потолок 512, вытеснение старейши�
   expect(failoverBindGet("id-1") && failoverBindGet("id-1").ladder).toStrictEqual(["m"])
   expect(failoverBindGet("id-" + FAILOVER_BIND_CAP) && failoverBindGet("id-" + FAILOVER_BIND_CAP).ladder).toStrictEqual(["m"])
   failoverBindReset()
+})
+
+// --- #227-A: свёртка скучных улик ------------------------------------------------
+
+test("failoverAttemptIsBoring: ok attempt 0 без отметок -- скучный", () => {
+  expect(failoverAttemptIsBoring({ outcome: "ok", attempt: 0 }, false)).toBe(true)
+  expect(FAILOVER_FOLD_PERIOD_MS).toBe(1000)
+})
+
+test("failoverAttemptIsBoring: отказ, переход, липкость, негодный эффорт -- не скучный", () => {
+  expect(failoverAttemptIsBoring({ outcome: "empty", attempt: 0 }, false)).toBe(false)
+  expect(failoverAttemptIsBoring({ outcome: "ok", attempt: 1 }, false)).toBe(false)
+  expect(failoverAttemptIsBoring({ outcome: "ok", attempt: 0 }, true)).toBe(false)
+  expect(failoverAttemptIsBoring({ outcome: "ok", attempt: 0, startMatch: true }, false)).toBe(false)
+  expect(failoverAttemptIsBoring({ outcome: "ok", attempt: 0, rungsFiltered: 1 }, false)).toBe(false)
+  expect(failoverAttemptIsBoring({ outcome: "ok", attempt: 0, effortBad_m: "High" }, false)).toBe(false)
+})
+
+test("#227-A зуб 5: два одновременных сброса -- один файл, счёт не теряется и не удваивается", async () => {
+  failoverFoldReset()
+  failoverFoldNote(1000)
+  failoverFoldNote(1001)
+  failoverFoldNote(1002)
+  failoverFoldNote(1003)
+  failoverFoldNote(1004)
+  expect(failoverFoldCount()).toBe(5)
+
+  const writes: { path: string; text: string }[] = []
+  let release: () => void = () => {}
+  const held = new Promise<void>(r => { release = r })
+  const $: any = {
+    fs: {
+      write: async (path: string, text: string) => {
+        writes.push({ path, text })
+        await held
+      },
+    },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+
+  const p1 = failoverFoldFlush($, world)
+  await Promise.resolve()
+  const p2 = failoverFoldFlush($, world)
+  await Promise.resolve()
+  release()
+  await Promise.all([p1, p2])
+
+  expect(writes, "сторож: один файл, не два").toHaveLength(1)
+  const rec = JSON.parse(writes[0].text)
+  expect(rec.fold, "агрегат отличим полем fold").toBe(true)
+  expect(rec.n, "счёт не потерян и не удвоен").toBe(5)
+  expect(String(rec.rec).indexOf("agg-"), "rec агрегата не схлопнется с попыткой").toBe(0)
+  expect(failoverFoldCount()).toBe(0)
+  failoverFoldReset()
+})
+
+test("#227-A зуб 6: нулевой сброс файла не создаёт; агрегат несёт fold", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  const $: any = {
+    fs: { write: async (path: string, text: string) => { writes.push({ path, text }) } },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  await failoverFoldFlush($, world)
+  expect(writes, "тик при нуле не пишет").toHaveLength(0)
+
+  failoverFoldNote(2000)
+  await failoverFoldFlush($, world)
+  expect(writes).toHaveLength(1)
+  const rec = JSON.parse(writes[0].text)
+  expect(rec.fold).toBe(true)
+  expect(rec.n).toBe(1)
+  failoverFoldReset()
+})
+
+test("#227-A зуб 7: агрегат называет липкую ступень", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  const $: any = {
+    fs: { write: async (path: string, text: string) => { writes.push({ path, text }) } },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  await failoverFoldObserve($, world, 3000, "glm-5.3", "sid-fold")
+  await failoverFoldObserve($, world, 3001, "glm-5.3", "sid-fold")
+  await failoverFoldFlush($, world)
+  expect(writes).toHaveLength(1)
+  const rec = JSON.parse(writes[0].text)
+  expect(rec.fold).toBe(true)
+  expect(rec.n).toBe(2)
+  expect(rec.sticky, "агрегат несёт липкую ступень, не модель события").toBe("glm-5.3")
+  failoverFoldReset()
+})
+
+test("#227-A зуб 8: смена липкой ступени не схлопывается в одну запись", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  const $: any = {
+    fs: { write: async (path: string, text: string) => { writes.push({ path, text }) } },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  await failoverFoldObserve($, world, 4000, "glm-5.3", "sid-a")
+  await failoverFoldObserve($, world, 4001, "glm-5.3", "sid-a")
+  await failoverFoldObserve($, world, 5000, "grok-4.6", "sid-b")
+  await failoverFoldFlush($, world)
+  expect(writes, "смена sticky — два агрегата, не один").toHaveLength(2)
+  const a = JSON.parse(writes[0].text)
+  const b = JSON.parse(writes[1].text)
+  expect(a.sticky).toBe("glm-5.3")
+  expect(a.n).toBe(2)
+  expect(b.sticky).toBe("grok-4.6")
+  expect(b.n).toBe(1)
+  failoverFoldReset()
+})
+
+test("#227-A зуб 9: отказ записи возвращает счёт; следующий проход пишет те же n", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  let fail = true
+  const $: any = {
+    fs: {
+      write: async (path: string, text: string) => {
+        if (fail) throw new Error("ENOSPC-fold")
+        writes.push({ path, text })
+      },
+    },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  await failoverFoldObserve($, world, 6000, "glm-5.3", "sid-e")
+  await failoverFoldObserve($, world, 6001, "glm-5.3", "sid-e")
+  expect(failoverFoldCount()).toBe(2)
+  let threw = ""
+  try { await failoverFoldFlush($, world) } catch (x) { threw = String(x) }
+  expect(threw.indexOf("ENOSPC-fold") >= 0, "отказ записи не глотается").toBe(true)
+  expect(failoverFoldCount(), "после отказа счётчик не обнулён").toBe(2)
+  expect(writes).toHaveLength(0)
+  fail = false
+  await failoverFoldFlush($, world)
+  expect(writes).toHaveLength(1)
+  const rec = JSON.parse(writes[0].text)
+  expect(rec.n, "следующий проход дописывает те же n шагов").toBe(2)
+  expect(rec.sticky).toBe("glm-5.3")
+  failoverFoldReset()
 })

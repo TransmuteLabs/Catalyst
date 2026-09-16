@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.26"
+export const MOD_VERSION = "0.1.28"
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 const COACHING =
@@ -1062,6 +1062,164 @@ export function sessionExecutorHas(model: string): boolean {
   return sessionExecutorModels.indexOf(String(model || "")) >= 0
 }
 
+// CONSTRAINT: период свёртки 1000 мс. Таймер не переживает смерть процесса,
+// поэтому хвост накопленных скучных шагов теряется; типичный turn.step --
+// вызов модели (секунды), 1 с ограничивает потерю меньше одного шага.
+// Нулевой агрегат файла не пишет: короткий период сам по себе шардов не плодит.
+export const FAILOVER_FOLD_PERIOD_MS = 1000
+
+let boringN = 0
+let boringT0 = 0
+let boringT1 = 0
+let boringSticky = ""
+let foldBusy = false
+let foldWait: Array<() => void> = []
+let foldSeq = 0
+let foldWorld: any = null
+let foldTimer: { cancel: () => void } | null = null
+let foldSid = ""
+let foldWriteErr = ""
+
+export function failoverFoldCount(): number {
+  return boringN
+}
+
+export function failoverFoldNote(tMs: number, sticky?: string): void {
+  boringN++
+  if (!boringT0) boringT0 = tMs
+  boringT1 = tMs
+  if (sticky && !boringSticky) boringSticky = String(sticky)
+}
+
+export function failoverFoldReset(): void {
+  boringN = 0
+  boringT0 = 0
+  boringT1 = 0
+  boringSticky = ""
+  foldBusy = false
+  foldWait = []
+  foldWorld = null
+  foldSid = ""
+  foldWriteErr = ""
+  if (foldTimer) {
+    try { foldTimer.cancel() } catch (x) {}
+    foldTimer = null
+  }
+}
+
+export function failoverAttemptIsBoring(rec: any, stickyChanged: boolean): boolean {
+  if (!rec || rec.outcome !== "ok") return false
+  if (Number(rec.attempt) !== 0) return false
+  if (stickyChanged) return false
+  if (rec.ladderFullTaken) return false
+  if (rec.startMatch) return false
+  if (rec.stickyDropped) return false
+  if (rec.execOverflow) return false
+  if (num(rec.rungsFiltered, 0, 0) > 0) return false
+  if (num(rec.rungsDropped, 0, 0) > 0) return false
+  const ks = Object.keys(rec)
+  for (let i = 0; i < ks.length; i++) {
+    if (ks[i].indexOf("effortBad_") === 0) return false
+  }
+  return true
+}
+
+function armFailoverFoldTimer($: any, world: any): void {
+  if (world) foldWorld = world
+  if (foldTimer) return
+  try {
+    const h = $.clock.every(FAILOVER_FOLD_PERIOD_MS, async () => {
+      try { await failoverFoldFlush($, foldWorld) } catch (x) {
+        if (!foldWriteErr) foldWriteErr = String((x && (x as any).message) || x).slice(0, 240)
+      }
+    })
+    foldTimer = (h && typeof h.cancel === "function") ? h : { cancel() {} }
+  } catch (x) {
+    foldTimer = { cancel() {} }
+  }
+}
+
+function restoreFoldSnapshot(n: number, t0: number, t1: number, sticky: string): void {
+  boringN += n
+  if (!boringT0 || (t0 && t0 < boringT0)) boringT0 = t0
+  if (t1 > boringT1) boringT1 = t1
+  if (sticky && !boringSticky) boringSticky = sticky
+}
+
+export async function failoverFoldObserve($: any, world: any, tMs: number, sticky: string, sid: string): Promise<void> {
+  const s = String(sticky || "")
+  if (boringN > 0 && boringSticky && s && boringSticky !== s) {
+    await failoverFoldFlush($, world)
+  }
+  failoverFoldNote(tMs, s)
+  foldSid = sid
+  if (s) boringSticky = s
+}
+
+export async function failoverFoldFlush($: any, world: any): Promise<void> {
+  while (foldBusy) {
+    await new Promise<void>(r => { foldWait.push(r) })
+  }
+  foldBusy = true
+  try {
+    // CONSTRAINT: доступ к счётчикам сериализует foldBusy (колбэки every
+    // перекрываются, замер #175). Снимок забирается под сторожем; отказ
+    // записи возвращает снятое (n прибавить, окно t0/t1 расширить, sticky
+    // вернуть если текущее пусто) -- иначе хвост исчезает, а catch таймера
+    // единственной реакцией быть не может.
+    const n = boringN
+    const t0 = boringT0
+    const t1 = boringT1
+    const sid = foldSid
+    const sticky = boringSticky
+    const prevErr = foldWriteErr
+    boringN = 0
+    boringT0 = 0
+    boringT1 = 0
+    boringSticky = ""
+    if (n <= 0) return
+    const w = world || foldWorld
+    const jpath = w && w.globalHome ? w.globalHome + "/failover/journal.jsonl" : ""
+    if (!jpath) {
+      restoreFoldSnapshot(n, t0, t1, sticky)
+      return
+    }
+    foldSeq++
+    const recKey = "agg-" + String(foldSeq) + "-" + String(t0) + "-" + String(n)
+    let safe = ""
+    for (let i = 0; i < recKey.length; i++) {
+      const c = recKey.charAt(i)
+      safe += /[A-Za-z0-9._-]/.test(c) ? c : "_"
+    }
+    const rec: any = {
+      t: new Date(t1).toISOString(),
+      rec: recKey,
+      fold: true,
+      n,
+      sticky,
+      tFirst: new Date(t0).toISOString(),
+      tLast: new Date(t1).toISOString(),
+      dtMs: t1 - t0,
+      carrier: "mod",
+      probe: "failover",
+      sid,
+    }
+    if (prevErr) rec.foldWriteErr = prevErr
+    try {
+      await $.fs.write(jpath + ".shard." + safe, JSON.stringify(rec) + "\n")
+      foldWriteErr = ""
+    } catch (x) {
+      restoreFoldSnapshot(n, t0, t1, sticky)
+      foldWriteErr = String((x && (x as any).message) || x).slice(0, 240)
+      throw x
+    }
+  } finally {
+    foldBusy = false
+    const nxt = foldWait.shift()
+    if (nxt) nxt()
+  }
+}
+
 function newSession() {
   epoch++
   sidMemo = null
@@ -1072,6 +1230,7 @@ function newSession() {
   sweepDone = false
   failoverBindReset()
   sessionExecutorsReset()
+  failoverFoldReset()
 }
 
 function formKind(p: string, t: string, c: any): string | null {
@@ -2205,6 +2364,8 @@ export function register(on: any) {
         ? (afterEmit ? "threw_after_emit" : "threw")
         : (isCarrierRefusal(res) ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
       const recKey = String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt)
+      const willSetSticky = !didThrow && !isCarrierRefusal(res) && !(reviewer && sessionExecutorHas(model))
+      const stickyChanged = !!(willSetSticky && bind.sticky !== model)
       try {
         let sid = ""
         try { sid = await sidFor($) } catch (x) { sid = "" }
@@ -2229,7 +2390,13 @@ export function register(on: any) {
           }
           if (declared && model !== original) rec.rungEffortRequested = declared
           if (bind.effortBad && bind.effortBad[model]) rec["effortBad_" + model] = bind.effortBad[model]
-          await appendJournal($, jpath, rec)
+          armFailoverFoldTimer($, world)
+          if (failoverAttemptIsBoring(rec, stickyChanged)) {
+            await failoverFoldObserve($, world, t1, String(bind.sticky || model || ""), sid)
+          } else {
+            await failoverFoldFlush($, world)
+            await appendJournal($, jpath, rec)
+          }
         }
       } catch (x) {}
       if (didThrow) {
