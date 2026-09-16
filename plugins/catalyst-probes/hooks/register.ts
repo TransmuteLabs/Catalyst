@@ -16,9 +16,11 @@ const CAP_KEY = "catalyst-probes:sesscap"
 // чтение в tool.call и порог уборки в session.start обязаны совпадать.
 const VERDICT_TTL_MS_DEFAULT = 120000
 // CONSTRAINT: версия дублируется в .claude-plugin/plugin.json НАМЕРЕННО --
-// манифест читает установщик, константу -- улика; расхождение ловит зуб в
-// tests/units.test.ts, сверяющий константу с манифестом.
-export const MOD_VERSION = "0.1.13"
+// манифест читает установщик, константу -- улика. Сверять их В ТЕСТЕ нельзя:
+// раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
+// JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
+// трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
+export const MOD_VERSION = "0.1.14"
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
