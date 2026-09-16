@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.17"
+export const MOD_VERSION = "0.1.18"
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
@@ -524,6 +524,12 @@ function outcomeOf(kind: string): string {
   // запрещать. NONE остаётся за другим случаем -- ступени ОТВЕТИЛИ, но ни в
   // одном ответе не нашлось вердикта.
   if (kind === "TIMEOUT") return "skip"
+  // CONSTRAINT: обрезка потолком -- тот же класс, что молчание по времени:
+  // ступень НАЧАЛА говорить и была остановлена прибором, вердикта в тексте нет
+  // не потому, что судья его не вынес. Отдельное имя (не TIMEOUT) нужно, чтобы
+  // журнал различал две причины: по времени лечится ожиданием, по потолку --
+  // бюджетом токенов.
+  if (kind === "TRUNCATED") return "skip"
   if (kind === "SKIP") return "skip"
   return "skip"
 }
@@ -1380,6 +1386,15 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         }
         verdict = parseVerdict(rawS, p.rx)
         if (verdict) break
+        // CONSTRAINT: ответ, оборванный ПОТОЛКОМ, -- отказ ПРИБОРА, а не
+        // суждение о задаче: вердикта в нём нет потому, что ступени не дали
+        // договорить. Такой суд обязан ПРОПУСТИТЬ диспатч, как и молчание по
+        // времени, а не запретить его именем NONE. Замер 2026-09-16 по 455
+        // боевым уликам: stop_* = end_turn 103, max_tokens 1 -- потолок режет
+        // редко, но режет молча, и цена молчания здесь -- остановленная работа.
+        if (ans.stopReason === "max_tokens") {
+          rec.rungTruncated = num(rec.rungTruncated, 0, 0) + 1
+        }
       } catch (x) {
         // Длительность ОТКАЗА мерится тем же полем: мгновенный отказ по
         // бюджету и отказ после ожидания провайдера -- разные явления.
@@ -1419,11 +1434,12 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       // ответившие без вердикта, остаются NONE -> запрет. Пока имя было одно
       // на оба случая, вис был неотличим от отказа и ЗАПРЕЩАЛ диспатч.
       const timedOut = rec.deadlineHit === true || num(rec.rungTimeouts, 0, 0) > 0
-      rec.kind = timedOut ? "TIMEOUT" : "NONE"
-      // CONSTRAINT: в кэш отказов кладётся только NONE. TIMEOUT -- состояние
-      // канала, а не свойство диспатча: закэшировав его, мы гасили бы будущие
-      // суды по причине, которой уже нет.
-      if (!timedOut && (p.pending || p.act === "cancel")) {
+      const truncated = num(rec.rungTruncated, 0, 0) > 0
+      rec.kind = timedOut ? "TIMEOUT" : (truncated ? "TRUNCATED" : "NONE")
+      // CONSTRAINT: в кэш отказов кладётся только NONE. TIMEOUT и TRUNCATED --
+      // состояния канала и бюджета, а не свойства диспатча: закэшировав их, мы
+      // гасили бы будущие суды по причине, которой уже нет.
+      if (!timedOut && !truncated && (p.pending || p.act === "cancel")) {
         try { await $.store.set(key, { kind: "NONE", used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {}
       }
     }

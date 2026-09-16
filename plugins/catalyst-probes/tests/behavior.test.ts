@@ -103,7 +103,10 @@ function wired(
   env: Record<string, string>,
   files: Record<string, string>,
   stored: Record<string, unknown> = {},
-  answers: string[] = [],
+  // CONSTRAINT: ответ ступени -- не только строка. Образ с шагом detail:true
+  // отдаёт конверт {text, stopReason, usage}, и ровно в нём живёт причина
+  // обрыва: зуб на потолок токенов недостижим типом string.
+  answers: (string | Record<string, unknown>)[] = [],
   opts: WiredOpts = {},
 ): Kept {
   // The harness refuses a second on("clock.now"), so an outage tooth takes
@@ -444,6 +447,37 @@ describe("dispatch judge: a rung that never answers", () => {
     const rec = JSON.parse(String(lastRecord(kept)?.text))
     expect(String(rec.err_m2 || ""), "the guard fired on the remainder").toContain("2000ms")
     expect(rec.rungTimeouts).toBe(2)
+  })
+
+  // Тот же класс, что молчание по времени, но по другой причине: ступень
+  // заговорила и была остановлена ПОТОЛКОМ токенов. Вердикта в тексте нет не
+  // потому, что судья его не вынес, а потому что ему не дали договорить.
+  test("a rung cut off by the token ceiling lets the dispatch through, apart from NONE", async ($, on) => {
+    const cut = (t: string) => ({ text: t, stopReason: "max_tokens", usage: { output_tokens: 512 } })
+    const kept = wired(
+      on, 1_064_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" }, FILES, {},
+      [cut("разбор диспатча, оборванный на полуслове"), cut("и второй такой же")],
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const res = await callIt($)
+
+    expect(res, "a judge cut off mid-sentence must not forbid").toEqual({ result: "ran" })
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.kind, "the ceiling carries its own name, apart from TIMEOUT and NONE").toBe("TRUNCATED")
+    expect(rec.rungTruncated, "both rungs were cut").toBe(2)
+    expect(rec.rungTimeouts, "nothing timed out here").toBeUndefined()
+    expect(rec.stop_m2, "the reason came from the image, not from a guess").toBe("max_tokens")
+    expect(
+      kept.store.sets.filter(s => s.key.indexOf("v:judge:") === 0),
+      "a budget failure is a state of the ceiling and is never cached",
+    ).toEqual([])
+    const line = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/judge/journal.jsonl") &&
+      w.text.includes('"verdict":'),
+    )
+    expect(String(line?.text || ""), "the journal calls it a skip").toContain('"outcome":"skip"')
+    expect(String(line?.text || ""), "and names the reason").toContain("TRUNCATED")
   })
 })
 
