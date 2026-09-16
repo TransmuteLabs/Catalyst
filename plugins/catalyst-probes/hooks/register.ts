@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.19"
+export const MOD_VERSION = "0.1.20"
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 const COACHING =
@@ -1998,17 +1998,23 @@ export function register(on: any) {
     if (!plan.length) return yield* driveNext(next(e))
     let lastRes: any = null
     let lastThrow: any = null
+    let sawThrow = false
     for (let attempt = 0; attempt < plan.length; attempt++) {
       const model = plan[attempt]
       const t0 = await nowMs($)
       const req = model === original ? e : Object.assign({}, e, { model })
       let res: any = null
       let threw: any = null
+      // CONSTRAINT: факт броска несёт ОТДЕЛЬНЫЙ флаг, а не истинность значения.
+      // `throw 0` / `throw ""` / `throw null` -- законные броски, и по значению
+      // они неотличимы от «не бросали»: ступень объявила бы отказ успехом,
+      // залипла на ней и вернула null вызывающему.
+      let didThrow = false
       try {
         res = yield* driveNext(next(req))
-      } catch (x) { threw = x }
+      } catch (x) { threw = x; didThrow = true }
       const t1 = await nowMs($)
-      const outcome = threw ? "threw" : (isCarrierRefusal(res) ? "empty" : "ok")
+      const outcome = didThrow ? "threw" : (isCarrierRefusal(res) ? "empty" : "ok")
       const recKey = String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt)
       try {
         let sid = ""
@@ -2032,22 +2038,24 @@ export function register(on: any) {
           })
         }
       } catch (x) {}
-      if (threw) {
+      if (didThrow) {
         // CONSTRAINT: исключение носителя гасится ТОЛЬКО пока есть следующая
         // ступень. На последней оно уезжает вызывающему нетронутым: съеденное
         // исключение неотличимо от пустого ответа.
         lastThrow = threw
+        sawThrow = true
         if (attempt === plan.length - 1) throw threw
         continue
       }
       lastRes = res
       lastThrow = null
+      sawThrow = false
       if (!isCarrierRefusal(res)) {
         bind.sticky = model
         return res
       }
     }
-    if (lastThrow) throw lastThrow
+    if (sawThrow) throw lastThrow
     return lastRes
   })
 }

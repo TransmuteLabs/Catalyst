@@ -13,7 +13,7 @@ import type { Args, On } from "claude-code"
 
 // CONSTRAINT: версия берётся импортом, а не литералом: дом версии — register.ts
 // и .claude-plugin/plugin.json, их сверяет tests/scripts/test-mod-units.sh.
-import { MOD_VERSION, verdictKey } from "../hooks/register.ts"
+import { MOD_VERSION, failoverBindSet, register, verdictKey } from "../hooks/register.ts"
 
 const HOME = "/probes-home"
 const SID = "sid-behavior-1"
@@ -926,5 +926,76 @@ describe("failover: agent.spawn + turn.step", () => {
     expect(lines[0].modelRequested).not.toBe(lines[1].modelRequested)
     expect(lines[0].outcome).toBe("empty")
     expect(lines[1].outcome).toBe("ok")
+  })
+
+  // CONSTRAINT: ложный бросок носителя до этой ступени НЕ ДОЕЗЖАЕТ ни одной
+  // дорогой, доступной зубу на поведении -- обе границы ИЗМЕРЕНЫ 2026-09-16:
+  //  (1) харнес гасит бросок тестового хука и подставляет свой объект
+  //      (`HooksError: no implementation for turn.step`), поэтому ложное
+  //      значение через `$.turn.step` не приходит никогда;
+  //  (2) хост выдаёт op-существительные ($.fs/$.env/$.clock) ТОЛЬКО модулю,
+  //      чей статический разбор их называет: ступени, поднятой из модуля и
+  //      вызванной ОТСЮДА, отказано («its hooks module does not call it»), и
+  //      журнала у неё нет.
+  // Поэтому предметом служит то, что наблюдаемо без обеих: сама ступень с
+  // `next`, бросающим ЛОЖЬ. Маршрут движка до хука пинят соседние зубы блока.
+  // НЕ ИЗМЕРЕНО: метка `outcome` в журнале при ЛОЖНОМ броске -- она живёт за
+  // границей (2) и делит флаг с решением ниже, которое зуб держит.
+  test("ложный бросок носителя — бросок, а не успех", async () => {
+    const steps: Record<string, any> = {}
+    register((ev: string, ...rest: any[]) => {
+      steps[ev] = rest[rest.length - 1]
+    })
+    const ladder = ["glm-5.3", "grok-4.6"]
+
+    // Носитель бросает ЛОЖНОЕ значение: по истинности оно неотличимо от
+    // «не бросали», и ступень объявила бы отказ успехом.
+    const seen: string[] = []
+    const oneFalsy = (req: any) => (async function* () {
+      seen.push(String(req.model))
+      if (req.model === "busy-model") throw 0
+      return {
+        turnId: req.turnId, index: req.index, answer: "from-second", toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: req.model },
+      }
+    })()
+
+    failoverBindSet("ag-unit-falsy", {
+      ladder, subagentType: "glm-executor", class: "exec-0p", sticky: null,
+    })
+    const res = await settleStep(steps["turn.step"]({}, {
+      turnId: "turn-unit-falsy", index: 0, model: "busy-model",
+      messageCount: 1, agentId: "ag-unit-falsy",
+    }, oneFalsy))
+
+    expect(res && res.answer, "ложный бросок увёл на следующую ступень").toBe("from-second")
+    expect(seen, "обе ступени пройдены").toEqual(["busy-model", "glm-5.3"])
+
+    // Бросок ПОСЛЕДНЕЙ ступени уезжает вызывающему нетронутым: съеденное
+    // исключение неотличимо от пустого ответа.
+    const seenAll: string[] = []
+    const allFalsy = (req: any) => (async function* () {
+      seenAll.push(String(req.model))
+      throw 0
+      // eslint-disable-next-line no-unreachable
+      yield 0
+    })()
+
+    failoverBindSet("ag-unit-falsy-all", {
+      ladder, subagentType: "glm-executor", class: "exec-0p", sticky: null,
+    })
+    let caught: any = "НЕ БРОСИЛО"
+    let returned: any = "НЕ ВЕРНУЛО"
+    try {
+      returned = await settleStep(steps["turn.step"]({}, {
+        turnId: "turn-unit-falsy-all", index: 0, model: "busy-model",
+        messageCount: 1, agentId: "ag-unit-falsy-all",
+      }, allFalsy))
+    } catch (x) { caught = x }
+
+    expect(seenAll, "пройдены все ступени лестницы").toEqual(["busy-model", "glm-5.3", "grok-4.6"])
+    expect(caught, "ложный бросок последней ступени уезжает вызывающему").toBe(0)
+    expect(returned, "проглоченный бросок не подменяется пустым возвратом").toBe("НЕ ВЕРНУЛО")
   })
 })
