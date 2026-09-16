@@ -4,3 +4,8 @@ tests/pressure/out/
 .catalyst/*
 !.catalyst/campaign/
 !.catalyst/map/
+
+# CONSTRAINT: прибор политики лестниц запускается python3 из tests/scripts;
+# байткод -- порождённый артефакт прогона, в дерево он не едет.
+__pycache__/
+*.pyc
