@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.23"
+export const MOD_VERSION = "0.1.24"
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 const COACHING =
@@ -2084,11 +2084,19 @@ export function register(on: any) {
         ladderFullTaken = true
       }
     }
-    // CONSTRAINT: bind.ladder не переписывается -- в привязке лежит объявленная
-    // реестром истина, очистка от моделей исполнителей -- решение одного шага.
-    // Порядок ступеней строит failoverAttemptModels -- ТА ЖЕ функция, которую
-    // пинят зубы; второй копии порядка в бою не держать.
-    const plan = failoverAttemptModels(original, bind.sticky, planLadder)
+    // CONSTRAINT: bind.ladder и bind.sticky не переписываются -- в привязке
+    // лежит объявленная реестром истина и факт «эта ступень отработала»;
+    // очистка от моделей исполнителей -- решение одного шага. Порядок ступеней
+    // строит failoverAttemptModels -- ТА ЖЕ функция, которую пинят зубы;
+    // второй копии порядка в бою не держать. Снятие липкости -- на ИСПОЛЬЗОВАНИИ:
+    // накопитель растёт позже установки, проверка в прошлом снова преждевременна.
+    let planSticky = bind.sticky
+    let stickyDropped = false
+    if (reviewer && planSticky && sessionExecutorHas(String(planSticky))) {
+      planSticky = null
+      stickyDropped = true
+    }
+    const plan = failoverAttemptModels(original, planSticky, planLadder)
     if (!plan.length) return yield* driveNext(next(e))
     // Отметки шага #226 уезжают в КАЖДУЮ запись попытки: улика попытки
     // самодостаточна и без соседних строк шага.
@@ -2097,6 +2105,7 @@ export function register(on: any) {
       journalExtra.rungsFiltered = rungsFiltered
       if (ladderFullTaken) journalExtra.ladderFullTaken = true
       if (startMatch) journalExtra.startMatch = true
+      if (stickyDropped) journalExtra.stickyDropped = true
     }
     if (sessionExecutorModelsOverflow) journalExtra.execOverflow = true
     let lastRes: any = null

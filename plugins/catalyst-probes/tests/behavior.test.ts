@@ -1717,4 +1717,66 @@ describe("failover: проверяющий не уезжает на модель
       "busy-model", "glm-5.3", "busy-model", "glm-5.3",
     ])
   })
+
+  test("#226 зуб 7: липкая ступень снимается, когда модель ПОЗЖЕ стала моделью исполнителя", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 170_000_000, {}, {
+      [HOME + "/probes.toml"]: failover226Toml('["grok-4.6", "qwen3.8-flash"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => {
+      const exec = String(e.prompt).indexOf("[dispatch-class:exec-0p]") >= 0
+      return exec
+        ? { model: "grok-4.6", agentId: "ag-226-exec-7" }
+        : { model: "busy-model", agentId: "ag-226-crit-7" }
+    })
+    on("turn.step", refusingFirst(seen))
+
+    const crit = await $.agent.spawn({
+      tool_use_id: "tu-226-crit-7",
+      prompt: "[dispatch-class:crit-mech] проверить работу исполнителя",
+      description: "crit",
+      subagentType: "gpt6-critic",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(crit.agentId).toBe("ag-226-crit-7")
+
+    const first = await settleStep($.turn.step({
+      turnId: "turn-226-7a", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+    expect(first && first.answer, "накопитель пуст: липкость легально встала на grok-4.6").toBe("from-grok-4.6")
+
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-226-exec-7",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на grok-4.6",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "grok-4.6",
+    })
+    expect(exec.agentId).toBe("ag-226-exec-7")
+
+    seen.length = 0
+    const second = await settleStep($.turn.step({
+      turnId: "turn-226-7b", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+    expect(second && second.answer, "липкость снята: шаг ушёл на оставшуюся ступень, не на модель исполнителя").toBe("from-qwen3.8-flash")
+    expect(seen, "grok-4.6 не звалась ни первой, ни вовсе").toEqual(["busy-model", "qwen3.8-flash"])
+
+    const lines = failoverLines(kept)
+    const last = lines[lines.length - 1]
+    expect(last && last.stickyDropped, "в улике: липкость снята на использовании").toBe(true)
+    expect(last && last.modelRequested).toBe("qwen3.8-flash")
+  })
 })
