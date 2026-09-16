@@ -19,6 +19,14 @@
 # CONSTRAINT: стенд ОПТ-ИН (CATALYST_JUDGE_LIVE=1) -- живой прогон тратит
 # токены; без ручки -- код 3 и громкая строка «НЕ ИЗМЕРЕНО» с точной
 # командой: молчаливый пропуск приёмки неотличим от пройденной.
+#
+# Самопроверка прибора: bash <стенд> --self-check. Мутационные зубы на КОПИИ
+# дерева, БЕЗ единого живого вызова модели (сценарии исполняются поддельным
+# образом claude). Коды самопроверки: 0 -- каждая мутация поймана заявленным
+# кодом и причиной; 1 -- есть мутация, прошедшая молча или чужой причиной;
+# 2 -- прибор не может мерить (пристинный контроль провален / якорь мутации
+# не уникален / мутация сломала разбор жертвы / сценария нет); 4 --
+# объявленные числа таблиц не сходятся или сценарий остался без своего зуба.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -50,12 +58,381 @@ len_class() {   # <N> -> ровно одно слово: пусто | огрыз
   fi
 }
 
+# --- САМОПРОВЕРКА (--self-check): мутационные зубы --------------------------------
+# Образец формы -- judge-tools-bench.py и probes-sync-bench.sh (дом
+# Catalyst-CC-Patch): пристинный контроль ДО мутаций; каждая мутация обязана
+# отклонить СВОЙ именованный сценарий ЗАЯВЛЕННЫМ кодом и причиной;
+# объявленные длины таблиц сверяются; «сценария нет» -- отказ прибора.
+#
+# CONSTRAINT: самопроверка не делает НИ ОДНОГО живого вызова модели: сценарий
+# исполняется поддельным образом claude, который строит только артефакты, по
+# которым стенд судит о прогоне (транскрипт сессии с одним tool_use Task,
+# журнал дома проб, одну улику судьи) из синтетической улики. Живые вызовы
+# остаются только у приёмки CATALYST_JUDGE_LIVE=1.
+#
+# CONSTRAINT: «мутация поймана» -- это НЕ «любой ненулевой код» (отвергнутая
+# форма judge-ladder-probe.py: там удаление сценария из таблицы давало
+# зелёное «покрытие=полное», а любой упавший мутант засчитывался зубом).
+# Пойманность -- три условия РАЗОМ: РОВНО заявленный код возврата, заявленная
+# причина в выводе, и причина пристинного прогона СНЯТА. Падение жертвы с
+# незаявленным кодом или текстом зубом не считается.
+#
+# CONSTRAINT: мутации применяются к КОПИИ дерева; между мутациями жертва
+# восстанавливается из пристинного снимка, и восстановление сверяется по
+# sha256: мутация, приехавшая поверх предыдущей, мерила бы смесь, а не свой
+# зуб. До первой мутации пристинная копия обязана пройти ВСЕ сценарии с
+# заявленными исходами -- уже красная копия «подтвердит» любую мутацию чужим
+# отказом, и зелёный итог ничего бы не значил.
+#
+# CONSTRAINT: якоря мутаций хранятся СКЛЕЙКОЙ ПОЛОВИН: полный литерал якоря
+# в таблице был бы вторым вхождением этого якоря в исходник, и требование
+# уникальности якоря отказало бы на первой же мутации.
+
+SCEN_DECLARED=11     # объявленное число сценариев: сверяется с таблицей (4)
+MUT_DECLARED=12      # объявленное число мутаций: сверяется с таблицей (4)
+
+# Сценарий = один прогон КОПИИ стенда на синтетическом мире. «Боевой» конфиг
+# сценария -- три ступени fake-rung-0/1/2 (те же формы таблиц, что в живом
+# probes.toml); улика сценария подставляется в дом проб поддельным образом.
+# Ожидаемый исход -- (код возврата, причина в выводе) пристинной копии.
+SC_NAMES=(green-full l1-empty l1-stub l1-none l1-no-kind l2-no-kind-used l2-degenerated l2-none-answered l2-all-refused live-toml-absent live-toml-no-judge)
+SC_RCS=(0 1 1 1 3 3 1 1 3 2 2)
+SC_MARKERS=(
+  'веер не выродился'
+  'вернула пусто'
+  'огрызок'
+  'вердикт не разобран'
+  'не несёт поля kind'
+  'не несёт kind/used'
+  'веер выродился'
+  'ни одна ступень не дала вердикта'
+  'все ступени отказали'
+  'боевого конфига нет'
+  'ступеней судьи нет'
+)
+
+# Мутация = снятие РОВНО одного зуба стенда. Поля: id | сценарий | якорь
+# (половина-1 + половина-2) | замена | код, который должен дать mutant |
+# причина, которую mutant обязан произнести | причина пристинного прогона,
+# обязанная ИСЧЕЗНУТЬ (пусто -- если в мутанте она остаётся законно).
+MUT_IDS=(l2-green-drop expected-arith empty-boundary stub-boundary l1-none-blind l1-kind-forged l2-kindused-blind degen-blind none-reason-lost allref-forged toml-blind nojudge-blind)
+MUT_SCEN=(green-full green-full l1-empty l1-stub l1-none l1-no-kind l2-no-kind-used l2-degenerated l2-none-answered l2-all-refused live-toml-absent live-toml-no-judge)
+MUT_A1=(
+  'ok "веер не выро'
+  'EXPECTED_OK=$(( ${#RUNG_MO'
+  '[ "$n" -le "$JUDGE_EMPTY_M'
+  'JUDGE_STUB_MAX'
+  'elif [ "$kind1" = "NO'
+  'elif [ "$kind1" = "-" ] || [ -z "$kin'
+  'elif [ "$kind2" = "-" ] || [ -z "$kind2" ] |'
+  'elif [ "$used2" = "$fi'
+  '[ "$em" = "-" ] && aller'
+  'if [ "$allerr" -eq 1 ]; th'
+  'if [ ! -f "$LIVE_TOML" ]; th'
+  'if j0 is None or m0 is No'
+)
+MUT_A2=(
+  'дился, первая ступень ответила"'
+  'DELS[@]} + 1 ))'
+  'AXLEN" ]; then'
+  'LEN=2'
+  'NE" ]; then'
+  'd1" ]; then'
+  '| [ "$used2" = "-" ] || [ -z "$used2" ]; then'
+  'rst" ]; then'
+  'r=0'
+  'en'
+  'en'
+  'ne:'
+)
+MUT_NEW=(
+  ': # мутация: зелёное L2 не посчитано'
+  'EXPECTED_OK=$(( ${#RUNG_MODELS[@]} + 0 ))'
+  '[ "$n" -lt "$JUDGE_EMPTY_MAXLEN" ]; then'
+  'JUDGE_STUB_MAXLEN=1'
+  'elif false; then'
+  'elif false; then'
+  'elif false; then'
+  'elif [ "$used2" != "$first" ]; then'
+  '[ "$em" = "-" ] && allerr=1'
+  'if false; then'
+  'if false; then'
+  'if False:'
+)
+MUT_RC=(3 3 1 1 1 3 1 0 1 1 2 2)
+MUT_SUB=(
+  'ожидалось зелёных 4'
+  'ожидалось зелёных 3'
+  'огрызок'
+  'вердикт не разобран'
+  'вердикт NONE'
+  'вердикт -'
+  'веер выродился'
+  'веер не выродился'
+  'все ступени отказали'
+  'ни одна ступень не дала вердикта'
+  'боевой конфиг не читается'
+  'Traceback'
+)
+MUT_ABS=(
+  'веер не выродился'
+  ''
+  'вернула пусто'
+  'огрызок'
+  'вердикт не разобран'
+  'не несёт поля kind'
+  'не несёт kind/used'
+  'веер выродился'
+  'ни одна ступень не дала вердикта'
+  'все ступени отказали'
+  'боевого конфига нет'
+  'ступеней судьи нет'
+)
+
+sc_tables_check() {   # числа объявлены; сценарий мутации существует; каждый сценарий покрыт
+  local n m found
+  if [ "${#SC_NAMES[@]}" -ne "$SCEN_DECLARED" ] || [ "${#MUT_IDS[@]}" -ne "$MUT_DECLARED" ]; then
+    printf 'self-check: ОТКАЗ -- объявлено сценариев %s и мутаций %s, в таблицах %s и %s\n' \
+      "$SCEN_DECLARED" "$MUT_DECLARED" "${#SC_NAMES[@]}" "${#MUT_IDS[@]}"
+    return 4
+  fi
+  for m in "${MUT_SCEN[@]}"; do
+    found=0
+    for n in "${SC_NAMES[@]}"; do [ "$n" = "$m" ] && found=1; done
+    if [ "$found" -ne 1 ]; then
+      # Ссылка мутации в пустоту -- отказ прибора, а не зелёное «покрытие»:
+      # ровно этот дефект (удалённый сценарий = зелёное) погубил отвергнутую
+      # копию прибора.
+      printf 'self-check: ОТКАЗ ПРИБОРА: мутация ссылается на несуществующий сценарий: %s\n' "$m" >&2
+      return 2
+    fi
+  done
+  for n in "${SC_NAMES[@]}"; do
+    found=0
+    for m in "${MUT_SCEN[@]}"; do [ "$n" = "$m" ] && found=1; done
+    if [ "$found" -ne 1 ]; then
+      printf 'self-check: ОТКАЗ -- сценарий %s не покрыт ни одной мутацией: непокрытый сценарий не доказывает ничего\n' "$n"
+      return 4
+    fi
+  done
+  return 0
+}
+
+sc_build_world() {   # синтетические дома и поддельные образы всех сценариев
+  python3 - "$SC_ROOT" "${SC_NAMES[@]}" <<'PY'
+import json, os, sys
+root, names = sys.argv[1], sys.argv[2:]
+RUNGS = ["fake-rung-0", "fake-rung-1", "fake-rung-2"]
+# Синтетический «боевой» конфиг -- в тех же формах, что и живой probes.toml.
+LIVE_TOML = "[probe.judge]\ntimeout_ms = 240000\n\n" + "".join(
+    "[[probe.judge.models]]\nmodel = \"%s\"\n\n" % r for r in RUNGS)
+
+def fake(evidence_json):
+    # Поддельный образ claude: живых вызовов нет; строятся только артефакты,
+    # по которым стенд судит о прогоне.
+    tool = "'" + json.dumps({"message": {"content": [
+        {"type": "tool_use", "name": "Task", "input": {}}]}}) + "'"
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -u",
+        'mkdir -p "$CLAUDE_CONFIG_DIR/projects/fake" "$CLAUDE_PROBES_DIR/judge/records"',
+        "printf '%s\\n' " + tool
+        + ' > "$CLAUDE_CONFIG_DIR/projects/fake/session.jsonl"',
+        "printf '%s\\n' '{\"fake\": \"journal\"}'"
+        ' > "$CLAUDE_PROBES_DIR/judge/journal.jsonl"',
+        "cat > \"$CLAUDE_PROBES_DIR/judge/records/mod-0001.json\" <<'FAKE_EVIDENCE'",
+        evidence_json,
+        "FAKE_EVIDENCE",
+        "exit 0",
+    ]
+    return "\n".join(lines) + "\n"
+
+def evidence(kind=None, used=None, ladder=None, raw=None, err=None):
+    d = {}
+    if kind is not None:
+        d["kind"] = kind
+    if used is not None:
+        d["used"] = used
+    if ladder is not None:
+        d["ladder"] = ladder
+    if raw is not None:
+        for i, r in enumerate(RUNGS):
+            n = raw if isinstance(raw, int) else raw[i]
+            if n is not None:
+                d["rawLen_" + r] = n
+    if err is not None:
+        for r in RUNGS:
+            d["err_" + r] = err
+    return json.dumps(d, ensure_ascii=False)
+
+SPECS = {
+    # Полностью зелёный мир: контроль «стенд умеет давать зелёное».
+    "green-full": dict(kind="BLOCK", used=RUNGS[0], ladder=RUNGS, raw=5),
+    # L1: ровно ноль знаков -- «пусто» (нижняя граница порога пустоты).
+    "l1-empty": dict(kind="BLOCK", used=RUNGS[0], ladder=RUNGS, raw=[0, 5, 5]),
+    # L1: два знака -- «огрызок» (верхняя граница класса огрызка).
+    "l1-stub": dict(kind="NONE", used=RUNGS[0], ladder=RUNGS, raw=[2, 5, 5]),
+    # L1: непустой ответ, вердикт не разобран.
+    "l1-none": dict(kind="NONE", used=RUNGS[0], ladder=RUNGS, raw=5),
+    # L1: улика без поля kind -- НЕ ИЗМЕРЕНО, не вердикт.
+    "l1-no-kind": dict(used=RUNGS[0], ladder=RUNGS, raw=5),
+    # L2: улика без kind/used -- НЕ ИЗМЕРЕНО, не «веер выродился».
+    "l2-no-kind-used": dict(ladder=RUNGS, raw=5),
+    # L2: вердикт дала ВТОРАЯ ступень -- веер выродился.
+    "l2-degenerated": dict(kind="BLOCK", used=RUNGS[1], ladder=RUNGS, raw=5),
+    # L2: вердикта нет, но ступени ОТВЕЧАЛИ -- красное своей причиной.
+    "l2-none-answered": dict(kind="NONE", used=RUNGS[0], ladder=RUNGS, raw=5),
+    # L2: вердикта нет и ВСЕ ступени отказали -- прибор, не находка.
+    "l2-all-refused": dict(kind="NONE", used=RUNGS[0], ladder=RUNGS,
+                           err="HTTP 529"),
+}
+
+for name in names:
+    d = os.path.join(root, "scen-" + name)
+    if name == "live-toml-absent":
+        # Дом не создаём ВОВСЕ: отсутствие боевого конфига -- предмет
+        # сценария. Образ всё равно нужен: стенд проверяет образ РАНЬШЕ
+        # боевого конфига.
+        os.makedirs(d, exist_ok=True)
+    elif name == "live-toml-no-judge":
+        os.makedirs(os.path.join(d, "home"), exist_ok=True)
+        open(os.path.join(d, "home", "probes.toml"), "w").write(
+            "[probe.other]\nx = 1\n")
+    elif name in SPECS:
+        os.makedirs(os.path.join(d, "home"), exist_ok=True)
+        open(os.path.join(d, "home", "probes.toml"), "w").write(LIVE_TOML)
+    else:
+        sys.stderr.write("нет спецификации сценария: %s\n" % name)
+        raise SystemExit(2)
+    ev = evidence(**SPECS[name]) if name in SPECS else "{}"
+    img = os.path.join(d, "fake-claude")
+    open(img, "w").write(fake(ev))
+    os.chmod(img, 0o755)
+print("синтетических миров: %d" % len(names))
+PY
+}
+
+sc_sha256() {   # <файл> -> sha256: восстановление жертвы сверяется побайтово
+  python3 -c 'import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+}
+
+sc_run() {   # <сценарий> <корень копии> <файл вывода> -> код возврата копии стенда
+  # CONSTRAINT: присваивания РАЗНЕСЕНЫ: в `local d=$x home="$d/y"` слова
+  # аргументов раскрываются ДО исполнения local, и под set -u второе падает
+  # «unbound variable» (тот же класс, что закомментирован в
+  # test-plugin-freshness.sh).
+  local name="$1"
+  local copy="$2"
+  local outf="$3"
+  local d="$SC_ROOT/scen-$name"
+  local home="$d/home"
+  # Для сценария отсутствующего дома подставляем путь, которого нет: сам
+  # факт «дома нет» и есть предмет сценария.
+  [ "$name" = live-toml-absent ] && home="$d/нет-такого-дома"
+  env CATALYST_JUDGE_LIVE=1 \
+      CATALYST_JUDGE_IMAGE="$d/fake-claude" \
+      CLAUDE_PROBES_HOME="$home" \
+      bash "$copy/tests/scripts/test-judge-ladder-live.sh" > "$outf" 2>&1
+  return $?
+}
+
+self_check() {
+  local trc=0
+  sc_tables_check
+  trc=$?
+  [ "$trc" -eq 0 ] || return "$trc"
+  SC_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/ladder-selfcheck.XXXXXX") || return 2
+  trap 'rm -rf "$SC_ROOT"' EXIT
+  sc_build_world || return 2
+  # Копия дерева и пристинный снимок жертвы: рабочий файл не трогается.
+  mkdir "$SC_ROOT/tree" || return 2
+  cp -R "$ROOT/." "$SC_ROOT/tree/" || return 2
+  rm -rf "$SC_ROOT/tree/.git"
+  local VICTIM="$SC_ROOT/tree/tests/scripts/test-judge-ladder-live.sh"
+  cp "$VICTIM" "$SC_ROOT/pristine.sh" || return 2
+  local PRISTINE_SHA i rc out reddened=0 now_sha
+  PRISTINE_SHA=$(sc_sha256 "$SC_ROOT/pristine.sh")
+  bash -n "$VICTIM" || {
+    printf 'self-check: ОТКАЗ ПРИБОРА: жертва не разбирается bash\n' >&2
+    return 2
+  }
+
+  # КОНТРОЛЬ: пристинная копия обязана дать КАЖДОМУ сценарию его заявленный
+  # исход. Контроль провален -- мутации не меряют ничего, прибор не может
+  # мерить (2), а не «зубы прошли с одной оговоркой».
+  for i in "${!SC_NAMES[@]}"; do
+    out="$SC_ROOT/out.control.${SC_NAMES[$i]}"
+    sc_run "${SC_NAMES[$i]}" "$SC_ROOT/tree" "$out"
+    rc=$?
+    if [ "$rc" -ne "${SC_RCS[$i]}" ] || ! grep -qF -- "${SC_MARKERS[$i]}" "$out"; then
+      printf 'self-check: КОНТРОЛЬ ПРОВАЛЕН -- пристинная копия на сценарии %s дала rc=%s, ждали rc=%s с причиной «%s»:\n' \
+        "${SC_NAMES[$i]}" "$rc" "${SC_RCS[$i]}" "${SC_MARKERS[$i]}"
+      cat "$out"
+      return 2
+    fi
+    printf '  контроль %-21s rc=%s, причина на месте\n' "${SC_NAMES[$i]}" "$rc"
+  done
+  printf 'self-check: КОНТРОЛЬ без мутаций: %s сценариев дали заявленные исходы\n' "${#SC_NAMES[@]}"
+
+  for i in "${!MUT_IDS[@]}"; do
+    cp "$SC_ROOT/pristine.sh" "$VICTIM"
+    now_sha=$(sc_sha256 "$VICTIM")
+    if [ "$now_sha" != "$PRISTINE_SHA" ]; then
+      printf 'self-check: ОТКАЗ ПРИБОРА: восстановление жертвы из снимка не сошлось по sha256 (мутация %s)\n' "${MUT_IDS[$i]}" >&2
+      return 2
+    fi
+    printf '%s' "${MUT_A1[$i]}${MUT_A2[$i]}" > "$SC_ROOT/anchor.txt"
+    printf '%s' "${MUT_NEW[$i]}" > "$SC_ROOT/repl.txt"
+    python3 - "$VICTIM" "$SC_ROOT/anchor.txt" "$SC_ROOT/repl.txt" <<'PY' || return 2
+import sys
+victim, anchor_f, repl_f = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(victim, encoding="utf-8").read()
+anchor = open(anchor_f, encoding="utf-8").read()
+repl = open(repl_f, encoding="utf-8").read()
+n = text.count(anchor)
+if n != 1:
+    sys.stderr.write("якорь найден %d раз, ожидался ровно один\n" % n)
+    raise SystemExit(2)
+open(victim, "w", encoding="utf-8").write(text.replace(anchor, repl, 1))
+PY
+    bash -n "$VICTIM" || {
+      printf 'self-check: ОТКАЗ ПРИБОРА: мутация %s сломала разбор жертвы -- покраснение разбором ничего не доказывает\n' "${MUT_IDS[$i]}" >&2
+      return 2
+    }
+    out="$SC_ROOT/out.mut.${MUT_IDS[$i]}"
+    sc_run "${MUT_SCEN[$i]}" "$SC_ROOT/tree" "$out"
+    rc=$?
+    if [ "$rc" -eq "${MUT_RC[$i]}" ] \
+       && grep -qF -- "${MUT_SUB[$i]}" "$out" \
+       && { [ -z "${MUT_ABS[$i]}" ] || ! grep -qF -- "${MUT_ABS[$i]}" "$out"; }; then
+      reddened=$((reddened+1))
+      printf '  ok     %-19s сценарий %-19s отклонился заявленно (rc=%s)\n' \
+        "${MUT_IDS[$i]}" "${MUT_SCEN[$i]}" "$rc"
+    else
+      printf '  ПРОВАЛ %-19s ждали rc=%s, причину «%s», без «%s»; получили rc=%s:\n' \
+        "${MUT_IDS[$i]}" "${MUT_RC[$i]}" "${MUT_SUB[$i]}" "${MUT_ABS[$i]}" "$rc"
+      cat "$out"
+    fi
+  done
+  printf 'self-check: SELF-CHECK мутаций=%s покраснели=%s\n' \
+    "${#MUT_IDS[@]}" "$reddened"
+  [ "$reddened" -eq "${#MUT_IDS[@]}" ] || return 1
+  return 0
+}
+
+if [ "${1:-}" = "--self-check" ]; then
+  self_check
+  exit $?
+fi
+
 if [ "${CATALYST_JUDGE_LIVE:-}" != "1" ]; then
   printf 'НЕ ИЗМЕРЕНО: боевой веер судьи не мерился -- стенд тратит токены и включается явно.\n'
   printf '  Мерить так: CATALYST_JUDGE_LIVE=1 bash %s\n' "${0}"
   printf '  Читается (только чтение): %s/probes.toml\n' "${CLAUDE_PROBES_HOME:-$HOME/.claude/probes}"
   printf '  Нужны: доступные провайдеры ступеней (по умолчанию через ANTHROPIC_BASE_URL)\n'
   printf '  и образ claude в CATALYST_JUDGE_IMAGE (по умолчанию ~/.local/bin/claude).\n'
+  printf '  Самопроверка прибора (мутации, без живых вызовов): bash %s --self-check\n' "${0}"
   # Код 3 -- «НЕ ИЗМЕРЕНО» для агрегатора: ноль означал бы пройденную приёмку.
   exit 3
 fi
@@ -361,7 +738,7 @@ for m in "${RUNG_MODELS[@]}"; do
     # len_class отдаёт ровно три слова; всё прочее значит, что rawLen был
     # нечисловым и классификатор не отработал -- это немощь прибора, и
     # зелёное на ней утверждало бы ответ, которого никто не измерял.
-    unmeasured "L1 $m: длина ответа не классифицирована (rawLen=$raw1, класс «$cls1»)"
+    unmeasured "L1 $m: длина ответа не классифицирована (rawLen=$raw1, класс «${cls1}»)"
   elif [ "$kind1" = "-" ] || [ -z "$kind1" ]; then
     unmeasured "L1 $m: улика не несёт поля kind -- вердикт нечем измерить"
   else
@@ -392,12 +769,16 @@ else
   err0=$(getf "$f2" "err_$first")
   printf 'лестница «%s»: used=%s, kind=%s\n' "$lad2" "$used2" "$kind2"
   if [ "$lad2" != "$exp_lad" ]; then
-    bad "L2: лестница улики не совпала с боевой: «$lad2» против «$exp_lad»"
+    bad "L2: лестница улики не совпала с боевой: «${lad2}» против «${exp_lad}»"
   elif [ "$kind2" = "-" ] || [ -z "$kind2" ] || [ "$used2" = "-" ] || [ -z "$used2" ]; then
     # CONSTRAINT: улика без kind/used -- НЕ ИЗМЕРЕНО, а не вердикт. Иначе
     # пустое used сравнивалось бы с первой ступенью и давало КРАСНОЕ
     # «веер выродился» на прогоне, где веер вообще не наблюдался.
-    unmeasured "L2: улика не несёт kind/used (kind=«$kind2», used=«$used2») -- веер нечем измерить"
+    # CONSTRAINT: переменные здесь ТОЛЬКО в скобочной форме: bash 3.2 (живой
+    # интерпретатор на darwin) склеивает байт » с концом имени -- «$kind2»
+    # даёт «kind2<мусор>: unbound variable» под set -u, и ветка НЕ ИЗМЕРЕНО
+    # падает вместо того, чтобы отчитаться (замерено самопроверкой 16.09).
+    unmeasured "L2: улика не несёт kind/used (kind=«${kind2}», used=«${used2}») -- веер нечем измерить"
   elif [ "$kind2" = "NONE" ]; then
     # Вердикта нет: если отказали ВСЕ ступени -- это немощь прибора (провайдеры
     # недоступны), не находка; если хоть одна отвечала -- находка.
