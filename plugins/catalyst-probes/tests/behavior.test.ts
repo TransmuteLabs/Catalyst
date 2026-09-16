@@ -417,6 +417,34 @@ describe("dispatch judge: a rung that never answers", () => {
     expect(rec.deadlineBlind, "the missing guard is on the record").toBe(true)
     expect(rec.rungTimeouts, "a blind guard is not a timeout").toBeUndefined()
   })
+
+  test("the last rung is cut to what the trial has left, not given a fresh budget", async ($, on) => {
+    const kept = wired(
+      on, 1_058_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      {
+        [HOME + "/probes.toml"]:
+          '[probe.judge]\nmodels = ["m1", "m2"]\ntimeout_ms = 5000\ntotal_timeout_ms = 7000\n',
+        [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+      },
+      {}, [], { onComplete: () => neverAnswers() },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const running = callIt($)
+    await kept.clock!.settle()
+    await kept.clock!.advance(RUNG_TMO)
+    await kept.clock!.advance(2000)
+    const res = await running
+
+    expect(res).toEqual({ result: "ran" })
+    expect(kept.completes.map(c => c.model), "both rungs were tried").toEqual(["m1", "m2"])
+    // остаток суда после первой ступени -- 2000 мс, и ровно столько просят
+    // у образа и держит собственный сторож.
+    expect(kept.completes[1].timeoutMs, "the image is asked for the remainder").toBe(2000)
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(String(rec.err_m2 || ""), "the guard fired on the remainder").toContain("2000ms")
+    expect(rec.rungTimeouts).toBe(2)
+  })
 })
 
 describe("tool.describe", () => {

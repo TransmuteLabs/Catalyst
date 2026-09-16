@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.16"
+export const MOD_VERSION = "0.1.17"
 const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
@@ -1330,7 +1330,13 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         // поверхность не монотонна -- часы на 2.1.272 уже сменили природу
         // (#185).
         if (mt) arg.maxTokens = mt
-        const tmo = rung.timeout_ms || floorTmo
+        // CONSTRAINT: предел СУДА обрезает бюджет ступени, а не только решает,
+        // пускать ли её. Проверки «перед ступенью» мало: ступень, стартовавшая
+        // за миг до границы, держала бы диспатч ещё весь свой бюджет сверх
+        // общего, и объявленный total_timeout_ms не выполнялся бы буквально.
+        const rungTmo = rung.timeout_ms || floorTmo
+        const left = hardStop ? hardStop - rungT0 : 0
+        const tmo = (hardStop && left > 0 && left < rungTmo) ? left : rungTmo
         if (tmo) arg.timeoutMs = tmo
         // CONSTRAINT: detail просят ВСЕГДА. Образ со шагом 31 отдаёт конверт
         // {text, stopReason, blocks, usage}; образ без него поля не знает и
