@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.28"
+export const MOD_VERSION = "0.1.29"
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 const COACHING =
@@ -707,15 +707,33 @@ async function readTextNull($: any, path: string): Promise<string | null> {
   return r.text
 }
 
+let journalWriteErr = ""
+
 async function appendJournal($: any, jpath: string, obj: any) {
-  const line = JSON.stringify(obj) + "\n"
-  const rec = String((obj && (obj.rec || obj.t)) || ("t" + String(await nowMs($))))
+  // CONSTRAINT: ОДИН дом формата шарда (имя jpath+".shard."+safe(rec)).
+  // Отказ записи ПРОБРАСЫВАЕТСЯ; след кладётся в journalWriteErr и уезжает
+  // в СЛЕДУЮЩУЮ удачную запись -- пустой catch здесь возвращал бы молчаливую
+  // потерю полной улики (тот же класс, что волна 1 чинила у агрегата).
+  const recObj = journalWriteErr ? Object.assign({}, obj, { journalWriteErr }) : obj
+  const line = JSON.stringify(recObj) + "\n"
+  const rec = String((recObj && (recObj.rec || recObj.t)) || ("t" + String(await nowMs($))))
   let safe = ""
   for (let i = 0; i < rec.length; i++) {
     const c = rec.charAt(i)
     safe += /[A-Za-z0-9._-]/.test(c) ? c : "_"
   }
-  try { await $.fs.write(jpath + ".shard." + safe, line) } catch (x) {}
+  try {
+    await $.fs.write(jpath + ".shard." + safe, line)
+    journalWriteErr = ""
+  } catch (x) {
+    // CONSTRAINT: след НАЗЫВАЕТ владельца отказавшего журнала. Один
+    // journalWriteErr обслуживает все пробы, и следующая удачная запись
+    // может принадлежать ДРУГОЙ пробе -- без пути читатель отнесёт отказ не
+    // к тому журналу. Сообщение носителя путь не гарантирует, поэтому он
+    // приписывается здесь.
+    journalWriteErr = (jpath + ": " + String((x && (x as any).message) || x)).slice(0, 240)
+    throw x
+  }
 }
 
 async function layerHit($: any, ch: string): Promise<boolean> {
@@ -1062,6 +1080,10 @@ export function sessionExecutorHas(model: string): boolean {
   return sessionExecutorModels.indexOf(String(model || "")) >= 0
 }
 
+export function failoverWouldSetSticky(didThrow: boolean, res: any, reviewer: boolean, model: string): boolean {
+  return !didThrow && !isCarrierRefusal(res) && !(reviewer && sessionExecutorHas(model))
+}
+
 // CONSTRAINT: период свёртки 1000 мс. Таймер не переживает смерть процесса,
 // поэтому хвост накопленных скучных шагов теряется; типичный turn.step --
 // вызов модели (секунды), 1 с ограничивает потерю меньше одного шага.
@@ -1079,6 +1101,7 @@ let foldWorld: any = null
 let foldTimer: { cancel: () => void } | null = null
 let foldSid = ""
 let foldWriteErr = ""
+let foldSplitLost = 0
 
 export function failoverFoldCount(): number {
   return boringN
@@ -1101,6 +1124,7 @@ export function failoverFoldReset(): void {
   foldWorld = null
   foldSid = ""
   foldWriteErr = ""
+  foldSplitLost = 0
   if (foldTimer) {
     try { foldTimer.cancel() } catch (x) {}
     foldTimer = null
@@ -1149,7 +1173,15 @@ function restoreFoldSnapshot(n: number, t0: number, t1: number, sticky: string):
 export async function failoverFoldObserve($: any, world: any, tMs: number, sticky: string, sid: string): Promise<void> {
   const s = String(sticky || "")
   if (boringN > 0 && boringSticky && s && boringSticky !== s) {
-    await failoverFoldFlush($, world)
+    try {
+      await failoverFoldFlush($, world)
+    } catch (x) {
+      // CONSTRAINT: шаг с новой липкостью нельзя влить в возвращённый снимок
+      // старого окна. Потеря считается и уезжает в следующую запись полем
+      // foldSplitLost -- пишется только при n>0 (отсутствие поля ≠ ноль).
+      foldSplitLost++
+      throw x
+    }
   }
   failoverFoldNote(tMs, s)
   foldSid = sid
@@ -1186,11 +1218,6 @@ export async function failoverFoldFlush($: any, world: any): Promise<void> {
     }
     foldSeq++
     const recKey = "agg-" + String(foldSeq) + "-" + String(t0) + "-" + String(n)
-    let safe = ""
-    for (let i = 0; i < recKey.length; i++) {
-      const c = recKey.charAt(i)
-      safe += /[A-Za-z0-9._-]/.test(c) ? c : "_"
-    }
     const rec: any = {
       t: new Date(t1).toISOString(),
       rec: recKey,
@@ -1205,9 +1232,11 @@ export async function failoverFoldFlush($: any, world: any): Promise<void> {
       sid,
     }
     if (prevErr) rec.foldWriteErr = prevErr
+    if (foldSplitLost) rec.foldSplitLost = foldSplitLost
     try {
-      await $.fs.write(jpath + ".shard." + safe, JSON.stringify(rec) + "\n")
+      await appendJournal($, jpath, rec)
       foldWriteErr = ""
+      foldSplitLost = 0
     } catch (x) {
       restoreFoldSnapshot(n, t0, t1, sticky)
       foldWriteErr = String((x && (x as any).message) || x).slice(0, 240)
@@ -1231,6 +1260,7 @@ function newSession() {
   failoverBindReset()
   sessionExecutorsReset()
   failoverFoldReset()
+  journalWriteErr = ""
 }
 
 function formKind(p: string, t: string, c: any): string | null {
@@ -1916,15 +1946,20 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
   const jpath = world.globalHome + "/form/journal.jsonl"
   const recPath = world.globalHome + "/form/records/" + recName
+  let formJournalErr = ""
   try {
     await appendJournal($, jpath, {
       t: new Date(t0).toISOString(), tool, outcome: vk, verdict: clip(vd, 400),
       cls, jm: "rules", tries: 0, rec: recName, carrier: "mod", sid: await sidFor($), probe: "form",
       skipped: sk.slice(0, 8),
     })
-  } catch (x) {}
+  } catch (x) {
+    formJournalErr = String((x && (x as any).message) || x).slice(0, 240)
+  }
   if (vk !== "pass") {
-    try { await $.fs.write(recPath, JSON.stringify({ ev: tool, cls, refuse: rf, warn: wn, vd })) } catch (x) {}
+    const formRec: any = { ev: tool, cls, refuse: rf, warn: wn, vd }
+    if (formJournalErr) formRec.journalErr = formJournalErr
+    try { await $.fs.write(recPath, JSON.stringify(formRec)) } catch (x) {}
   }
   if (vk === "refuse") {
     let cancel = false
@@ -2183,7 +2218,16 @@ export function register(on: any) {
             }
             if (recErr) jline.recErr = recErr
             await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", jline)
-          } catch (x) {}
+          } catch (x) {
+            try {
+              recErr = recErr || String((x && (x as any).message) || x).slice(0, 240)
+              await $.fs.write(modRecPath(world, p.id, e), JSON.stringify({
+                id: e && e.tool_use_id, probe: p.id, tool, agent, t0, carrier: "mod",
+                mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
+                used: stored.used, dtMs: stored.dtMs, journalErr: recErr,
+              }))
+            } catch (y) {}
+          }
           if (stored.kind === "BLOCK" || stored.kind === "STOP" || stored.kind === "DENY") {
             if (!enforce) continue
             hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(stored.rest || stored.kind)
@@ -2364,7 +2408,11 @@ export function register(on: any) {
         ? (afterEmit ? "threw_after_emit" : "threw")
         : (isCarrierRefusal(res) ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
       const recKey = String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt)
-      const willSetSticky = !didThrow && !isCarrierRefusal(res) && !(reviewer && sessionExecutorHas(model))
+      // CONSTRAINT: предсказание смены липкости -- тот же предикат, что установка
+      // ниже (failoverWouldSetSticky). Улика пишется ДО bind.sticky = model;
+      // расхождение двух вызовов посчитает скучность по устаревшему правилу и
+      // пропустит разрез окна.
+      const willSetSticky = failoverWouldSetSticky(didThrow, res, reviewer, model)
       const stickyChanged = !!(willSetSticky && bind.sticky !== model)
       try {
         let sid = ""
@@ -2419,7 +2467,7 @@ export function register(on: any) {
       // ступени исполнителя модель запоминается как факт сессии.
       if (!refusal) {
         if (executor) sessionExecutorModelAdd(model)
-        if (!(reviewer && sessionExecutorHas(model))) bind.sticky = model
+        if (failoverWouldSetSticky(false, res, reviewer, model)) bind.sticky = model
       }
       // CONSTRAINT: отказ носителя ПОСЛЕ выдачи уезжает вызывающему как есть:
       // куски первой ступени уже у сессии, вторая приклеила бы к ним чужой

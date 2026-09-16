@@ -20,7 +20,8 @@ import {
   failoverBindSet, failoverBindGet, failoverBindReset,
   FAILOVER_FOLD_PERIOD_MS, failoverAttemptIsBoring,
   failoverFoldCount, failoverFoldNote, failoverFoldFlush, failoverFoldReset,
-  failoverFoldObserve,
+  failoverFoldObserve, failoverWouldSetSticky,
+  sessionExecutorHas, sessionExecutorModelAdd, sessionExecutorsReset,
 } from "../hooks/register.ts"
 
 const RX_JUDGE = "OK|WARN|BLOCK|STOP|DENY"
@@ -546,7 +547,7 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.28")
+  expect(MOD_VERSION).toBe("0.1.29")
 })
 
 // --- verdictKey: сессионная и текстовая грань вердиктного кэша -------------------
@@ -917,4 +918,99 @@ test("#227-A зуб 9: отказ записи возвращает счёт; с
   expect(rec.n, "следующий проход дописывает те же n шагов").toBe(2)
   expect(rec.sticky).toBe("glm-5.3")
   failoverFoldReset()
+})
+
+test("#227-A зуб 10: отказ записи виден на следующей записи (journalWriteErr)", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  let fail = true
+  const $: any = {
+    fs: {
+      write: async (path: string, text: string) => {
+        if (fail) throw new Error("ENOSPC-j")
+        writes.push({ path, text })
+      },
+    },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  await failoverFoldObserve($, world, 7000, "glm-5.3", "sid-j")
+  try { await failoverFoldFlush($, world) } catch (x) {}
+  fail = false
+  await failoverFoldFlush($, world)
+  expect(writes).toHaveLength(1)
+  const rec = JSON.parse(writes[0].text)
+  expect(String(rec.journalWriteErr || ""), "след отказа на следующей записи, не молча").toContain("ENOSPC-j")
+  failoverFoldReset()
+})
+
+test("#227-A зуб 12: след отказа НАЗЫВАЕТ журнал-владелец, а не только причину", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  let fail = true
+  const $: any = {
+    fs: {
+      write: async (path: string, text: string) => {
+        if (fail) throw new Error("ENOSPC-owner")
+        writes.push({ path, text })
+      },
+    },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  await failoverFoldObserve($, world, 7000, "glm-5.3", "sid-o")
+  try { await failoverFoldFlush($, world) } catch (x) {}
+  fail = false
+  await failoverFoldFlush($, world)
+  const rec = JSON.parse(writes[0].text)
+  const trace = String(rec.journalWriteErr || "")
+  expect(trace, "причина названа").toContain("ENOSPC-owner")
+  expect(trace, "владелец журнала назван: один след обслуживает все пробы")
+    .toContain("/probes-home/failover/journal.jsonl")
+  failoverFoldReset()
+})
+
+test("#227-A зуб 11: шаг, потерянный на разрезе окна, назван и не смешан со старым", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  let fail = true
+  const $: any = {
+    fs: {
+      write: async (path: string, text: string) => {
+        if (fail) throw new Error("ENOSPC-split")
+        writes.push({ path, text })
+      },
+    },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  await failoverFoldObserve($, world, 8000, "glm-5.3", "sid-s")
+  await failoverFoldObserve($, world, 8001, "glm-5.3", "sid-s")
+  let threw = ""
+  try { await failoverFoldObserve($, world, 9000, "grok-4.6", "sid-s") } catch (x) { threw = String(x) }
+  expect(threw.indexOf("ENOSPC-split") >= 0).toBe(true)
+  expect(failoverFoldCount(), "старое окно возвращено, новый шаг в него не смешан").toBe(2)
+  fail = false
+  await failoverFoldFlush($, world)
+  expect(writes).toHaveLength(1)
+  const rec = JSON.parse(writes[0].text)
+  expect(rec.sticky).toBe("glm-5.3")
+  expect(rec.n).toBe(2)
+  expect(rec.foldSplitLost, "потерянный на разрезе шаг назван").toBe(1)
+  expect(Object.prototype.hasOwnProperty.call(rec, "foldSplitLost")).toBe(true)
+  failoverFoldReset()
+})
+
+test("failoverWouldSetSticky: бросок, отказ носителя, совпадение проверяющего -- false", () => {
+  sessionExecutorsReset()
+  const ok = { stopReason: "end_turn", usage: { input_tokens: 1, output_tokens: 1, model: "m" } }
+  const empty = { stopReason: null, usage: null }
+  expect(failoverWouldSetSticky(true, ok, false, "m")).toBe(false)
+  expect(failoverWouldSetSticky(false, empty, false, "m")).toBe(false)
+  expect(failoverWouldSetSticky(false, ok, false, "m")).toBe(true)
+  sessionExecutorModelAdd("glm-5.3")
+  expect(sessionExecutorHas("glm-5.3")).toBe(true)
+  expect(failoverWouldSetSticky(false, ok, true, "glm-5.3")).toBe(false)
+  expect(failoverWouldSetSticky(false, ok, true, "grok-4.6")).toBe(true)
+  sessionExecutorsReset()
 })
