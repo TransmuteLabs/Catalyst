@@ -1,6 +1,6 @@
 {
   "name": "catalyst-probes",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "description": "Consultation and prompt engine for Claude Mods. The module is the core; [probe.<id>] tables in probes.toml are the consultants and [prompt.<id>] tables author a system-prompt section, a tool description or a command description. Pair splice-backed probes with CLAUDE_*_CARRIER=mod.",
   "author": {
     "name": "Marat Karimov"

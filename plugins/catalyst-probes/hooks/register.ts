@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.22"
+export const MOD_VERSION = "0.1.23"
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 const COACHING =
@@ -973,6 +973,47 @@ export function failoverBindGet(agentId: string): any {
   return failoverBinds.get(String(agentId || ""))
 }
 
+// CONSTRAINT (#226): исполнитель и проверяющий -- ЯВНЫЕ перечни префиксов
+// класса: новый класс не должен присоединиться к правилу незаметно. Класс вне
+// обоих перечней -- штатный посторонний, молчать о нём не нужно.
+export const EXECUTOR_CLASS_PREFIXES = ["exec-"]
+export const REVIEWER_CLASS_PREFIXES = ["crit-", "audit-"]
+
+export function classHasPrefix(classId: string, prefixes: string[]): boolean {
+  const c = String(classId || "")
+  for (let i = 0; i < prefixes.length; i++) {
+    if (prefixes[i] && c.indexOf(prefixes[i]) === 0) return true
+  }
+  return false
+}
+
+// CONSTRAINT (#226): накопитель моделей исполнителей сессии. Потолок 64 имени;
+// при переполнении набор НЕ обрезается молча -- добавление прекращается и
+// взводится флаг, уезжающий в улику: молча усечённый набор бесшумно выключил
+// бы всё правило целиком.
+export const SESSION_EXECUTOR_MODELS_CAP = 64
+const sessionExecutorModels: string[] = []
+let sessionExecutorModelsOverflow = false
+
+export function sessionExecutorsReset(): void {
+  sessionExecutorModels.length = 0
+  sessionExecutorModelsOverflow = false
+}
+
+export function sessionExecutorModelAdd(model: string): void {
+  const m = String(model || "")
+  if (!m || sessionExecutorModels.indexOf(m) >= 0) return
+  if (sessionExecutorModels.length >= SESSION_EXECUTOR_MODELS_CAP) {
+    sessionExecutorModelsOverflow = true
+    return
+  }
+  sessionExecutorModels.push(m)
+}
+
+export function sessionExecutorHas(model: string): boolean {
+  return sessionExecutorModels.indexOf(String(model || "")) >= 0
+}
+
 function newSession() {
   epoch++
   sidMemo = null
@@ -982,6 +1023,7 @@ function newSession() {
   clockBad = false
   sweepDone = false
   failoverBindReset()
+  sessionExecutorsReset()
 }
 
 function formKind(p: string, t: string, c: any): string | null {
@@ -1981,6 +2023,7 @@ export function register(on: any) {
     const subagentType = String((e && e.subagentType) || "")
     const cls = classesOf(String((e && e.prompt) || ""))
     const classId = cls.length ? cls[0] : ""
+    const spawnModel = String((e && e.model) || "")
     let world: any = null
     try {
       const w = await worldFor($)
@@ -1988,6 +2031,7 @@ export function register(on: any) {
     } catch (x) { world = null }
     const result = await next(e)
     if (!result || result.deny || !result.agentId) return result
+    if (classHasPrefix(classId, EXECUTOR_CLASS_PREFIXES)) sessionExecutorModelAdd(spawnModel)
     if (!world || !world.failover || !bl3(world.failover.enabled, true)) return result
     const ladder = failoverLadder(world.failover, subagentType, classId)
     if (!ladder.length) return result
@@ -2015,11 +2059,46 @@ export function register(on: any) {
       return yield* driveNext(next(e))
     }
     const original = String(e.model || "")
-    // CONSTRAINT: порядок ступеней строит failoverAttemptModels -- ТА ЖЕ функция,
-    // которую пинят зубы. Второй копии порядка в бою не держать: она разойдётся
-    // молча, и зелёные зубы будут удостоверять не то, что исполняется.
-    const plan = failoverAttemptModels(original, bind.sticky, bind.ladder)
+    // CONSTRAINT (#226): проверяющего (crit-/audit-) нельзя переводить на модель,
+    // которой в этой сессии работал исполнитель, -- проверка вырождается в
+    // самопроверку. Модель СТАРТА при этом мод не переписывает: назначение вне
+    // мода, совпадение уходит в улику отметкой, а не решением.
+    const reviewer = classHasPrefix(bind.class, REVIEWER_CLASS_PREFIXES)
+    const executor = classHasPrefix(bind.class, EXECUTOR_CLASS_PREFIXES)
+    let planLadder: string[] = bind.ladder
+    let rungsFiltered = 0
+    let ladderFullTaken = false
+    const startMatch = reviewer && sessionExecutorHas(original)
+    if (reviewer) {
+      const keep: string[] = []
+      for (let i = 0; i < bind.ladder.length; i++) {
+        if (!sessionExecutorHas(bind.ladder[i])) keep.push(bind.ladder[i])
+      }
+      rungsFiltered = bind.ladder.length - keep.length
+      if (keep.length) {
+        planLadder = keep
+      } else {
+        // Остановленный проверяющий хуже проверки той же моделью, но молчаливое
+        // совпадение хуже обоих.
+        planLadder = bind.ladder
+        ladderFullTaken = true
+      }
+    }
+    // CONSTRAINT: bind.ladder не переписывается -- в привязке лежит объявленная
+    // реестром истина, очистка от моделей исполнителей -- решение одного шага.
+    // Порядок ступеней строит failoverAttemptModels -- ТА ЖЕ функция, которую
+    // пинят зубы; второй копии порядка в бою не держать.
+    const plan = failoverAttemptModels(original, bind.sticky, planLadder)
     if (!plan.length) return yield* driveNext(next(e))
+    // Отметки шага #226 уезжают в КАЖДУЮ запись попытки: улика попытки
+    // самодостаточна и без соседних строк шага.
+    const journalExtra: any = {}
+    if (reviewer) {
+      journalExtra.rungsFiltered = rungsFiltered
+      if (ladderFullTaken) journalExtra.ladderFullTaken = true
+      if (startMatch) journalExtra.startMatch = true
+    }
+    if (sessionExecutorModelsOverflow) journalExtra.execOverflow = true
     let lastRes: any = null
     let lastThrow: any = null
     let sawThrow = false
@@ -2068,6 +2147,7 @@ export function register(on: any) {
             emitted: emitted.n,
             dtMs: t1 - t0,
             laddered: model !== original,
+            ...journalExtra,
           })
         }
       } catch (x) {}
@@ -2085,7 +2165,14 @@ export function register(on: any) {
       lastThrow = null
       sawThrow = false
       const refusal = isCarrierRefusal(res)
-      if (!refusal) bind.sticky = model
+      // CONSTRAINT (#226): липкость не ставится на ступень-совпадение --
+      // failoverAttemptModels кладёт липкую ступень в plan[0], и совпадение
+      // зацепило бы проверяющего за модель исполнителя навсегда. У удачной
+      // ступени исполнителя модель запоминается как факт сессии.
+      if (!refusal) {
+        if (executor) sessionExecutorModelAdd(model)
+        if (!(reviewer && sessionExecutorHas(model))) bind.sticky = model
+      }
       // CONSTRAINT: отказ носителя ПОСЛЕ выдачи уезжает вызывающему как есть:
       // куски первой ступени уже у сессии, вторая приклеила бы к ним чужой
       // хвост. До первой выдачи поведение прежнее -- отказ ведёт на следующую

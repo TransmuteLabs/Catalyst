@@ -13,7 +13,7 @@ import type { Args, On } from "claude-code"
 
 // CONSTRAINT: версия берётся импортом, а не литералом: дом версии — register.ts
 // и .claude-plugin/plugin.json, их сверяет tests/scripts/test-mod-units.sh.
-import { MOD_VERSION, failoverBindSet, register, verdictKey } from "../hooks/register.ts"
+import { MOD_VERSION, failoverBindSet, register, sessionExecutorsReset, verdictKey } from "../hooks/register.ts"
 
 const HOME = "/probes-home"
 const SID = "sid-behavior-1"
@@ -1295,5 +1295,426 @@ describe("failover: agent.spawn + turn.step", () => {
     expect(out.threw).toBe(false)
     expect(seen, "переход с молчащей ступени законен").toEqual(["busy-model", "glm-5.3"])
     expect(out.value && out.value.answer, "ответ второй ступени вернулся").toBe("from-second")
+  })
+})
+
+// CONSTRAINT (#226): зубы этого блока читают УЛИКУ, поэтому идут ДВИЖКОВЫМ
+// маршрутом ($.agent.spawn + $.turn.step): прямому вызову хука мода op-существительные
+// отказаны («its hooks module does not call it» -- измерено 2026-09-16), журнала
+// у него нет. Модульное состояние (накопитель моделей исполнителей) переживает
+// тесты файла, поэтому каждый зуб начинает с sessionExecutorsReset().
+describe("failover: проверяющий не уезжает на модель исполнителя (#226)", () => {
+  function failover226Toml(critModels: string): string {
+    return [
+      "[failover]",
+      "enabled = true",
+      "",
+      "[failover.class.exec-0p]",
+      'models = ["glm-5.3", "grok-4.6"]',
+      "",
+      "[failover.class.crit-mech]",
+      "models = " + critModels,
+      "",
+      "[failover.class.scout-enum]",
+      'models = ["glm-5.3", "grok-4.6"]',
+      "",
+    ].join("\n")
+  }
+
+  function failoverLines(kept: Kept): any[] {
+    return kept.writes
+      .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
+      .map(w => JSON.parse(String(w.text)))
+  }
+
+  // Шаблон ступени: busy-model отказывает носителем (usage null, stopReason
+  // null), любая другая модель отвечает. Совпадение с накопителем
+  // определяется ПО МОДЕЛИ, поэтому остальные отвечают успешно всегда --
+  // увод на модель исполнителя опасен именно когда она работает.
+  function refusingFirst(seen: string[]) {
+    return async function* (_$: unknown, e: any) {
+      seen.push(String(e.model))
+      if (e.model === "busy-model") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    }
+  }
+
+  test("#226 зуб 1: отказ носителя уводит проверяющего НЕ на модель исполнителя", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 110_000_000, {}, {
+      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => {
+      const exec = String(e.prompt).indexOf("[dispatch-class:exec-0p]") >= 0
+      return exec
+        ? { model: "glm-5.3", agentId: "ag-226-exec-1" }
+        : { model: "busy-model", agentId: "ag-226-crit-1" }
+    })
+    on("turn.step", refusingFirst(seen))
+
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-226-exec-1",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(exec.agentId).toBe("ag-226-exec-1")
+
+    const crit = await $.agent.spawn({
+      tool_use_id: "tu-226-crit-1",
+      prompt: "[dispatch-class:crit-mech] проверить работу исполнителя",
+      description: "crit",
+      subagentType: "gpt6-critic",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(crit.agentId).toBe("ag-226-crit-1")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-226-1", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+
+    expect(res && res.answer, "шаг ушёл на другую модель, не на модель исполнителя").toBe("from-grok-4.6")
+    expect(seen, "glm-5.3 вычеркнута из плана проверяющего").toEqual(["busy-model", "grok-4.6"])
+
+    const lines = failoverLines(kept)
+    expect(lines, "две попытки: исходная и ступень").toHaveLength(2)
+    expect(lines[1].class).toBe("crit-mech")
+    expect(lines[1].modelRequested).toBe("grok-4.6")
+    expect(lines[1].rungsFiltered, "в улике: одна ступень отфильтрована").toBe(1)
+  })
+
+  test("#226 зуб 2: лестница только из модели исполнителя — переход есть, отметка «нечем фильтровать»", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 120_000_000, {}, {
+      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => {
+      const exec = String(e.prompt).indexOf("[dispatch-class:exec-0p]") >= 0
+      return exec
+        ? { model: "glm-5.3", agentId: "ag-226-exec-2" }
+        : { model: "busy-model", agentId: "ag-226-crit-2" }
+    })
+    on("turn.step", refusingFirst(seen))
+
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-226-exec-2",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(exec.agentId).toBe("ag-226-exec-2")
+
+    const crit = await $.agent.spawn({
+      tool_use_id: "tu-226-crit-2",
+      prompt: "[dispatch-class:crit-mech] проверить работу исполнителя",
+      description: "crit",
+      subagentType: "gpt6-critic",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(crit.agentId).toBe("ag-226-crit-2")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-226-2", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+
+    expect(res && res.answer, "работа не встала: переход на модель исполнителя состоялся").toBe("from-glm-5.3")
+    expect(seen).toEqual(["busy-model", "glm-5.3"])
+
+    const lines = failoverLines(kept)
+    expect(lines).toHaveLength(2)
+    expect(lines[1].modelRequested).toBe("glm-5.3")
+    expect(lines[1].rungsFiltered).toBe(1)
+    expect(lines[1].ladderFullTaken, "в улике: отфильтровать было нечем, взята полная лестница").toBe(true)
+  })
+
+  test("#226 зуб 3: модель старта уже в накопителе — не переписывается, отметка в улике", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 130_000_000, {}, {
+      [HOME + "/probes.toml"]: failover226Toml('["grok-4.6", "qwen3.8-flash"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => {
+      const exec = String(e.prompt).indexOf("[dispatch-class:exec-0p]") >= 0
+      return exec
+        ? { model: "glm-5.3", agentId: "ag-226-exec-3" }
+        : { model: "glm-5.3", agentId: "ag-226-crit-3" }
+    })
+    on("turn.step", refusingFirst(seen))
+
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-226-exec-3",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(exec.agentId).toBe("ag-226-exec-3")
+
+    const crit = await $.agent.spawn({
+      tool_use_id: "tu-226-crit-3",
+      prompt: "[dispatch-class:crit-mech] проверить работу исполнителя",
+      description: "crit",
+      subagentType: "gpt6-critic",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(crit.agentId).toBe("ag-226-crit-3")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-226-3", index: 0, model: "glm-5.3", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+
+    expect(res && res.answer, "шаг отработал назначенной моделью").toBe("from-glm-5.3")
+    expect(seen, "модель шага модом НЕ изменена").toEqual(["glm-5.3"])
+
+    const lines = failoverLines(kept)
+    expect(lines).toHaveLength(1)
+    expect(lines[0].modelRequested).toBe("glm-5.3")
+    expect(lines[0].laddered).toBe(false)
+    expect(lines[0].startMatch, "в улике: совпадение на старте").toBe(true)
+    expect(lines[0].rungsFiltered).toBe(0)
+  })
+
+  test("#226 зуб 4: класс вне обоих перечней (scout-enum) правилом не задет", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 140_000_000, {}, {
+      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => {
+      const exec = String(e.prompt).indexOf("[dispatch-class:exec-0p]") >= 0
+      return exec
+        ? { model: "glm-5.3", agentId: "ag-226-exec-4" }
+        : { model: "busy-model", agentId: "ag-226-scout-4" }
+    })
+    on("turn.step", refusingFirst(seen))
+
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-226-exec-4",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(exec.agentId).toBe("ag-226-exec-4")
+
+    const scout = await $.agent.spawn({
+      tool_use_id: "tu-226-scout-4",
+      prompt: "[dispatch-class:scout-enum] перечислить находки",
+      description: "scout",
+      subagentType: "grok-scout",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(scout.agentId).toBe("ag-226-scout-4")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-226-4", index: 0, model: "busy-model", messageCount: 1,
+      agentId: scout.agentId,
+    }))
+
+    expect(res && res.answer, "работа скаута не встала").toBe("from-glm-5.3")
+    expect(seen, "лестница постороннего класса НЕ фильтруется: следующая ступень -- glm-5.3").toEqual(["busy-model", "glm-5.3"])
+
+    const lines = failoverLines(kept)
+    expect(lines).toHaveLength(2)
+    expect(lines[1].modelRequested).toBe("glm-5.3")
+    expect(lines[1].rungsFiltered, "полей фильтрации у постороннего класса нет").toBe(undefined)
+    expect(lines[1].ladderFullTaken).toBe(undefined)
+    expect(lines[1].startMatch).toBe(undefined)
+  })
+
+  test("#226 зуб 5: /clear очищает накопитель — прежние модели исполнителей не влияют", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 150_000_000, {}, {
+      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => {
+      const exec = String(e.prompt).indexOf("[dispatch-class:exec-0p]") >= 0
+      return exec
+        ? { model: "glm-5.3", agentId: "ag-226-exec-5" }
+        : { model: "busy-model", agentId: "ag-226-crit-5" }
+    })
+    on("turn.step", refusingFirst(seen))
+    on("command.run", { command: "clear" }, () => ({ text: "cleared" }))
+
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-226-exec-5",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(exec.agentId).toBe("ag-226-exec-5")
+
+    const crit = await $.agent.spawn({
+      tool_use_id: "tu-226-crit-5",
+      prompt: "[dispatch-class:crit-mech] проверить работу исполнителя",
+      description: "crit",
+      subagentType: "gpt6-critic",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(crit.agentId).toBe("ag-226-crit-5")
+
+    const first = await settleStep($.turn.step({
+      turnId: "turn-226-5a", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+    expect(first && first.answer, "до /clear совпадение вычеркнуто из лестницы").toBe("from-grok-4.6")
+    expect(seen).toEqual(["busy-model", "grok-4.6"])
+
+    const cleared = await $.command.run({ command: "clear", args: "" })
+    expect(cleared).toEqual({ text: "cleared" })
+
+    // /clear сносит и привязки: проверяющего надо перезавести.
+    const critAgain = await $.agent.spawn({
+      tool_use_id: "tu-226-crit-5b",
+      prompt: "[dispatch-class:crit-mech] проверить работу исполнителя заново",
+      description: "crit",
+      subagentType: "gpt6-critic",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(critAgain.agentId).toBe("ag-226-crit-5")
+
+    const second = await settleStep($.turn.step({
+      turnId: "turn-226-5b", index: 0, model: "busy-model", messageCount: 1,
+      agentId: critAgain.agentId,
+    }))
+    expect(second && second.answer, "после /clear накопитель пуст: годна и glm-5.3").toBe("from-glm-5.3")
+    expect(seen, "полная история обеих шагов").toEqual(["busy-model", "grok-4.6", "busy-model", "glm-5.3"])
+
+    const lines = failoverLines(kept)
+    expect(lines).toHaveLength(4)
+    expect(lines[1].rungsFiltered, "до /clear одна ступень отфильтрована").toBe(1)
+    expect(lines[3].rungsFiltered, "после /clear фильтровать нечем").toBe(0)
+    expect(lines[3].modelRequested).toBe("glm-5.3")
+  })
+
+  test("#226 зуб 6: липкость не ставится на ступень-совпадение", async ($, on) => {
+    sessionExecutorsReset()
+    const kept = wired(on, 160_000_000, {}, {
+      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => {
+      const exec = String(e.prompt).indexOf("[dispatch-class:exec-0p]") >= 0
+      return exec
+        ? { model: "glm-5.3", agentId: "ag-226-exec-6" }
+        : { model: "busy-model", agentId: "ag-226-crit-6" }
+    })
+    on("turn.step", refusingFirst(seen))
+
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-226-exec-6",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(exec.agentId).toBe("ag-226-exec-6")
+
+    const crit = await $.agent.spawn({
+      tool_use_id: "tu-226-crit-6",
+      prompt: "[dispatch-class:crit-mech] проверить работу исполнителя",
+      description: "crit",
+      subagentType: "gpt6-critic",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(crit.agentId).toBe("ag-226-crit-6")
+
+    const first = await settleStep($.turn.step({
+      turnId: "turn-226-6a", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+    expect(first && first.answer, "первый шаг дошёл до совпадения откатом на полную лестницу").toBe("from-glm-5.3")
+
+    const second = await settleStep($.turn.step({
+      turnId: "turn-226-6b", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+    expect(second && second.answer).toBe("from-glm-5.3")
+    expect(seen, "второй шаг начинается с ИСХОДНОЙ модели, а не с прилипшего совпадения").toEqual([
+      "busy-model", "glm-5.3", "busy-model", "glm-5.3",
+    ])
   })
 })
