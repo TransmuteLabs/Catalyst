@@ -21,7 +21,7 @@
 # сторону это rc=3, а не зелёный.
 set -u
 
-EXPECTED_TEETH=6
+EXPECTED_TEETH=9
 
 if ! command -v python3 >/dev/null 2>&1; then
   printf 'ПРИБОР НЕДОСТУПЕН: нет python3\n' >&2

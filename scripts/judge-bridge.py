@@ -86,7 +86,16 @@ DISPATCHER_SRC = '''
 # CONSTRAINT: маркер готовности пишется ТОЛЬКО в журнал, не в сокет:
 # пробное соединение к служебному порту стало бы фантомным рабочим каналом
 # и увело бы первого реального клиента в пустоту.
+# CONSTRAINT: диспетчер -- ВЛАДЕЛЕЦ каталога, в котором лежит сам и
+# подкаталог probes/ с доставленным боевым конфигом: при ЛЮБОМ своём выходе
+# (простой, сигнал, падение) он сносит каталог сам. Мак-сторона убирает
+# быстрее и объявляет GONE/LEFT, но при её смерти (обрыв сети, падение мака,
+# OOM) копия боевого конфига не имеет права оставаться на чужой машине.
 import argparse
+import os
+import select
+import shutil
+import signal
 import socket
 import sys
 import threading
@@ -101,6 +110,21 @@ def log(msg):
     sys.stderr.flush()
 
 
+def channel_dead(sock):
+    # CONSTRAINT: живость канала мерится САМИМ сокетом, а не тем, что он
+    # лежит в списке: смерть мак-стороны оставляет принятый сокет в
+    # CLOSE_WAIT -- он читаем и отдаёт EOF. MSG_PEEK не съедает байты, если
+    # данные всё же пришли, поэтому проверка безопасна для простаивающего
+    # канала.
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+        if not readable:
+            return False
+        return sock.recv(1, socket.MSG_PEEK) == b''
+    except Exception:
+        return True
+
+
 class Pool:
     # Очередь свободных рабочих каналов; _ever -- был ли хоть один канал
     # (отличает «мост ещё не подключился» от «мост умер»). Атрибут намеренно
@@ -111,6 +135,26 @@ class Pool:
         self.free = []
         self._ever = False
 
+    def _reap(self):
+        # CONSTRAINT: вызывается ТОЛЬКО под self.cond. Единственный дом
+        # прополки мёртвых каналов: и счётчик, и выдача обязаны видеть один
+        # и тот же список, иначе сторож одиночества мерит одно, а клиент
+        # получает другое.
+        live = []
+        for sock in self.free:
+            if channel_dead(sock):
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            else:
+                live.append(sock)
+        dropped = len(self.free) - len(live)
+        if dropped:
+            log('прополка пула: мёртвых каналов %d, живых %d'
+                % (dropped, len(live)))
+        self.free = live
+
     def put(self, sock):
         with self.cond:
             self.free.append(sock)
@@ -120,15 +164,18 @@ class Pool:
     def get(self, timeout):
         deadline = time.monotonic() + timeout
         with self.cond:
-            while not self.free:
+            while True:
+                self._reap()
+                if self.free:
+                    return self.free.pop(0)
                 left = deadline - time.monotonic()
                 if left <= 0:
                     return None
                 self.cond.wait(left)
-            return self.free.pop(0)
 
     def size(self):
         with self.cond:
+            self._reap()
             return len(self.free)
 
     def ever(self):
@@ -209,15 +256,13 @@ def accept_loop(sock, handler):
         threading.Thread(target=handler, args=(conn,), daemon=True).start()
 
 
-def main():
-    global ARGS
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--client-port', type=int, required=True)
-    ap.add_argument('--service-port', type=int, required=True)
-    ap.add_argument('--wait-worker', type=float, default=60.0)
-    ap.add_argument('--idle-exit', type=float, default=900.0)
-    ap.add_argument('--worker-grace', type=float, default=300.0)
-    ARGS = ap.parse_args()
+def cleanup_own_dir():
+    here = os.path.dirname(os.path.abspath(__file__))
+    log('выхожу: убираю свой каталог %s' % here)
+    shutil.rmtree(here, ignore_errors=True)
+
+
+def serve():
     service = listener(ARGS.service_port)
     client = listener(ARGS.client_port)
     threading.Thread(target=accept_loop, args=(service, POOL.put),
@@ -252,6 +297,34 @@ def main():
                     return
         else:
             lonely_since = None
+
+
+def main():
+    global ARGS
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--client-port', type=int, required=True)
+    ap.add_argument('--service-port', type=int, required=True)
+    ap.add_argument('--wait-worker', type=float, default=60.0)
+    # CONSTRAINT: умолчание простоя -- минуты, не четверть часа: мост без
+    # мака бесполезен, а доставленный боевой конфиг не имеет права жить на
+    # usbox дольше необходимого.
+    ap.add_argument('--idle-exit', type=float, default=180.0)
+    ap.add_argument('--worker-grace', type=float, default=300.0)
+    ARGS = ap.parse_args()
+    # CONSTRAINT: сигналы -> SystemExit: SIGTERM/SIGINT обязаны пройти ТЕМ
+    # ЖЕ путём, что и штатный выход (finally ниже); отдельной уборки «на
+    # сигнал» нет -- иначе один из путей забывал бы каталог.
+    def to_exit(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, to_exit)
+    signal.signal(signal.SIGINT, to_exit)
+    # CONSTRAINT: finally, а не except: уборка нужна и при штатном выходе,
+    # и при необработанном исключении -- finally единственный путь,
+    # покрывающий оба.
+    try:
+        serve()
+    finally:
+        cleanup_own_dir()
 
 
 main()
@@ -786,6 +859,144 @@ def _tooth_nested_cleanup(root):
                              'уборка перестала быть рекурсивной' % top)
 
 
+def _free_port():
+    # Эфемерный свободный порт (занять-освободить-использовать): боевые порты
+    # могут быть заняты живым мостом, зуб не имеет права падать из-за чужого
+    # слушателя.
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _write_dispatcher_case(case):
+    os.makedirs(os.path.join(case, 'probes'))
+    with open(os.path.join(case, 'probes', 'probes.toml'), 'wb') as f:
+        f.write(SYNTH_PROBES_TOML)
+    with open(os.path.join(case, DISPATCHER_NAME), 'w') as f:
+        f.write(DISPATCHER_SRC)
+    return os.path.join(case, DISPATCHER_NAME)
+
+
+def _tooth_dispatcher_idle_exit(root):
+    case = os.path.join(root, 'dispatch-idle')
+    disp = _write_dispatcher_case(case)
+    proc = subprocess.Popen(
+        [sys.executable, disp,
+         '--client-port', str(_free_port()),
+         '--service-port', str(_free_port()),
+         '--idle-exit', '1', '--worker-grace', '1'],
+        cwd=case, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rc = proc.wait(timeout=60)
+    if rc != 0:
+        raise AssertionError('диспетчер по простою вышел нештатно: rc=%d' % rc)
+    if os.path.exists(case):
+        raise AssertionError('диспетчер вышел по простою (rc=0), но каталог '
+                             '%s стоит -- владение каталогом потеряно' % case)
+
+
+def _tooth_dispatcher_sigterm(root):
+    case = os.path.join(root, 'dispatch-sigterm')
+    disp = _write_dispatcher_case(case)
+    client_port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, disp,
+         '--client-port', str(client_port),
+         '--service-port', str(_free_port()),
+         '--idle-exit', '1', '--worker-grace', '1'],
+        cwd=case, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Готовность меряем по КЛИЕНТСКОМУ порту: проба служебного порта стала бы
+    # фантомным рабочим каналом (CONSTRAINT диспетчера).
+    deadline = time.monotonic() + 20
+    ready = False
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError('диспетчер умер до сигнала: rc=%s'
+                                 % proc.returncode)
+        try:
+            probe = socket.create_connection(('127.0.0.1', client_port), 1)
+            probe.close()
+            ready = True
+            break
+        except OSError:
+            time.sleep(0.2)
+    if not ready:
+        proc.kill()
+        proc.wait(timeout=10)
+        raise AssertionError('клиентский порт диспетчера не начал слушать '
+                             'за 20 с')
+    proc.terminate()
+    rc = proc.wait(timeout=30)
+    if rc != 0 or os.path.exists(case):
+        raise AssertionError('диспетчер, снятый SIGTERM, не убрал за собой: '
+                             'rc=%d, каталог %s' % (rc, case))
+
+
+def _wait_ready_log(proc, log_path, seconds):
+    # CONSTRAINT: готовность ждём по МАРКЕРУ В ЖУРНАЛЕ, а не пробой порта.
+    # Проба клиентского порта оставляет в диспетчере живой serve_client,
+    # который ждёт канал до wait_worker секунд и ЗАБИРАЕТ первый пришедший
+    # канал из пула -- пул пустеет по причине пробы, и зуб на брошенном
+    # канале зеленел бы, ничего не измерив (измерено: на мутации прополки
+    # зуб с пробой порта остался зелёным).
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError('диспетчер умер до готовности: rc=%s'
+                                 % proc.returncode)
+        try:
+            with open(log_path, 'r') as f:
+                if 'READY' in f.read():
+                    return
+        except OSError:
+            pass
+        time.sleep(0.2)
+    proc.kill()
+    proc.wait(timeout=10)
+    raise AssertionError('диспетчер не объявил READY за %.0f с' % seconds)
+
+
+def _tooth_dispatcher_dead_channel(root):
+    # Боевой сценарий обрыва: рабочие каналы БЫЛИ и умерли вместе с мак-стороной.
+    # worker_grace намеренно велик -- зелёным зуб может стать ТОЛЬКО через ветку
+    # простоя, ветка «каналов не было вовсе» здесь сработать не успевает.
+    case = os.path.join(root, 'dispatch-dead-channel')
+    disp = _write_dispatcher_case(case)
+    # CONSTRAINT: журнал -- ВНЕ каталога диспетчера: свой каталог он сносит
+    # при выходе вместе со всем, что в нём лежит.
+    log_path = os.path.join(root, 'dead-channel.log')
+    service_port = _free_port()
+    with open(log_path, 'wb') as log_file:
+        proc = subprocess.Popen(
+            [sys.executable, disp,
+             '--client-port', str(_free_port()),
+             '--service-port', str(service_port),
+             '--idle-exit', '2', '--worker-grace', '600'],
+            cwd=case, stdout=subprocess.DEVNULL, stderr=log_file)
+        try:
+            _wait_ready_log(proc, log_path, 20)
+            worker = socket.create_connection(('127.0.0.1', service_port), 5)
+            time.sleep(1)
+            worker.close()
+            try:
+                rc = proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                raise AssertionError(
+                    'рабочий канал умер, но диспетчер жив спустя 60 с -- пул '
+                    'считает мёртвый сокет живым, сторож простоя недостижим')
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+    if rc != 0:
+        raise AssertionError('диспетчер после смерти канала вышел нештатно: '
+                             'rc=%d' % rc)
+    if os.path.exists(case):
+        raise AssertionError('диспетчер вышел (rc=0), но каталог %s стоит -- '
+                             'владение каталогом потеряно' % case)
+
+
 def _mkprobes(parent, content):
     os.makedirs(parent)
     with open(os.path.join(parent, 'probes.toml'), 'wb') as f:
@@ -813,6 +1024,12 @@ def _self_check_run(root):
          lambda: _tooth_nested_delivery(root)),
         ('команда уборки сносит вложенное',
          lambda: _tooth_nested_cleanup(root)),
+        ('диспетчер по простою сносит свой каталог',
+         lambda: _tooth_dispatcher_idle_exit(root)),
+        ('диспетчер, снятый SIGTERM, сносит свой каталог',
+         lambda: _tooth_dispatcher_sigterm(root)),
+        ('умерший рабочий канал не держит диспетчера живым',
+         lambda: _tooth_dispatcher_dead_channel(root)),
     )
     red = []
     for name, fn in teeth:
