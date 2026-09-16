@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.24"
+export const MOD_VERSION = "0.1.26"
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 const COACHING =
@@ -147,23 +147,24 @@ export function classesOf(prompt: string): string[] {
   return set
 }
 
-function modelsList(table: any): string[] {
-  const raw = table && table.models
-  if (!Array.isArray(raw)) return []
-  const out: string[] = []
-  for (let i = 0; i < raw.length; i++) {
-    if (typeof raw[i] === "string" && raw[i]) out.push(raw[i])
-  }
-  return out
+function failoverLadderBind(fo: any, subagentType: string, classId: string): {
+  ladder: string[]
+  rungEffort: { [k: string]: string }
+  effortBad: { [k: string]: string }
+  rungsDropped: number
+} {
+  const empty = { ladder: [] as string[], rungEffort: {} as { [k: string]: string }, effortBad: {} as { [k: string]: string }, rungsDropped: 0 }
+  if (!fo || typeof fo !== "object") return empty
+  const fromAgent = tableRungs(fo.agent && subagentType ? fo.agent[subagentType] : null)
+  if (fromAgent.models.length) return { ladder: fromAgent.models, rungEffort: fromAgent.rungEffort, effortBad: fromAgent.effortBad, rungsDropped: fromAgent.dropped }
+  const fromClass = tableRungs(fo.class && classId ? fo.class[classId] : null)
+  if (fromClass.models.length) return { ladder: fromClass.models, rungEffort: fromClass.rungEffort, effortBad: fromClass.effortBad, rungsDropped: fromClass.dropped }
+  const fromDefault = tableRungs(fo.default)
+  return { ladder: fromDefault.models, rungEffort: fromDefault.rungEffort, effortBad: fromDefault.effortBad, rungsDropped: fromDefault.dropped }
 }
 
 export function failoverLadder(fo: any, subagentType: string, classId: string): string[] {
-  if (!fo || typeof fo !== "object") return []
-  const fromAgent = modelsList(fo.agent && subagentType ? fo.agent[subagentType] : null)
-  if (fromAgent.length) return fromAgent
-  const fromClass = modelsList(fo.class && classId ? fo.class[classId] : null)
-  if (fromClass.length) return fromClass
-  return modelsList(fo.default)
+  return failoverLadderBind(fo, subagentType, classId).ladder
 }
 
 export function nextFailoverModel(ladder: string[], failed: string[]): string | null {
@@ -448,30 +449,77 @@ export function markEffort(rec: any, used: string, rung: any): void {
   if (rung && rung.effortBad) rec["effortBad_" + used] = rung.effortBad
 }
 
+type RungItem = {
+  model: string
+  effort?: string
+  effortBad?: string
+  max_tokens?: number
+  timeout_ms?: number
+  context_chars?: number
+}
+
+// CONSTRAINT: правило разбора элемента лестницы живёт в ОДНОМ доме --
+// судья (rungsOf) и failover (tableRungs) зовут ЭТУ функцию. Вторая копия
+// правила -- дефект: богатая форма тогда расходится между дорогами.
+function parseRungItem(x: any): RungItem | null {
+  if (typeof x === "string" && x) return { model: x }
+  if (x && typeof x === "object" && x.model) {
+    const r: RungItem = { model: String(x.model) }
+    // CONSTRAINT: у max_tokens проверка значения была (num), у эффорта не
+    // было вовсе -- негодное значение уезжало провайдеру дословно (#141).
+    // Негодное НЕ доезжает и НАЗЫВАЕТСЯ уликой (effortBad_<модель>): молча
+    // уронить поле значит сделать опечатку в ступени неотличимой от
+    // ступени без эффорта.
+    if (x.effort) {
+      const ev = String(x.effort)
+      if (effortOk(ev)) r.effort = ev
+      else r.effortBad = ev.slice(0, 64)
+    }
+    if (x.max_tokens != null) r.max_tokens = num(x.max_tokens, 0, 1)
+    if (x.timeout_ms != null) r.timeout_ms = num(x.timeout_ms, 0, 1)
+    if (x.context_chars != null) r.context_chars = num(x.context_chars, 0, 1)
+    return r
+  }
+  return null
+}
+
+function tableRungs(table: any): {
+  models: string[]
+  rungEffort: { [k: string]: string }
+  effortBad: { [k: string]: string }
+  dropped: number
+} {
+  const raw = table && table.models
+  const models: string[] = []
+  const rungEffort: { [k: string]: string } = {}
+  const effortBad: { [k: string]: string } = {}
+  let dropped = 0
+  if (!Array.isArray(raw)) return { models, rungEffort, effortBad, dropped }
+  for (let i = 0; i < raw.length; i++) {
+    const x = raw[i]
+    const r = parseRungItem(x)
+    if (!r) {
+      // CONSTRAINT: считается ЛЮБОЙ неразобранный элемент, а не только объект
+      // без model. Пустая строка и число -- та же опечатка в реестре, и
+      // молчаливое их отбрасывание есть ровно тот класс, который эта запись
+      // закрывает: ступень исчезла, знаменатель не назван.
+      dropped++
+      continue
+    }
+    models.push(r.model)
+    if (r.effort && rungEffort[r.model] === undefined) rungEffort[r.model] = r.effort
+    if (r.effortBad && effortBad[r.model] === undefined) effortBad[r.model] = r.effortBad
+  }
+  return { models, rungEffort, effortBad, dropped }
+}
+
 export function rungsOf(cfg: any, modelEnv: string): { model: string; effort?: string; effortBad?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] {
   const raw = cfg && cfg.models
   const out: { model: string; effort?: string; effortBad?: string; max_tokens?: number; timeout_ms?: number; context_chars?: number }[] = []
   if (Array.isArray(raw) && raw.length) {
     for (let i = 0; i < raw.length; i++) {
-      const x = raw[i]
-      if (typeof x === "string" && x) out.push({ model: x })
-      else if (x && typeof x === "object" && x.model) {
-        const r: any = { model: String(x.model) }
-        // CONSTRAINT: у max_tokens проверка значения была (num), у эффорта не
-        // было вовсе -- негодное значение уезжало провайдеру дословно (#141).
-        // Негодное НЕ доезжает и НАЗЫВАЕТСЯ уликой (effortBad_<модель>): молча
-        // уронить поле значит сделать опечатку в ступени неотличимой от
-        // ступени без эффорта.
-        if (x.effort) {
-          const ev = String(x.effort)
-          if (effortOk(ev)) r.effort = ev
-          else r.effortBad = ev.slice(0, 64)
-        }
-        if (x.max_tokens != null) r.max_tokens = num(x.max_tokens, 0, 1)
-        if (x.timeout_ms != null) r.timeout_ms = num(x.timeout_ms, 0, 1)
-        if (x.context_chars != null) r.context_chars = num(x.context_chars, 0, 1)
-        out.push(r)
-      }
+      const r = parseRungItem(raw[i])
+      if (r) out.push(r)
     }
   }
   if (!out.length && cfg && cfg.model) out.push({ model: String(cfg.model) })
@@ -2033,10 +2081,11 @@ export function register(on: any) {
     if (!result || result.deny || !result.agentId) return result
     if (classHasPrefix(classId, EXECUTOR_CLASS_PREFIXES)) sessionExecutorModelAdd(spawnModel)
     if (!world || !world.failover || !bl3(world.failover.enabled, true)) return result
-    const ladder = failoverLadder(world.failover, subagentType, classId)
-    if (!ladder.length) return result
+    const info = failoverLadderBind(world.failover, subagentType, classId)
+    if (!info.ladder.length) return result
     failoverBindSet(String(result.agentId), {
-      ladder, subagentType, class: classId, sticky: null,
+      ladder: info.ladder, subagentType, class: classId, sticky: null,
+      rungEffort: info.rungEffort, effortBad: info.effortBad, rungsDropped: info.rungsDropped,
     })
     return result
   })
@@ -2108,13 +2157,33 @@ export function register(on: any) {
       if (stickyDropped) journalExtra.stickyDropped = true
     }
     if (sessionExecutorModelsOverflow) journalExtra.execOverflow = true
+    if (bind.rungsDropped) journalExtra.rungsDropped = bind.rungsDropped
     let lastRes: any = null
     let lastThrow: any = null
     let sawThrow = false
     for (let attempt = 0; attempt < plan.length; attempt++) {
       const model = plan[attempt]
       const t0 = await nowMs($)
-      const req = model === original ? e : Object.assign({}, e, { model })
+      const declared = bind.rungEffort && bind.rungEffort[model]
+      // CONSTRAINT: эффорт применяется ТОЛЬКО на реальном переходе
+      // (model !== original). На попытке 0, идущей моделью хоста,
+      // авторитет у frontmatter агента -- пин ТОЙ ЖЕ клетки и он
+      // конкретнее реестра; hookEffortValue перебил бы его (первый
+      // приоритет в DE).
+      let req: any
+      if (model === original) {
+        req = e
+      } else if (declared) {
+        // CONSTRAINT: поле effort выставляется только когда объявлено и
+        // годно. undefined/пустая строка включили бы канал hookEffortValue
+        // на пустом значении. Улика называет эффорт ЗАПРОШЕННЫМ
+        // (rungEffortRequested), не применённым: x(E, model) тихо клампит
+        // max→high / xhigh→high у моделей без соответствующего флага, без
+        // отказа, и кламп с этой поверхности ненаблюдаем.
+        req = Object.assign({}, e, { model, effort: declared })
+      } else {
+        req = Object.assign({}, e, { model })
+      }
       let res: any = null
       let threw: any = null
       // CONSTRAINT: факт броска несёт ОТДЕЛЬНЫЙ флаг, а не истинность значения.
@@ -2141,7 +2210,7 @@ export function register(on: any) {
         try { sid = await sidFor($) } catch (x) { sid = "" }
         const jpath = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
         if (jpath) {
-          await appendJournal($, jpath, {
+          const rec: any = {
             t: new Date(t1).toISOString(),
             sid,
             rec: recKey,
@@ -2157,7 +2226,10 @@ export function register(on: any) {
             dtMs: t1 - t0,
             laddered: model !== original,
             ...journalExtra,
-          })
+          }
+          if (declared && model !== original) rec.rungEffortRequested = declared
+          if (bind.effortBad && bind.effortBad[model]) rec["effortBad_" + model] = bind.effortBad[model]
+          await appendJournal($, jpath, rec)
         }
       } catch (x) {}
       if (didThrow) {

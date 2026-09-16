@@ -1780,3 +1780,270 @@ describe("failover: проверяющий не уезжает на модель
     expect(last && last.modelRequested).toBe("qwen3.8-flash")
   })
 })
+
+// CONSTRAINT (#223): улику эффорта читают только зубы движкового маршрута
+// ($.agent.spawn + $.turn.step + wired). Прямому вызову хука мир недоступен
+// (измеренная граница харнеса: op-существительные отказаны).
+describe("failover: объявленный эффорт ступени (#223)", () => {
+  function effortToml(modelsLine: string): string {
+    return [
+      "[failover]",
+      "enabled = true",
+      "",
+      "[failover.default]",
+      "models = " + modelsLine,
+      "",
+    ].join("\n")
+  }
+
+  function failoverLines(kept: Kept): any[] {
+    return kept.writes
+      .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
+      .map(w => JSON.parse(String(w.text)))
+  }
+
+  function spawnSpec(agentId: string, prompt: string, model: string) {
+    return {
+      tool_use_id: "tu-" + agentId,
+      prompt,
+      description: agentId,
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model,
+    }
+  }
+
+  test("#223 зуб 1: эффорт доехал на реальном переходе", async ($, on) => {
+    const kept = wired(on, 180_000_000, {}, {
+      [HOME + "/probes.toml"]: effortToml('[{ model = "glm-5.3", effort = "high" }]'),
+    })
+    const seen: string[] = []
+    const seenEffort: unknown[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-223-1",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      seenEffort.push(e.effort)
+      if (e.model === "busy-model") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn(spawnSpec(
+      "ag-223-1",
+      "[dispatch-class:exec-0p] effort arrived",
+      "busy-model",
+    ))
+    expect(spawned.agentId).toBe("ag-223-1")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-223-1", index: 0, model: "busy-model",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    expect(res && res.answer, "ответ ступени после отказа носителя").toBe("from-glm-5.3")
+    expect(seen, "переход на объявленную ступень").toEqual(["busy-model", "glm-5.3"])
+    expect(seenEffort[1], "хук ступени ВИДИТ effort===high в событии").toBe("high")
+
+    const lines = failoverLines(kept)
+    const rung = lines.filter(l => l.modelRequested === "glm-5.3")[0]
+    expect(rung && rung.rungEffortRequested, "улика несёт запрошенный эффорт").toBe("high")
+  })
+
+  test("#223 зуб 2: без объявления поле effort не трогаем", async ($, on) => {
+    const kept = wired(on, 190_000_000, {}, {
+      [HOME + "/probes.toml"]: effortToml('["glm-5.3", "grok-4.6"]'),
+    })
+    const seen: string[] = []
+    const seenEffort: unknown[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-223-2",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      seenEffort.push(e.effort)
+      if (e.model === "busy-model") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn(spawnSpec(
+      "ag-223-2",
+      "[dispatch-class:exec-0p] no declared effort",
+      "busy-model",
+    ))
+    expect(spawned.agentId).toBe("ag-223-2")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-223-2", index: 0, model: "busy-model",
+      messageCount: 1, agentId: spawned.agentId, effort: "medium",
+    }))
+    expect(res && res.answer).toBe("from-glm-5.3")
+    expect(seen).toEqual(["busy-model", "glm-5.3"])
+    expect(seenEffort[0], "посланный эффорт на попытке 0").toBe("medium")
+    expect(seenEffort[1], "на переходе поле effort идентично посланному").toBe("medium")
+
+    const lines = failoverLines(kept)
+    const rung = lines.filter(l => l.modelRequested === "glm-5.3")[0]
+    expect(rung && rung.rungEffortRequested, "без объявления запрошенного эффорта в улике нет").toBe(undefined)
+  })
+
+  test("#223 зуб 3: попытка 0 не переписывается", async ($, on) => {
+    wired(on, 200_000_000, {}, {
+      [HOME + "/probes.toml"]: effortToml('[{ model = "busy-model", effort = "max" }, { model = "glm-5.3", effort = "high" }]'),
+    })
+    const seen: string[] = []
+    const seenEffort: unknown[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-223-3",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      seenEffort.push(e.effort)
+      if (e.model === "busy-model") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn(spawnSpec(
+      "ag-223-3",
+      "[dispatch-class:exec-0p] attempt 0 keeps host effort",
+      "busy-model",
+    ))
+    expect(spawned.agentId).toBe("ag-223-3")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-223-3", index: 0, model: "busy-model",
+      messageCount: 1, agentId: spawned.agentId, effort: "low",
+    }))
+    expect(res && res.answer).toBe("from-glm-5.3")
+    expect(seen).toEqual(["busy-model", "glm-5.3"])
+    expect(seenEffort[0], "попытка 0 идёт исходным эффортом события, не реестра").toBe("low")
+    expect(seenEffort[1], "на реальном переходе объявленный эффорт доезжает").toBe("high")
+  })
+
+  test("#223 зуб 4: негодное значение — ступень зовётся, эффорт не применён", async ($, on) => {
+    const kept = wired(on, 210_000_000, {}, {
+      [HOME + "/probes.toml"]: effortToml('[{ model = "glm-5.3", effort = "High" }]'),
+    })
+    const seen: string[] = []
+    const seenEffort: unknown[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-223-4",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      seenEffort.push(e.effort)
+      if (e.model === "busy-model") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn(spawnSpec(
+      "ag-223-4",
+      "[dispatch-class:exec-0p] invalid effort value",
+      "busy-model",
+    ))
+    expect(spawned.agentId).toBe("ag-223-4")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-223-4", index: 0, model: "busy-model",
+      messageCount: 1, agentId: spawned.agentId, effort: "low",
+    }))
+    expect(res && res.answer, "ступень с негодным эффортом всё равно зовётся").toBe("from-glm-5.3")
+    expect(seen).toEqual(["busy-model", "glm-5.3"])
+    expect(seenEffort[1], "негодное значение не применено").toBe("low")
+
+    const lines = failoverLines(kept)
+    const rung = lines.filter(l => l.modelRequested === "glm-5.3")[0]
+    expect(rung && rung["effortBad_glm-5.3"],
+      "в улике поле эффорт негоден с именем модели").toBe("High")
+    expect(rung && rung.rungEffortRequested, "негодное не выдаётся за запрошенное").toBe(undefined)
+  })
+
+  test("#223 зуб 5: неразобранный элемент (объект без model, пустая строка) отбрасывается СО СЧЁТЧИКОМ", async ($, on) => {
+    const kept = wired(on, 220_000_000, {}, {
+      [HOME + "/probes.toml"]: effortToml('[{ effort = "high" }, "", "glm-5.3"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-223-5",
+    }))
+    on("turn.step", async function* (_$, e) {
+      seen.push(String(e.model))
+      if (e.model === "busy-model") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    const spawned = await $.agent.spawn(spawnSpec(
+      "ag-223-5",
+      "[dispatch-class:exec-0p] object without model dropped",
+      "busy-model",
+    ))
+    expect(spawned.agentId).toBe("ag-223-5")
+
+    const res = await settleStep($.turn.step({
+      turnId: "turn-223-5", index: 0, model: "busy-model",
+      messageCount: 1, agentId: spawned.agentId,
+    }))
+    expect(res && res.answer, "лестница работает из оставшихся").toBe("from-glm-5.3")
+    expect(seen).toEqual(["busy-model", "glm-5.3"])
+
+    const lines = failoverLines(kept)
+    expect(lines.length, "есть улика перехода").toBeGreaterThan(0)
+    // Счётчик берёт ЛЮБОЙ неразобранный элемент: объект без model И пустую
+    // строку. Считать только объекты значило бы оставить тот же молчаливый
+    // пропуск для прочих опечаток реестра.
+    expect(lines[0].rungsDropped, "в улике счётчик отброшенных").toBe(2)
+  })
+})
