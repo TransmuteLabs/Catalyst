@@ -25,7 +25,7 @@ UNITS="$TESTS_DIR/units.test.ts"
 
 # Пин числа зубов: молча выпавший тест обязан быть виден. Поднимается ВМЕСТЕ с
 # добавлением тестов, в этой же строке -- другого дома у числа нет.
-EXPECTED_TESTS=171
+EXPECTED_TESTS=177
 
 # --- прибор ------------------------------------------------------------------
 
@@ -58,6 +58,47 @@ if [ "$V_CODE" != "$V_MANIFEST" ] || [ "$V_CODE" != "$V_TEST" ]; then
     "$V_CODE" "$V_MANIFEST" "$V_TEST" >&2
   printf 'Без бампа ОБЪЯВЛЕННОЙ version правки мода не доезжают в бой (дверь #179).\n' >&2
   exit 1
+fi
+
+# CONSTRAINT: consultBg не экспортируется, поэтому функциональные зубы не
+# наблюдают его проводку. Исходник читается здесь: node:fs в харнесе запрещён.
+python3 - "$REGISTER" <<'PY'
+import pathlib
+import re
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+try:
+    start = source.index("async function consultBg(")
+    build = source.index("    let ladder = rungsOf(cfg, modelEnv)", start)
+    record = source.index("    rec.ladder = ladder.map", build)
+    loop = source.index("    for (let i = 0; i < ladder.length; i++)", record)
+    wiring = source[build:record]
+    expected = (
+        r"^    let ladder = rungsOf\(cfg, modelEnv\)\n"
+        r"    const cooldown = rungsAfterCooldown\(ladder, await nowMs\(\$\)\)\n"
+        r"    ladder = cooldown\.ladder\n"
+        r"    Object\.assign\(rec, cooldown\.evidence\)\n$"
+    )
+    assert re.fullmatch(expected, wiring), "фильтр или улика не подключены перед rec.ladder"
+    assert build < record < loop, "фильтр не предшествует циклу"
+    body = source[loop:source.index("    rec.dtMs =", loop)]
+    assert "let rungBudgetClipped = false\n      try {" in body, "признак урезания недоступен в catch"
+    assert "rungBudgetClipped = tmo !== rungTmo" in body, "урезание не измерено по бюджету ступени"
+    timeout_branch = (
+        "if (noteRungTimeout(used, es, await nowMs($), undefined, rungBudgetClipped)) {\n"
+        "          rec.rungTimeouts = num(rec.rungTimeouts, 0, 0) + 1\n"
+        '          if (rungBudgetClipped) rec["rungDeadlineClipped_" + used] = true\n'
+        "        }"
+    )
+    assert timeout_branch in body, "метка, счётчик или улика урезания не подключены к дедлайну"
+except (ValueError, AssertionError) as error:
+    print("rung-cooldown-wiring: FAIL: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PY
+WIRING_RC=$?
+if [ "$WIRING_RC" -ne 0 ]; then
+  exit "$WIRING_RC"
 fi
 
 # --- перечень файлов зубов ---------------------------------------------------
@@ -132,4 +173,5 @@ if [ "$PASS_N" -ne "$RAN_N" ]; then
 fi
 
 printf 'mod-units: %s passed (%s файлов, официальный харнес %s)\n' "$PASS_N" "$RAN_F" "$V_CODE"
+printf 'rung-cooldown-wiring: 1 passed\n'
 exit 0

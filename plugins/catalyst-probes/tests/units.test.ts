@@ -14,7 +14,7 @@ import {
   parseVal, parseToml, rungsOf, rungCtx, parseVerdict,
   verdictKey, memoUsable, effortOk, EFFORTS, markEffort,
   readComplete, blocksLine,
-  MOD_VERSION,
+  MOD_VERSION, RUNG_COOLDOWN_MS, noteRungTimeout, rungsAfterCooldown,
   failoverLadder, nextFailoverModel, failoverAttemptModels,
   isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP,
   failoverBindSet, failoverBindGet, failoverBindReset,
@@ -23,6 +23,66 @@ import {
   failoverFoldObserve, failoverWouldSetSticky,
   sessionExecutorHas, sessionExecutorModelAdd, sessionExecutorsReset,
 } from "../hooks/register.ts"
+
+test("rung-cooldown: свежая метка исключает ступень, включая границу окна", () => {
+  expect(RUNG_COOLDOWN_MS).toBe(900000)
+  const ladder = [{ model: "cold", effort: "high" }, { model: "ready", timeout_ms: 42 }]
+  const marks = new Map<string, number>([["cold", 0]])
+  expect(rungsAfterCooldown(ladder, 1, marks).ladder).toEqual([ladder[1]])
+  expect(rungsAfterCooldown(ladder, RUNG_COOLDOWN_MS, marks).ladder).toEqual([ladder[1]])
+  expect(ladder.length).toBe(2)
+})
+
+test("rung-cooldown: просроченная метка возвращает ступень", () => {
+  const ladder = [{ model: "expired" }, { model: "ready" }]
+  const marks = new Map<string, number>([["expired", 10]])
+  expect(rungsAfterCooldown(ladder, 10 + RUNG_COOLDOWN_MS + 1, marks).ladder).toEqual(ladder)
+  expect(rungsAfterCooldown(ladder, 10, new Map()).ladder).toEqual(ladder)
+})
+
+test("rung-cooldown: все метки не вырождают лестницу", () => {
+  const ladder = [{ model: "a", max_tokens: 17 }, { model: "b", effort: "max" }]
+  const marks = new Map<string, number>([["a", 100], ["b", 100]])
+  expect(rungsAfterCooldown(ladder, 101, marks).ladder).toEqual(ladder)
+  expect(rungsAfterCooldown([ladder[0]], 101, marks).ladder).toEqual([ladder[0]])
+  expect(rungsAfterCooldown([], 101, marks).ladder).toEqual([])
+})
+
+test("rung-cooldown: метка только на rung-deadline", () => {
+  const marks = new Map<string, number>()
+  expect(noteRungTimeout("deadline", "Error: rung-deadline deadline 240000ms", 10, marks)).toBe(true)
+  expect(marks.get("deadline")).toBe(10)
+  expect(noteRungTimeout("deadline", "Error: rung-deadline deadline 240000ms", 20, marks)).toBe(true)
+  expect(marks.get("deadline")).toBe(20)
+  for (const errText of ["", "carrier refusal", "BLOCK: retry", "cancelled"]) {
+    expect(noteRungTimeout("other", errText, 30, marks)).toBe(false)
+    expect(marks.has("other")).toBe(false)
+  }
+  expect(noteRungTimeout("deadline", "carrier refusal", 30, marks)).toBe(false)
+  expect(marks.get("deadline")).toBe(20)
+})
+
+test("rung-cooldown: улика называет только фактические пропуски и возраст", () => {
+  const ladder = [{ model: "cold" }, { model: "ready" }]
+  const marks = new Map<string, number>([["cold", 100]])
+  expect(rungsAfterCooldown(ladder, 123, marks).evidence).toEqual({
+    rungCooldownSkipped: ["cold"], rungCooldownAgeMs_cold: 23,
+  })
+  expect(rungsAfterCooldown(ladder, 123, new Map()).evidence).toEqual({})
+  expect(rungsAfterCooldown([ladder[0]], 123, marks).evidence).toEqual({})
+  expect(rungsAfterCooldown(ladder, 100 + RUNG_COOLDOWN_MS + 1, marks).evidence).toEqual({})
+})
+
+test("rung-cooldown: урезанный бюджет считается таймаутом без метки", () => {
+  const marks = new Map<string, number>()
+  const error = "Error: rung-deadline model 10ms"
+  expect(noteRungTimeout("model", error, 10, marks, true)).toBe(true)
+  expect(marks.has("model")).toBe(false)
+  expect(noteRungTimeout("model", error, 20, marks, false)).toBe(true)
+  expect(marks.get("model")).toBe(20)
+  expect(noteRungTimeout("model", error, 30, marks, true)).toBe(true)
+  expect(marks.get("model")).toBe(20)
+})
 
 const RX_JUDGE = "OK|WARN|BLOCK|STOP|DENY"
 const RX_IDLE = "SILENT|NUDGE"
@@ -547,7 +607,7 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.29")
+  expect(MOD_VERSION).toBe("0.1.31")
 })
 
 // --- verdictKey: сессионная и текстовая грань вердиктного кэша -------------------

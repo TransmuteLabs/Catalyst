@@ -20,7 +20,10 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.29"
+export const MOD_VERSION = "0.1.31"
+// CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
+// ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
+export const RUNG_COOLDOWN_MS = 900000
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 const COACHING =
@@ -1018,6 +1021,42 @@ let epoch = 0
 let sweepDone = false
 
 const failoverBinds = new Map<string, any>()
+// CONSTRAINT: недоступность модели относится к процессу, а не к сессии;
+// newSession не сбрасывает метки. Ключи — только модели лестниц консультаций.
+const rungCooldownMarks = new Map<string, number>()
+
+export function noteRungTimeout(model: string, errText: string, atMs: number, marks: Map<string, number> = rungCooldownMarks, budgetClipped: boolean = false): boolean {
+  if (errText.indexOf("rung-deadline") < 0) return false
+  // CONSTRAINT: урезанный общим пределом бюджет доказывает таймаут,
+  // но не недоступность модели; существующая метка тоже не продлевается.
+  if (!budgetClipped) marks.set(model, atMs)
+  return true
+}
+
+export function rungsAfterCooldown<T extends { model: string }>(ladder: T[], atMs: number, marks: ReadonlyMap<string, number> = rungCooldownMarks): { ladder: T[]; evidence: { [k: string]: any } } {
+  const keep: T[] = []
+  const skipped: string[] = []
+  const ages: { [k: string]: number } = {}
+  for (let i = 0; i < ladder.length; i++) {
+    const rung = ladder[i]
+    const stamp = marks.get(rung.model)
+    if (stamp !== undefined && atMs - stamp <= RUNG_COOLDOWN_MS) {
+      skipped.push(rung.model)
+      ages["rungCooldownAgeMs_" + rung.model] = atMs - stamp
+    } else {
+      keep.push(rung)
+    }
+  }
+  // CONSTRAINT: пустой фильтр возвращает полный перечень; фактических
+  // пропусков в этом случае нет, поэтому нет и полей пропуска в улике.
+  if (!keep.length) return { ladder, evidence: {} }
+  const evidence: { [k: string]: any } = {}
+  if (skipped.length) {
+    evidence.rungCooldownSkipped = skipped
+    Object.assign(evidence, ages)
+  }
+  return { ladder: keep, evidence }
+}
 
 export function failoverBindReset(): void {
   failoverBinds.clear()
@@ -1661,7 +1700,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       return (sys ? sys + "\n\n" : "") + user
     }
     const modelEnv = p.id === "judge" ? env.JUDGE_MODEL : ""
-    const ladder = rungsOf(cfg, modelEnv)
+    let ladder = rungsOf(cfg, modelEnv)
+    const cooldown = rungsAfterCooldown(ladder, await nowMs($))
+    ladder = cooldown.ladder
+    Object.assign(rec, cooldown.evidence)
     rec.ladder = ladder.map((r: any) => r.model)
     let verdict: { kind: string; rest: string } | null = null
     let used = ""
@@ -1692,6 +1734,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       markEffort(rec, used, rung)
       const full = buildFull(rungCtxN)
       const rungT0 = await nowMs($)
+      let rungBudgetClipped = false
       try {
         const arg: any = { model: rung.model, prompt: full }
         // CONSTRAINT: эффорт доставляется штатно (образ 2.1.272, замер
@@ -1719,6 +1762,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         const rungTmo = rung.timeout_ms || floorTmo
         const left = hardStop ? hardStop - rungT0 : 0
         const tmo = (hardStop && left > 0 && left < rungTmo) ? left : rungTmo
+        rungBudgetClipped = tmo !== rungTmo
         if (tmo) arg.timeoutMs = tmo
         // CONSTRAINT: detail просят ВСЕГДА. Образ со шагом 31 отдаёт конверт
         // {text, stopReason, blocks, usage}; образ без него поля не знает и
@@ -1782,7 +1826,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         // Смешать их значит потерять различие между «ступень отказала» и
         // «ступень не ответила»: первое -- вердикт о канале, второе -- о
         // приборе, и исход у них РАЗНЫЙ (block_no_verdict против skip).
-        if (es.indexOf("rung-deadline") >= 0) rec.rungTimeouts = num(rec.rungTimeouts, 0, 0) + 1
+        if (noteRungTimeout(used, es, await nowMs($), undefined, rungBudgetClipped)) {
+          rec.rungTimeouts = num(rec.rungTimeouts, 0, 0) + 1
+          if (rungBudgetClipped) rec["rungDeadlineClipped_" + used] = true
+        }
       }
     }
     rec.dtMs = await nowMs($) - t0
