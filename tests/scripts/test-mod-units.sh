@@ -115,6 +115,127 @@ else
   printf 'splice-parity: НЕ ИЗМЕРЕНО (CATALYST_PATCH_KIT не задана; ступень 2 не исполнена)\n'
 fi
 
+# --- ступень 3: поверхность мода по официальному статическому разбору --------
+# Хост вычисляет поверхность register.ts сам: подписки, $.-вызовы, записи и
+# чтения env; пин снимком закрывает молчаливую потерю подписки, новый op или
+# новое чтение окружения. CONSTRAINT: снимок -- артефакт ПРИЁМКИ, живёт ВНЕ
+# plugins/** (внутри каталога мода требовал бы бампа version и уехал бы в
+# доставку) и при отсутствии НЕ пересоздаётся: автосоздание -- тавтология,
+# прибор сверял бы выдачу с самой собой.
+
+MOD_SURFACE="$ROOT/tests/fixtures/mod-surface.txt"
+if [ ! -s "$MOD_SURFACE" ]; then
+  printf 'ПРИБОР НЕДОСТУПЕН: снимку поверхности нечем сверять (%s нет или пуст)\n' "$MOD_SURFACE" >&2
+  exit 2
+fi
+
+VAL_OUT="$(mktemp "${TMPDIR:-/tmp}/mod-surface-out.XXXXXX")"
+# Ручка обязательна по той же причине, что и у `plugin test`: без неё ветка
+# мод-подкоманд у образа не берётся вовсе.
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 "$BIN" plugin validate --json --strict "$PLUGIN_DIR" >"$VAL_OUT" 2>&1 </dev/null
+VAL_RC=$?
+
+if LC_ALL=C grep -q "unknown command 'validate'" "$VAL_OUT"; then
+  printf 'ПРИБОР НЕДОСТУПЕН: %s не регистрирует `plugin validate` (раскатка мод-хуков выключена у этого образа)\n' "$BIN" >&2
+  tail -n 8 "$VAL_OUT" >&2
+  rm -f "$VAL_OUT"
+  exit 2
+fi
+
+python3 - "$VAL_OUT" "$MOD_SURFACE" "$VAL_RC" <<'PY'
+import json
+import pathlib
+import sys
+
+raw_path, snapshot_path, bin_rc = sys.argv[1], sys.argv[2], sys.argv[3]
+raw = pathlib.Path(raw_path).read_text(errors="replace")
+snapshot = pathlib.Path(snapshot_path).read_text().split("\n")
+if snapshot and snapshot[-1] == "":
+    snapshot = snapshot[:-1]
+
+def refuse(code, message):
+    print(message, file=sys.stderr)
+    for line in raw.splitlines()[-12:]:
+        print(line, file=sys.stderr)
+    sys.exit(code)
+
+try:
+    doc = json.loads(raw)
+except ValueError:
+    if bin_rc != "0":
+        refuse(2, "ПРИБОР НЕДОСТУПЕН: бинарник не ответил (код %s), JSON не получен:" % bin_rc)
+    refuse(3, "НЕ ИЗМЕРЕНО: вывод plugin validate не разобран как JSON (код %s):" % bin_rc)
+
+if not isinstance(doc, dict) or not isinstance(doc.get("contents"), list):
+    refuse(3, "НЕ ИЗМЕРЕНО: JSON без объекта/contents[]")
+
+errors = []
+manifest = doc.get("manifest")
+if isinstance(manifest, dict) and manifest.get("errors"):
+    errors.append("manifest.errors: " + json.dumps(manifest["errors"], ensure_ascii=False))
+notes = []
+for element in doc["contents"]:
+    if not isinstance(element, dict):
+        continue
+    if element.get("errors"):
+        errors.append(
+            "contents[%s].errors: %s" % (
+                element.get("type", "?"),
+                json.dumps(element["errors"], ensure_ascii=False),
+            )
+        )
+    if element.get("type") == "hooks" and isinstance(element.get("notes"), list):
+        notes.extend(str(note) for note in element["notes"])
+
+if doc.get("success") is not True or errors:
+    print("ПОВЕРХНОСТЬ_МОДА_НЕПРИГОДНА: success=%s" % json.dumps(doc.get("success")), file=sys.stderr)
+    for line in errors:
+        print(line, file=sys.stderr)
+    for line in raw.splitlines()[-20:]:
+        print(line, file=sys.stderr)
+    sys.exit(1)
+
+if not notes:
+    refuse(3, "НЕ ИЗМЕРЕНО: у элемента contents[] с type == hooks заметок нет (ПУСТО != НОЛЬ)")
+
+if notes != snapshot:
+    print("ПОВЕРХНОСТЬ_МОДА_РАЗОШЛАСЬ: живая выдача против снимка %s" % snapshot_path, file=sys.stderr)
+    for i in range(max(len(notes), len(snapshot))):
+        was = snapshot[i] if i < len(snapshot) else "<строки нет>"
+        now = notes[i] if i < len(notes) else "<строки нет>"
+        if was != now:
+            print("  строка %d:" % (i + 1), file=sys.stderr)
+            print("    было:  %s" % was, file=sys.stderr)
+            print("    стало: %s" % now, file=sys.stderr)
+    sys.exit(1)
+
+# Разложение счётчиков идёт ПОСЛЕ сверки со снимком, поэтому недостающий
+# префикс означает не расхождение мода, а смену формата заметок у хоста:
+# такой исход неизмерим (3), а не красен (1) -- иначе отказ прибора читался
+# бы как вина мода.
+def counted(prefix):
+    for line in notes:
+        if line.startswith(prefix):
+            items = [item for item in line[len(prefix):].split(", ") if item]
+            return len(items)
+    return None
+
+hooks_n = counted("./register.ts hooks: ")
+calls_n = counted("./register.ts calls: ")
+env_n = counted("./register.ts env reads: ")
+if hooks_n is None or calls_n is None or env_n is None:
+    refuse(3, "НЕ ИЗМЕРЕНО: формат заметок хоста сменился -- префикса нет "
+              "(подписки=%s вызовы=%s чтения=%s)" % (hooks_n, calls_n, env_n))
+
+print("mod-surface: %d проекции сверены (подписок %d, вызовов %d, чтений env %d)"
+      % (len(notes), hooks_n, calls_n, env_n))
+PY
+MOD_SURFACE_RC=$?
+rm -f "$VAL_OUT"
+if [ "$MOD_SURFACE_RC" -ne 0 ]; then
+  exit "$MOD_SURFACE_RC"
+fi
+
 # --- перечень файлов зубов ---------------------------------------------------
 # Знаменатель берётся из ФАЙЛОВОЙ СИСТЕМЫ, а не из памяти: файл, который харнес
 # не подхватил, иначе неотличим от отсутствующего.
