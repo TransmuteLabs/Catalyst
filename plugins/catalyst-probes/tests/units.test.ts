@@ -688,7 +688,7 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.34")
+  expect(MOD_VERSION).toBe("0.1.35")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1164,6 +1164,55 @@ test("#227-A зуб 11: шаг, потерянный на разрезе окн�
   expect(rec.n).toBe(2)
   expect(rec.foldSplitLost, "потерянный на разрезе шаг назван").toBe(1)
   expect(Object.prototype.hasOwnProperty.call(rec, "foldSplitLost")).toBe(true)
+  failoverFoldReset()
+})
+
+test("#251 зуб: агрегат несёт разбивку по agentId, сумма карты равна n", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  const $: any = {
+    fs: { write: async (path: string, text: string) => { writes.push({ path, text }) } },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  // два агента с ОДНОЙ липкостью делят окно -- старая свёртка теряла их id
+  await failoverFoldObserve($, world, 3000, "glm-5.3", "sid-fold", "agent-A")
+  await failoverFoldObserve($, world, 3001, "glm-5.3", "sid-fold", "agent-A")
+  await failoverFoldObserve($, world, 3002, "glm-5.3", "sid-fold", "agent-B")
+  await failoverFoldFlush($, world)
+  expect(writes).toHaveLength(1)
+  const rec = JSON.parse(writes[0].text)
+  expect(rec.n).toBe(3)
+  expect(rec.agents, "агрегат несёт атрибуцию по agentId").toEqual({ "agent-A": 2, "agent-B": 1 })
+  const sum = Object.values(rec.agents as Record<string, number>).reduce((a: number, b: number) => a + b, 0)
+  expect(sum, "сумма карты агентов равна n -- ни одна попытка не потеряна").toBe(rec.n)
+  failoverFoldReset()
+})
+
+test("#251 зуб: отказ записи возвращает карту агентов; следующий проход несёт её целиком", async () => {
+  failoverFoldReset()
+  const writes: { path: string; text: string }[] = []
+  let fail = true
+  const $: any = {
+    fs: {
+      write: async (path: string, text: string) => {
+        if (fail) throw new Error("ENOSPC-agents")
+        writes.push({ path, text })
+      },
+    },
+    clock: { now: async () => 1_000_000 },
+  }
+  const world = { globalHome: "/probes-home" }
+  await failoverFoldObserve($, world, 6000, "glm-5.3", "sid-e", "agent-A")
+  await failoverFoldObserve($, world, 6001, "glm-5.3", "sid-e", "agent-B")
+  try { await failoverFoldFlush($, world) } catch (x) {}
+  expect(failoverFoldCount(), "после отказа счёт не обнулён").toBe(2)
+  fail = false
+  await failoverFoldFlush($, world)
+  expect(writes).toHaveLength(1)
+  const rec = JSON.parse(writes[0].text)
+  expect(rec.n).toBe(2)
+  expect(rec.agents, "атрибуция пережила возврат снимка").toEqual({ "agent-A": 1, "agent-B": 1 })
   failoverFoldReset()
 })
 

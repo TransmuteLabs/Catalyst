@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.34"
+export const MOD_VERSION = "0.1.35"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -1187,6 +1187,11 @@ let boringN = 0
 let boringT0 = 0
 let boringT1 = 0
 let boringSticky = ""
+// CONSTRAINT (#251): свёртка держит объём (одна agg-запись на окно), но обязана
+// вернуть атрибуцию по агенту -- иначе журнал теряет agentId скучных попыток.
+// Карта agentId->счёт снимается и возвращается ТЕМ ЖЕ снимком, что boringN
+// (влитие при отказе записи -- сложением, не заменой); сумма карты == n.
+let boringAgents: Map<string, number> = new Map()
 let foldBusy = false
 let foldWait: Array<() => void> = []
 let foldSeq = 0
@@ -1200,11 +1205,13 @@ export function failoverFoldCount(): number {
   return boringN
 }
 
-export function failoverFoldNote(tMs: number, sticky?: string): void {
+export function failoverFoldNote(tMs: number, sticky?: string, aid?: string): void {
   boringN++
   if (!boringT0) boringT0 = tMs
   boringT1 = tMs
   if (sticky && !boringSticky) boringSticky = String(sticky)
+  const a = String(aid || "")
+  if (a) boringAgents.set(a, (boringAgents.get(a) || 0) + 1)
 }
 
 export function failoverFoldReset(): void {
@@ -1212,6 +1219,7 @@ export function failoverFoldReset(): void {
   boringT0 = 0
   boringT1 = 0
   boringSticky = ""
+  boringAgents = new Map()
   foldBusy = false
   foldWait = []
   foldWorld = null
@@ -1256,14 +1264,15 @@ function armFailoverFoldTimer($: any, world: any): void {
   }
 }
 
-function restoreFoldSnapshot(n: number, t0: number, t1: number, sticky: string): void {
+function restoreFoldSnapshot(n: number, t0: number, t1: number, sticky: string, agents: Map<string, number>): void {
   boringN += n
   if (!boringT0 || (t0 && t0 < boringT0)) boringT0 = t0
   if (t1 > boringT1) boringT1 = t1
   if (sticky && !boringSticky) boringSticky = sticky
+  agents.forEach((c, a) => { boringAgents.set(a, (boringAgents.get(a) || 0) + c) })
 }
 
-export async function failoverFoldObserve($: any, world: any, tMs: number, sticky: string, sid: string): Promise<void> {
+export async function failoverFoldObserve($: any, world: any, tMs: number, sticky: string, sid: string, aid?: string): Promise<void> {
   const s = String(sticky || "")
   if (boringN > 0 && boringSticky && s && boringSticky !== s) {
     try {
@@ -1276,7 +1285,7 @@ export async function failoverFoldObserve($: any, world: any, tMs: number, stick
       throw x
     }
   }
-  failoverFoldNote(tMs, s)
+  failoverFoldNote(tMs, s, aid)
   foldSid = sid
   if (s) boringSticky = s
 }
@@ -1290,23 +1299,25 @@ export async function failoverFoldFlush($: any, world: any): Promise<void> {
     // CONSTRAINT: доступ к счётчикам сериализует foldBusy (колбэки every
     // перекрываются, замер #175). Снимок забирается под сторожем; отказ
     // записи возвращает снятое (n прибавить, окно t0/t1 расширить, sticky
-    // вернуть если текущее пусто) -- иначе хвост исчезает, а catch таймера
-    // единственной реакцией быть не может.
+    // вернуть если текущее пусто, карту агентов #251 влить сложением) -- иначе
+    // хвост исчезает, а catch таймера единственной реакцией быть не может.
     const n = boringN
     const t0 = boringT0
     const t1 = boringT1
     const sid = foldSid
     const sticky = boringSticky
+    const agents = boringAgents
     const prevErr = foldWriteErr
     boringN = 0
     boringT0 = 0
     boringT1 = 0
     boringSticky = ""
+    boringAgents = new Map()
     if (n <= 0) return
     const w = world || foldWorld
     const jpath = w && w.globalHome ? w.globalHome + "/failover/journal.jsonl" : ""
     if (!jpath) {
-      restoreFoldSnapshot(n, t0, t1, sticky)
+      restoreFoldSnapshot(n, t0, t1, sticky, agents)
       return
     }
     foldSeq++
@@ -1326,12 +1337,13 @@ export async function failoverFoldFlush($: any, world: any): Promise<void> {
     }
     if (prevErr) rec.foldWriteErr = prevErr
     if (foldSplitLost) rec.foldSplitLost = foldSplitLost
+    if (agents.size) rec.agents = Object.fromEntries(agents)
     try {
       await appendJournal($, jpath, rec)
       foldWriteErr = ""
       foldSplitLost = 0
     } catch (x) {
-      restoreFoldSnapshot(n, t0, t1, sticky)
+      restoreFoldSnapshot(n, t0, t1, sticky, agents)
       foldWriteErr = String((x && (x as any).message) || x).slice(0, 240)
       throw x
     }
@@ -2615,7 +2627,7 @@ export function register(on: any) {
           if (bind.effortBad && bind.effortBad[model]) rec["effortBad_" + model] = bind.effortBad[model]
           armFailoverFoldTimer($, world)
           if (failoverAttemptIsBoring(rec, stickyChanged)) {
-            await failoverFoldObserve($, world, t1, String(bind.sticky || model || ""), sid)
+            await failoverFoldObserve($, world, t1, String(bind.sticky || model || ""), sid, String(aid))
           } else {
             await failoverFoldFlush($, world)
             await appendJournal($, jpath, rec)
