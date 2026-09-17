@@ -688,7 +688,7 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.33")
+  expect(MOD_VERSION).toBe("0.1.34")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1250,10 +1250,13 @@ test("ladder-cmd: имя и описание подачи укладываютс
 test("ladder-cmd: ПРОВОДКА -- регистрация из session.start, подписка на catalyst-ladder", async () => {
   // on(...) вызывается с матчером (command.run) и без него (session.start) --
   // собиратель нормализует арность сам.
+  // Регистрации несут цепочку .catch на месте вызова -- мок on обязан
+  // отдавать дескриптор с .catch, иначе сама проводка падает на undefined.
   const subs: Array<{ ev: string; matcher: any; fn: any }> = []
   register((...a: any[]) => {
     if (a.length >= 3) subs.push({ ev: a[0], matcher: a[1], fn: a[2] })
     else subs.push({ ev: a[0], matcher: null, fn: a[1] })
+    return { catch: () => {} }
   })
   const started = subs.filter(s => s.ev === "session.start")
   expect(started.length).toBe(1)
@@ -1279,6 +1282,7 @@ test("ladder-cmd: отказ двери регистрации не ломает
   register((...a: any[]) => {
     if (a.length >= 3) subs.push({ ev: a[0], matcher: a[1], fn: a[2] })
     else subs.push({ ev: a[0], matcher: null, fn: a[1] })
+    return { catch: () => {} }
   })
   const started = subs.filter(s => s.ev === "session.start")
   expect(started.length).toBe(1)
@@ -1291,4 +1295,146 @@ test("ladder-cmd: отказ двери регистрации не ломает
   const out = await started[0].fn($, { cwd: "/probe" }, next)
   expect(out).toBe("NEXT-OK")
   expect(nextArg).toEqual({ cwd: "/probe" })
+})
+
+// --- Обработчик отказа регистрации (.catch): решающие ветви -------------------
+
+// CONSTRAINT: движковый маршрут для этих ветвей в ките НЕИЗМЕРИМ и это
+// ИЗМЕРЕНО, а не обойдено: (1) пер-тестовый таймаут кита 5000 мс меньше
+// бюджета хоста 10000 мс -- хук, висящий до отказа, убивает тест раньше
+// отказа ("Error: timed out after 5000 ms", красный прогон 2026-09-17);
+// (2) до первого next мод не бросается ничем -- каждый op-вызов на этом
+// пути сидит под глухим try (register.ts: worldFor/loadWorld/nowMs/sidFor/
+// agent.list). Хост зовёт обработчик в форме хука ($, e, next): e --
+// событие, next несёт caught-поля поднятыми прямо на себя --
+// next.error = {kind, budget}, next.called (живой зонд 2026-09-17 и байты
+// 2.1.273/274: Object.assign(s, e.caught)); $ внутри обработчика читаться
+// не может (статическая проверка), поэтому заглушка Dollar не читается и
+// самим обработчиком. Зуб зовёт обработчики, снятые с РЕАЛЬНЫХ регистраций.
+// Загрузку мода с .catch на всех девяти регистрациях движком держит каждый
+// движковый зуб набора: отвергни валидатор форму -- упал бы весь файл
+// behavior.test.ts.
+const Dollar = { probe: "не читается обработчиком отказа" }
+
+function catchOfRegister(): Record<string, any> {
+  const caught: Record<string, any> = {}
+  register(((ev: string, ..._rest: any[]) => ({
+    catch: (h: any) => { caught[ev] = h },
+  })) as any)
+  return caught
+}
+
+test("catch: звавшийся next -- прозрачный проход, отмена не нужна", async () => {
+  const caught = catchOfRegister()
+  for (const ev of ["tool.call", "agent.spawn"]) {
+    expect(typeof caught[ev], `${ev} несёт обработчик отказа на месте регистрации`).toBe("function")
+  }
+  for (const ev of ["tool.call", "agent.spawn"]) {
+    let passed: any = "НЕ ЗВАЛСЯ"
+    const next: any = (x: any) => { passed = x; return "PASSED-" + ev }
+    next.called = true
+    next.error = Object.freeze({ kind: "throw", budget: 1000 })
+    const out = await caught[ev](Dollar, { tool: "Agent", prompt: "x" }, next)
+    expect(out, `${ev}: прозрачный проход без нового deny`).toBe("PASSED-" + ev)
+    expect(passed, `${ev}: next получил исходное событие`).toEqual({ tool: "Agent", prompt: "x" })
+  }
+})
+
+test("catch: не звавшийся next -- deny с видом отказа", async () => {
+  const caught = catchOfRegister()
+  expect(typeof caught["agent.spawn"], "agent.spawn несёт обработчик отказа").toBe("function")
+  const next: any = () => "НИКОГДА: ОТМЕНА ДО ПРОХОДА"
+  next.called = false
+  next.error = Object.freeze({ kind: "timeout", budget: 1000 })
+  const out = await caught["agent.spawn"](Dollar, { subagentType: "glm-executor" }, next)
+  expect(out).toEqual({
+    deny:
+      "Subagent dispatch cancelled: the catalyst-probes agent.spawn hook timed out " +
+      "without answering [timeout]. Fail-closed: the dispatch never runs " +
+      "unreviewed. This is NOT the routing-table.toml gate. Tell the human and " +
+      "do the work without a subagent, or retry later.",
+  })
+  // CONSTRAINT: next.error.budget -- грейс обработчика отказа (Be=1000), не
+  // бюджет упавшего хука (1e4); в текст deny число не входит.
+  const nextThrow: any = () => "НИКОГДА: ОТМЕНА ДО ПРОХОДА"
+  nextThrow.called = false
+  nextThrow.error = Object.freeze({ kind: "throw", budget: 1000 })
+  const outThrow = await caught["agent.spawn"](Dollar, { subagentType: "glm-executor" }, nextThrow)
+  expect(outThrow).toEqual({
+    deny:
+      "Subagent dispatch cancelled: the catalyst-probes agent.spawn hook threw " +
+      "[throw]. Fail-closed: the dispatch never runs unreviewed. This is NOT " +
+      "the routing-table.toml gate. Tell the human and do the work without a " +
+      "subagent, or retry later.",
+  })
+  // Тот же вид отказа у второй решающей регистрации -- с названием её события.
+  const out2 = await caught["tool.call"](Dollar, { tool: "Agent", prompt: "x" }, next)
+  expect(String(out2.deny)).toContain("the catalyst-probes tool.call hook")
+  expect(String(out2.deny)).toContain("[timeout]")
+  expect(String(out2.deny)).toContain("timed out without answering")
+})
+
+// CONSTRAINT: turn.step стримит, и его обработчик отказа обязан прогонять
+// поток next так же, как основной хук (driveNext по Symbol.asyncIterator,
+// register.ts): голый `return next(e)` отдаёт ОБЪЕКТ ГЕНЕРАТОРА вместо
+// потока -- шаги не эмитятся, и второе место расходится молча (класс
+// предупреждения у driveNext).
+async function drainStream(g: any): Promise<{ chunks: any[]; value: any }> {
+  const out = { chunks: [] as any[], value: undefined as any }
+  if (g == null || typeof g.next !== "function") { out.value = g; return out }
+  for (;;) {
+    const n: any = await g.next()
+    if (n.done) { out.value = n.value; return out }
+    out.chunks.push(n.value)
+  }
+}
+
+test("catch: стримовая регистрация прогоняет поток next -- шаги наружу, не объект генератора", async () => {
+  const caught = catchOfRegister()
+  expect(typeof caught["turn.step"], "turn.step несёт обработчик отказа").toBe("function")
+  const first = { kind: "text", index: 0, text: "step-one" }
+  const second = { kind: "text", index: 1, text: "step-two" }
+  const next: any = () => (async function* () {
+    yield first
+    yield second
+    return "STREAM-RESULT"
+  })()
+  next.called = true
+  next.error = Object.freeze({ kind: "throw", budget: 1000 })
+  const out = await drainStream(caught["turn.step"](Dollar, { turnId: "t1", index: 0, model: "m1" }, next))
+  expect(out.chunks, "оба шага потока эмитились наружу").toEqual([first, second])
+  expect(out.value, "возвращено значение потока, а не объект генератора").toBe("STREAM-RESULT")
+})
+
+// CONSTRAINT: семь наблюдательских регистраций не дёргаются решающими
+// зубами; снимок поверхности поле catch не отражает. Равенство множеств
+// (подписка vs .catch получил обработчик) краснеет и на снятии catch с
+// существующей регистрации, и на новой подписке без обработчика. Род:
+// turn.step -- async function* (валидатор хоста), остальные восемь --
+// обычная функция; зуб, не различающий род, пропустит подмену стрима.
+test("catch: каждое подписанное событие несёт обработчик отказа, род совпадает с формой события", () => {
+  const subscribed = new Set<string>()
+  const caught = new Set<string>()
+  const handlers: Array<{ ev: string; h: any }> = []
+  register(((ev: string, ..._rest: any[]) => {
+    subscribed.add(ev)
+    return {
+      catch: (h: any) => {
+        caught.add(ev)
+        handlers.push({ ev, h })
+      },
+    }
+  }) as any)
+  expect(subscribed.size, "подписки непусты -- иначе равенство пустых множеств вакуумно").toBeGreaterThan(0)
+  expect([...caught].sort(), "события с обработчиком отказа = события подписки").toEqual([...subscribed].sort())
+  const step = handlers.filter(x => x.ev === "turn.step")
+  expect(step.length, "turn.step -- одна стримовая регистрация").toBe(1)
+  expect(step[0].h.constructor.name, "turn.step -- async-генератор").toBe("AsyncGeneratorFunction")
+  const others = handlers.filter(x => x.ev !== "turn.step")
+  expect(others.length, "остальные восемь регистраций -- не стрим").toBe(8)
+  for (const x of others) {
+    expect(typeof x.h, `${x.ev} несёт функцию`).toBe("function")
+    expect(x.h.constructor.name, `${x.ev} не async-генератор`).not.toBe("AsyncGeneratorFunction")
+    expect(x.h.constructor.name, `${x.ev} не sync-генератор`).not.toBe("GeneratorFunction")
+  }
 })

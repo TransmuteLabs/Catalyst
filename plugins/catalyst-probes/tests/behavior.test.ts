@@ -1091,6 +1091,7 @@ describe("failover: agent.spawn + turn.step", () => {
     const steps: Record<string, any> = {}
     register((ev: string, ...rest: any[]) => {
       steps[ev] = rest[rest.length - 1]
+      return { catch: () => {} }
     })
     const ladder = ["glm-5.3", "grok-4.6"]
 
@@ -1228,6 +1229,7 @@ describe("failover: agent.spawn + turn.step", () => {
     const steps: Record<string, any> = {}
     register((ev: string, ...rest: any[]) => {
       steps[ev] = rest[rest.length - 1]
+      return { catch: () => {} }
     })
     const ladder = ["glm-5.3", "grok-4.6"]
 
@@ -1265,6 +1267,7 @@ describe("failover: agent.spawn + turn.step", () => {
     const steps: Record<string, any> = {}
     register((ev: string, ...rest: any[]) => {
       steps[ev] = rest[rest.length - 1]
+      return { catch: () => {} }
     })
     const ladder = ["glm-5.3", "grok-4.6"]
 

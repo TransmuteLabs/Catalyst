@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.33"
+export const MOD_VERSION = "0.1.34"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -2122,6 +2122,50 @@ async function* driveNext(n: any, emitted?: { n: number }): AsyncGenerator<any, 
   return n
 }
 
+// CONSTRAINT: обработчик отказа хост зовёт в форме хука ($, e, next), но $
+// в него недоступен для чтения -- только $.noun.event(...) (статическая
+// проверка), и DECISIVE-обработчик его не касается вовсе -- собственный
+// грейс 1000 мс не ждёт ничего. caught-поля подняты прямо на next:
+// next.error = {kind: "timeout"|"throw", budget}, next.called (замер живым
+// зондом и по байтам 2.1.273/274). Ответ обработчика становится результатом
+// хука и строкой "hook failed closed ... (its .catch answered)" журнала
+// хоста; молчание или отсутствие обработчика -- ветка "skipped", работа
+// уходит непроверенной. Форма жёсткая: .catch(handler) цепочкой ровно на
+// месте регистрации -- сохранить дескриптор и вызвать позже нельзя.
+// CONSTRAINT: next.error.budget -- грейс обработчика отказа (Be=1000), не
+// бюджет упавшего хука (1e4) и в текст deny не входит: приписывать хуку
+// 1000 мс было бы ложью. Вид -- из next.error.kind.
+function decisiveFailClosed($: any, event: string, e: any, next: any): any {
+  if (next && next.called) return next(e)
+  const err: any = next && next.error
+  const timedOut = !!(err && err.kind === "timeout")
+  const why = timedOut ? "timed out without answering" : "threw"
+  return {
+    deny:
+      "Subagent dispatch cancelled: the catalyst-probes " + event + " hook " + why +
+      " [" + (timedOut ? "timeout" : "throw") + "]. Fail-closed: the dispatch " +
+      "never runs unreviewed. This is NOT the routing-table.toml gate. Tell the " +
+      "human and do the work without a subagent, or retry later.",
+  }
+}
+
+// Наблюдательская регистрация не отменяет ничего: её отказ обязан быть
+// видимым, и ответ next(e) даёт именно это -- хост пишет свою строку
+// "hook failed closed ... (its .catch answered)" вместо молчаливого "skipped".
+function observerFailThrough($: any, e: any, next: any): any {
+  return next(e)
+}
+
+// CONSTRAINT: для стриминговой регистрации обработчик отказа обязан быть
+// генератором (валидатор: событие streams -- "it takes async function*") и
+// прогонять поток next ТОЙ ЖЕ дорогой, что основной хук -- driveNext по
+// Symbol.asyncIterator: голый `return next(e)` отдал бы ОБЪЕКТ ГЕНЕРАТОРА
+// вместо потока, шаги не эмитились бы, и это второе место разошлось бы
+// молча.
+async function* observerFailThroughStream($: any, e: any, next: any): AsyncGenerator<any, any, any> {
+  return yield* driveNext(next(e))
+}
+
 export function register(on: any) {
   on("session.start", async ($: any, e: any, next: any) => {
     try { if (e && e.cwd) await $.store.set(CWD_KEY, String(e.cwd)) } catch (x) {}
@@ -2140,6 +2184,7 @@ export function register(on: any) {
     } catch (x) {}
     return next(e)
   })
+    .catch(observerFailThrough)
 
   on("command.run", { command: ["clear", "resume"] }, async ($: any, e: any, next: any) => {
     const result = await next(e)
@@ -2149,6 +2194,7 @@ export function register(on: any) {
     try { newSession() } catch (x) {}
     return result
   })
+    .catch(observerFailThrough)
 
   // CONSTRAINT: подписка -- отдельным вызовом ТОЛЬКО на свою команду. Ответ --
   // ровно {text}: $.command.run из command.run-хука хост запрещает (волна 1
@@ -2158,6 +2204,7 @@ export function register(on: any) {
   on("command.run", { command: [LADDER_COMMAND] }, async ($: any, e: any, next: any) => {
     return { text: ladderCommandText(await nowMs($), String((e && e.args) || "")) }
   })
+    .catch(observerFailThrough)
 
   on("prompt.section", async ($: any, e: any, next: any) => {
     const name = String((e && e.name) || "")
@@ -2168,6 +2215,7 @@ export function register(on: any) {
     if (!r.applied.length) return next(e)
     return next(Object.assign({}, e, { text: r.text }))
   })
+    .catch(observerFailThrough)
 
   // Field names measured live on 2.1.267: tool.describe carries
   // `tool,description,provider`; command.describe carries
@@ -2182,6 +2230,7 @@ export function register(on: any) {
     if (!r.applied.length) return next(e)
     return next(Object.assign({}, e, { description: r.text }))
   })
+    .catch(observerFailThrough)
 
   on("command.describe", async ($: any, e: any, next: any) => {
     const raw = String((e && e.command) || "")
@@ -2199,6 +2248,7 @@ export function register(on: any) {
     if (!r.applied.length) return next(e)
     return next(Object.assign({}, e, { description: r.text }))
   })
+    .catch(observerFailThrough)
 
   on("tool.call", async ($: any, e: any, next: any) => {
     if ("agentId" in e) return next(e)
@@ -2392,6 +2442,7 @@ export function register(on: any) {
     if (hardDeny) return { deny: hardDeny }
     return next(e)
   })
+    .catch(($: any, e: any, next: any) => decisiveFailClosed($, "tool.call", e, next))
 
   on("agent.spawn", async ($: any, e: any, next: any) => {
     const subagentType = String((e && e.subagentType) || "")
@@ -2415,6 +2466,7 @@ export function register(on: any) {
     })
     return result
   })
+    .catch(($: any, e: any, next: any) => decisiveFailClosed($, "agent.spawn", e, next))
 
   on("turn.step", async function* ($: any, e: any, next: any) {
     const aid = e && e.agentId
@@ -2601,4 +2653,5 @@ export function register(on: any) {
     if (sawThrow) throw lastThrow
     return lastRes
   })
+    .catch(observerFailThroughStream)
 }
