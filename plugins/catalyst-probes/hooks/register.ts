@@ -20,17 +20,23 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.32"
+export const MOD_VERSION = "0.1.33"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
 export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
-const COACHING =
+export const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
   "If one is cancelled, the tool result states the reason: treat that reason as a correction to apply. " +
-  "Reissue the dispatch only with the change it names, and never repeat the identical call — an unchanged retry cannot succeed. " +
+  "Reissue the dispatch only with the change it names, and never repeat the identical call - an unchanged retry cannot succeed. " +
   "This review is separate from the permission system and from any routing gate, so do not attribute a cancellation to either."
+// CONSTRAINT: пин обязан совпадать с sha256 текста RULE шага 26 сплайса
+// (Catalyst-CC-Patch/tweakcc-patch.js) и с sha256(COACHING) выше: побайтовый
+// паритет двух домов охраняют юнит units.test.ts и ступень 2
+// tests/scripts/check-splice-parity.sh (путь к киту -- CATALYST_PATCH_KIT).
+// Намеренная смена формулировки правит ОБА дома и ЭТОТ пин вместе.
+export const COACHING_SPLICE_SHA256 = "c1b580c5baea717e6236200a8b96d5f78e80750484ec6d0dde87a3d6b5d08bb5"
 const FORM_REQ = [
   "brief_path","brief_ref","brief_head","brief_tail","report_path","fence",
   "arm_line","arm_ellipsis","arm_cmd","arm_remote","arm_log","witness_remote",
