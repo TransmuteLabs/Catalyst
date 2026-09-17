@@ -22,6 +22,9 @@ import {
   failoverFoldCount, failoverFoldNote, failoverFoldFlush, failoverFoldReset,
   failoverFoldObserve, failoverWouldSetSticky,
   sessionExecutorHas, sessionExecutorModelAdd, sessionExecutorsReset,
+  cooldownSnapshot, ladderCommandText, clipLadderArg,
+  LADDER_COMMAND, LADDER_COMMAND_DESCRIPTION, LADDER_COMMAND_ARG_HINT,
+  LADDER_COMMAND_ARG_MAX, register,
 } from "../hooks/register.ts"
 
 test("rung-cooldown: свежая метка исключает ступень, включая границу окна", () => {
@@ -607,7 +610,7 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.31")
+  expect(MOD_VERSION).toBe("0.1.32")
 })
 
 // --- verdictKey: сессионная и текстовая грань вердиктного кэша -------------------
@@ -1073,4 +1076,116 @@ test("failoverWouldSetSticky: бросок, отказ носителя, сов�
   expect(failoverWouldSetSticky(false, ok, true, "glm-5.3")).toBe(false)
   expect(failoverWouldSetSticky(false, ok, true, "grok-4.6")).toBe(true)
   sessionExecutorsReset()
+})
+
+// --- #178w3: слэш-команда catalyst-ladder ---------------------------------------
+// CONSTRAINT: хостовая половина двери $.command.register в харнесе ЗАМОКАНА
+// (волна 1 #178: «no implementation for command.register» на всех валидных
+// спеках), поэтому зубы пинят НАШУ сторону -- подачу, обрезку и проводку, --
+// а не ответ хоста.
+
+test("ladder-cmd: snapshot возвращает остывающие с убывающим остатком; истёкшая не возвращается", () => {
+  const marks = new Map<string, number>([["glm-5.3", 1000], ["grok-4.6", 2000]])
+  const a = cooldownSnapshot(61000, marks)
+  expect(a).toStrictEqual([
+    { model: "glm-5.3", leftMs: RUNG_COOLDOWN_MS - 60000 },
+    { model: "grok-4.6", leftMs: RUNG_COOLDOWN_MS - 59000 },
+  ])
+  const b = cooldownSnapshot(62000, marks)
+  expect(b[0].leftMs).toBeLessThan(a[0].leftMs)
+  // граница окна ровно: ещё остывает (тот же предикат, что у фильтра лестницы)
+  expect(cooldownSnapshot(1000 + RUNG_COOLDOWN_MS, new Map([["edge", 1000]])))
+    .toStrictEqual([{ model: "edge", leftMs: 0 }])
+  expect(cooldownSnapshot(1001 + RUNG_COOLDOWN_MS, new Map([["old", 1000]])))
+    .toStrictEqual([])
+})
+
+test("ladder-cmd: ПУСТО не НОЛЬ -- без остывающих текст говорит об этом явно", () => {
+  const empty = new Map<string, number>()
+  expect(cooldownSnapshot(12345, empty)).toStrictEqual([])
+  const text0 = ladderCommandText(12345, "", empty)
+  expect(text0).toContain("остывающих ступеней нет")
+  // положительный контроль: тот же вызов с непустой картой несёт модель
+  const marks = new Map<string, number>([["glm-5.3", 100]])
+  const text1 = ladderCommandText(12345, "", marks)
+  expect(text1).toContain("glm-5.3")
+  expect(text1.indexOf("остывающих ступеней нет")).toBe(-1)
+})
+
+test("ladder-cmd: текст несёт версию мода и окно остывания", () => {
+  const marks = new Map<string, number>([["glm-5.3", 0]])
+  const text = ladderCommandText(1, "", marks)
+  expect(text).toContain(MOD_VERSION)
+  expect(text).toContain((RUNG_COOLDOWN_MS / 60000) + " мин")
+})
+
+test("ladder-cmd: фильтр-подстрока оставляет совпавшие; пусто после фильтра -- явная строка", () => {
+  const marks = new Map<string, number>([["glm-5.3", 0], ["grok-4.6", 0]])
+  const text = ladderCommandText(1, "glm", marks)
+  expect(text).toContain("glm-5.3")
+  expect(text.indexOf("grok-4.6")).toBe(-1)
+  expect(ladderCommandText(1, "qwen", marks)).toContain("под фильтр не попала ни одна ступень")
+})
+
+test("ladder-cmd: аргумент длиннее 32000 обрезается НАШЕЙ стороной до границы", () => {
+  expect(LADDER_COMMAND_ARG_MAX).toBe(32000)
+  expect(clipLadderArg("x".repeat(32001)).length).toBe(32000)
+  expect(clipLadderArg("x".repeat(32000)).length).toBe(32000)
+  expect(clipLadderArg("glm")).toBe("glm")
+  expect(clipLadderArg("")).toBe("")
+})
+
+test("ladder-cmd: имя и описание подачи укладываются в измеренные пределы двери", () => {
+  expect(LADDER_COMMAND).toBe("catalyst-ladder")
+  expect(LADDER_COMMAND.length).toBeLessThanOrEqual(64)
+  expect(/^[A-Za-z0-9_-]+$/.test(LADDER_COMMAND)).toBe(true)
+  expect(LADDER_COMMAND_DESCRIPTION.length).toBeGreaterThan(0)
+  expect(LADDER_COMMAND_DESCRIPTION.length).toBeLessThanOrEqual(4096)
+  expect(LADDER_COMMAND_ARG_HINT).toBe("[модель]")
+})
+
+test("ladder-cmd: ПРОВОДКА -- регистрация из session.start, подписка на catalyst-ladder", async () => {
+  // on(...) вызывается с матчером (command.run) и без него (session.start) --
+  // собиратель нормализует арность сам.
+  const subs: Array<{ ev: string; matcher: any; fn: any }> = []
+  register((...a: any[]) => {
+    if (a.length >= 3) subs.push({ ev: a[0], matcher: a[1], fn: a[2] })
+    else subs.push({ ev: a[0], matcher: null, fn: a[1] })
+  })
+  const started = subs.filter(s => s.ev === "session.start")
+  expect(started.length).toBe(1)
+  const specs: any[] = []
+  const $: any = {
+    store: { set: async () => {} },
+    command: { register: async (spec: any) => { specs.push(spec) } },
+  }
+  await started[0].fn($, { cwd: "/probe" }, async (x: any) => "NEXT-" + String(x && x.cwd))
+  expect(specs.length).toBe(1)
+  expect(specs[0].name).toBe("catalyst-ladder")
+  expect(specs[0].description).toBe(LADDER_COMMAND_DESCRIPTION)
+  expect(specs[0].argumentHint).toBe("[модель]")
+  expect(specs[0].immediate).toBe(false)
+  const own = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("catalyst-ladder") >= 0)
+  expect(own.length).toBe(1)
+})
+
+test("ladder-cmd: отказ двери регистрации не ломает session.start", async () => {
+  const subs: Array<{ ev: string; matcher: any; fn: any }> = []
+  register((...a: any[]) => {
+    if (a.length >= 3) subs.push({ ev: a[0], matcher: a[1], fn: a[2] })
+    else subs.push({ ev: a[0], matcher: null, fn: a[1] })
+  })
+  const started = subs.filter(s => s.ev === "session.start")
+  expect(started.length).toBe(1)
+  const $: any = {
+    store: { set: async () => {} },
+    command: { register: async () => { throw new Error("no implementation for command.register") } },
+  }
+  let nextArg: any = null
+  const next = async (x: any) => { nextArg = x; return "NEXT-OK" }
+  const out = await started[0].fn($, { cwd: "/probe" }, next)
+  expect(out).toBe("NEXT-OK")
+  expect(nextArg).toEqual({ cwd: "/probe" })
 })

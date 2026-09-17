@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.31"
+export const MOD_VERSION = "0.1.32"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -1058,6 +1058,54 @@ export function rungsAfterCooldown<T extends { model: string }>(ladder: T[], atM
   return { ladder: keep, evidence }
 }
 
+// --- #178w3: слэш-команда catalyst-ladder ---------------------------------------
+// CONSTRAINT: метки остывания живут в процессе, и прочитать их может только
+// процесс -- слэш-команда и есть эта дверь наблюдения (#61).
+export const LADDER_COMMAND = "catalyst-ladder"
+export const LADDER_COMMAND_DESCRIPTION =
+  "Ступени лестницы в остывании: версия мода, окно в минутах, модель и сколько " +
+  "остывать осталось. Аргумент -- подстрока для фильтра по имени модели."
+export const LADDER_COMMAND_ARG_HINT = "[модель]"
+// CONSTRAINT: аргумент длиннее 32000 не подаётся в дверь никогда -- граница
+// хоста (волна 2 #178, r3: 32000 доставлен, 32001 отвергнут) встречается
+// НАШЕЙ обрезкой раньше чужого валидатора.
+export const LADDER_COMMAND_ARG_MAX = 32000
+
+export function clipLadderArg(arg: string): string {
+  return String(arg || "").slice(0, LADDER_COMMAND_ARG_MAX)
+}
+
+// CONSTRAINT: предикат «ещё остывает» -- РОВНО тот, что у rungsAfterCooldown
+// (atMs - stamp <= RUNG_COOLDOWN_MS): второй дом правила сделал бы команду и
+// фильтр лестницы спорящими об одном окне.
+export function cooldownSnapshot(atMs: number, marks: Map<string, number> = rungCooldownMarks): Array<{ model: string; leftMs: number }> {
+  const out: Array<{ model: string; leftMs: number }> = []
+  marks.forEach((stamp: number, model: string) => {
+    if (atMs - stamp <= RUNG_COOLDOWN_MS) {
+      out.push({ model, leftMs: RUNG_COOLDOWN_MS - (atMs - stamp) })
+    }
+  })
+  return out
+}
+
+// CONSTRAINT: пустая карта и отфильтрованная в ноль -- РАЗНЫЕ явные строки:
+// пустой вывод неотличим от молчания команды, а молчание наблюдатель принял бы
+// за ноль (ПУСТО != НОЛЬ).
+export function ladderCommandText(atMs: number, argRaw: string, marks: Map<string, number> = rungCooldownMarks): string {
+  const arg = clipLadderArg(argRaw)
+  const snap = cooldownSnapshot(atMs, marks)
+  const rows = snap.filter((r) => !arg || r.model.indexOf(arg) >= 0)
+  const lines = ["catalyst-ladder " + MOD_VERSION + ": окно остывания " + (RUNG_COOLDOWN_MS / 60000) + " мин"]
+  if (!snap.length) {
+    lines.push("остывающих ступеней нет")
+  } else if (!rows.length) {
+    lines.push("под фильтр не попала ни одна ступень")
+  } else {
+    for (const r of rows) lines.push(r.model + ": остывать ещё " + Math.ceil(r.leftMs / 1000) + " с")
+  }
+  return lines.join("\n")
+}
+
 export function failoverBindReset(): void {
   failoverBinds.clear()
 }
@@ -2071,6 +2119,19 @@ async function* driveNext(n: any, emitted?: { n: number }): AsyncGenerator<any, 
 export function register(on: any) {
   on("session.start", async ($: any, e: any, next: any) => {
     try { if (e && e.cwd) await $.store.set(CWD_KEY, String(e.cwd)) } catch (x) {}
+    // CONSTRAINT: регистрация -- ДО next(e) и под отдельным глухим try: отказ
+    // двери не имеет права уронить старт сессии. Повторная регистрация --
+    // тихая замена (волна 2 #178), поэтому каждый session.start регистрирует
+    // смело. immediate: false -- наблюдаемый эффект true волной 2 НЕ измерен,
+    // а невыясненное поведение в бой не ставится.
+    try {
+      await $.command.register({
+        name: LADDER_COMMAND,
+        description: LADDER_COMMAND_DESCRIPTION,
+        argumentHint: LADDER_COMMAND_ARG_HINT,
+        immediate: false,
+      })
+    } catch (x) {}
     return next(e)
   })
 
@@ -2081,6 +2142,15 @@ export function register(on: any) {
     // взведён под отдельным try.
     try { newSession() } catch (x) {}
     return result
+  })
+
+  // CONSTRAINT: подписка -- отдельным вызовом ТОЛЬКО на свою команду. Ответ --
+  // ровно {text}: $.command.run из command.run-хука хост запрещает (волна 1
+  // #178, байты образа: вызов ждал бы ход, который держит этот хук). Матчер --
+  // массивная форма: строковая не измерена, массивная дошла до живого хоста
+  // (волна 2 #178, r2/r3).
+  on("command.run", { command: [LADDER_COMMAND] }, async ($: any, e: any, next: any) => {
+    return { text: ladderCommandText(await nowMs($), String((e && e.args) || "")) }
   })
 
   on("prompt.section", async ($: any, e: any, next: any) => {
