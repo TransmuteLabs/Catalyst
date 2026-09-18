@@ -5,6 +5,15 @@
 # proving the rule lives in the table, not in the gate's code.
 # No live sessions, no network, <2s total.
 set -u
+
+# CONSTRAINT: ожидаемое число зубов объявлено ЗДЕСЬ и больше нигде. Стенд
+# печатает фактически прогнанное, и расхождение в ЛЮБУЮ сторону -- КРАСНЫЙ, а не
+# «НЕ ИЗМЕРЕНО»: зуб, тихо выпавший из прогона (ранний выход, потерянный вызов),
+# неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
+# агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
+# дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
+EXPECTED_TEETH=257
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 GATE="$ROOT/hooks/dispatch-gate.py"
@@ -858,5 +867,10 @@ check "t17 selection layer keeps membership" allow "$(gate "$(task nomodel opus 
 check "t17 selection layer keeps sonnet out" deny  "$(gate "$(task sonnetagent sonnet "[dispatch-class:1a] fix")")"
 O="$WORK/absent-override.toml"
 
-echo "test-dispatch-gate: $pass passed, $fail failed"
+echo "test-dispatch-gate: $pass passed, $fail failed, expected $EXPECTED_TEETH"
+if [ "$((pass + fail))" -ne "$EXPECTED_TEETH" ]; then
+  printf 'ПРОВАЛ: прогнано зубов %d при объявленных %d -- прогон не тот, который пинили\n' \
+    "$((pass + fail))" "$EXPECTED_TEETH" >&2
+  exit 1
+fi
 [ "$fail" -eq 0 ]

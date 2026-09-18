@@ -4,6 +4,15 @@
 # (The user's no-more-tests policy retired LIVE pressure runs; shell scripts
 # are code and keep code's cheap tests.)
 set -u
+
+# CONSTRAINT: ожидаемое число зубов объявлено ЗДЕСЬ и больше нигде. Стенд
+# печатает фактически прогнанное, и расхождение в ЛЮБУЮ сторону -- КРАСНЫЙ, а не
+# «НЕ ИЗМЕРЕНО»: зуб, тихо выпавший из прогона (ранний выход, потерянный вызов),
+# неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
+# агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
+# дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
+EXPECTED_TEETH=22
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 TB="$ROOT/skills/arcane-mode/scripts/task-brief"
@@ -96,5 +105,10 @@ printf 'status: complete (2026-07-01)\n' > "$PROJ/.catalyst/campaign/alpha/PROGR
 out=$(CLAUDE_PROJECT_DIR="$PROJ" bash "$BC")
 [ -z "$out" ];                                             check "bc silent on completed campaign" 0 $?
 
-echo "test-scripts: $pass passed, $fail failed"
+echo "test-scripts: $pass passed, $fail failed, expected $EXPECTED_TEETH"
+if [ "$((pass + fail))" -ne "$EXPECTED_TEETH" ]; then
+  printf 'ПРОВАЛ: прогнано зубов %d при объявленных %d -- прогон не тот, который пинили\n' \
+    "$((pass + fail))" "$EXPECTED_TEETH" >&2
+  exit 1
+fi
 [ "$fail" -eq 0 ]

@@ -4,6 +4,15 @@
 # through its real stdin contract, and pin every rule with a mutant table so a
 # green run proves the rule lives in the table rather than in the code.
 set -u
+
+# CONSTRAINT: ожидаемое число зубов объявлено ЗДЕСЬ и больше нигде. Стенд
+# печатает фактически прогнанное, и расхождение в ЛЮБУЮ сторону -- КРАСНЫЙ, а не
+# «НЕ ИЗМЕРЕНО»: зуб, тихо выпавший из прогона (ранний выход, потерянный вызов),
+# неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
+# агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
+# дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
+EXPECTED_TEETH=31
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HOOK="$ROOT/hooks/dispatch-stats.py"
 BASE_TABLE="$ROOT/hooks/routing-table.toml"
@@ -206,5 +215,10 @@ new=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") \
       | grep -vE '/\.claude(/catalyst(/stats(/.*)?)?)?$' || true)
 case "$new" in '') check "s8 writes only under stats/" 0 0 ;; *) echo "  stray:$new"; check "s8 writes only under stats/" 0 1 ;; esac
 
-echo "test-dispatch-stats: $pass passed, $fail failed"
+echo "test-dispatch-stats: $pass passed, $fail failed, expected $EXPECTED_TEETH"
+if [ "$((pass + fail))" -ne "$EXPECTED_TEETH" ]; then
+  printf 'ПРОВАЛ: прогнано зубов %d при объявленных %d -- прогон не тот, который пинили\n' \
+    "$((pass + fail))" "$EXPECTED_TEETH" >&2
+  exit 1
+fi
 [ "$fail" -eq 0 ]
