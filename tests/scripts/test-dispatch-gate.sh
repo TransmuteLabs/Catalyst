@@ -148,11 +148,17 @@ sed 's/^mode = "deny"/mode = "warn"/' "$SHIPPED_TABLE" > "$WORK/table-warn.toml"
 
 # Mutant tables: one rule removed each (everything else intact).
 # Admission lives in the case tables: naming sonnet in one must ADMIT it.
-{ cat "$BASE_TABLE"; printf '\n[classes.mutantonly]\nlabel = "m"\nallowed = ["sonnet"]\n'; } > "$WORK/table-with-sonnet.toml"
+# CONSTRAINT: фикстуры классов несут ДВЕ модели, даже когда предмет ряда -- не
+# запасной путь. Гвард с 2026-09-18 отказывает клетке, чей допуск минус входящая
+# модель пуст (#261, слово юзера про обязательный фолбэк), и одномодельная
+# фикстура упала бы по ЭТОЙ причине, не дойдя до своего предмета -- слоёв,
+# родительских точек, квоты или пинов. Вторая модель выбрана не-Anthropic и не
+# участвует ни в одном ожидании этих рядов.
+{ cat "$BASE_TABLE"; printf '\n[classes.mutantonly]\nlabel = "m"\nallowed = ["sonnet", "glm-5.3"]\n'; } > "$WORK/table-with-sonnet.toml"
 # kimi-k3 left every class in the grid (its channel, envoy, was closed
 # 2026-09-05) — its [pins] row is pinned against this fixture class, same
 # mutant-table pattern as above
-{ cat "$BASE_TABLE"; printf '\n[classes.kimionly]\nlabel = "m"\nallowed = ["kimi-k3"]\n'; } > "$WORK/table-with-kimi.toml"
+{ cat "$BASE_TABLE"; printf '\n[classes.kimionly]\nlabel = "m"\nallowed = ["kimi-k3", "glm-5.3"]\n'; } > "$WORK/table-with-kimi.toml"
 sed '/^\[channels\.agent\]/,/^effort_required_for/d' "$BASE_TABLE" > "$WORK/table-no-agent-effort.toml"
 sed '/^\[roles\.analysis\]/,/^class/d' "$BASE_TABLE" > "$WORK/table-no-analysis-role.toml"
 # No case table names any model -> nothing is admitted anywhere.
@@ -390,8 +396,8 @@ case "$(CATALYST_ROUTING_TABLE="$BASE_TABLE" CATALYST_ROUTING_OVERRIDE="$O" \
   *allow_all_models*) check "t10 base ships the hatch off" 0 1 ;; *) check "t10 base ships the hatch off" 0 0 ;; esac
 
 # ---- truth 11: override LAYERS — base < home < project, merging by entry ----
-printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["opus"]\n' > "$WORK/override-home.toml"
-printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["fable"]\n' > "$WORK/override-proj.toml"
+printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["opus", "glm-5.3"]\n' > "$WORK/override-home.toml"
+printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["fable", "glm-5.3"]\n' > "$WORK/override-proj.toml"
 O="$WORK/override-home.toml"
 check "t11 home layer retunes a class"      allow "$(gate "$(task implementer opus "[dispatch-class:1a] x")")"
 check "t11 home layer displaces the base"   deny  "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] x")")"
@@ -404,7 +410,7 @@ O="$WORK/absent-override.toml"
 check "t11 layers gone, base governs again" allow "$(gate "$(task pinned1a grok-4.6 "[dispatch-class:1a] x")")"
 # a project config is found by walking up from cwd, not only at the exact cwd
 mkdir -p "$WORK/rw/.claude/catalyst" "$WORK/rw/deep/deeper"
-printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["fable"]\n' > "$WORK/rw/.claude/catalyst/routing-override.toml"
+printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["fable", "glm-5.3"]\n' > "$WORK/rw/.claude/catalyst/routing-override.toml"
 found=$(printf '{"tool_name":"Task","tool_input":{"subagent_type":"implementer","model":"fable","prompt":"[dispatch-class:1a] x"},"cwd":"%s"}' "$WORK/rw/deep/deeper" \
   | env -u CLAUDE_PLUGIN_ROOT -u CURSOR_PLUGIN_ROOT -u COPILOT_CLI HOME="$WORK/home" \
     CATALYST_ROUTING_TABLE="$BASE_TABLE" CATALYST_ROUTING_OVERRIDE="$WORK/absent-override.toml" \
@@ -760,7 +766,7 @@ pb_table codex=1 xaicli=1 kimicode=1
 # ---- truth 11: a grid point declares its parent class ([classes.<point>].parent) —
 # role matching and the quota rule read the point AS its parent; a point without
 # a parent stays a foreign class for the role (and unguarded for the quota).
-{ cat "$BASE_TABLE"; printf '\n[classes.crit-mech-t]\nlabel = "m"\nparent = "critique"\nallowed = ["opus"]\n[classes.exec-1n-t]\nlabel = "e"\nallowed = ["opus"]\n'; } > "$WORK/table-with-parent.toml"
+{ cat "$BASE_TABLE"; printf '\n[classes.crit-mech-t]\nlabel = "m"\nparent = "critique"\nallowed = ["opus", "glm-5.3"]\n[classes.exec-1n-t]\nlabel = "e"\nallowed = ["opus", "glm-5.3"]\n'; } > "$WORK/table-with-parent.toml"
 T="$WORK/table-with-parent.toml"
 check "t11 point accepted for its parent role" allow "$(gate "$(task catalyst:critic opus "[dispatch-class:crit-mech-t] [anthropic-exception:pin] x")")"
 # quota rows use a role-less agent: a critic-named one is denied by the ROLE

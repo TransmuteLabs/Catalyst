@@ -615,6 +615,26 @@ def check_class_admits(model, source, cid, cls, table):
                   f"{cls.get('reason', '')}")
 
 
+def check_class_has_failover(model, cid, cls):
+    """allow-list minus the incoming model must be non-empty.
+
+    CONSTRAINT: hatch allow_all_models does NOT waive this check. The hatch
+    says which model may lead the class; it does not create a spare path,
+    because the mod takes the spare path from the allow-list and ladders,
+    not from the hatch. A hatch that silently turns the rule off is the
+    same defect rule-2 of the ladder instrument already closes in its home.
+    """
+    allowed = cls.get("allowed") or []
+    remaining = {str(a).lower() for a in allowed} - {str(model).strip().lower()}
+    if not remaining:
+        emit_deny(
+            f"class '{cid}' ({cls.get('label', '')}) has no spare path for "
+            f"model '{model}': allow-list minus the incoming model is empty. "
+            f"Widen the class allow-list or give the class a ladder "
+            f"(every ladder rung must lie in the allow-list)."
+        )
+
+
 def check_quota_exception(model, cid, prompt, table, where="the prompt"):
     # Quota rule (ratified 2026-09-04): an Anthropic model in a non-executor class
     # spends the quota the main loop already runs on; it must name its basis.
@@ -687,6 +707,7 @@ def check_dispatch(tool_input, table, cwd, sink=None):
                       f"name and the class must not disagree.")
 
     check_class_admits(model, source, cid, cls, table)
+    check_class_has_failover(model, cid, cls)
     check_quota_exception(model, cid, str(tool_input.get("prompt") or ""), table)
 
     # Agent-channel effort: proxy models must carry an explicit effort — the
@@ -1038,6 +1059,7 @@ def check_bash(cmd, table, sink=None):
     check_class_delegable(cid, cls)
     for model, source in named:
         check_class_admits(model, source, cid, cls, table)
+        check_class_has_failover(model, cid, cls)
         check_quota_exception(model, cid, cmd, table, where="the command text")
 
 
@@ -1188,7 +1210,136 @@ def evaluate(data, with_limits=False):
     return None, gate_mode(table)
 
 
+def self_check_failover():
+    """Зубы проверки запасного пути. 0 -- все зелёны."""
+    teeth = []
+
+    def tooth(name, ok, detail=""):
+        teeth.append((name, bool(ok), detail))
+
+    def caught(fn):
+        try:
+            fn()
+            return None
+        except Violation as v:
+            return v.reason
+
+    def call_failover(model, cid, cls):
+        fn = globals().get("check_class_has_failover")
+        if fn is None:
+            emit_deny("missing check_class_has_failover")
+        return fn(model, cid, cls)
+
+    mark = "[" + "dispatch-class:"
+    solo = {"label": "solo-cell", "allowed": ["glm-5.3"]}
+    pair = {"label": "pair-cell", "allowed": ["glm-5.3", "grok-4.6"]}
+    empty = {"label": "empty-cell", "allowed": [], "reason": "never delegated on purpose"}
+    table_base = {
+        "schema_version": 1,
+        "dispatch": {"class_marker_required": True},
+        "classes": {"solo": solo, "pair": pair, "empty": empty},
+        "channels": {
+            "proxy": {"effort_required": True},
+            "agent": {},
+        },
+        "experiment": {"allow_all_models": False},
+    }
+
+    r = caught(lambda: call_failover("glm-5.3", "solo", solo))
+    tooth("клетка с одной моделью -> отказ, названы клетка и модель",
+          r is not None and "solo" in r and "glm-5.3" in r and "solo-cell" in r,
+          f"reason={r!r}")
+
+    r = caught(lambda: call_failover("glm-5.3", "pair", pair))
+    tooth("клетка с двумя моделями -> проход",
+          r is None,
+          f"reason={r!r}")
+
+    table_hatch = dict(table_base)
+    table_hatch["experiment"] = {"allow_all_models": True}
+    r_admits = caught(lambda: check_class_admits(
+        "madeup-9", "the call", "pair", pair, table_hatch))
+    r_fail = caught(lambda: call_failover("madeup-9", "pair", pair))
+    tooth("входящая вне допуска (люк) -> запас не отказывает",
+          r_admits is None and r_fail is None,
+          f"admits={r_admits!r} failover={r_fail!r}")
+
+    r = caught(lambda: check_class_admits(
+        "glm-5.3", "the call", "empty", empty, table_base))
+    tooth("пустой допуск -> отказ check_class_delegable, не запас",
+          r is not None and "never delegated" in r
+          and "spare path" not in r,
+          f"reason={r!r}")
+
+    r = caught(lambda: call_failover("glm-5.3", "solo", solo))
+    tooth("люк не отменяет проверку запаса на одиночной клетке",
+          r is not None and "spare path" in r,
+          f"reason={r!r}")
+
+    r = caught(lambda: check_dispatch(
+        {"subagent_type": "worker", "model": "glm-5.3",
+         "prompt": mark + "solo] x"},
+        table_base, cwd="."))
+    tooth("канал Agent, одна модель -> отказ запаса",
+          r is not None and "spare path" in r and "solo" in r and "glm-5.3" in r,
+          f"reason={r!r}")
+
+    r = caught(lambda: check_dispatch(
+        {"subagent_type": "worker", "model": "glm-5.3",
+         "prompt": mark + "pair] x"},
+        table_base, cwd="."))
+    tooth("канал Agent, две модели -> проход",
+          r is None,
+          f"reason={r!r}")
+
+    bash_solo = (
+        "curl -s http://127.0.0.1:" + PROXY_MARK
+        + ' -d {"model":"glm-5.3","reasoning_effort":"max"} '
+        + mark + "solo]"
+    )
+    bash_pair = (
+        "curl -s http://127.0.0.1:" + PROXY_MARK
+        + ' -d {"model":"glm-5.3","reasoning_effort":"max"} '
+        + mark + "pair]"
+    )
+    r = caught(lambda: check_bash(bash_solo, table_base))
+    tooth("канал Bash, одна модель -> отказ запаса",
+          r is not None and "spare path" in r and "solo" in r and "glm-5.3" in r,
+          f"reason={r!r}")
+
+    r = caught(lambda: check_bash(bash_pair, table_base))
+    tooth("канал Bash, две модели -> проход",
+          r is None,
+          f"reason={r!r}")
+
+    r = caught(lambda: check_dispatch(
+        {"subagent_type": "worker", "model": "glm-5.3",
+         "prompt": mark + "solo] x"},
+        table_hatch, cwd="."))
+    tooth("люк на канале Agent не отменяет запас",
+          r is not None and "spare path" in r and "solo" in r,
+          f"reason={r!r}")
+
+    r = caught(lambda: check_bash(bash_solo, table_hatch))
+    tooth("люк на канале Bash не отменяет запас",
+          r is not None and "spare path" in r and "solo" in r,
+          f"reason={r!r}")
+
+    for i, (name, ok, detail) in enumerate(teeth, 1):
+        if ok:
+            print(f"зуб {i} {name}: зелёный")
+        else:
+            print(f"зуб {i} {name}: КРАСЕН — {detail}")
+    if all(ok for _, ok, _ in teeth):
+        print(f"зубов {len(teeth)}, все зелёны")
+        return 0
+    print(f"зубов {len(teeth)}, красных {sum(1 for _, ok, _ in teeth if not ok)}")
+    return 1
+
+
 def main(argv):
+    if "--self-check" in argv:
+        return self_check_failover()
     if "--render-slice" in argv:
         render_slice()
         return
@@ -1216,7 +1367,9 @@ def main(argv):
 
 if __name__ == "__main__":
     try:
-        main(sys.argv[1:])
+        rc = main(sys.argv[1:])
+        if rc is not None:
+            sys.exit(rc)
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001 — an internal error must not become a silent pass

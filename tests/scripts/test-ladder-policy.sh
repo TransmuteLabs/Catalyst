@@ -27,7 +27,7 @@
 # сторону это rc=3, а не зелёный (форма test-judge-bridge.sh).
 set -u
 
-EXPECTED_TEETH=29
+EXPECTED_TEETH=33
 EXPECTED_SHELL_TEETH=10
 
 shell_self_check() {

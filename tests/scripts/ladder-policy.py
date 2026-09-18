@@ -6,8 +6,8 @@
 (plugins/catalyst-probes/hooks/register.ts) routing-table.toml НЕ читает
 нигде, а гейт диспатча срабатывает на вызове инструмента, тогда как лестница
 меняет модель уже ПОСЛЕ него и вторым вызовом не проверяется -- поэтому
-проверка обязана быть внешней и статической. Три правила и разбор элемента
-(брифы #225 и #230, адъюдикация контроллера 2026-09-16):
+проверка обязана быть внешней и статической. Четыре правила и разбор элемента
+(брифы #225 и #230 -- адъюдикация контроллера 2026-09-16; #261 -- 2026-09-18):
 
   правило-1-допуск: каждая ступень каждой [failover.class.<id>] обязана быть
     в [classes.<id>].allowed. Класса нет в таблице -- нарушение с названной
@@ -21,6 +21,12 @@
     модели (hooks/routing-table.toml). Нет записи в [pins] -- отдельная
     причина «пин-эффорта-не-объявлен» (пусто ≠ ноль), не молчаливый допуск.
     Ступень без effort правило 3 не задевает.
+  правило-4-запас: каждый класс таблицы с НЕПУСТЫМ допуском обязан нести
+    минимум две модели (после той же нормализации, что у гварда: str.lower).
+    Иначе ни лестница, ни дефолт не дают переход: правило-1 требует
+    ladder ⊆ allowed. Класс с пустым допуском правило-4 не задевает:
+    он не делегируется, диспатчей у него нет. Сканируются ВСЕ классы
+    таблицы, не только те, у кого есть лестница.
   Разбор элемента -- до правил, контракт поведения parseRungItem
     (plugins/catalyst-probes/hooks/register.ts): неразобранная ступень
     (пустая строка, число, объект без model) -- «ступень-не-разобрана»;
@@ -230,7 +236,7 @@ def rung_violation(cell, rung, allowed, pins=None, index=0):
     return None
 
 
-def verdict_line(registry_path, ladders, rungs, effort_rungs):
+def verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked):
     """Итоговая строка зелёного исхода. Один дом текста вердикта.
 
     CONSTRAINT: при НУЛЕ ступеней с объявленным эффортом правило-3 назвать
@@ -241,51 +247,60 @@ def verdict_line(registry_path, ladders, rungs, effort_rungs):
     """
     head = (f"лестниц {ladders} (ступеней {rungs}, с эффортом {effort_rungs}), "
             f"файл {registry_path}: ")
+    rule4 = f"правило-4-запас — на всех {classes_checked} классах таблицы"
     if effort_rungs == 0:
         return (head + f"правило-1-допуск и правило-2-антропик соблюдены на "
                 f"всех {rungs} ступенях; правило-3-эффорт НЕ ИЗМЕРЕНО — "
-                "ступеней с объявленным эффортом 0")
+                f"ступеней с объявленным эффортом 0; {rule4}")
     return (head + f"правило-1-допуск и правило-2-антропик соблюдены на всех "
             f"{rungs} ступенях, правило-3-эффорт — на всех {effort_rungs} "
-            "с объявленным эффортом")
+            f"с объявленным эффортом, {rule4}")
 
 
 def check_ladders(registry_path, table_path):
-    """(reason, violations, ladders, rungs, effort_rungs).
+    """(reason, violations, ladders, rungs, effort_rungs, classes_checked).
 
     reason None -- предмет измерим: violations -- список строк-нарушений
     (пустой = правила соблюдены), ladders -- число разобранных таблиц
     [failover.class.*], rungs -- число ступеней в них, effort_rungs --
-    сколько из них с объявленным effort. reason не None -- прибор не в
-    состоянии мерить (код 2).
+    сколько из них с объявленным effort, classes_checked -- сколько
+    классов таблицы просмотрело правило-4-запас. reason не None --
+    прибор не в состоянии мерить (код 2).
     """
+    _ua = (None, None, None, None, None)
+
+    def unavail(msg):
+        return (msg,) + _ua
+
     reg, err = load_toml(registry_path)
     if err is not None:
-        return f"реестр: {err}", None, None, None, None
+        return unavail(f"реестр: {err}")
     tab, err = load_toml(table_path)
     if err is not None:
-        return f"таблица маршрутизации: {err}", None, None, None, None
+        return unavail(f"таблица маршрутизации: {err}")
 
     failover = reg.get("failover")
     if failover is None:
-        return None, [], 0, 0, 0
-    if not isinstance(failover, dict):
-        return (f"реестр {registry_path}: секция [failover] не таблица -- "
-                "форма лестниц не разобрана"), None, None, None, None
-    classes_map = failover.get("class")
-    if classes_map is None:
-        return None, [], 0, 0, 0
-    if not isinstance(classes_map, dict):
-        return (f"реестр {registry_path}: секция [failover.class] не таблица -- "
-                "форма лестниц не разобрана"), None, None, None, None
+        classes_map = {}
+    elif not isinstance(failover, dict):
+        return unavail(f"реестр {registry_path}: секция [failover] не таблица -- "
+                       "форма лестниц не разобрана")
+    else:
+        classes_map = failover.get("class")
+        if classes_map is None:
+            classes_map = {}
+        elif not isinstance(classes_map, dict):
+            return unavail(
+                f"реестр {registry_path}: секция [failover.class] не таблица -- "
+                "форма лестниц не разобрана")
     grid = tab.get("classes", {})
     if not isinstance(grid, dict):
-        return (f"таблица {table_path}: секция [classes] не таблица -- "
-                "допуск клеток не разобран"), None, None, None, None
+        return unavail(f"таблица {table_path}: секция [classes] не таблица -- "
+                       "допуск клеток не разобран")
     pins = tab.get("pins", {})
     if not isinstance(pins, dict):
-        return (f"таблица {table_path}: секция [pins] не таблица -- "
-                "допуск эффорта не разобран"), None, None, None, None
+        return unavail(f"таблица {table_path}: секция [pins] не таблица -- "
+                       "допуск эффорта не разобран")
 
     violations = []
     ladders = 0
@@ -294,13 +309,15 @@ def check_ladders(registry_path, table_path):
     for cell in classes_map:
         ladder = classes_map[cell]
         if not isinstance(ladder, dict):
-            return (f"реестр {registry_path}: [failover.class.{cell}] не таблица -- "
-                    "форма лестницы не разобрана"), None, None, None, None
+            return unavail(
+                f"реестр {registry_path}: [failover.class.{cell}] не таблица -- "
+                "форма лестницы не разобрана")
         ladders += 1
         models = ladder.get("models", [])
         if not isinstance(models, list):
-            return (f"реестр {registry_path}: [failover.class.{cell}].models не список -- "
-                    "форма лестницы не разобрана"), None, None, None, None
+            return unavail(
+                f"реестр {registry_path}: [failover.class.{cell}].models не список -- "
+                "форма лестницы не разобрана")
         entry = grid.get(cell)
         if not isinstance(entry, dict):
             violations.append(
@@ -310,8 +327,9 @@ def check_ladders(registry_path, table_path):
             continue
         allowed = entry.get("allowed", [])
         if not isinstance(allowed, list):
-            return (f"таблица {table_path}: [classes.{cell}].allowed не список -- "
-                    "допуск клетки не разобран"), None, None, None, None
+            return unavail(
+                f"таблица {table_path}: [classes.{cell}].allowed не список -- "
+                "допуск клетки не разобран")
         for index, rung in enumerate(models):
             rungs += 1
             parsed, _unknown = parse_rung_item(rung)
@@ -320,7 +338,29 @@ def check_ladders(registry_path, table_path):
             v = rung_violation(cell, rung, allowed, pins=pins, index=index)
             if v is not None:
                 violations.append(v)
-    return None, violations, ladders, rungs, effort_rungs
+
+    classes_checked = 0
+    for cell, entry in grid.items():
+        classes_checked += 1
+        if not isinstance(entry, dict):
+            return unavail(
+                f"таблица {table_path}: [classes.{cell}] не таблица -- "
+                "допуск клетки не разобран")
+        allowed = entry.get("allowed", [])
+        if not isinstance(allowed, list):
+            return unavail(
+                f"таблица {table_path}: [classes.{cell}].allowed не список -- "
+                "допуск клетки не разобран")
+        if not allowed:
+            continue
+        unique = {str(a).lower() for a in allowed}
+        if len(unique) < 2:
+            shown = str(allowed[0]) if allowed else ""
+            violations.append(
+                f"НАРУШЕНИЕ правило-4-запас: клетка {cell} — допуск состоит из одной модели {shown}, "
+                f"запасного пути нет ни из одного источника"
+            )
+    return None, violations, ladders, rungs, effort_rungs, classes_checked
 
 
 def self_check():
@@ -357,7 +397,7 @@ def self_check():
             return check_ladders(r, t)
 
         # зуб 0 (положительный контроль): валидная лестница -- 0 нарушений
-        reason, vs, l, r, _ = check(
+        reason, vs, l, r, *_ = check(
             '[failover]\nenabled = true\n\n[failover.class.exec-0n]\n'
             'models = ["glm-5.3", "grok-4.6"]\n')
         tooth("положительный контроль: валидная лестница зелена",
@@ -366,7 +406,7 @@ def self_check():
 
         # зуб 1: ступень вне допуска клетки -> нарушение правило-1-допуск,
         # названы клетка и ступень
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\nmodels = ["glm-5.3", "glm-5.3-flash"]\n')
         v1 = " ".join(vs)
         tooth("ступень вне допуска -> правило-1-допуск с клеткой и ступенью",
@@ -376,7 +416,7 @@ def self_check():
               f"reason={reason} violations={vs}")
 
         # зуб 2: Anthropic-имя в лестнице -> правило-2-антропик
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\nmodels = ["glm-5.3", "opus"]\n')
         v2 = " ".join(vs)
         tooth("Anthropic-имя -> правило-2-антропик",
@@ -387,7 +427,7 @@ def self_check():
 
         # зуб 3: имя, не опознанное ни одним семейством -> «семейство не
         # определено» (слепота прибора обязана быть слышна)
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\nmodels = ["glm-5.3", "madeup-9"]\n')
         v3 = " ".join(vs)
         tooth("неизвестное имя -> «семейство не определено»",
@@ -398,7 +438,7 @@ def self_check():
 
         # зуб 4: реестр без единой таблицы [failover.*] -> НОЛЬ лестниц
         # (это НЕ ИЗМЕРЕНО, код 3, а не зелёный)
-        reason, vs, l, _, _ = check('[probe.x]\ny = 1\n')
+        reason, vs, l, *_ = check('[probe.x]\ny = 1\n')
         tooth("реестр без [failover.*] -> ноль лестниц (НЕ ИЗМЕРЕНО)",
               reason is None and not vs and l == 0,
               f"reason={reason} violations={vs} ladders={l}")
@@ -419,21 +459,21 @@ def self_check():
               and all("no-such" in path for _, path in att),
               f"path={p} err={err} attempts={att}")
         fake_reg = os.path.join(work, "no-such-registry.toml")
-        reason, vs, _, _, _ = check(registry_path=fake_reg)
+        reason, vs, *_ = check(registry_path=fake_reg)
         tooth("явный путь отсутствующего реестра -> отказ с названным путём",
               reason is not None and fake_reg in reason and vs is None,
               f"reason={reason}")
 
         # новые зубы 1–8: богатая форма ступени (бриф #230). Нумерация в именах
         # — нумерация брифа, не индекс печати (существующие 8 зубов впереди).
-        reason, vs, l, r, _ = check(
+        reason, vs, l, r, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "glm-5.3", effort = "max"}]\n')
         tooth("богатая форма: допуск + эффорт в pins -> нет нарушений",
               reason is None and not vs and l == 1 and r == 1,
               f"reason={reason} violations={vs} ladders={l} rungs={r}")
 
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "opus", effort = "high"}]\n')
         v_rich_anth = " ".join(vs or [])
@@ -444,7 +484,7 @@ def self_check():
               and not any("семейство-не-определено" in x for x in vs),
               f"reason={reason} violations={vs}")
 
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "glm-5.3-flash", effort = "max"}]\n')
         v_rich_allow = " ".join(vs or [])
@@ -455,7 +495,7 @@ def self_check():
               and not any("семейство-не-определено" in x for x in vs),
               f"reason={reason} violations={vs}")
 
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "grok-4.6", effort = "high"}]\n')
         v_rich_eff = " ".join(vs or [])
@@ -466,7 +506,7 @@ def self_check():
               and "medium" in v_rich_eff and "max" in v_rich_eff,
               f"reason={reason} violations={vs}")
 
-        reason, vs, l, r, _ = check(
+        reason, vs, l, r, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "glm-5.3"}]\n')
         tooth("богатая форма без effort -> правило 3 молчит",
@@ -481,7 +521,7 @@ def self_check():
             '[pins]\n'
             '"glm-5.3" = ["max"]\n'
             '"grok-4.6" = ["medium", "max"]\n')
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "qwen3.8-flash", effort = "high"}]\n',
             table_path=table_nopin)
@@ -498,7 +538,7 @@ def self_check():
             '[failover.class.exec-0n]\nmodels = [42]\n',
             '[failover.class.exec-0n]\nmodels = [{effort = "max"}]\n',
         ):
-            reason, vs, _, _, _ = check(text7)
+            reason, vs, *_ = check(text7)
             cases7.append((reason, vs))
         tooth("пустая/число/без model -> ступень-не-разобрана (не семейство)",
               all(
@@ -510,7 +550,7 @@ def self_check():
               ),
               f"cases={cases7}")
 
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "glm-5.3", efort = "max"}]\n')
         v_unk = " ".join(vs or [])
@@ -525,7 +565,7 @@ def self_check():
         # счётчик не задевают -- выключенный счётчик печатал бы ложное
         # «НЕ ИЗМЕРЕНО» при коде 0, и после заполнения реестра это была бы
         # молчаливая неправда.
-        reason, vs, l, r, er = check(
+        reason, vs, l, r, er, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = ["grok-4.6", {model = "glm-5.3", effort = "max"}]\n')
         tooth("счётчик ступеней с эффортом считает богатую ступень",
@@ -534,7 +574,7 @@ def self_check():
 
         # зуб 18 (находка критика F2): порядок «антропик раньше ключа» несущий
         # и обязан быть запинен, а не только объявлен в докстринге.
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "opus", efort = "max"}]\n')
         v_ord = " ".join(vs or [])
@@ -551,7 +591,7 @@ def self_check():
             'allowed = ["glm-5.3", "grok-4.6"]\n'
             '[pins]\n'
             '"glm-5.3" = "max"\n')
-        reason, vs, _, _, _ = check(
+        reason, vs, *_ = check(
             '[failover.class.exec-0n]\n'
             'models = [{model = "glm-5.3", effort = "max"}]\n',
             table_path=table_badpin)
@@ -564,17 +604,65 @@ def self_check():
 
         # зубы 20-21 (адъюдикация контроллера #230): вердикт не смеет
         # объявлять правило-3 соблюдённым при пустом знаменателе.
-        vl0 = verdict_line("/р.toml", 20, 77, 0)
+        vl0 = verdict_line("/р.toml", 20, 77, 0, 4)
         tooth("вердикт при нуле ступеней с эффортом -> правило-3 НЕ ИЗМЕРЕНО",
               "правило-3-эффорт НЕ ИЗМЕРЕНО" in vl0
               and "правило-3-эффорт — на всех" not in vl0
-              and "77" in vl0,
+              and "77" in vl0
+              and "правило-4-запас — на всех 4 классах таблицы" in vl0,
               f"строка={vl0!r}")
-        vl1 = verdict_line("/р.toml", 20, 77, 5)
+        vl1 = verdict_line("/р.toml", 20, 77, 5, 4)
         tooth("вердикт при ненуле -> правило-3 названо со своим знаменателем",
               "правило-3-эффорт — на всех 5" in vl1
-              and "НЕ ИЗМЕРЕНО" not in vl1,
+              and "НЕ ИЗМЕРЕНО" not in vl1
+              and "правило-4-запас — на всех 4 классах таблицы" in vl1,
               f"строка={vl1!r}")
+
+        # правило-4-запас: по ВСЕМ классам таблицы, не только по тем, у кого лестница.
+        t4_solo = table_with(
+            '[classes.solo]\nlabel = "s"\nallowed = ["glm-5.3"]\n'
+            '[pins]\n"glm-5.3" = ["max"]\n')
+        reason, vs, *_ = check(
+            '[failover.class.solo]\nmodels = ["glm-5.3"]\n',
+            table_path=t4_solo)
+        tooth("класс с одной моделью -> правило-4-запас",
+              reason is None and vs is not None
+              and any("правило-4-запас" in x and "solo" in x and "glm-5.3" in x
+                      for x in vs),
+              f"reason={reason} violations={vs}")
+
+        t4_pair = table_with(
+            '[classes.pair]\nlabel = "p"\nallowed = ["glm-5.3", "grok-4.6"]\n'
+            '[pins]\n"glm-5.3" = ["max"]\n')
+        reason, vs, *_ = check(
+            '[failover.class.pair]\nmodels = ["glm-5.3"]\n',
+            table_path=t4_pair)
+        tooth("класс с двумя моделями -> правило-4 молчит",
+              reason is None and not any("правило-4-запас" in x for x in (vs or [])),
+              f"reason={reason} violations={vs}")
+
+        t4_empty = table_with(
+            '[classes.none]\nlabel = "n"\nallowed = []\nreason = "x"\n'
+            '[classes.pair]\nlabel = "p"\nallowed = ["glm-5.3", "grok-4.6"]\n')
+        reason, vs, *_ = check(
+            '[failover.class.pair]\nmodels = ["glm-5.3"]\n',
+            table_path=t4_empty)
+        tooth("класс с пустым допуском -> правило-4 молчит",
+              reason is None and not any("правило-4-запас" in x for x in (vs or [])),
+              f"reason={reason} violations={vs}")
+
+        # правило-4 обязано видеть клетку БЕЗ лестницы: иначе оно снова
+        # смотрит только тех, у кого лестница уже есть.
+        t4_noline = table_with(
+            '[classes.solo]\nlabel = "s"\nallowed = ["glm-5.3"]\n'
+            '[classes.pair]\nlabel = "p"\nallowed = ["glm-5.3", "grok-4.6"]\n')
+        reason, vs, l, *_ = check('[probe.x]\ny = 1\n', table_path=t4_noline)
+        tooth("клетка без лестницы с одной моделью -> правило-4-запас",
+              reason is None and l == 0 and vs is not None
+              and any("правило-4-запас" in x and "solo" in x and "glm-5.3" in x
+                      for x in vs)
+              and not any("pair" in x and "правило-4-запас" in x for x in vs),
+              f"reason={reason} ladders={l} violations={vs}")
 
         main_root = os.path.join(work, "main-root")
         main_home = os.path.join(work, "main-home")
@@ -642,7 +730,7 @@ def self_check():
                     'models = [{model = "glm-5.3", effort = "max"}]\n')
         main_tooth(8, "зелёный итог",
                    capture_main([], env={ENV_REGISTRY_VAR: valid}),
-                   (0, verdict_line(valid, 1, 1, 1) + "\n", ""))
+                   (0, verdict_line(valid, 1, 1, 1, 1) + "\n", ""))
 
     for i, (name, ok, detail) in enumerate(teeth, 1):
         if ok:
@@ -691,7 +779,7 @@ def main(argv, root=None, env=None, home=None):
                 print(f"  - {label}: {path}", file=sys.stderr)
             return 2
 
-    reason, violations, ladders, rungs, effort_rungs = check_ladders(
+    reason, violations, ladders, rungs, effort_rungs, classes_checked = check_ladders(
         registry_path, table_path)
     if reason is not None:
         print(f"ПРИБОР НЕДОСТУПЕН: {reason}", file=sys.stderr)
@@ -705,7 +793,7 @@ def main(argv, root=None, env=None, home=None):
               "таблицы [failover.*] — пустой результат без предмета нулём "
               "не считается")
         return 3
-    print(verdict_line(registry_path, ladders, rungs, effort_rungs))
+    print(verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked))
     return 0
 
 
