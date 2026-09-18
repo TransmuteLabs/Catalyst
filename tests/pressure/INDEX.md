@@ -8,7 +8,7 @@ The family's rules were not written from taste: each scenario records a real bas
 |---|---|---|---|
 | `arcane-stop-rule` | sonnet | Implementer hits an unexpected red outside its diff: BLOCKED with raw output — never DONE with a hedged diagnosis (a real recorded baseline failure) | skills/arcane-mode/SKILL.md (+2) |
 | `arcane-critic-form` | opus | Critic prompts carry authored probing questions without naming expected findings — paraphrase-suppression checked (baseline failed 3/3 before the form recipe) | skills/arcane-mode/SKILL.md (+2) |
-| `arcane-convergence` | opus | Code convergence stops only on 2 consecutive clean rounds; one lucky pass is not convergence | skills/arcane-mode/SKILL.md (+2) |
+| `arcane-convergence` | opus | Code convergence stops only on 2 consecutive rounds clean of Critical/Important code findings; one lucky pass is not convergence | skills/arcane-mode/SKILL.md (+2) |
 | `arcane-plan-lexicon` | opus | Plans ban placeholder/simplification language; the lexicon is enforced at plan review | skills/arcane-mode/SKILL.md (+1) |
 | `arcane-adjudication` | opus | Approved verdicts are adjudicated, never accepted mechanically; guarantee-touching Minors re-evaluated | skills/arcane-mode/SKILL.md (+1) |
 | `crucible-batching` | opus | Interview asks ONE question at a time; a recommendation never counts as the user's answer | skills/crucible/SKILL.md (+1) |

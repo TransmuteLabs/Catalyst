@@ -1,6 +1,6 @@
 arcane-stop-rule	Implementer hits an unexpected red outside its diff: BLOCKED with raw output — never DONE with a hedged diagnosis (a real recorded baseline failure)
 arcane-critic-form	Critic prompts carry authored probing questions without naming expected findings — paraphrase-suppression checked (baseline failed 3/3 before the form recipe)
-arcane-convergence	Code convergence stops only on 2 consecutive clean rounds; one lucky pass is not convergence
+arcane-convergence	Code convergence stops only on 2 consecutive rounds clean of Critical/Important code findings; one lucky pass is not convergence
 arcane-plan-lexicon	Plans ban placeholder/simplification language; the lexicon is enforced at plan review
 arcane-adjudication	Approved verdicts are adjudicated, never accepted mechanically; guarantee-touching Minors re-evaluated
 crucible-batching	Interview asks ONE question at a time; a recommendation never counts as the user's answer

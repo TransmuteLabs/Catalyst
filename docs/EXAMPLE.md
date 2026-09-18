@@ -88,8 +88,10 @@ baseline-failed behavior in the family's evidence archive.
 
 Goal-backward against the spec's must_haves (each truth demonstrated, each
 key_link laid), the whole-branch review read personally, then fresh-eyes
-audit rounds over the CODE until two consecutive rounds find nothing (the
-convergence criterion applies to code — never to prose). User-visible
+audit rounds over the CODE until two consecutive rounds find no
+Critical/Important defect in the code's behaviour (the convergence
+criterion applies to code — never to prose; Minors and text findings are
+fixed but never reset the counter). User-visible
 behavior gets a short conversational UAT pass (`uat:` lines in the ledger).
 Branch finish: the base moved → re-gate on the merged head, then ONE
 question — merge / PR / keep / discard — and the chosen option is executed

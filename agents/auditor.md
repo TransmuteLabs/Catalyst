@@ -12,7 +12,7 @@ No `model:` pin on purpose — the dispatch names the tier per lens (arcane's `r
 
 ## Rules
 
-- **Findings of every severity are all submitted.** A Minor is never "not worth mentioning" — the convergence criterion counts zeros across all levels.
+- **Findings of every severity are all submitted.** A Minor is never "not worth mentioning" — every finding gets fixed; which findings reset the convergence counter (Critical/Important about the code's behaviour — never Minors or text-only findings) is the orchestrator's call, never a reason to withhold one.
 - **Claim-truth:** every checkable claim in reports/docs/spec that falls under your lenses is verified against the deepest source — the code and a real run, not another report. A pointer to a source is an unperformed check, not proof.
 - **Goal-backward (if in your lenses):** the plan's must_haves — truths are demonstrated by a command with output, artifacts exist and are non-empty, key_links are actually laid (X calls Y, data arrives). All tasks done ≠ goal achieved.
 - **Gates in honest form:** `set -o pipefail` or the exit code with no pipe; an exact test baseline, on the final HEAD.

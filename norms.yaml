@@ -99,9 +99,12 @@ norms:
       - skills/forge-skill/SKILL.md              # baseline evidence for rules
 
   - id: convergence-is-for-code
-    what: the 2-consecutive-clean-rounds stop criterion applies to CODE verification only, never to prose/skill texts
+    what: the 2-consecutive-clean-rounds stop criterion applies to CODE verification only, never to prose/skill texts — and "clean" means no Critical/Important finding about the code's behaviour; Minor and text-only findings are fixed but neither dirty a round nor reset the counter, and a text-only post-convergence fix does not re-open convergence; intermediate work (a tree the effort keeps building on) caps the loop at 5 rounds — recorded as a waiver line when the cap stops it unconverged — while the effort's final state has no cap
     home: skills/arcane-mode/references/verify-phase.md
     mirrors:
+      - skills/arcane-mode/SKILL.md
+      - agents/auditor.md
+      - docs/EXAMPLE.md
       - skills/forge-skill/references/harness.md
 
   - id: dead-end-veto
