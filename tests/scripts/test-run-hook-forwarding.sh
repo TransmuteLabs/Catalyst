@@ -7,6 +7,14 @@
 # missing target never forward.
 set -u
 
+# CONSTRAINT: ожидаемое число рядов объявлено ЗДЕСЬ и больше нигде. Стенд
+# печатает фактически прогнанное, и расхождение в ЛЮБУЮ сторону -- КРАСНЫЙ, а не
+# «НЕ ИЗМЕРЕНО»: ряд, тихо выпавший из прогона (ранний выход, потерянный вызов),
+# неотличим от ряда, которого никогда не писали. Код 1, а не 3, выбран замером
+# агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
+# дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
+EXPECTED_ROWS=5
+
 HOOKS_DIR="$(cd "$(dirname "$0")/../../hooks" && pwd)"
 FAILS=0
 ROWS=0
@@ -56,8 +64,12 @@ cp "$HOOKS_DIR/run-hook.cmd" "$WORK/cache/catalyst/0.0.11/hooks/run-hook.cmd"
 OUT="$(env -u CATALYST_HOOK_FORWARDED bash "$WORK/cache/catalyst/0.0.1/hooks/run-hook.cmd" probe)"
 row "missing target script falls through" "probe-from=0.0.1" "$OUT"
 
+if [ "$ROWS" -ne "$EXPECTED_ROWS" ]; then
+  echo "test-run-hook-forwarding: ПРОВАЛ: прогнано рядов $ROWS при объявленных $EXPECTED_ROWS -- прогон не тот, который пинили" >&2
+  exit 1
+fi
 if [ "$FAILS" -ne 0 ]; then
   echo "test-run-hook-forwarding: $FAILS/$ROWS FAILED"
   exit 1
 fi
-echo "test-run-hook-forwarding: OK ($ROWS rows)"
+echo "test-run-hook-forwarding: OK ($ROWS rows, expected $EXPECTED_ROWS)"
