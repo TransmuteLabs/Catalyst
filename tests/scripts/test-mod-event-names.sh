@@ -18,7 +18,7 @@ set -u
 # сторону -- КРАСНЫЙ (#292). Потерянная подписка и подписка, которой никогда не
 # было, неразличимы по нулю провалов.
 EXPECTED_TEETH=6
-EXPECTED_EVENTS=8
+EXPECTED_EVENTS=9
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
