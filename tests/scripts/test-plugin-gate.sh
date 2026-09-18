@@ -326,5 +326,29 @@ else
   bad "15) оснастка без плагина: ждали rc=0 с объявлением, получили rc=$rc [$out]"
 fi
 
+# --- 16. СТАДИЯ 5 гоняет стенд БЕЗ git-окружения хука -------------------------
+# git экспортирует хуку GIT_INDEX_FILE: при обычном коммите -- относительный
+# `.git/index`, при `git commit --only/--include <paths>` -- АБСОЛЮТНЫЙ путь к
+# временному индексу репо. Стенды строят свои временные репо; унаследованный
+# путь заставил бы их писать чужой индекс («invalid object … Error building
+# trees»), и дверь краснела бы ложно (замер 2026-09-18, посадка 0.8.31).
+# Индекс подставляется КОПИЕЙ настоящего: несуществующий файл дал бы двери
+# пустой staged-список и ранний rc=0 -- ряд был бы вакуумным.
+R=$(mk_world hook_env)
+printf '#!/usr/bin/env bash\nfor v in GIT_INDEX_FILE GIT_PREFIX GIT_DIR GIT_WORK_TREE; do\n  [ -z "${!v:-}" ] || { echo "run-all: унаследовано $v=${!v}"; exit 1; }\ndone\nexit 0\n' > "$R/tests/run-all.sh"
+git -C "$R" add tests
+cp "$R/.git/index" "$R/.git/next-index-teeth.lock"
+# Положительный контроль прибора: стаб сам по себе краснеет под переменной.
+if (cd "$R" && GIT_INDEX_FILE="$R/.git/next-index-teeth.lock" bash tests/run-all.sh >/dev/null 2>&1); then
+  bad "16) контроль: стаб не краснеет под GIT_INDEX_FILE -- прибор ничего не измеряет"
+else
+  out=$(run_door "$R" GIT_INDEX_FILE="$R/.git/next-index-teeth.lock" GIT_PREFIX=); rc=$?
+  if (( rc == 0 )) && [[ "$out" == *"только оснастка"* ]] && [[ "$out" != *"унаследовано"* ]]; then
+    ok "16) стадия 5 под GIT_INDEX_FILE хука (абсолютный путь) -- стенд получает чистое окружение, rc=0"
+  else
+    bad "16) окружение хука протекло в стенд: rc=$rc [$out]"
+  fi
+fi
+
 printf '\nplugin-gate teeth: прошло=%d провалов=%d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

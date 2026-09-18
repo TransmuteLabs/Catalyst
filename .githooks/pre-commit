@@ -162,7 +162,13 @@ fi
 if [ ! -f tests/run-all.sh ]; then
   fail "ПРИБОР_НЕДОСТУПЕН: tests/run-all.sh не найден -- стенды не позваны, это «не измерено», а не «чисто»"
 fi
-stands_out=$(bash tests/run-all.sh 2>&1)
+# CONSTRAINT: стенды гоняются БЕЗ git-окружения хука. git экспортирует хуку
+# GIT_INDEX_FILE (и GIT_PREFIX): при обычном коммите это относительный
+# `.git/index`, при `git commit --only/--include <paths>` -- АБСОЛЮТНЫЙ путь к
+# временному индексу этого репо. Стенды строят свои временные репо; унаследованный
+# путь заставляет их писать чужой индекс («invalid object … Error building
+# trees»), и дверь краснеет ложно. GIT_DIR/GIT_WORK_TREE -- тот же класс.
+stands_out=$(env -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_DIR -u GIT_WORK_TREE bash tests/run-all.sh 2>&1)
 stands_rc=$?
 if [ "$stands_rc" -eq 1 ]; then
   printf 'дверь приёмки плагина: ОТКАЗ СТЕНД_КРАСЕН: стенд семьи красен\n'
