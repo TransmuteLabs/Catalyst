@@ -15,7 +15,7 @@ import {
   verdictKey, memoUsable, effortOk, EFFORTS, markEffort,
   readComplete, blocksLine,
   MOD_VERSION, RUNG_COOLDOWN_MS, noteRungTimeout, rungsAfterCooldown,
-  failoverLadder, nextFailoverModel, failoverAttemptModels,
+  failoverLadder, failoverLadderBind, loadAllowedByClass, loadWorld, nextFailoverModel, failoverAttemptModels,
   isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP, chunkCarriesContent,
   failoverBindSet, failoverBindGet, failoverBindReset,
   FAILOVER_FOLD_PERIOD_MS, failoverAttemptIsBoring,
@@ -748,7 +748,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.36")
+  expect(MOD_VERSION).toBe("0.1.37")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -949,6 +949,281 @@ test("failoverLadder: default, когда нет ни agent, ни class", () => 
 test("failoverLadder: нет ни одной таблицы -- пустая лестница", () => {
   expect(failoverLadder(undefined, "glm-executor", "exec-0p")).toStrictEqual([])
   expect(failoverLadder({}, "glm-executor", "exec-0p")).toStrictEqual([])
+})
+
+test("failoverLadderBind: клетка без лестницы берёт allowed без входящей, порядок табличный", () => {
+  const allowed = { "1a": ["glm-5.3-flash", "glm-5.3", "grok-4.6"] }
+  const info = failoverLadderBind({}, "any-agent", "1a", allowed, "glm-5.3-flash")
+  expect(info.ladder).toStrictEqual(["glm-5.3", "grok-4.6"])
+  expect(info.source).toBe("allowed")
+})
+
+test("failoverLadderBind: явная поклеточная лестница выигрывает у allowed", () => {
+  const fo = parseToml(FAILOVER_TOML).failover
+  const allowed = { "exec-0p": ["x1", "x2", "x3"] }
+  const info = failoverLadderBind(fo, "other-agent", "exec-0p", allowed, "c1")
+  expect(info.ladder).toStrictEqual(["c1", "c2"])
+  expect(info.source).toBe("class")
+})
+
+test("failoverLadderBind: единственная allowed -- входящая, уровень пуст", () => {
+  const allowed = { "1d": ["glm-5.3"] }
+  const info = failoverLadderBind({}, "any-agent", "1d", allowed, "glm-5.3")
+  expect(info.ladder).toStrictEqual([])
+  expect(info.source).toBe("none")
+})
+
+test("failoverLadderBind: пустой allowed -- уровень пуст", () => {
+  const allowed = { adjudication: [] as string[] }
+  const info = failoverLadderBind({}, "any-agent", "adjudication", allowed, "glm-5.3")
+  expect(info.ladder).toStrictEqual([])
+  expect(info.source).toBe("none")
+})
+
+test("loadAllowedByClass: оба адреса недоступны -- allowedSrc absent:, без исключения", async () => {
+  const $: any = {
+    fs: { read: async (p: string) => { throw new Error("ENOENT " + p) } },
+  }
+  const env = { ROUTING_TABLE: "/no/such/env-table.toml", CONFIG_DIR: "/no-such-config", HOME: "/no-such-home" }
+  const got = await loadAllowedByClass($, env)
+  expect(got.allowedSrc.indexOf("env:absent")).toBe(0)
+  expect(got.allowedByClass).toEqual({})
+})
+
+test("failoverLadderBind: ступени allowed несут пустой rungEffort", () => {
+  const allowed = { "1a": ["m1", "m2", "m3"] }
+  const info = failoverLadderBind({}, "any-agent", "1a", allowed, "m1")
+  expect(info.ladder).toStrictEqual(["m2", "m3"])
+  expect(info.source).toBe("allowed")
+  expect(info.rungEffort).toEqual({})
+  expect(info.rungsDropped).toBe(0)
+})
+
+function spawnHook(): any {
+  let fn: any = null
+  register((ev: string, ...rest: any[]) => {
+    if (ev === "agent.spawn") fn = rest.length >= 2 ? rest[1] : rest[0]
+    return { catch: () => {} }
+  })
+  return fn
+}
+
+function fsEnv$(files: Record<string, string>, env: Record<string, string>, now: number) {
+  const reads: string[] = []
+  const writes: { path: string, text: string }[] = []
+  const $: any = {
+    clock: { now: async () => now },
+    env: { get: async (k: string) => env[k] || "" },
+    fs: {
+      read: async (p: string) => {
+        reads.push(p)
+        if (files[p] === undefined) throw new Error("ENOENT " + p)
+        return files[p]
+      },
+      write: async (p: string, text: string) => {
+        writes.push({ path: p, text: String(text) })
+      },
+    },
+    store: { get: async () => "" },
+    session: { id: async () => "sid-units" },
+  }
+  return { $, reads, writes }
+}
+
+test("agent.spawn: пустая лестница 1d всё равно кладёт source/allowedSrc в привязку", async () => {
+  failoverBindReset()
+  const table = "/tbl-1d/routing-table.toml"
+  const probes = "/probes-1d/probes.toml"
+  const files: Record<string, string> = {
+    [probes]: "[failover]\nenabled = true\n",
+    [table]: "[classes.1d]\nallowed = [\"glm-5.3\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-1d",
+    CATALYST_ROUTING_TABLE: table,
+  }, 91_000_000)
+  const result = await spawnHook()($, {
+    subagentType: "any-agent",
+    prompt: "[dispatch-class:1d] x",
+    model: "glm-5.3",
+  }, async () => ({ agentId: "ag-empty-1d" }))
+  expect(result.agentId).toBe("ag-empty-1d")
+  const bind = failoverBindGet("ag-empty-1d")
+  expect(bind && bind.source).toBe("none")
+  expect(bind && bind.ladder).toStrictEqual([])
+  expect(bind && bind.allowedSrc).toBe("env")
+  const shards = writes.filter(w => String(w.path).indexOf("/failover/journal.jsonl.shard.") >= 0)
+  expect(shards.length).toBe(1)
+  const rec = JSON.parse(String(shards[0].text))
+  expect(String(rec.rec).indexOf("empty-ladder")).toBe(0)
+  expect(rec.source).toBe("none")
+  expect(rec.allowedSrc).toBe("env")
+  expect(rec.agentId).toBe("ag-empty-1d")
+  expect(rec.class).toBe("1d")
+  expect(rec.subagentType).toBe("any-agent")
+  expect(rec.sid).toBe("sid-units")
+  failoverBindReset()
+})
+
+test("agent.spawn: таблица недоступна -- привязка несёт source none и allowedSrc absent:", async () => {
+  failoverBindReset()
+  const probes = "/probes-abs/probes.toml"
+  const files: Record<string, string> = {
+    [probes]: "[failover]\nenabled = true\n",
+  }
+  const { $ } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-abs",
+    CLAUDE_CONFIG_DIR: "/no-such-config",
+    HOME: "/no-such-home",
+  }, 91_006_000)
+  const result = await spawnHook()($, {
+    subagentType: "any-agent",
+    prompt: "[dispatch-class:1a] x",
+    model: "glm-5.3",
+  }, async () => ({ agentId: "ag-empty-abs" }))
+  expect(result.agentId).toBe("ag-empty-abs")
+  const bind = failoverBindGet("ag-empty-abs")
+  expect(bind && bind.source).toBe("none")
+  expect(bind && String(bind.allowedSrc).slice(0, 7)).toBe("absent:")
+  failoverBindReset()
+})
+
+test("loadWorld: два вызова в окне мемо -- одно чтение файла таблицы", async () => {
+  const table = "/tbl-memo/routing-table.toml"
+  const probes = "/probes-memo/probes.toml"
+  const files: Record<string, string> = {
+    [probes]: "[failover]\nenabled = true\n",
+    [table]: "[classes.1a]\nallowed = [\"glm-5.3-flash\", \"glm-5.3\"]\n",
+  }
+  const { $, reads } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-memo",
+    CATALYST_ROUTING_TABLE: table,
+  }, 92_000_000)
+  const env = { PROBES_DIR: "/probes-memo", ROUTING_TABLE: table, CONFIG_DIR: "", HOME: "", PWD: "/work" }
+  await loadWorld($, env)
+  await loadWorld($, env)
+  expect(reads.filter(p => p === table).length).toBe(1)
+})
+
+test("loadAllowedByClass: битая env-таблица не выигрывает, цепочка env:unusable→marketplace", async () => {
+  const envPath = "/tbl-bad/routing-table.toml"
+  const market = "/cfg-ok/plugins/marketplaces/catalyst/hooks/routing-table.toml"
+  const files: Record<string, string> = {
+    [envPath]: "[classes.1a]\nallowed = [\"glm-5.3\",\n",
+    [market]: "[classes.1a]\nallowed = [\"glm-5.3-flash\", \"glm-5.3\", \"grok-4.6\"]\n",
+  }
+  const { $ } = fsEnv$(files, {}, 93_000_000)
+  const got = await loadAllowedByClass($, {
+    ROUTING_TABLE: envPath,
+    CONFIG_DIR: "/cfg-ok",
+    HOME: "",
+  })
+  expect(got.allowedSrc).toBe("env:unusable→marketplace")
+  expect(got.allowedByClass["1a"]).toStrictEqual(["glm-5.3-flash", "glm-5.3", "grok-4.6"])
+})
+
+test("loadWorld: живой файл таблицы доезжает до ступеней bind", async () => {
+  const table = "/tbl-live/routing-table.toml"
+  const probes = "/probes-live/probes.toml"
+  const files: Record<string, string> = {
+    [probes]: "[failover]\nenabled = true\n",
+    [table]: "[classes.1a]\nallowed = [\"glm-5.3-flash\", \"glm-5.3\", \"grok-4.6\"]\n",
+  }
+  const { $ } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-live",
+    CATALYST_ROUTING_TABLE: table,
+  }, 94_000_000)
+  const world = await loadWorld($, {
+    PROBES_DIR: "/probes-live", ROUTING_TABLE: table, CONFIG_DIR: "", HOME: "", PWD: "/work",
+  })
+  const info = failoverLadderBind(world.failover, "any-agent", "1a", world.allowedByClass, "glm-5.3-flash")
+  expect(info.ladder).toStrictEqual(["glm-5.3", "grok-4.6"])
+  expect(info.source).toBe("allowed")
+  expect(world.allowedSrc).toBe("env")
+})
+
+test("loadAllowedByClass: заданный env-путь без файла -- env:absent в цепочке", async () => {
+  const envPath = "/tbl-gone/routing-table.toml"
+  const market = "/cfg-ok2/plugins/marketplaces/catalyst/hooks/routing-table.toml"
+  const files: Record<string, string> = {
+    [market]: "[classes.1a]\nallowed = [\"glm-5.3-flash\", \"glm-5.3\"]\n",
+  }
+  const { $ } = fsEnv$(files, {}, 93_100_000)
+  const got = await loadAllowedByClass($, {
+    ROUTING_TABLE: envPath,
+    CONFIG_DIR: "/cfg-ok2",
+    HOME: "",
+  })
+  expect(got.allowedSrc).toBe("env:absent→marketplace")
+  expect(got.allowedByClass["1a"]).toStrictEqual(["glm-5.3-flash", "glm-5.3"])
+})
+
+test("loadAllowedByClass: env без классов -- env:noclasses, marketplace выигрывает", async () => {
+  const envPath = "/tbl-noclass/routing-table.toml"
+  const market = "/cfg-ok3/plugins/marketplaces/catalyst/hooks/routing-table.toml"
+  const files: Record<string, string> = {
+    [envPath]: "# truncated before any [classes.*]\n",
+    [market]: "[classes.1a]\nallowed = [\"glm-5.3\", \"grok-4.6\"]\n",
+  }
+  const { $ } = fsEnv$(files, {}, 93_200_000)
+  const got = await loadAllowedByClass($, {
+    ROUTING_TABLE: envPath,
+    CONFIG_DIR: "/cfg-ok3",
+    HOME: "",
+  })
+  expect(got.allowedSrc).toBe("env:noclasses→marketplace")
+  expect(got.allowedByClass["1a"]).toStrictEqual(["glm-5.3", "grok-4.6"])
+})
+
+test("loadAllowedByClass: битое allowed и отсутствие классов -- разные причины", async () => {
+  const envBad = "/tbl-kind-bad/routing-table.toml"
+  const envEmpty = "/tbl-kind-empty/routing-table.toml"
+  const market = "/cfg-kind/plugins/marketplaces/catalyst/hooks/routing-table.toml"
+  const files: Record<string, string> = {
+    [envBad]: "[classes.1a]\nallowed = [\"glm-5.3\",\n",
+    [envEmpty]: "# no classes\n",
+    [market]: "[classes.1a]\nallowed = [\"x\"]\n",
+  }
+  const { $ } = fsEnv$(files, {}, 93_300_000)
+  const bad = await loadAllowedByClass($, { ROUTING_TABLE: envBad, CONFIG_DIR: "/cfg-kind", HOME: "" })
+  const empty = await loadAllowedByClass($, { ROUTING_TABLE: envEmpty, CONFIG_DIR: "/cfg-kind", HOME: "" })
+  expect(bad.allowedSrc).toBe("env:unusable→marketplace")
+  expect(empty.allowedSrc).toBe("env:noclasses→marketplace")
+  expect(bad.allowedSrc).not.toBe(empty.allowedSrc)
+})
+
+test("tool.call: два вызова в окне мемо -- одно чтение probes.toml", async () => {
+  const probes = "/probes-wmemo/probes.toml"
+  const table = "/tbl-wmemo/routing-table.toml"
+  const files: Record<string, string> = {
+    [probes]: "[failover]\nenabled = true\n",
+    [table]: "[classes.1a]\nallowed = [\"glm-5.3\"]\n",
+  }
+  const { $, reads } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-wmemo",
+    CATALYST_ROUTING_TABLE: table,
+  }, 96_000_000)
+  $.agent = { list: async () => [] }
+  let hook: any = null
+  register((ev: string, ...rest: any[]) => {
+    if (ev === "tool.call") hook = rest.length >= 2 ? rest[1] : rest[0]
+    return { catch: () => {} }
+  })
+  const next = async (e: any) => e
+  await hook($, { tool: "Read" }, next)
+  await hook($, { tool: "Read" }, next)
+  expect(reads.filter(p => p === probes).length).toBe(1)
+})
+
+test("failoverLadderBind: агентная лестница выигрывает у class и allowed", () => {
+  const fo = parseToml(`[failover.agent.glm-executor]
+models = ["a1", "a2"]
+[failover.class.exec-0p]
+models = ["c1"]
+`).failover
+  const info = failoverLadderBind(fo, "glm-executor", "exec-0p", { "exec-0p": ["x1", "x2"] }, "a1")
+  expect(info.ladder).toStrictEqual(["a1", "a2"])
+  expect(info.source).toBe("agent")
 })
 
 test("nextFailoverModel: пропуск уже отказавшей модели", () => {

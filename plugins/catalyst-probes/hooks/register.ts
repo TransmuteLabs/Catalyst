@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.36"
+export const MOD_VERSION = "0.1.37"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -156,24 +156,124 @@ export function classesOf(prompt: string): string[] {
   return set
 }
 
-function failoverLadderBind(fo: any, subagentType: string, classId: string): {
+export function failoverLadderBind(fo: any, subagentType: string, classId: string, allowedByClass?: any, incomingModel?: string): {
   ladder: string[]
   rungEffort: { [k: string]: string }
   effortBad: { [k: string]: string }
   rungsDropped: number
+  source: "agent" | "class" | "default" | "allowed" | "none"
 } {
-  const empty = { ladder: [] as string[], rungEffort: {} as { [k: string]: string }, effortBad: {} as { [k: string]: string }, rungsDropped: 0 }
-  if (!fo || typeof fo !== "object") return empty
-  const fromAgent = tableRungs(fo.agent && subagentType ? fo.agent[subagentType] : null)
-  if (fromAgent.models.length) return { ladder: fromAgent.models, rungEffort: fromAgent.rungEffort, effortBad: fromAgent.effortBad, rungsDropped: fromAgent.dropped }
-  const fromClass = tableRungs(fo.class && classId ? fo.class[classId] : null)
-  if (fromClass.models.length) return { ladder: fromClass.models, rungEffort: fromClass.rungEffort, effortBad: fromClass.effortBad, rungsDropped: fromClass.dropped }
-  const fromDefault = tableRungs(fo.default)
-  return { ladder: fromDefault.models, rungEffort: fromDefault.rungEffort, effortBad: fromDefault.effortBad, rungsDropped: fromDefault.dropped }
+  const empty = { ladder: [] as string[], rungEffort: {} as { [k: string]: string }, effortBad: {} as { [k: string]: string }, rungsDropped: 0, source: "none" as const }
+  // CONSTRAINT: allowed -- строго последний уровень. Явная лестница
+  // (agent/class/default) -- решение автора; allowed -- допуск клетки и не
+  // имеет права её перебить.
+  if (fo && typeof fo === "object") {
+    const fromAgent = tableRungs(fo.agent && subagentType ? fo.agent[subagentType] : null)
+    if (fromAgent.models.length) return { ladder: fromAgent.models, rungEffort: fromAgent.rungEffort, effortBad: fromAgent.effortBad, rungsDropped: fromAgent.dropped, source: "agent" }
+    const fromClass = tableRungs(fo.class && classId ? fo.class[classId] : null)
+    if (fromClass.models.length) return { ladder: fromClass.models, rungEffort: fromClass.rungEffort, effortBad: fromClass.effortBad, rungsDropped: fromClass.dropped, source: "class" }
+    const fromDefault = tableRungs(fo.default)
+    if (fromDefault.models.length) return { ladder: fromDefault.models, rungEffort: fromDefault.rungEffort, effortBad: fromDefault.effortBad, rungsDropped: fromDefault.dropped, source: "default" }
+  }
+  const raw = allowedByClass && classId ? allowedByClass[classId] : null
+  if (!Array.isArray(raw) || !raw.length) return empty
+  const incoming = String(incomingModel || "")
+  const ladder: string[] = []
+  for (let i = 0; i < raw.length; i++) {
+    const m = raw[i]
+    if (typeof m !== "string" || !m) continue
+    if (incoming && m === incoming) continue
+    ladder.push(m)
+  }
+  if (!ladder.length) return empty
+  // CONSTRAINT: эффорт на этом уровне не выдумывается. Пин клетки живёт во
+  // frontmatter агента и в [pins]; выдуманный эффорт хуже отсутствующего.
+  // rungsDropped = 0: в allowed нет формы ступени, которую можно уронить.
+  return { ladder, rungEffort: {}, effortBad: {}, rungsDropped: 0, source: "allowed" }
 }
 
-export function failoverLadder(fo: any, subagentType: string, classId: string): string[] {
-  return failoverLadderBind(fo, subagentType, classId).ladder
+function allowedTableOf(parsed: any): { usable: true, allowedByClass: { [classId: string]: string[] } } | { usable: false, reason: "unusable" | "noclasses" } {
+  const out: { [classId: string]: string[] } = {}
+  const classes = parsed && parsed.classes
+  if (!classes || typeof classes !== "object" || Array.isArray(classes) || !Object.keys(classes).length) {
+    return { usable: false, reason: "noclasses" }
+  }
+  const ks = Object.keys(classes)
+  for (let i = 0; i < ks.length; i++) {
+    const id = ks[i]
+    const row = classes[id]
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue
+    if (!Object.prototype.hasOwnProperty.call(row, "allowed")) continue
+    const raw = row.allowed
+    // CONSTRAINT: поле allowed, которое есть и не является массивом непустых
+    // строк, делает таблицу непригодной ЦЕЛИКОМ. Отклонить один ключ и оставить
+    // остальные -- отдать потребителю половину таблицы, что хуже, чем не отдать
+    // ничего. Отсутствие поля -- законная пустота, не непригодность.
+    if (!Array.isArray(raw)) return { usable: false, reason: "unusable" }
+    const models: string[] = []
+    for (let j = 0; j < raw.length; j++) {
+      if (typeof raw[j] !== "string" || !raw[j]) return { usable: false, reason: "unusable" }
+      models.push(raw[j])
+    }
+    out[id] = models
+  }
+  return { usable: true, allowedByClass: out }
+}
+
+function routingCandidates(env: any): { envPath: string, market: string } {
+  const envPath = String((env && env.ROUTING_TABLE) || "").trim()
+  const root = String((env && env.CONFIG_DIR) || "").trim() || (String((env && env.HOME) || "") + "/.claude")
+  return { envPath, market: root + "/plugins/marketplaces/catalyst/hooks/routing-table.toml" }
+}
+
+export async function loadAllowedByClass($: any, env: any): Promise<{ allowedByClass: { [classId: string]: string[] }, allowedSrc: string }> {
+  // CONSTRAINT: адрес таблицы -- CATALYST_ROUTING_TABLE (тот же handle, что у
+  // гварда) либо версионно-свободный marketplace. Относительный путь от дома
+  // мода запрещён: версии плагинов расходятся.
+  // CONSTRAINT: отсутствие таблицы именуется (absent:<path>), не молчит и не бросает.
+  // CONSTRAINT: окно мемо таблицы -- ТО ЖЕ, что у мира (worldFor / WORLD_MEMO_MS).
+  // Чтение на каждый диспатч (tool.call без agentId минует кэш мира) запрещено.
+  const now = await nowMs($)
+  const cand = routingCandidates(env)
+  const key = cand.envPath + "\0" + cand.market
+  if (allowedMemo && now - allowedMemo.t < WORLD_MEMO_MS && allowedMemo.key === key) {
+    return allowedMemo.value
+  }
+  const chain: string[] = []
+  let last = cand.market
+  if (cand.envPath) {
+    const t = await readText($, cand.envPath)
+    if (t.text != null) {
+      const got = allowedTableOf(parseToml(t.text))
+      if (got.usable) {
+        const value = { allowedByClass: got.allowedByClass, allowedSrc: "env" }
+        allowedMemo = { t: now, key, value }
+        return value
+      }
+      chain.push("env:" + got.reason)
+    } else {
+      chain.push("env:absent")
+    }
+  }
+  const t2 = await readText($, cand.market)
+  if (t2.text != null) {
+    const got = allowedTableOf(parseToml(t2.text))
+    if (got.usable) {
+      const src = chain.length ? chain.join("→") + "→marketplace" : "marketplace"
+      const value = { allowedByClass: got.allowedByClass, allowedSrc: src }
+      allowedMemo = { t: now, key, value }
+      return value
+    }
+    chain.push("marketplace:" + got.reason)
+  }
+  const src = chain.length ? chain.join("→") + "→absent:" + last : "absent:" + last
+  const value = { allowedByClass: {}, allowedSrc: src }
+  allowedMemo = { t: now, key, value }
+  return value
+}
+
+export function failoverLadder(fo: any, subagentType: string, classId: string, allowedByClass?: any, incomingModel?: string): string[] {
+  return failoverLadderBind(fo, subagentType, classId, allowedByClass, incomingModel).ladder
 }
 
 export function nextFailoverModel(ladder: string[], failed: string[]): string | null {
@@ -979,11 +1079,13 @@ async function applyPromptRules(
 // (measured 2026-09-12). Reading probes.toml per call would be 278 file reads
 // per session, so the world is memoised for a short window. Correctness never
 // depends on the memo — only cost does.
+const WORLD_MEMO_MS = 5000
 let worldMemo: any = null
+let allowedMemo: { t: number, key: string, value: { allowedByClass: { [classId: string]: string[] }, allowedSrc: string } } | null = null
 
-async function worldFor($: any): Promise<any> {
+export async function worldFor($: any): Promise<any> {
   const now = await nowMs($)
-  if (worldMemo && now - worldMemo.t < 5000) return worldMemo
+  if (worldMemo && now - worldMemo.t < WORLD_MEMO_MS) return worldMemo
   const env = await envBundle($)
   const world = await loadWorld($, env)
   worldMemo = { t: now, env, world }
@@ -1358,6 +1460,7 @@ function newSession() {
   epoch++
   sidMemo = null
   worldMemo = null
+  allowedMemo = null
   promptTextMemo = {}
   rxCache = {}
   clockBad = false
@@ -1521,6 +1624,8 @@ async function envBundle($: any): Promise<any> {
   try { HOME = await $.env.get("HOME") } catch (x) {}
   let PWD: any = ""
   try { PWD = await $.env.get("PWD") } catch (x) {}
+  let ROUTING_TABLE: any = ""
+  try { ROUTING_TABLE = await $.env.get("CATALYST_ROUTING_TABLE") } catch (x) {}
   return {
     JUDGE_CARRIER: String(JUDGE_CARRIER || ""),
     JUDGE: String(JUDGE || ""),
@@ -1537,6 +1642,7 @@ async function envBundle($: any): Promise<any> {
     CONFIG_DIR: String(CONFIG_DIR || "").trim(),
     HOME: String(HOME || ""),
     PWD: String(PWD || "").trim(),
+    ROUTING_TABLE: String(ROUTING_TABLE || "").trim(),
   }
 }
 
@@ -1581,7 +1687,7 @@ export function memoUsable(stored: any, atMs: number, ttlMs: number): boolean {
   return Number.isFinite(stored.t) && (atMs - stored.t) <= ttlMs
 }
 
-async function loadWorld($: any, env: any): Promise<any> {
+export async function loadWorld($: any, env: any): Promise<any> {
   let globalHome = ""
   if (env.PROBES_DIR) globalHome = env.PROBES_DIR
   else if (env.CONFIG_DIR) globalHome = env.CONFIG_DIR + "/probes"
@@ -1603,11 +1709,14 @@ async function loadWorld($: any, env: any): Promise<any> {
   }
   const cfgUnread = ((gParsed && gParsed.__unreadN) || 0) +
                     ((pParsed && pParsed.__unreadN) || 0)
+  const allowedLoaded = await loadAllowedByClass($, env)
   return {
     globalHome, projectHome, cwd, cfgUnread,
     probes: probesOf(gParsed, pParsed),
     prompts: promptsOf(gParsed, pParsed),
     failover: failoverOf(gParsed, pParsed),
+    allowedByClass: allowedLoaded.allowedByClass,
+    allowedSrc: allowedLoaded.allowedSrc,
   }
 }
 
@@ -2308,8 +2417,15 @@ export function register(on: any) {
   on("tool.call", async ($: any, e: any, next: any) => {
     if ("agentId" in e) return next(e)
     const tool = String((e && e.tool) || "")
-    const env = await envBundle($)
-    const world = await loadWorld($, env)
+    // CONSTRAINT: tool.call главного лупа (нет agentId) -- горячий путь.
+    // Замер 2026-09-18, транскрипт worktree claudeapp session 9632494b,
+    // 493 часа с tool_use: медиана 41/час, пик 251/час (2026-09-15T20).
+    // command.describe даёт 254 чтения за одну сборку промпта; без мемо
+    // этот путь читал probes.toml на каждый вызов. Мир берётся через
+    // worldFor -- то же окно, что у describe/spawn.
+    const packed = await worldFor($)
+    const env = packed.env
+    const world = packed.world
     const prompt = String((e && e.prompt) || "")
     const agent = String((e && e.subagent_type) || "")
     const t0 = await nowMs($)
@@ -2513,12 +2629,37 @@ export function register(on: any) {
     if (!result || result.deny || !result.agentId) return result
     if (classHasPrefix(classId, EXECUTOR_CLASS_PREFIXES)) sessionExecutorModelAdd(spawnModel)
     if (!world || !world.failover || !bl3(world.failover.enabled, true)) return result
-    const info = failoverLadderBind(world.failover, subagentType, classId)
-    if (!info.ladder.length) return result
+    const info = failoverLadderBind(world.failover, subagentType, classId, world.allowedByClass, spawnModel)
+    // CONSTRAINT: пустая лестница неотличима от забытой, если source/allowedSrc
+    // не записаны. Привязка кладётся на всех ветках, включая ladder.length===0
+    // (клетка 1d, пустой allowed, оба адреса таблицы недоступны).
     failoverBindSet(String(result.agentId), {
       ladder: info.ladder, subagentType, class: classId, sticky: null,
       rungEffort: info.rungEffort, effortBad: info.effortBad, rungsDropped: info.rungsDropped,
+      source: info.source, allowedSrc: world.allowedSrc,
     })
+    // CONSTRAINT: журнал пустой лестницы пишется ЗДЕСЬ, один раз на агента.
+    // turn.step на пустой привязке выходит до journalExtra -- писать оттуда
+    // залило бы журнал на каждом шаге.
+    if (!info.ladder.length) {
+      try {
+        const sid = await sidFor($)
+        const t1 = await nowMs($)
+        // CONSTRAINT: пустой дом даёт путь от корня -- писать наружу нельзя.
+        // Тот же гард несёт писатель попыток ниже.
+        const jpath = world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
+        if (jpath) await appendJournal($, jpath, {
+          t: new Date(t1).toISOString(),
+          sid,
+          rec: "empty-ladder-" + String(result.agentId),
+          agentId: String(result.agentId),
+          subagentType,
+          class: classId,
+          source: info.source,
+          allowedSrc: world.allowedSrc,
+        })
+      } catch (x) {}
+    }
     return result
   })
     .catch(($: any, e: any, next: any) => decisiveFailClosed($, "agent.spawn", e, next))
@@ -2591,6 +2732,8 @@ export function register(on: any) {
     }
     if (sessionExecutorModelsOverflow) journalExtra.execOverflow = true
     if (bind.rungsDropped) journalExtra.rungsDropped = bind.rungsDropped
+    if (bind.source) journalExtra.source = bind.source
+    if (bind.allowedSrc) journalExtra.allowedSrc = bind.allowedSrc
     let lastRes: any = null
     let lastThrow: any = null
     let sawThrow = false
