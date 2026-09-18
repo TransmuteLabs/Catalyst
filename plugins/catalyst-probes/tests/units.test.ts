@@ -16,7 +16,7 @@ import {
   readComplete, blocksLine,
   MOD_VERSION, RUNG_COOLDOWN_MS, noteRungTimeout, rungsAfterCooldown,
   failoverLadder, nextFailoverModel, failoverAttemptModels,
-  isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP,
+  isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP, chunkCarriesContent,
   failoverBindSet, failoverBindGet, failoverBindReset,
   FAILOVER_FOLD_PERIOD_MS, failoverAttemptIsBoring,
   failoverFoldCount, failoverFoldNote, failoverFoldFlush, failoverFoldReset,
@@ -680,6 +680,66 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
   expect(resolvePath("", "/H", "/C")).toBe("/C/")
 })
 
+// --- chunkCarriesContent: что считается выдачей (#239, замер #242b) ----------
+
+// CONSTRAINT: предикат решает, РАЗРЕШЁН ЛИ ПЕРЕХОД по лестнице. Ложное «да»
+// стоит времени (лишний запрет перехода); ложное «нет» склеивает ответы двух
+// ступеней (#224) и портит данные молча. Поэтому зубы закрывают обе стороны,
+// и умолчание на неразбираемом входе пинится ЯВНО.
+// Формы взяты из замера #242b дословно, не придуманы.
+
+test("chunkCarriesContent: служебный кусок отказа {kind,ref} выдачей НЕ считается", () => {
+  expect(chunkCarriesContent({ kind: "engine", ref: 1 })).toBe(false)
+  // порядок ключей значения не имеет -- предикат структурный, не позиционный
+  expect(chunkCarriesContent({ ref: 11, kind: "engine" })).toBe(false)
+})
+
+test("chunkCarriesContent: text и stop -- выдача (обе измеренные формы успеха)", () => {
+  expect(chunkCarriesContent({ kind: "text", index: 0, text: "ok", ref: 3 })).toBe(true)
+  expect(chunkCarriesContent({
+    kind: "stop", stopReason: "end_turn", usage: { input_tokens: 0 }, ref: 6,
+  })).toBe(true)
+})
+
+test("chunkCarriesContent: неизвестный вид С ПОЛЯМИ -- выдача (алфавит kind измерен не полностью)", () => {
+  expect(chunkCarriesContent({ kind: "thinking", thinking: "…", ref: 2 })).toBe(true)
+  expect(chunkCarriesContent({ kind: "tool_use", id: "t1", ref: 5 })).toBe(true)
+  // вид, которого мы не видели вовсе, но он несёт поле
+  expect(chunkCarriesContent({ kind: "whatever-upstream-adds", payload: 1 })).toBe(true)
+})
+
+test("chunkCarriesContent: неразбираемый вход -- КОНСЕРВАТИВНО выдача, а не пусто", () => {
+  expect(chunkCarriesContent(null)).toBe(true)
+  expect(chunkCarriesContent(undefined)).toBe(true)
+  expect(chunkCarriesContent("text")).toBe(true)
+  expect(chunkCarriesContent(7)).toBe(true)
+})
+
+test("chunkCarriesContent: пустой объект полей сверх kind/ref не несёт", () => {
+  expect(chunkCarriesContent({})).toBe(false)
+  expect(chunkCarriesContent({ kind: "engine" })).toBe(false)
+  expect(chunkCarriesContent({ ref: 4 })).toBe(false)
+})
+
+test("chunkCarriesContent: одиннадцать служебных кусков отказа дают НОЛЬ выдачи", () => {
+  // Дословная форма замера #242b: 503/429/529 -- все одиннадцать {kind,ref}.
+  // Это и есть случай, из-за которого веер обнулялся до передачи содержимого.
+  const refusal = []
+  for (let i = 1; i <= 11; i++) refusal.push({ kind: "engine", ref: i })
+  expect(refusal.filter(chunkCarriesContent).length).toBe(0)
+  // положительный контроль прибора: успех из того же замера даёт ДВА
+  const success = [
+    { kind: "engine", ref: 1 },
+    { kind: "engine", ref: 2 },
+    { kind: "text", index: 0, text: "ok", ref: 3 },
+    { kind: "engine", ref: 4 },
+    { kind: "engine", ref: 5 },
+    { kind: "stop", stopReason: "end_turn", usage: {}, ref: 6 },
+    { kind: "engine", ref: 7 },
+  ]
+  expect(success.filter(chunkCarriesContent).length).toBe(2)
+})
+
 // --- MOD_VERSION: константа против манифеста --------------------------------
 
 // CONSTRAINT: манифест .claude-plugin/plugin.json в среде раннера НЕЧИТАЕМ:
@@ -688,7 +748,7 @@ test("resolvePath: пустой cwd даёт ./; пустой путь не ра
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.35")
+  expect(MOD_VERSION).toBe("0.1.36")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------

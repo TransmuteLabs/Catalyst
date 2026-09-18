@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.35"
+export const MOD_VERSION = "0.1.36"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -2106,14 +2106,54 @@ function builtinTrigger(p: any, e: any, ctx: any): boolean {
 // место разойдётся молча. Счёт растёт при ИЗЪЯТИИ куска из источника: yield*
 // отдаёт его вызывающему тем же шагом, без точки, где счёт и выдача могли бы
 // разойтись.
-function countEmitted(src: any, emitted: { n: number }): any {
+// CONSTRAINT (#239, замер #242b 17.09): запрет перехода держит число кусков
+// С СОДЕРЖИМЫМ, а не число кусков. Отказ носителя приходит после одиннадцати
+// кусков вида ровно {kind, ref}, не несущих наружу ничего; счёт по ВСЕМ кускам
+// делал afterEmit истинным, и веер запрещался при любом ретраебельном статусе
+// до передачи хотя бы одного байта содержимого (503/429/529 неразличимы --
+// измерено на стенде #242, обе площадки).
+// Предикат СТРУКТУРНЫЙ, а не белый список имён: алфавит kind измерен НЕ
+// полностью (thinking / tool_use формой не накрыты), а цена ложно-отрицательной
+// ошибки -- склейка ответов двух ступеней (#224), которая портит данные МОЛЧА.
+// Поэтому умолчание консервативное: всё, что несёт поля сверх kind/ref, и всё,
+// что не разбирается, считается выдачей -- в сторону лишнего запрета перехода,
+// никогда в сторону склейки.
+export function chunkCarriesContent(c: any): boolean {
+  if (c == null || typeof c !== "object") return true
+  let ks: string[]
+  try { ks = Object.keys(c) } catch (x) { return true }
+  for (let i = 0; i < ks.length; i++) {
+    if (ks[i] !== "kind" && ks[i] !== "ref") return true
+  }
+  return false
+}
+
+function countEmitted(
+  src: any,
+  emitted: { n: number; content: number; kinds: string[] },
+): any {
   return {
     [Symbol.asyncIterator]: () => {
       const it: any = src[Symbol.asyncIterator]()
       const wrap: any = {
         next: async () => {
           const r = await it.next()
-          if (!r.done) emitted.n++
+          if (!r.done) {
+            emitted.n++
+            if (chunkCarriesContent(r.value)) emitted.content++
+            // CONSTRAINT (обязательная вторая половина адъюдикации #242b):
+            // алфавит kind обязан расти ЗАМЕРОМ, а не догадкой -- каждый вид,
+            // впервые встреченный на этой дороге, уезжает в улику попытки.
+            // Потолок 16 держит размер улики: алфавит шире шестнадцати сам по
+            // себе есть находка, и её видно по достижению потолка.
+            const k =
+              r.value != null && typeof r.value === "object"
+                ? String((r.value as any).kind)
+                : "?"
+            if (emitted.kinds.length < 16 && emitted.kinds.indexOf(k) < 0) {
+              emitted.kinds.push(k)
+            }
+          }
           return r
         },
       }
@@ -2126,7 +2166,10 @@ function countEmitted(src: any, emitted: { n: number }): any {
 
 // CONSTRAINT: turn.step STREAMS -- простая async роняет загрузку ВСЕГО модуля.
 // next() бывает генератором или значением; ветка по Symbol.asyncIterator.
-async function* driveNext(n: any, emitted?: { n: number }): AsyncGenerator<any, any, any> {
+async function* driveNext(
+  n: any,
+  emitted?: { n: number; content: number; kinds: string[] },
+): AsyncGenerator<any, any, any> {
   if (n != null && typeof n[Symbol.asyncIterator] === "function") {
     if (emitted == null) return yield* n
     return yield* countEmitted(n, emitted)
@@ -2582,15 +2625,21 @@ export function register(on: any) {
       // залипла на ней и вернула null вызывающему.
       let didThrow = false
       // CONSTRAINT: кусок, уже ушедший наружу, находится у сессии -- отмены
-      // нет. Ступень, выдавшая хотя бы один кусок, СОСТОЯЛАСЬ: переход с неё
-      // запрещён и при отказе носителя, и при броске, иначе к ответу одной
-      // модели приклеится хвост другой.
-      const emitted = { n: 0 }
+      // нет. Ступень, выдавшая хотя бы один кусок С СОДЕРЖИМЫМ, СОСТОЯЛАСЬ:
+      // переход с неё запрещён и при отказе носителя, и при броске, иначе к
+      // ответу одной модели приклеится хвост другой.
+      // Уточнение 18.09 (#239): «кусок» здесь -- кусок, дошедший до сессии, а
+      // не любой элемент потока. Служебная оболочка потока сессии не достаётся,
+      // склеивать нечего, и запрет на ней был ложным -- см. chunkCarriesContent.
+      const emitted = { n: 0, content: 0, kinds: [] as string[] }
       try {
         res = yield* driveNext(next(req), emitted)
       } catch (x) { threw = x; didThrow = true }
       const t1 = await nowMs($)
-      const afterEmit = emitted.n > 0
+      // CONSTRAINT: решает СОДЕРЖИМОЕ, не счёт кусков -- см. countEmitted.
+      // Поле emitted в улике остаётся СЫРЫМ счётом: по нему сравниваются все
+      // прежние записи, и именно оно показало дефект (11 служебных кусков).
+      const afterEmit = emitted.content > 0
       const outcome = didThrow
         ? (afterEmit ? "threw_after_emit" : "threw")
         : (isCarrierRefusal(res) ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
@@ -2619,6 +2668,8 @@ export function register(on: any) {
             modelRequested: model,
             outcome,
             emitted: emitted.n,
+            emittedContent: emitted.content,
+            emittedKinds: emitted.kinds,
             dtMs: t1 - t0,
             laddered: model !== original,
             ...journalExtra,
