@@ -608,7 +608,11 @@ def check_class_admits(model, source, cid, cls, table):
     """The named model must belong to the declared case."""
     check_class_delegable(cid, cls)
     allowed = cls.get("allowed") or []
-    if (str(model).strip().lower() not in {str(a).lower() for a in allowed}
+    # CONSTRAINT: allowed-side normalization MUST match known_model_ids
+    # (strip().lower()); a lone .lower() rejected "glm-5.3" against an
+    # allowed entry padded with spaces — one normalization per side of the
+    # comparison, not two.
+    if (str(model).strip().lower() not in {str(a).strip().lower() for a in allowed}
             and not hatch_admits(model, table)):
         emit_deny(f"model '{model}' (from {source}) is outside class '{cid}' "
                   f"({cls.get('label', '')}): allowed {allowed}. "

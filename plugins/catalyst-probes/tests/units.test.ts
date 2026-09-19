@@ -749,7 +749,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.41")
+  expect(MOD_VERSION).toBe("0.1.42")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1917,7 +1917,13 @@ function fan313Step(): any {
 }
 
 async function fan313Run(aid: string, original: string, ladder: string[], next: any): Promise<any> {
-  failoverBindSet(aid, { ladder, subagentType: "fan313", class: "", sticky: null })
+  // CONSTRAINT (#266): ступени веера несут ОБЪЯВЛЕННЫЙ эффорт -- голая ступень
+  // без пина клетки отказывает ДО вызова, и зубы остывания мерили бы отказ,
+  // а не метки. Пин клетки в мире f313 отсутствует намеренно: объявление на
+  // ступени -- единственный годный источник.
+  const rungEffort: { [k: string]: string } = {}
+  for (const m of ladder) rungEffort[m] = "max"
+  failoverBindSet(aid, { ladder, rungEffort, subagentType: "fan313", class: "", sticky: null })
   const step = fan313Step()
   return await drainStream(step(fan313$(), { agentId: aid, turnId: "f313", index: 0, model: original }, next))
 }

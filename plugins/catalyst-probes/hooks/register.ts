@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.41"
+export const MOD_VERSION = "0.1.42"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -192,8 +192,9 @@ export function failoverLadderBind(fo: any, subagentType: string, classId: strin
   return { ladder, rungEffort: {}, effortBad: {}, rungsDropped: 0, source: "allowed" }
 }
 
-function allowedTableOf(parsed: any): { usable: true, allowedByClass: { [classId: string]: string[] } } | { usable: false, reason: "unusable" | "noclasses" } {
+function allowedTableOf(parsed: any): { usable: true, allowedByClass: { [classId: string]: string[] }, effortByClass: { [classId: string]: string } } | { usable: false, reason: "unusable" | "noclasses" } {
   const out: { [classId: string]: string[] } = {}
+  const efforts: { [classId: string]: string } = {}
   const classes = parsed && parsed.classes
   if (!classes || typeof classes !== "object" || Array.isArray(classes) || !Object.keys(classes).length) {
     return { usable: false, reason: "noclasses" }
@@ -216,8 +217,12 @@ function allowedTableOf(parsed: any): { usable: true, allowedByClass: { [classId
       models.push(raw[j])
     }
     out[id] = models
+    // CONSTRAINT: пин эффорта клетки -- поле effort той же записи. Годность
+    // судит ПОТРЕБИТЕЛЬ (переход отказывает громко, называя значение), а не
+    // загрузчик: негодный пин -- улика, молча выбросить её нельзя.
+    if (row.effort != null && row.effort !== "") efforts[id] = String(row.effort).slice(0, 64)
   }
-  return { usable: true, allowedByClass: out }
+  return { usable: true, allowedByClass: out, effortByClass: efforts }
 }
 
 function routingCandidates(env: any): { envPath: string, market: string } {
@@ -226,48 +231,139 @@ function routingCandidates(env: any): { envPath: string, market: string } {
   return { envPath, market: root + "/plugins/marketplaces/catalyst/hooks/routing-table.toml" }
 }
 
-export async function loadAllowedByClass($: any, env: any): Promise<{ allowedByClass: { [classId: string]: string[] }, allowedSrc: string }> {
+// CONSTRAINT: порядок и семантика слоёв -- ДОСЛОВНО dispatch-gate.py
+// (override_paths + load_table): машинный, затем проектный; запись клетки
+// ЗАМЕНЯЕТ базовую ЦЕЛИКОМ; дубликат машинного слоя по пути проектным не
+// становится. Второй дом этой логики расходился бы с гвардом молча --
+// паритет и есть чинимый дефект (#274). env-ручки гварда
+// (CATALYST_ROUTING_OVERRIDE / CATALYST_ROUTING_PROJECT_OVERRIDE) мод не
+// читает: набор чтений env -- снимок поверхности мода
+// (tests/fixtures/mod-surface.txt), новое имя роняет стенд; слои живут по
+// домам по умолчанию.
+async function pathExists($: any, path: string): Promise<boolean> {
+  const r = await readText($, path)
+  return r.text !== null || !!r.unreadable
+}
+
+async function findProjectOverride($: any, cwd: string, machineAbs: string): Promise<string> {
+  // CONSTRAINT: тем же способом, каким находится проектный probes.toml
+  // (findProjectHome): вверх от cwd, первый существующий слой выигрывает.
+  if (!cwd) return ""
+  let p = String(cwd)
+  for (let i = 0; i < 24; i++) {
+    if (!p) break
+    const cand = p + "/.claude/catalyst/routing-override.toml"
+    if (normTmp(cand) !== normTmp(machineAbs) && await pathExists($, cand)) return cand
+    const up = parentDir(p)
+    if (!up || up === p) break
+    p = up
+  }
+  return ""
+}
+
+function mergeTableLayer(base: any, over: any): any {
+  const out: any = base
+  const ks = Object.keys(over || {})
+  for (let i = 0; i < ks.length; i++) {
+    const k = ks[i]
+    if (k === "schema_version") continue
+    const v = over[k]
+    if (v && typeof v === "object" && !Array.isArray(v)
+        && out[k] && typeof out[k] === "object" && !Array.isArray(out[k])) {
+      out[k] = shallowMerge(out[k], v)
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
+export async function loadAllowedByClass($: any, env: any, cwdArg?: string): Promise<{ allowedByClass: { [classId: string]: string[] }, effortByClass: { [classId: string]: string }, allowedSrc: string, refused?: string }> {
   // CONSTRAINT: адрес таблицы -- CATALYST_ROUTING_TABLE (тот же handle, что у
   // гварда) либо версионно-свободный marketplace. Относительный путь от дома
   // мода запрещён: версии плагинов расходятся.
   // CONSTRAINT: отсутствие таблицы именуется (absent:<path>), не молчит и не бросает.
   // CONSTRAINT: окно мемо таблицы -- ТО ЖЕ, что у мира (worldFor / WORLD_MEMO_MS).
   // Чтение на каждый диспатч (tool.call без agentId минует кэш мира) запрещено.
+  // CONSTRAINT: битый слой (нечитаем или с неразобранными строками) -- ГРОМКИЙ
+  // отказ (refused, веер пуст), не тихий откат к базе: тихий откат к базе и
+  // есть дефект #274.
   const now = await nowMs($)
   const cand = routingCandidates(env)
-  const key = cand.envPath + "\0" + cand.market
+  const cwd = cwdArg !== undefined ? cwdArg : String((env && env.PWD) || "")
+  const home = String((env && env.HOME) || "").trim()
+  const machine = home ? home + "/.claude/catalyst/routing-override.toml" : ""
+  const project = await findProjectOverride($, cwd, machine)
+  const layers: string[] = []
+  if (machine) layers.push(machine)
+  if (project) layers.push(project)
+  const key = cand.envPath + "\0" + cand.market + "\0" + layers.join("\0")
   if (allowedMemo && now - allowedMemo.t < WORLD_MEMO_MS && allowedMemo.key === key) {
     return allowedMemo.value
   }
   const chain: string[] = []
+  const applied: string[] = []
   let last = cand.market
+  let parsed: any = null
+  let baseSrc = ""
   if (cand.envPath) {
     const t = await readText($, cand.envPath)
     if (t.text != null) {
       const got = allowedTableOf(parseToml(t.text))
       if (got.usable) {
-        const value = { allowedByClass: got.allowedByClass, allowedSrc: "env" }
-        allowedMemo = { t: now, key, value }
-        return value
+        parsed = parseToml(t.text)
+        baseSrc = "env"
+      } else {
+        chain.push("env:" + got.reason)
       }
-      chain.push("env:" + got.reason)
     } else {
       chain.push("env:absent")
     }
   }
-  const t2 = await readText($, cand.market)
-  if (t2.text != null) {
-    const got = allowedTableOf(parseToml(t2.text))
-    if (got.usable) {
-      const src = chain.length ? chain.join("→") + "→marketplace" : "marketplace"
-      const value = { allowedByClass: got.allowedByClass, allowedSrc: src }
+  if (parsed == null) {
+    const t2 = await readText($, cand.market)
+    if (t2.text != null) {
+      const got = allowedTableOf(parseToml(t2.text))
+      if (got.usable) {
+        parsed = parseToml(t2.text)
+        baseSrc = chain.length ? chain.join("→") + "→marketplace" : "marketplace"
+      } else {
+        chain.push("marketplace:" + got.reason)
+      }
+    }
+  }
+  if (parsed == null) {
+    const src = chain.length ? chain.join("→") + "→absent:" + last : "absent:" + last
+    const value = { allowedByClass: {}, effortByClass: {}, allowedSrc: src }
+    allowedMemo = { t: now, key, value }
+    return value
+  }
+  for (let i = 0; i < layers.length; i++) {
+    const path = layers[i]
+    const r = await readText($, path)
+    if (r.text == null && !r.unreadable) continue
+    if (r.text == null) {
+      const value = { allowedByClass: {}, effortByClass: {}, allowedSrc: baseSrc + "+ovr:unreadable", refused: path + ": " + r.unreadable }
       allowedMemo = { t: now, key, value }
       return value
     }
-    chain.push("marketplace:" + got.reason)
+    const over = parseToml(r.text || "")
+    if (over.__unreadN) {
+      const value = { allowedByClass: {}, effortByClass: {}, allowedSrc: baseSrc + "+ovr:unreadable", refused: path + ": не разобран как TOML (" + over.__unreadN + " строк)" }
+      allowedMemo = { t: now, key, value }
+      return value
+    }
+    parsed = mergeTableLayer(parsed, over)
+    applied.push(path === machine ? "machine" : "project")
   }
-  const src = chain.length ? chain.join("→") + "→absent:" + last : "absent:" + last
-  const value = { allowedByClass: {}, allowedSrc: src }
+  const got = allowedTableOf(parsed)
+  if (!got.usable) {
+    const value = { allowedByClass: {}, effortByClass: {}, allowedSrc: baseSrc + "+ovr:" + got.reason, refused: "слияние слоёв: таблица непригодна (" + got.reason + ")" }
+    allowedMemo = { t: now, key, value }
+    return value
+  }
+  const src = baseSrc + (applied.length ? "+ovr:" + applied.join("+") : "")
+  const value = { allowedByClass: got.allowedByClass, effortByClass: got.effortByClass, allowedSrc: src }
   allowedMemo = { t: now, key, value }
   return value
 }
@@ -1083,7 +1179,12 @@ async function applyPromptRules(
 // hit inside the window answers with a foreign projectHome (#308).
 const WORLD_MEMO_MS = 5000
 let worldMemo: any = null
-let allowedMemo: { t: number, key: string, value: { allowedByClass: { [classId: string]: string[] }, allowedSrc: string } } | null = null
+let allowedMemo: { t: number, key: string, value: { allowedByClass: { [classId: string]: string[] }, effortByClass: { [classId: string]: string }, allowedSrc: string, refused?: string } } | null = null
+
+// CONSTRAINT: однократность журнальной записи громкого отказа слоя допуска --
+// на ПРОЦЕСС, не на сессию: newSession её не сбрасывает, повторный отказ той
+// же причины после /resume не молчит вечно, но и не заливает журнал.
+const admissionRefusedSaid = new Set<string>()
 
 export async function worldFor($: any): Promise<any> {
   const now = await nowMs($)
@@ -1791,13 +1892,32 @@ export async function loadWorld($: any, env: any, cwdArg?: string): Promise<any>
   }
   const cfgUnread = ((gParsed && gParsed.__unreadN) || 0) +
                     ((pParsed && pParsed.__unreadN) || 0)
-  const allowedLoaded = await loadAllowedByClass($, env)
+  const allowedLoaded = await loadAllowedByClass($, env, cwd)
+  // CONSTRAINT: громкий отказ слоя допуска пишется в журнал ОДИН раз на
+  // процесс на причину: мир строится на каждом шаге (окно мемо 5 с), и отказ
+  // без однократности заливал бы журнал одной и той же строкой.
+  if (allowedLoaded.refused) {
+    const refKey = String(allowedLoaded.refused)
+    if (!admissionRefusedSaid.has(refKey)) {
+      admissionRefusedSaid.add(refKey)
+      try {
+        await appendJournal($, globalHome + "/failover/journal.jsonl", {
+          t: new Date(await nowMs($)).toISOString(),
+          sid: await sidFor($),
+          rec: "routing-admission-refused",
+          reason: refKey,
+          allowedSrc: allowedLoaded.allowedSrc,
+        })
+      } catch (x) {}
+    }
+  }
   return {
     globalHome, projectHome, cwd, cfgUnread,
     probes: probesOf(gParsed, pParsed),
     prompts: promptsOf(gParsed, pParsed),
     failover: failoverOf(gParsed, pParsed),
     allowedByClass: allowedLoaded.allowedByClass,
+    effortByClass: allowedLoaded.effortByClass,
     allowedSrc: allowedLoaded.allowedSrc,
   }
 }
@@ -2849,7 +2969,51 @@ export function register(on: any) {
         // отказа, и кламп с этой поверхности ненаблюдаем.
         req = Object.assign({}, e, { model, effort: declared })
       } else {
-        req = Object.assign({}, e, { model })
+        // CONSTRAINT (#266): «ступень без эффорта» невозможна -- поле effort
+        // отсутствующим не бывает, движок восполняет его пином frontmatter
+        // МОДЕЛИ СТАРТА, и перенос полей события исполнял бы ступень на
+        // ЧУЖОМ пине. Пин берётся СВОЙ -- поле effort клетки в таблице
+        // маршрутизации; нет пина (или он негоден) -- ступень ОТКАЗЫВАЕТ
+        // громко, с именем ступени и клетки, а не едет на чужом. Какой эффорт
+        // у какой паре «клетка x модель» -- решение юзера (#266), мод его не
+        // выдумывает.
+        const pin = world && world.effortByClass ? world.effortByClass[bind.class] : undefined
+        if (!effortOk(pin)) {
+          const tR = await nowMs($)
+          try {
+            let sidR = ""
+            try { sidR = await sidFor($) } catch (x) { sidR = "" }
+            const jpathR = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
+            if (jpathR) {
+              const recR: any = {
+                t: new Date(tR).toISOString(),
+                sid: sidR,
+                rec: String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt) + "-rung-effort-refused",
+                agentId: String(aid),
+                subagentType: bind.subagentType,
+                class: bind.class,
+                turnId: e.turnId,
+                index: e.index,
+                attempt,
+                modelRequested: model,
+                outcome: "rung-effort-refused",
+                reason: pin === undefined || pin === null || pin === ""
+                  ? "пин эффорта клетки не объявлен"
+                  : "пин эффорта клетки не годен: " + String(pin),
+                source: bind.source,
+                allowedSrc: bind.allowedSrc,
+              }
+              // CONSTRAINT: негодный эффорт ступени обязан быть НАЗВАН и в
+              // отказе (parseRungItem обещает улику effortBad_<модель>): без
+              // поля читатель отличил бы отказ по опечатке от отказа по
+              // отсутствию пина.
+              if (bind.effortBad && bind.effortBad[model]) recR["effortBad_" + model] = bind.effortBad[model]
+              await appendJournal($, jpathR, recR)
+            }
+          } catch (x) {}
+          continue
+        }
+        req = Object.assign({}, e, { model, effort: pin })
       }
       let res: any = null
       let threw: any = null

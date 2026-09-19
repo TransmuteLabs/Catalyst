@@ -3,15 +3,19 @@
 
 Предмет: таблицы [failover.class.<id>] в реестре проб probes.toml против
 допуска клеток [classes.<id>].allowed в hooks/routing-table.toml. Мод
-(plugins/catalyst-probes/hooks/register.ts) routing-table.toml НЕ читает
-нигде, а гейт диспатча срабатывает на вызове инструмента, тогда как лестница
-меняет модель уже ПОСЛЕ него и вторым вызовом не проверяется -- поэтому
-проверка обязана быть внешней и статической. Четыре правила и разбор элемента
-(брифы #225 и #230 -- адъюдикация контроллера 2026-09-16; #261 -- 2026-09-18):
+(plugins/catalyst-probes/hooks/register.ts) routing-table.toml ЧИТАЕТ --
+допуск клеток без явной лестницы строится из [classes.<id>].allowed той же
+таблицы (loadAllowedByClass, allowed-ветка failoverLadderBind). Гейт
+диспатча срабатывает на вызове инструмента, тогда как лестница меняет
+модель уже ПОСЛЕ него и вторым вызовом не проверяется -- поэтому проверка
+обязана быть внешней и статической. Пять правил и разбор элемента
+(брифы #225 и #230 -- адъюдикация контроллера 2026-09-16; #261 -- 2026-09-18;
+#274/#275 -- 2026-09-19):
 
   правило-1-допуск: каждая ступень каждой [failover.class.<id>] обязана быть
     в [classes.<id>].allowed. Класса нет в таблице -- нарушение с названной
-    клеткой, не тихий пропуск.
+    клеткой, не тихий пропуск. Предикат -- гварда: str(x).strip().lower()
+    с обеих сторон (check_class_admits, hooks/dispatch-gate.py).
   правило-2-антропик: ни одна ступень не смеет быть Anthropic-носителем:
     автоматический переход на него обошёл бы маркер [anthropic-exception:…]
     молча. Признак -- по объявленным ниже семействам; имя, не опознанное НИ
@@ -27,6 +31,17 @@
     ladder ⊆ allowed. Класс с пустым допуском правило-4 не задевает:
     он не делегируется, диспатчей у него нет. Сканируются ВСЕ классы
     таблицы, не только те, у кого есть лестница.
+  правило-5-веер: клетка БЕЗ явной лестницы получает веер из allowed-ветки
+    -- её допуск обязан быть ПОДМНОЖЕСТВОМ оверрайд-допуска той же клетки
+    (гвард меряет допуск слоями: база → машинный ~/.claude/catalyst/
+    routing-override.toml → проектный, запись клетки заменяет базовую
+    ЦЕЛИКОМ -- load_table/override_paths, hooks/dispatch-gate.py). Мод,
+    читающий только базу, строит веер шире допуска гварда -- переход на
+    ступень, которую гвард отверг бы (#274). Источник веера мода прибор
+    выводит из исходника register.ts: чтение слоёв опознаётся по литералу
+    routing-override; мод без слоёв меряется базовым allowed. Туда же
+    распространён антропик-фильтр правила-2: Anthropic-имя в allowed-ветке
+    клетки без лестницы -- то же молчаливое обходание маркера.
   Разбор элемента -- до правил, контракт поведения parseRungItem
     (plugins/catalyst-probes/hooks/register.ts): неразобранная ступень
     (пустая строка, число, объект без model) -- «ступень-не-разобрана»;
@@ -137,7 +152,106 @@ def load_toml(path):
         return None, f"не читается как TOML: {path}: {e}"
 
 
+# --- правило-5-веер: слои допуска, как их меряет гвард ------------------------
+# CONSTRAINT: порядок и семантика слоёв -- ДОСЛОВНО dispatch-gate.py
+# (override_paths + load_table): машинный затем проектный, запись клетки
+# ЗАМЕНЯЕТ базовую целиком, дубликат по абspath в слой не попадает.
+# Второй дом этих правил расходился бы с гвардом молча -- паритет и есть
+# предмет правила.
+PROJECT_OVERRIDE_REL = os.path.join(".claude", "catalyst", "routing-override.toml")
+
+
+def find_project_override(start_dir):
+    """Ближайший .claude/catalyst/routing-override.toml от start_dir вверх -- как гвард."""
+    d = os.path.abspath(start_dir or os.getcwd())
+    while True:
+        cand = os.path.join(d, PROJECT_OVERRIDE_REL)
+        if os.path.isfile(cand):
+            return cand
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def resolve_override_layers(root, env=None, home=None):
+    """Пути слоёв допуска (машина, затем проект), наименьший первым.
+
+    env-ручки -- те же, что у гварда: CATALYST_ROUTING_OVERRIDE задаёт машинный
+    слой ЦЕЛИКОМ (включая пустое значение), CATALYST_ROUTING_PROJECT_OVERRIDE --
+    проектный; без ручек машинный -- <home>/.claude/catalyst/routing-override.toml,
+    проектный ищется от корня репо вверх.
+    """
+    envd = os.environ if env is None else env
+    if home is None:
+        home = os.path.expanduser("~")
+    layers = []
+    env_home = envd.get("CATALYST_ROUTING_OVERRIDE")
+    machine = env_home if env_home is not None else os.path.join(
+        str(home), ".claude", "catalyst", "routing-override.toml")
+    layers.append(machine)
+    env_proj = envd.get("CATALYST_ROUTING_PROJECT_OVERRIDE")
+    project = env_proj if env_proj is not None else find_project_override(root)
+    if project and os.path.abspath(project) not in {os.path.abspath(l) for l in layers}:
+        layers.append(project)
+    return layers
+
+
+def merge_admission(grid, override_paths):
+    """(cell -> set(strip().lower() имён), None) или (None, причина).
+
+    База -- [classes.*].allowed поданной таблицы; каждый существующий слой
+    заменяет названную клетку ЦЕЛИКОМ (без allowed -- допуск пуст: так же
+    отказывает гвард). Несуществующий слой пропускается; битый слой --
+    отказ прибора: молчаливый откат к базе и есть чинимый дефект (#274).
+    """
+    merged = {}
+    for cell, entry in grid.items():
+        if not isinstance(entry, dict):
+            continue
+        allowed = entry.get("allowed")
+        merged[cell] = [str(a) for a in allowed] if isinstance(allowed, list) else []
+    for path in override_paths or []:
+        if not path or not os.path.isfile(path):
+            continue
+        data, err = load_toml(path)
+        if err is not None:
+            return None, f"слой допуска не читается: {err}"
+        ov_classes = data.get("classes")
+        if ov_classes is None:
+            continue
+        if not isinstance(ov_classes, dict):
+            return None, (f"слой допуска {path}: секция [classes] не таблица -- "
+                          "форма замены клеток не разобрана")
+        for cell, entry in ov_classes.items():
+            allowed = entry.get("allowed") if isinstance(entry, dict) else None
+            merged[cell] = [str(a) for a in allowed] if isinstance(allowed, list) else []
+    return {cell: {str(a).strip().lower() for a in models}
+            for cell, models in merged.items()}, None
+
+
+def mod_reads_layers(mod_source_path):
+    """(True/False, None) или (None, причина): мод строит веер по слоям?
+
+    CONSTRAINT: признак -- литерал routing-override в исходнике мода: это
+    имя файла слоя, который мод обязан читать при слоёном допуске. Греп по
+    имени -- не парсер: вторая копия логики слоёв в приборе разошлась бы с
+    модом молча, а исходник мода -- единственный дом его правды.
+    """
+    try:
+        with open(mod_source_path, "r", encoding="utf-8") as f:
+            return ("routing-override" in f.read()), None
+    except OSError as e:
+        return None, f"исходник мода не читается: {mod_source_path}: {e}"
+
+
 _ANTHROPIC_LOW = frozenset(a.lower() for a in ANTHROPIC_EXACT_IDS)
+
+
+def _is_anthropic_name(name):
+    """Признак правила-2 для ЛЮБОГО имени модели (не только ступени)."""
+    low = str(name).strip().lower()
+    return low in _ANTHROPIC_LOW or low.startswith(ANTHROPIC_PREFIXES)
 
 # CONSTRAINT: известные ключи -- поля parseRungItem (register.ts:464-484).
 # Любой другой ключ мод молча игнорирует, поэтому опечатка обязана быть
@@ -177,8 +291,12 @@ def rung_violation(cell, rung, allowed, pins=None, index=0):
 
     Сначала разбор элемента, потом правила. Порядок после разбора запинен
     зубами: неразобранная -> антропик -> семейство -> допуск -> неизвестный
-    ключ -> правило-3-эффорт. На ступень -- первое совпадение. Допуск и
-    [pins] сверяются ТОЧНО, семейства -- по префиксам без регистра.
+    ключ -> правило-3-эффорт. На ступень -- первое совпадение. Допуск
+    сверяется предикатом ГВАРДА -- str(x).strip().lower() с обеих сторон
+    (check_class_admits, hooks/dispatch-gate.py): прибор не имеет права быть
+    строже того, что меряет. Суффикс "[1m]" -- часть идентификатора модели,
+    нормализация его не трогает. [pins] сверяются ТОЧНО, семейства -- по
+    префиксам без регистра.
 
     CONSTRAINT: запрет носителя идёт ПЕРЕД неизвестным ключом. Порядок несущий:
     на ступени {model = "opus", efort = …} причина «опечатка в ключе» скрыла бы
@@ -200,7 +318,11 @@ def rung_violation(cell, rung, allowed, pins=None, index=0):
         return (f"НАРУШЕНИЕ ступень-не-разобрана: клетка {cell}, позиция {index} — "
                 "ступень не разобрана")
     name = parsed["model"]
-    low = name.lower()
+    # CONSTRAINT (паритет с гвардом, #275): имя нормализуется strip().lower()
+    # ДО всех правил -- антропик, семейство и допуск обязаны видеть то же
+    # имя, что и check_class_admits, иначе " GLM-5.3 " краснел на семействе,
+    # которое гвард допускал.
+    low = name.strip().lower()
     if low in _ANTHROPIC_LOW or low.startswith(ANTHROPIC_PREFIXES):
         return (f"НАРУШЕНИЕ правило-2-антропик: клетка {cell}, ступень {name} — "
                 "Anthropic-носитель в лестнице запрещён: автоматический переход "
@@ -209,7 +331,9 @@ def rung_violation(cell, rung, allowed, pins=None, index=0):
         return (f"НАРУШЕНИЕ семейство-не-определено: клетка {cell}, ступень {name} — "
                 "семейство не определено: имя не опознано ни одним объявленным "
                 "семейством прибора")
-    if name not in allowed:
+    # CONSTRAINT: обе стороны сравнения -- предикат гварда (strip().lower()),
+    # не точное сравнение: "Glm-5.3" против allowed ["glm-5.3"] гвард пускает.
+    if low not in {str(a).strip().lower() for a in allowed}:
         return (f"НАРУШЕНИЕ правило-1-допуск: клетка {cell}, ступень {name} — "
                 f"вне допуска клетки: нет в [classes.{cell}].allowed "
                 "(hooks/routing-table.toml)")
@@ -236,7 +360,8 @@ def rung_violation(cell, rung, allowed, pins=None, index=0):
     return None
 
 
-def verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked):
+def verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked,
+                 fan_checked=None):
     """Итоговая строка зелёного исхода. Один дом текста вердикта.
 
     CONSTRAINT: при НУЛЕ ступеней с объявленным эффортом правило-3 назвать
@@ -244,10 +369,16 @@ def verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked):
     закон, по которому реестр без [failover.*] даёт НЕ ИЗМЕРЕНО, а не
     зелёное). Знаменатели каждого правила печатаются числом рядом, иначе
     читатель принимает молчание прибора за проверенность.
+    CONSTRAINT: правило-5 печатается только когда прибор его МЕРЯЛ
+    (fan_checked is not None): без исходника мода предмет правила отсутствует,
+    и молчание здесь -- не проверенность, а неизмеренность (вызывающий
+    обязан был отказаться раньше).
     """
     head = (f"лестниц {ladders} (ступеней {rungs}, с эффортом {effort_rungs}), "
             f"файл {registry_path}: ")
     rule4 = f"правило-4-запас — на всех {classes_checked} классах таблицы"
+    if fan_checked is not None:
+        rule4 += f"; правило-5-веер — на всех {fan_checked} клетках без лестницы"
     if effort_rungs == 0:
         return (head + f"правило-1-допуск и правило-2-антропик соблюдены на "
                 f"всех {rungs} ступенях; правило-3-эффорт НЕ ИЗМЕРЕНО — "
@@ -257,17 +388,21 @@ def verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked):
             f"с объявленным эффортом, {rule4}")
 
 
-def check_ladders(registry_path, table_path):
-    """(reason, violations, ladders, rungs, effort_rungs, classes_checked).
+def check_ladders(registry_path, table_path, mod_source_path=None,
+                  override_paths=None, home=None, env=None):
+    """(reason, violations, ladders, rungs, effort_rungs, classes_checked,
+    fan_checked).
 
     reason None -- предмет измерим: violations -- список строк-нарушений
     (пустой = правила соблюдены), ladders -- число разобранных таблиц
     [failover.class.*], rungs -- число ступеней в них, effort_rungs --
     сколько из них с объявленным effort, classes_checked -- сколько
-    классов таблицы просмотрело правило-4-запас. reason не None --
-    прибор не в состоянии мерить (код 2).
+    классов таблицы просмотрело правило-4-запас, fan_checked -- сколько
+    клеток без явной лестницы просмотрело правило-5-веер (None -- правило
+    не мерялось: исходник мода не подан). reason не None -- прибор не в
+    состоянии мерить (код 2).
     """
-    _ua = (None, None, None, None, None)
+    _ua = (None, None, None, None, None, None)
 
     def unavail(msg):
         return (msg,) + _ua
@@ -360,7 +495,52 @@ def check_ladders(registry_path, table_path):
                 f"НАРУШЕНИЕ правило-4-запас: клетка {cell} — допуск состоит из одной модели {shown}, "
                 f"запасного пути нет ни из одного источника"
             )
-    return None, violations, ladders, rungs, effort_rungs, classes_checked
+
+    # правило-5-веер: клетки БЕЗ явной лестницы (источник веера мода).
+    fan_checked = None
+    if mod_source_path is not None:
+        mod_layers, err = mod_reads_layers(mod_source_path)
+        if err is not None:
+            return unavail(err)
+        if override_paths is None:
+            override_paths = resolve_override_layers(
+                table_path, env=env, home=home)
+        layered, err = merge_admission(grid, override_paths)
+        if err is not None:
+            return unavail(err)
+        fan_checked = 0
+        for cell, entry in grid.items():
+            if cell in classes_map:
+                continue
+            allowed = entry.get("allowed") or []
+            if not allowed:
+                continue
+            fan_checked += 1
+            # CONSTRAINT: источник веера -- тот же, у которого его берёт мод:
+            # мод со слоями строит веер из слоёного допуска, мод без слоёв --
+            # из базы. Сравнение с допуском ГВАРДА (всегда слоёным) ловит
+            # расхождение ровно в состоянии мода, не в данных.
+            fan = (layered.get(cell, set()) if mod_layers
+                   else {str(a).strip().lower() for a in allowed})
+            admit = layered.get(cell, set())
+            extra = sorted(fan - admit)
+            if extra:
+                violations.append(
+                    f"НАРУШЕНИЕ правило-5-веер: клетка {cell} — allowed-ветка "
+                    f"шире оверрайд-допуска клетки: {', '.join(extra)} "
+                    f"(мод {'со слоями' if mod_layers else 'без слоёв'} строит "
+                    "веер, который гвард по слоям допуска не пропустит)"
+                )
+            anthropic = sorted(a for a in fan if _is_anthropic_name(a))
+            if anthropic:
+                violations.append(
+                    f"НАРУШЕНИЕ правило-5-антропик: клетка {cell} — "
+                    f"Anthropic-носители {', '.join(anthropic)} в allowed-ветке "
+                    "без явной лестницы: автоматический переход обошёл бы "
+                    "маркер [anthropic-exception:…] молча"
+                )
+    return (None, violations, ladders, rungs, effort_rungs, classes_checked,
+            fan_checked)
 
 
 def self_check():
@@ -378,9 +558,13 @@ def self_check():
             return p
 
         table_valid = os.path.join(work, "table.toml")
+        # CONSTRAINT: allowed клетки БЕЗ Anthropic-имён: правило-5-антропик
+        # краснеет на allowed-ветке бесклеточника, и стол #231 с opus в
+        # allowed делал бы ветви 7-8 (НЕ ИЗМЕРЕНО / зелёный итог) красными
+        # без отношения к их предмету.
         with open(table_valid, "w", encoding="utf-8") as f:
             f.write('[classes.exec-0n]\nlabel = "t"\n'
-                    'allowed = ["glm-5.3", "grok-4.6", "opus", "madeup-9"]\n'
+                    'allowed = ["glm-5.3", "grok-4.6", "madeup-9"]\n'
                     '[pins]\n'
                     '"glm-5.3" = ["max"]\n'
                     '"grok-4.6" = ["medium", "max"]\n')
@@ -668,6 +852,61 @@ def self_check():
         main_home = os.path.join(work, "main-home")
         main_table = os.path.join(main_root, "hooks", "routing-table.toml")
 
+        # --- правило-5-веер: выделенные зубы (волна ремонта 2026-09-19) --------
+        # CONSTRAINT: #231-ветви пинят ПРОВОДКУ main() (резолв слоёв и исходника
+        # мода); эти зубы пинят само правило-5 на прямом входе check_ladders --
+        # мутация правила краснит их, не трогая ветви #231.
+        def modsrc(with_layers: bool) -> str:
+            p = os.path.join(work, f"mod-{'layers' if with_layers else 'base'}.ts")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("// синтетический исходник мода для правила-5\n"
+                        + ('const layer = "routing-override"\n' if with_layers
+                           else "const layer = base_only\n"))
+            return p
+
+        t5_reg = reg('[probe.x]\ny = 1\n')
+        t5_base = table_with('[classes.nolad5]\nlabel = "n"\n'
+                             'allowed = ["glm-5.3", "gpt-6-astra"]\n')
+        t5_over = table_with('[classes.nolad5]\nallowed = ["glm-5.3"]\n')
+        reason, vs, l, r, er, cc, fan = check_ladders(
+            t5_reg, t5_base,
+            mod_source_path=modsrc(False), override_paths=[t5_over])
+        v5a = " ".join(vs or [])
+        tooth("правило-5: мод без слоёв -- лишняя модель названа, клетка названа",
+              reason is None and vs
+              and any("правило-5-веер" in x and "nolad5" in x and "gpt-6-astra" in x
+                      for x in vs)
+              and fan == 1,
+              f"reason={reason} violations={vs} fan={fan}")
+
+        reason, vs, l, r, er, cc, fan = check_ladders(
+            t5_reg,
+            table_with('[classes.noanth5]\nlabel = "a"\nallowed = ["glm-5.3", "opus"]\n'),
+            mod_source_path=modsrc(True), override_paths=[])
+        tooth("правило-5: антропик в allowed-ветке бесклеточника красен и при слоях",
+              reason is None and vs
+              and any("правило-5-антропик" in x and "noanth5" in x and "opus" in x
+                      for x in vs)
+              and not any("правило-5-веер" in x for x in vs)
+              and fan == 1,
+              f"reason={reason} violations={vs} fan={fan}")
+
+        reason, vs, l, r, er, cc, fan = check_ladders(
+            t5_reg, t5_base,
+            mod_source_path=modsrc(True), override_paths=[t5_over])
+        tooth("правило-5: мод со слоями -- подмножество зелено, счётчик веера жив",
+              reason is None and not vs and fan == 1,
+              f"reason={reason} violations={vs} fan={fan}")
+
+        t5_broken = table_with('[classes.nolad5\nallowed = ["glm-5.3"]\n')
+        reason, vs, *_ = check_ladders(
+            t5_reg, t5_base,
+            mod_source_path=modsrc(True), override_paths=[t5_broken])
+        tooth("правило-5: битый слой допуска -- отказ прибора с путём, не пустой допуск",
+              reason is not None and t5_broken in reason and vs is None,
+              f"reason={reason}")
+
+
         def capture_main(argv, env=None):
             out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -686,10 +925,28 @@ def self_check():
                     f"{main_table}\n"))
 
         os.makedirs(os.path.dirname(main_table))
-        with open(table_valid, encoding="utf-8") as src, open(
-                main_table, "w", encoding="utf-8") as dst:
-            dst.write(src.read())
+        mod_source = os.path.join(main_root, "plugins", "catalyst-probes",
+                                  "hooks", "register.ts")
+        os.makedirs(os.path.dirname(mod_source))
+        machine_override = os.path.join(main_home, ".claude", "catalyst",
+                                        "routing-override.toml")
+        os.makedirs(os.path.dirname(machine_override))
 
+        def write_main(table_text, mod_with_layers):
+            with open(main_table, "w", encoding="utf-8") as f:
+                f.write(table_text)
+            # CONSTRAINT: содержимое -- только признак правила-5 (литерал
+            # routing-override); логику мода прибор не исполняет.
+            with open(mod_source, "w", encoding="utf-8") as f:
+                f.write("// синтетический стол правила-5\n" +
+                        ("const layer = \"routing-override\"\n"
+                         if mod_with_layers else "const layer = \"base-only\"\n"))
+
+        def main_table_text(extra=""):
+            with open(table_valid, encoding="utf-8") as src:
+                return src.read() + extra
+
+        write_main(main_table_text(), mod_with_layers=False)
         main_tooth(3, "ошибка выбора реестра",
                    capture_main([], env={ENV_REGISTRY_VAR: fake_explicit}),
                    (2, "", f"ПРИБОР НЕДОСТУПЕН: env {ENV_REGISTRY_VAR} указывает "
@@ -707,6 +964,17 @@ def self_check():
                    capture_main(["--registry", bad_shape]),
                    (2, "", f"ПРИБОР НЕДОСТУПЕН: реестр {bad_shape}: секция "
                     "[failover] не таблица -- форма лестниц не разобрана\n"))
+        # правило-5, красная сторона: мод БЕЗ слоёв строит веер из базы,
+        # оверрайд сужает допуск клетки без лестницы -- лишняя модель названа;
+        # бесклеточник с Anthropic в allowed красен антропик-половиной.
+        with open(machine_override, "w", encoding="utf-8") as f:
+            f.write('[classes.solo5]\nallowed = ["glm-5.3"]\n')
+        write_main(
+            main_table_text('[classes.solo5]\nlabel = "s"\n'
+                            'allowed = ["glm-5.3", "gpt-6-astra"]\n'
+                            '[classes.anth5]\nlabel = "a"\n'
+                            'allowed = ["glm-5.3", "opus"]\n'),
+            mod_with_layers=False)
         bad_rungs = reg('[failover.class.exec-0n]\n'
                         'models = ["glm-5.3-flash", "opus"]\n')
         expected_violations = (
@@ -716,21 +984,38 @@ def self_check():
             "НАРУШЕНИЕ правило-2-антропик: клетка exec-0n, ступень opus — "
             "Anthropic-носитель в лестнице запрещён: автоматический переход "
             "на него обошёл бы маркер [anthropic-exception:…] молча\n"
+            "НАРУШЕНИЕ правило-5-веер: клетка solo5 — allowed-ветка "
+            "шире оверрайд-допуска клетки: gpt-6-astra "
+            "(мод без слоёв строит веер, который гвард по слоям допуска "
+            "не пропустит)\n"
+            "НАРУШЕНИЕ правило-5-антропик: клетка anth5 — "
+            "Anthropic-носители opus в allowed-ветке "
+            "без явной лестницы: автоматический переход обошёл бы "
+            "маркер [anthropic-exception:…] молча\n"
         )
         main_tooth(6, "нарушения отдельными строками",
                    capture_main(["--registry", bad_rungs]),
                    (1, expected_violations, ""))
+        # правило-5 не перекрывает НЕ ИЗМЕРЕНО: бесклеточников нет -- violations
+        # пусты, ноль лестниц по-прежнему код 3.
+        write_main(main_table_text(), mod_with_layers=False)
         empty = reg('[probe.x]\ny = 1\n')
         main_tooth(7, "пустой предмет не измерен",
                    capture_main(["--registry", empty]),
                    (3, f"НЕ ИЗМЕРЕНО: в реестре {empty} не разобрано ни одной "
                     "таблицы [failover.*] — пустой результат без предмета нулём "
                     "не считается\n", ""))
+        # правило-5, зелёная сторона: мод СО слоями строит веер из слоёного
+        # допуска -- подмножество выполняется, счётчик веера в вердикте.
+        write_main(
+            main_table_text('[classes.solo5]\nlabel = "s"\n'
+                            'allowed = ["glm-5.3", "gpt-6-astra"]\n'),
+            mod_with_layers=True)
         valid = reg('[failover.class.exec-0n]\n'
                     'models = [{model = "glm-5.3", effort = "max"}]\n')
         main_tooth(8, "зелёный итог",
                    capture_main([], env={ENV_REGISTRY_VAR: valid}),
-                   (0, verdict_line(valid, 1, 1, 1, 1) + "\n", ""))
+                   (0, verdict_line(valid, 1, 1, 1, 2, 1) + "\n", ""))
 
     for i, (name, ok, detail) in enumerate(teeth, 1):
         if ok:
@@ -752,6 +1037,8 @@ def main(argv, root=None, env=None, home=None):
         return self_check()
 
     table_path = os.path.join(root, "hooks", "routing-table.toml")
+    mod_source = os.path.join(root, "plugins", "catalyst-probes", "hooks",
+                              "register.ts")
     explicit_reg = None
     if "--registry" in argv:
         i = argv.index("--registry")
@@ -763,6 +1050,11 @@ def main(argv, root=None, env=None, home=None):
     if not os.path.isfile(table_path):
         print("ПРИБОР НЕДОСТУПЕН: таблица маршрутизации не найдена: "
               f"{table_path}", file=sys.stderr)
+        return 2
+    if not os.path.isfile(mod_source):
+        print("ПРИБОР НЕДОСТУПЕН: исходник мода не найден: "
+              f"{mod_source} -- правило-5-веер без него неизмеримо",
+              file=sys.stderr)
         return 2
 
     if explicit_reg is not None:
@@ -779,8 +1071,10 @@ def main(argv, root=None, env=None, home=None):
                 print(f"  - {label}: {path}", file=sys.stderr)
             return 2
 
-    reason, violations, ladders, rungs, effort_rungs, classes_checked = check_ladders(
-        registry_path, table_path)
+    override_paths = resolve_override_layers(root, env=envd, home=homed)
+    reason, violations, ladders, rungs, effort_rungs, classes_checked, fan_checked = check_ladders(
+        registry_path, table_path, mod_source_path=mod_source,
+        override_paths=override_paths)
     if reason is not None:
         print(f"ПРИБОР НЕДОСТУПЕН: {reason}", file=sys.stderr)
         return 2
@@ -793,7 +1087,8 @@ def main(argv, root=None, env=None, home=None):
               "таблицы [failover.*] — пустой результат без предмета нулём "
               "не считается")
         return 3
-    print(verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked))
+    print(verdict_line(registry_path, ladders, rungs, effort_rungs,
+                       classes_checked, fan_checked))
     return 0
 
 

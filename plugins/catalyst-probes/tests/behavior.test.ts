@@ -866,16 +866,23 @@ async function drainStep(g: any): Promise<{ threw: boolean; error: any; value: a
   }
 }
 
+// CONSTRAINT (#266): ступени/fixtures несут ОБЪЯВЛЕННЫЙ эффорт: голая ступень
+// (строка без effort) после #266 отказывает без пина клетки, и фиксатор с
+// голыми ступенями мерил бы отказ, а не предмет зуба.
+function richRungs(models: string[]): string {
+  return "[" + models.map(m => `{ model = "${m}", effort = "max" }`).join(", ") + "]"
+}
+
 function failoverToml(): string {
   return [
     "[failover]",
     "enabled = true",
     "",
     "[failover.default]",
-    'models = ["glm-5.3", "grok-4.6"]',
+    "models = " + richRungs(["glm-5.3", "grok-4.6"]),
     "",
     "[failover.agent.glm-executor]",
-    'models = ["glm-5.3", "grok-4.6"]',
+    "models = " + richRungs(["glm-5.3", "grok-4.6"]),
     "",
   ].join("\n")
 }
@@ -1109,7 +1116,8 @@ describe("failover: agent.spawn + turn.step", () => {
     })()
 
     failoverBindSet("ag-unit-falsy", {
-      ladder, subagentType: "glm-executor", class: "exec-0p", sticky: null,
+      ladder, rungEffort: { "glm-5.3": "max", "grok-4.6": "max" },
+      subagentType: "glm-executor", class: "exec-0p", sticky: null,
     })
     const res = await settleStep(steps["turn.step"]({}, {
       turnId: "turn-unit-falsy", index: 0, model: "busy-model",
@@ -1130,7 +1138,8 @@ describe("failover: agent.spawn + turn.step", () => {
     })()
 
     failoverBindSet("ag-unit-falsy-all", {
-      ladder, subagentType: "glm-executor", class: "exec-0p", sticky: null,
+      ladder, rungEffort: { "glm-5.3": "max", "grok-4.6": "max" },
+      subagentType: "glm-executor", class: "exec-0p", sticky: null,
     })
     let caught: any = "НЕ БРОСИЛО"
     let returned: any = "НЕ ВЕРНУЛО"
@@ -1288,7 +1297,8 @@ describe("failover: agent.spawn + turn.step", () => {
     })()
 
     failoverBindSet("ag-unit-silent-refusal", {
-      ladder, subagentType: "glm-executor", class: "exec-0p", sticky: null,
+      ladder, rungEffort: { "glm-5.3": "max", "grok-4.6": "max" },
+      subagentType: "glm-executor", class: "exec-0p", sticky: null,
     })
     const out = await drainStep(steps["turn.step"]({}, {
       turnId: "turn-unit-silent-refusal", index: 0, model: "busy-model",
@@ -1310,19 +1320,19 @@ describe("failover: agent.spawn + turn.step", () => {
 // rungCooldownReset(): метки остывания -- та же процессная память, и без сброса
 // зуб, чья модель отказала соседу, молча меняет смысл (#313).
 describe("failover: проверяющий не уезжает на модель исполнителя (#226)", () => {
-  function failover226Toml(critModels: string): string {
+  function failover226Toml(critModels: string[]): string {
     return [
       "[failover]",
       "enabled = true",
       "",
       "[failover.class.exec-0p]",
-      'models = ["glm-5.3", "grok-4.6"]',
+      "models = " + richRungs(["glm-5.3", "grok-4.6"]),
       "",
       "[failover.class.crit-mech]",
-      "models = " + critModels,
+      "models = " + richRungs(critModels),
       "",
       "[failover.class.scout-enum]",
-      'models = ["glm-5.3", "grok-4.6"]',
+      "models = " + richRungs(["glm-5.3", "grok-4.6"]),
       "",
     ].join("\n")
   }
@@ -1358,7 +1368,7 @@ describe("failover: проверяющий не уезжает на модель
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 110_000_000, {}, {
-      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
+      [HOME + "/probes.toml"]: failover226Toml(["glm-5.3", "grok-4.6"]),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => {
@@ -1416,7 +1426,7 @@ describe("failover: проверяющий не уезжает на модель
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 120_000_000, {}, {
-      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3"]'),
+      [HOME + "/probes.toml"]: failover226Toml(["glm-5.3"]),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => {
@@ -1474,7 +1484,7 @@ describe("failover: проверяющий не уезжает на модель
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 130_000_000, {}, {
-      [HOME + "/probes.toml"]: failover226Toml('["grok-4.6", "qwen3.8-flash"]'),
+      [HOME + "/probes.toml"]: failover226Toml(["grok-4.6", "qwen3.8-flash"]),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => {
@@ -1533,7 +1543,7 @@ describe("failover: проверяющий не уезжает на модель
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 140_000_000, {}, {
-      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
+      [HOME + "/probes.toml"]: failover226Toml(["glm-5.3", "grok-4.6"]),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => {
@@ -1592,7 +1602,7 @@ describe("failover: проверяющий не уезжает на модель
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 150_000_000, {}, {
-      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
+      [HOME + "/probes.toml"]: failover226Toml(["glm-5.3", "grok-4.6"]),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => {
@@ -1681,7 +1691,7 @@ describe("failover: проверяющий не уезжает на модель
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 160_000_000, {}, {
-      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3"]'),
+      [HOME + "/probes.toml"]: failover226Toml(["glm-5.3"]),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => {
@@ -1752,7 +1762,7 @@ describe("failover: проверяющий не уезжает на модель
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 170_000_000, {}, {
-      [HOME + "/probes.toml"]: failover226Toml('["grok-4.6", "qwen3.8-flash"]'),
+      [HOME + "/probes.toml"]: failover226Toml(["grok-4.6", "qwen3.8-flash"]),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => {
@@ -1828,7 +1838,7 @@ describe("failover: проверяющий не уезжает на модель
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 180_000_000, {}, {
-      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "qwen3.8-flash"]'),
+      [HOME + "/probes.toml"]: failover226Toml(["glm-5.3", "qwen3.8-flash"]),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => {
@@ -1992,7 +2002,11 @@ describe("failover: объявленный эффорт ступени (#223)", 
     expect(rung && rung.rungEffortRequested, "улика несёт запрошенный эффорт").toBe("high")
   })
 
-  test("#223 зуб 2: без объявления поле effort не трогаем", async ($, on) => {
+  // CONSTRAINT (#266): предмет зуба -- голая ступень БЕЗ пина клетки. Прежний
+  // контракт «поле effort не трогаем» пинил устранённый дефект (наследование
+  // эффорта старта); новый: ступень ОТКАЗЫВАЕТ громко, перехода нет, отказная
+  // запись называет ступень, клетку и причину.
+  test("#266 зуб: без объявления и без пина клетки ступень отказывает громко", async ($, on) => {
     const kept = wired(on, 190_000_000, {}, {
       [HOME + "/probes.toml"]: effortToml('["glm-5.3", "grok-4.6"]'),
     })
@@ -2029,14 +2043,17 @@ describe("failover: объявленный эффорт ступени (#223)", 
       turnId: "turn-223-2", index: 0, model: "busy-model",
       messageCount: 1, agentId: spawned.agentId, effort: "medium",
     }))
-    expect(res && res.answer).toBe("from-glm-5.3")
-    expect(seen).toEqual(["busy-model", "glm-5.3"])
     expect(seenEffort[0], "посланный эффорт на попытке 0").toBe("medium")
-    expect(seenEffort[1], "на переходе поле effort идентично посланному").toBe("medium")
+    expect(res && res.answer, "наружу ушёл пустой ответ ИСХОДНОЙ: ступени не звались").toBe("")
+    expect(seen, "голые ступени не звались вовсе").toEqual(["busy-model"])
 
     const lines = failoverLines(kept)
-    const rung = lines.filter(l => l.modelRequested === "glm-5.3")[0]
-    expect(rung && rung.rungEffortRequested, "без объявления запрошенного эффорта в улике нет").toBe(undefined)
+    const refusals = lines.filter(l => l.outcome === "rung-effort-refused")
+    expect(refusals, "по отказной записи на каждую голую ступень").toHaveLength(2)
+    expect(refusals.map(l => l.modelRequested), "обе ступени названы по порядку плана")
+      .toEqual(["glm-5.3", "grok-4.6"])
+    expect(refusals[0].reason, "причина названа: пина клетки нет").toBe("пин эффорта клетки не объявлен")
+    expect(refusals[0].rungEffortRequested, "запрошенного эффорта нет: объявлять нечего").toBe(undefined)
   })
 
   test("#223 зуб 3: попытка 0 не переписывается", async ($, on) => {
@@ -2082,9 +2099,13 @@ describe("failover: объявленный эффорт ступени (#223)", 
     expect(seenEffort[1], "на реальном переходе объявленный эффорт доезжает").toBe("high")
   })
 
-  test("#223 зуб 4: негодное значение — ступень зовётся, эффорт не применён", async ($, on) => {
+  // CONSTRAINT (#266): негодный эффорт -- ступень БЕЗ годного объявления, после
+  // #266 она ОТКАЗЫВАЕТ (а не едет без эффорта), но значение по-прежнему
+  // НАЗВАНО уликой effortBad_<модель>: молча проглоченная опечатка реестра --
+  // тот же класс, что и тихое применение. Здоровая ступень за ней подхватывает.
+  test("#223 зуб 4: негодное значение — ступень отказывает, значение названо, следующая подхватывает", async ($, on) => {
     const kept = wired(on, 210_000_000, {}, {
-      [HOME + "/probes.toml"]: effortToml('[{ model = "glm-5.3", effort = "High" }]'),
+      [HOME + "/probes.toml"]: effortToml('[{ model = "glm-5.3", effort = "High" }, { model = "grok-4.6", effort = "max" }]'),
     })
     const seen: string[] = []
     const seenEffort: unknown[] = []
@@ -2119,20 +2140,26 @@ describe("failover: объявленный эффорт ступени (#223)", 
       turnId: "turn-223-4", index: 0, model: "busy-model",
       messageCount: 1, agentId: spawned.agentId, effort: "low",
     }))
-    expect(res && res.answer, "ступень с негодным эффортом всё равно зовётся").toBe("from-glm-5.3")
-    expect(seen).toEqual(["busy-model", "glm-5.3"])
-    expect(seenEffort[1], "негодное значение не применено").toBe("low")
+    expect(res && res.answer, "негодная ступень отвергнута, здоровая ответила").toBe("from-grok-4.6")
+    expect(seen, "негодная ступень НЕ звалась: отказ до вызова").toEqual(["busy-model", "grok-4.6"])
+    expect(seenEffort[1], "здоровая ступень едет на СВОЁМ объявленном эффорте").toBe("max")
 
     const lines = failoverLines(kept)
-    const rung = lines.filter(l => l.modelRequested === "glm-5.3")[0]
-    expect(rung && rung["effortBad_glm-5.3"],
-      "в улике поле эффорт негоден с именем модели").toBe("High")
-    expect(rung && rung.rungEffortRequested, "негодное не выдаётся за запрошенное").toBe(undefined)
+    const refused = lines.filter(l => l.outcome === "rung-effort-refused")
+    expect(refused, "ровно одна отказная запись -- негодная ступень").toHaveLength(1)
+    expect(refused[0] && refused[0].modelRequested).toBe("glm-5.3")
+    expect(refused[0] && refused[0]["effortBad_glm-5.3"],
+      "в отказной записи негодное значение названо с именем модели").toBe("High")
+    expect(refused[0] && refused[0].rungEffortRequested, "негодное не выдаётся за запрошенное").toBe(undefined)
+    const ok = lines.filter(l => l.modelRequested === "grok-4.6" && l.outcome === "ok")[0]
+    expect(ok && ok.rungEffortRequested, "здоровая ступень несёт свой эффорт").toBe("max")
   })
 
   test("#223 зуб 5: неразобранный элемент (объект без model, пустая строка) отбрасывается СО СЧЁТЧИКОМ", async ($, on) => {
     const kept = wired(on, 220_000_000, {}, {
-      [HOME + "/probes.toml"]: effortToml('[{ effort = "high" }, "", "glm-5.3"]'),
+      // CONSTRAINT: выживший элемент -- богатой формы: голой строкой ступень
+      // после #266 отказала бы, и зуб мерил бы отказ, а не счётчик отброшенных.
+      [HOME + "/probes.toml"]: effortToml('[{ effort = "high" }, "", { model = "glm-5.3", effort = "max" }]'),
     })
     const seen: string[] = []
     on("agent.spawn", (_$, e) => ({
@@ -2189,7 +2216,7 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
       "enabled = true",
       "",
       "[failover.default]",
-      'models = ["glm-5.3", "grok-4.6"]',
+      "models = " + richRungs(["glm-5.3", "grok-4.6"]),
       "",
     ].join("\n")
   }
