@@ -52,17 +52,49 @@ if not entries or not entries[0].get("version"):
 print(entries[0]["version"])' "$PLUGINS_REGISTRY" "$PLUGIN@$MARKETPLACE"
 }
 
-# --- версия ДЕРЕВА ------------------------------------------------------------
+manifest_name() {   # <файл> -> name; ненулевой rc -- не читается
+  python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8"))["name"])
+except Exception:
+    sys.exit(1)' "$1"
+}
+
+# --- дом плагина и версия ДЕРЕВА ----------------------------------------------
+# CONSTRAINT: дом выбирается ПОЛЕМ name корневого манифеста, не наличием файла:
+# при обратной схеме опечатка в имени (catalist) молча разрешилась бы корневым
+# плагином и отгрузила бы НЕ ТО. Нечитаемый корневой манифест -- не отказ:
+# просто дом не корневой, идём вложенной дорогой.
+ROOT_MANIFEST=".claude-plugin/plugin.json"
+HOME_DIR="plugins/$PLUGIN"
 MANIFEST="plugins/$PLUGIN/.claude-plugin/plugin.json"
-[ -f "$MANIFEST" ] || no_instrument "нет $MANIFEST -- версию дерева не прочитать"
+if root_name=$(manifest_name "$ROOT_MANIFEST") && [ "$root_name" = "$PLUGIN" ]; then
+  HOME_DIR="."
+  MANIFEST="$ROOT_MANIFEST"
+fi
+[ -f "$MANIFEST" ] || no_instrument "нет ни корневого $ROOT_MANIFEST (name не $PLUGIN либо не читается), ни вложенного $MANIFEST -- версию дерева не прочитать"
 TREE_V=$(manifest_version "$MANIFEST") || no_instrument "$MANIFEST не разбирается как JSON"
 
 # --- активировать несохранённое нельзя ----------------------------------------
-DIRTY=$(git status --porcelain -- "plugins/$PLUGIN") \
-  || no_instrument "git status отказал -- текущий каталог не репозиторий?"
-if [ -n "$DIRTY" ]; then
-  refuse "ДЕРЕВО_ГРЯЗНОЕ: по путям plugins/$PLUGIN не всё сохранено:
+# CONSTRAINT: область грязи следует за домом; для корневого -- ровно канон
+# владения .githooks/pre-commit. Голый `git status --porcelain` без pathspec
+# ЗАПРЕЩЁН: грязь в tests/ или docs/ не принадлежит корневому плагину, отказ
+# по ней стрелял бы шире области действия.
+if [ "$HOME_DIR" = "." ]; then
+  DIRTY=$(git status --porcelain -- \
+    skills agents commands hooks .claude-plugin .codex-plugin .cursor-plugin .kimi-plugin) \
+    || no_instrument "git status отказал -- текущий каталог не репозиторий?"
+  if [ -n "$DIRTY" ]; then
+    refuse "ДЕРЕВО_ГРЯЗНОЕ: по путям корневого плагина $PLUGIN (skills agents commands hooks .claude-plugin .codex-plugin .cursor-plugin .kimi-plugin) не всё сохранено:
 $DIRTY"
+  fi
+else
+  DIRTY=$(git status --porcelain -- "plugins/$PLUGIN") \
+    || no_instrument "git status отказал -- текущий каталог не репозиторий?"
+  if [ -n "$DIRTY" ]; then
+    refuse "ДЕРЕВО_ГРЯЗНОЕ: по путям plugins/$PLUGIN не всё сохранено:
+$DIRTY"
+  fi
 fi
 
 # --- HEAD обязан быть запушен --------------------------------------------------
@@ -74,6 +106,24 @@ if [ $? -ne 0 ] || [ -n "$AHEAD" ]; then
   # здесь отказ раньше и с названной причиной.
   refuse "НЕ_ЗАПУШЕНО: HEAD впереди origin/$BRANCH (зеркало тянет с origin -- активация взяла бы прошлую версию):
 $AHEAD"
+fi
+
+# --- зеркала корневого обязаны согласоваться ДО отгрузки ----------------------
+# CONSTRAINT: зеркала читают ЧУЖИЕ инструменты (клоны маркетплейса других
+# площадок) -- расщеплённое объявление отгружать нельзя; pre-commit обходится
+# --no-verify, эта дверь стоит при самой отгрузке. Отсутствующий файл зеркала --
+# тоже расхождение.
+if [ "$HOME_DIR" = "." ]; then
+  MIRRORS=".claude-plugin/plugin.json .codex-plugin/plugin.json .cursor-plugin/plugin.json .kimi-plugin/plugin.json"
+  first=""; diverged=0; listing=""
+  for m in $MIRRORS; do
+    v=$(manifest_version "$m") || v="НЕТ ФАЙЛА"
+    [ -n "$first" ] || first="$v"
+    [ "$v" = "$first" ] || diverged=1
+    listing="$listing
+  $m → $v"
+  done
+  [ "$diverged" = 0 ] || refuse "ЗЕРКАЛА_РАСХОДЯТСЯ:$listing"
 fi
 
 # --- обновление зеркала маркетплейса ------------------------------------------

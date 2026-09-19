@@ -19,12 +19,24 @@ set -u
 
 git diff-tree --no-commit-id --name-only -r --root -m --first-parent HEAD | while IFS= read -r f; do
   [ -n "$f" ] || continue
+  plugin=""
   case "$f" in
-    plugins/*/.claude-plugin/plugin.json) ;;
+    plugins/*/.claude-plugin/plugin.json)
+      plugin="${f#plugins/}"; plugin="${plugin%%/*}" ;;
+    # CONSTRAINT: имя корневого плагина берётся из ПОЛЯ name манифеста ЭТОГО
+    # же коммита -- путь корневого манифеста имени не содержит (дом «.»).
+    # Зеркала (.codex-plugin и др.) в образец НЕ попадают: дом объявления
+    # один, иначе один бамп печатал бы четыре одинаковых напоминания.
+    .claude-plugin/plugin.json)
+      plugin=$(git show "HEAD:$f" 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("name", "?"))
+except Exception:
+    print("?")')
+      ;;
     *) continue ;;
   esac
-  plugin="${f#plugins/}"
-  plugin="${plugin%%/*}"
+  [ -n "$plugin" ] || plugin="?"
   v=$(git show "HEAD:$f" 2>/dev/null | python3 -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("version", "?"))

@@ -29,7 +29,7 @@ set -u
 # неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
 # агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
 # дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
-EXPECTED_TEETH=12
+EXPECTED_TEETH=21
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SHIP="$(cd "$HERE/../.." && pwd)/scripts/ship-plugin.sh"
@@ -53,7 +53,7 @@ trap 'rm -rf "$ROOT"' EXIT
 # CONSTRAINT: «ПРИБОР НЕДОСТУПЕН» с пробелом -- форма брифа #188, не
 # подчёркивание соседних дверей. Поэтому причины -- МАССИВ: разбивка строки
 # по словам резала бы двухсловную причину на два ложных куска.
-REASONS=("ДЕРЕВО_ГРЯЗНОЕ" "НЕ_ЗАПУШЕНО" "АКТИВАЦИЯ_НЕ_ПЕРЕСТАВИЛА" "ОБНОВЛЕНИЕ_МАРКЕТПЛЕЙСА_ОТКАЗАЛО" "ОБНОВЛЕНИЕ_ПЛАГИНА_ОТКАЗАЛО" "ПРИБОР НЕДОСТУПЕН")
+REASONS=("ДЕРЕВО_ГРЯЗНОЕ" "НЕ_ЗАПУШЕНО" "АКТИВАЦИЯ_НЕ_ПЕРЕСТАВИЛА" "ОБНОВЛЕНИЕ_МАРКЕТПЛЕЙСА_ОТКАЗАЛО" "ОБНОВЛЕНИЕ_ПЛАГИНА_ОТКАЗАЛО" "ЗЕРКАЛА_РАСХОДЯТСЯ" "ПРИБОР НЕДОСТУПЕН")
 
 check_only() {   # <ожидаемая причина> <вывод инструмента>
   local exp="$1" out="$2" r
@@ -67,11 +67,24 @@ check_only() {   # <ожидаемая причина> <вывод инстру�
   return 0
 }
 
+root_manifest() {   # <файл> <версия> -- корневой манифест catalyst; он же зеркало
+  cat > "$1" <<JSON
+{
+  "name": "catalyst",
+  "version": "$2",
+  "description": "synthetic root plugin for the ship teeth",
+  "author": {"name": "t"}
+}
+JSON
+}
+
 # Дерево мира: манифест 0.1.10, заглушка claude, пустой пуш в bare-origin.
 # Реестр НЕ пишется -- его пишет write_registry для случаев, где он есть:
 # случай «реестра нет» пользуется миром как есть.
-mk_world() {   # <имя мира> -> путь мира
-  local w="$ROOT/$1"
+# Второй аргумент -- версия КОРНЕВОГО плагина: мир получает манифест catalyst,
+# четыре согласованных зеркала и tracked-файл в skills/.
+mk_world() {   # <имя мира> [версия корневого] -> путь мира
+  local w="$ROOT/$1" root_v="${2:-}"
   mkdir -p "$w/plugins/catalyst-probes/.claude-plugin" "$w/bin" "$w/home/plugins"
   cat > "$w/plugins/catalyst-probes/.claude-plugin/plugin.json" <<JSON
 {
@@ -81,6 +94,18 @@ mk_world() {   # <имя мира> -> путь мира
   "author": {"name": "t"}
 }
 JSON
+  if [ -n "$root_v" ]; then
+    mkdir -p "$w/.claude-plugin" "$w/.codex-plugin" "$w/.cursor-plugin" \
+             "$w/.kimi-plugin" "$w/skills"
+    root_manifest "$w/.claude-plugin/plugin.json" "$root_v"
+    root_manifest "$w/.codex-plugin/plugin.json" "$root_v"
+    root_manifest "$w/.cursor-plugin/plugin.json" "$root_v"
+    root_manifest "$w/.kimi-plugin/plugin.json" "$root_v"
+    # CONSTRAINT: в skills/ обязан жить tracked-файл -- целиком несохранённый
+    # каталог git сворачивает в «?? skills/», и зуб на грязь не смог бы назвать
+    # путь конкретного файла.
+    printf 'живой навык\n' > "$w/skills/live.md"
+  fi
   # CONSTRAINT: заглушка только пишет след и возвращает заданный код/текст --
   # «действий» у неё нет, живой claude не зовётся.
   cat > "$w/bin/claude" <<'STUB'
@@ -97,6 +122,7 @@ STUB
   git -C "$w" config user.email t@t
   git -C "$w" config user.name t
   git -C "$w" add plugins bin home
+  [ -z "$root_v" ] || git -C "$w" add .claude-plugin .codex-plugin .cursor-plugin .kimi-plugin skills
   git -C "$w" commit -qm base
   git -C "$w" branch -M main
   # CONSTRAINT: bare-origin и пуш ДО следа -- «HEAD запушен» обязан быть
@@ -107,10 +133,10 @@ STUB
   printf '%s' "$w"
 }
 
-write_registry() {   # <мир> <версия> [рынок записи]
-  local w="$1" v="$2" mkt="${3:-catalyst}"
+write_registry() {   # <мир> <версия> [рынок записи] [плагин записи]
+  local w="$1" v="$2" mkt="${3:-catalyst}" plugin="${4:-catalyst-probes}"
   cat > "$w/home/plugins/installed_plugins.json" <<JSON
-{"version":2,"plugins":{"catalyst-probes@$mkt":[{"scope":"user",
+{"version":2,"plugins":{"$plugin@$mkt":[{"scope":"user",
  "installPath":"/синтетика-без-кэша","version":"$v","gitCommitSha":"0123456789abcdef"}]}}
 JSON
 }
@@ -118,8 +144,17 @@ JSON
 # Код возврата берётся у САМОЙ подстановки, а не через переменную внутри неё:
 # run_ship исполняется в подоболочке, присваивания внутри неё наружу не
 # выходят. stderr гасить нельзя -- туда пишутся отказы инструмента.
-run_ship() {   # <мир> [VAR=val ...] -> вывод инструмента, код = код инструмента
+# После «--» идут АРГУМЕНТЫ ship-plugin.sh (имя плагина и рынок): до него --
+# только VAR=val, как в существующих случаях заглушки.
+run_ship() {   # <мир> [VAR=val ...] [-- <аргументы ship-plugin.sh>] -> вывод, код = код инструмента
   local w="$1"; shift
+  # CONSTRAINT: ${arr[@]+…} -- под set -u пустой массив в bash 3.2 падает
+  # «unbound variable», а стенд обязан идти системным bash.
+  local envs=() args=() ship_args=0 a
+  for a in "$@"; do
+    if [ "$ship_args" = 0 ] && [ "$a" = "--" ]; then ship_args=1; continue; fi
+    if [ "$ship_args" = 1 ]; then args+=("$a"); else envs+=("$a"); fi
+  done
   # CONSTRAINT: след заглушки живёт ВНЕ репозитория мира -- tracked-файл,
   # растущий от вызова к вызову, краснел бы ДЕРЕВО_ГРЯЗНОЕ в каждом случае.
   : > "$w.stub.log"
@@ -127,7 +162,7 @@ run_ship() {   # <мир> [VAR=val ...] -> вывод инструмента, к
     CLAUDE_BIN="$w/bin/claude" \
     PLUGINS_REGISTRY="$w/home/plugins/installed_plugins.json" \
     CLAUDE_STUB_LOG="$w.stub.log" \
-    "$@" bash "$SHIP") 2>&1
+    ${envs[@]+"${envs[@]}"} bash "$SHIP" ${args[@]+"${args[@]}"}) 2>&1
 }
 
 # --- 1. версии совпали -> rc=0 и ОДНА строка ---------------------------------
@@ -243,10 +278,10 @@ fi
 # CONSTRAINT: случаи 10--11 -- СЛЕПЫЕ ЗОНЫ прежней формы diff-tree (без
 # --root -m --first-parent): первичный коммит и слияние давали 0 строк, и
 # напоминание молчало ровно на них.
-hook_manifest() {   # <файл> <версия>
+hook_manifest() {   # <файл> <версия> [имя плагина]
   cat > "$1" <<JSON
 {
-  "name": "catalyst-probes",
+  "name": "${3:-catalyst-probes}",
   "version": "$2",
   "description": "synthetic plugin for the post-commit teeth",
   "author": {"name": "t"}
@@ -262,6 +297,21 @@ mk_hook_repo() {   # <имя> -> путь; root-коммит СОЗДАЁТ ма
   git -C "$h" config user.email t@t
   git -C "$h" config user.name t
   git -C "$h" add plugins
+  git -C "$h" commit -qm base
+  git -C "$h" branch -M main
+  printf '%s' "$h"
+}
+
+# Корневой вариант хук-репозитория: манифест catalyst лежит в КОРНЕ, имени
+# в пути нет -- хук обязан взять его из поля name самого манифеста.
+mk_hook_root_repo() {   # <имя> -> путь; root-коммит создаёт корневой манифест 0.1.10
+  local h="$ROOT/$1"
+  mkdir -p "$h/.claude-plugin"
+  hook_manifest "$h/.claude-plugin/plugin.json" 0.1.10 catalyst
+  git -C "$h" init -q
+  git -C "$h" config user.email t@t
+  git -C "$h" config user.name t
+  git -C "$h" add .claude-plugin
   git -C "$h" commit -qm base
   git -C "$h" branch -M main
   printf '%s' "$h"
@@ -308,6 +358,139 @@ if (( rc == 0 )) && [[ -z "$out" ]]; then
   ok "12) коммит без манифеста -- хук молчит (вывод пуст), rc=0"
 else
   bad "12) без манифеста: ждали пустой вывод и rc=0, получили rc=$rc [$out]"
+fi
+
+# --- корневой плагин catalyst: дом «.» (бриф #334) ----------------------------
+# CONSTRAINT: мир с корневым получает ВСЕ четыре манифеста согласованными --
+# расхождение вносится ТОЛЬКО самим случаем, и его коммитят/пушат, чтобы
+# отказ назывался своей причиной, а не ДЕРЕВО_ГРЯЗНОЕ/НЕ_ЗАПУШЕНО.
+
+# --- 13. корневой отгружается: rc=0, ОДНА строка, заглушка позвана ------------
+W=$(mk_world r13 9.9.9)
+write_registry "$W" 9.9.9 catalyst catalyst
+out=$(run_ship "$W" -- catalyst); rc=$?
+trace=$(cat "$W.stub.log")
+if (( rc == 0 )) && [[ "$out" == "в бою catalyst v9.9.9 (дерево v9.9.9)" ]] \
+  && [[ "$trace" == *"plugin update catalyst@catalyst"* ]]; then
+  ok "13) корневой catalyst отгружен -- rc=0, одна строка, в следе plugin update catalyst@catalyst"
+else
+  bad "13) корневая отгрузка: ждали rc=0, «в бою catalyst v9.9.9 (дерево v9.9.9)» и вызов заглушки, получили rc=$rc [$out] след=[$trace]"
+fi
+
+# --- 14. грязь по ВЛАДЕЕМОМУ пути корневого -> ДЕРЕВО_ГРЯЗНОЕ, путь назван ----
+W=$(mk_world r14 9.9.9)
+write_registry "$W" 9.9.9 catalyst catalyst
+printf 'несохранённое\n' > "$W/skills/new-skill.md"
+out=$(run_ship "$W" -- catalyst); rc=$?
+why=$(check_only "ДЕРЕВО_ГРЯЗНОЕ" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *"skills/new-skill.md"* ]]; then
+  ok "14) несохранённая правка корневого (skills/) -- ДЕРЕВО_ГРЯЗНОЕ, путь назван"
+else
+  bad "14) грязь корневого: rc=$rc $why[$out]"
+fi
+
+# --- 15. ГРАНИЦА: грязь ВНЕ области корневого отказа НЕ рождает ---------------
+# Несущий зуб границы: docs/ не принадлежит ни одному плагину; отказ по нему
+# был бы отказом шире области действия. Прогон обязан дойти до обычного исхода.
+W=$(mk_world r15 9.9.9)
+write_registry "$W" 9.9.9 catalyst catalyst
+mkdir -p "$W/docs"
+printf 'чужая грязь\n' > "$W/docs/outside.md"
+out=$(run_ship "$W" -- catalyst); rc=$?
+trace=$(cat "$W.stub.log")
+why=""
+for r in "${REASONS[@]}"; do
+  [[ "$out" != *"$r"* ]] || why="тянется причина $r; "
+done
+if (( rc == 0 )) && [[ -z "$why" ]] && [[ "$out" == "в бою catalyst v9.9.9 (дерево v9.9.9)" ]] \
+  && [[ "$trace" == *"plugin update catalyst@catalyst"* ]]; then
+  ok "15) грязь в docs/ вне области корневого -- ДЕРЕВО_ГРЯЗНОЕ НЕ звучит, отгрузка дошла до конца"
+else
+  bad "15) граница отказа: rc=$rc $why[$out] след=[$trace]"
+fi
+
+# --- 16. опечатка имени -> ПРИБОР НЕДОСТУПЕН, ОБА пути названы, заглушки нет --
+W=$(mk_world r16 9.9.9)
+write_registry "$W" 9.9.9 catalyst catalyst
+out=$(run_ship "$W" -- catalist); rc=$?
+trace=$(cat "$W.stub.log")
+why=$(check_only "ПРИБОР НЕДОСТУПЕН" "$out")
+# CONSTRAINT: маркеры «корневого»/«вложенного» обязательны -- голая подстрока
+# .claude-plugin/plugin.json живёт ВНУТРИ вложенного пути, и старый (не чиненный)
+# текст проходил бы проверку, не назвав корневой путь отдельной пробой.
+if (( rc == 2 )) && [[ -z "$why" ]] \
+  && [[ "$out" == *"корневого .claude-plugin/plugin.json"* ]] \
+  && [[ "$out" == *"вложенного plugins/catalist/.claude-plugin/plugin.json"* ]] \
+  && [[ -z "$trace" ]]; then
+  ok "16) опечатка catalist -- rc=2, названы ОБА пробованных пути, заглушка НЕ звана"
+else
+  bad "16) опечатка имени: rc=$rc $why[$out] след=[$trace]"
+fi
+
+# --- 17. зеркала разошлись -> ЗЕРКАЛА_РАСХОДЯТСЯ, файл и обе версии названы ---
+W=$(mk_world r17 9.9.9)
+write_registry "$W" 9.9.9 catalyst catalyst
+root_manifest "$W/.cursor-plugin/plugin.json" 9.9.8
+git -C "$W" add .cursor-plugin
+git -C "$W" commit -qm mirror-drift
+git -C "$W" push -q origin main
+out=$(run_ship "$W" -- catalyst); rc=$?
+trace=$(cat "$W.stub.log")
+why=$(check_only "ЗЕРКАЛА_РАСХОДЯТСЯ" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *".cursor-plugin/plugin.json"* ]] \
+  && [[ "$out" == *"9.9.8"* && "$out" == *"9.9.9"* ]] && [[ -z "$trace" ]]; then
+  ok "17) зеркало .cursor на 9.9.8 -- ЗЕРКАЛА_РАСХОДЯТСЯ, файл и обе версии названы, заглушка НЕ звана"
+else
+  bad "17) расхождение зеркал: rc=$rc $why[$out] след=[$trace]"
+fi
+
+# --- 18. зеркало отсутствует -> ЗЕРКАЛА_РАСХОДЯТСЯ, «НЕТ ФАЙЛА» и путь -------
+W=$(mk_world r18 9.9.9)
+write_registry "$W" 9.9.9 catalyst catalyst
+git -C "$W" rm -q .kimi-plugin/plugin.json
+git -C "$W" commit -qm mirror-gone
+git -C "$W" push -q origin main
+out=$(run_ship "$W" -- catalyst); rc=$?
+why=$(check_only "ЗЕРКАЛА_РАСХОДЯТСЯ" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *"НЕТ ФАЙЛА"* ]] \
+  && [[ "$out" == *".kimi-plugin/plugin.json"* ]]; then
+  ok "18) удалённое зеркало .kimi -- ЗЕРКАЛА_РАСХОДЯТСЯ, названы «НЕТ ФАЙЛА» и путь"
+else
+  bad "18) отсутствующее зеркало: rc=$rc $why[$out]"
+fi
+
+# --- 19. реестр отстал на корневом -> АКТИВАЦИЯ_НЕ_ПЕРЕСТАВИЛА, оба числа ----
+W=$(mk_world r19 9.9.9)
+write_registry "$W" 9.9.8 catalyst catalyst
+out=$(run_ship "$W" -- catalyst); rc=$?
+why=$(check_only "АКТИВАЦИЯ_НЕ_ПЕРЕСТАВИЛА" "$out")
+if (( rc == 1 )) && [[ -z "$why" ]] && [[ "$out" == *"реестр v9.9.8"* && "$out" == *"дерево v9.9.9"* ]]; then
+  ok "19) реестр catalyst отстал -- АКТИВАЦИЯ_НЕ_ПЕРЕСТАВИЛА, обе версии названы"
+else
+  bad "19) отставание реестра корневого: rc=$rc $why[$out]"
+fi
+
+# --- 20. post-commit на КОРНЕВОМ манифесте -> ОБЕ строки, имя из поля name ---
+H=$(mk_hook_root_repo c20)
+out=$(run_hook "$H"); rc=$?
+if (( rc == 0 )) && [[ "$out" == *"версия catalyst поднята до v0.1.10"* ]] \
+  && [[ "$out" == *"scripts/ship-plugin.sh catalyst"* ]]; then
+  ok "20) root-коммит с корневым манифестом -- ОБЕ строки, имя catalyst взято из поля name"
+else
+  bad "20) корневой манифест: ждали обе строки с именем catalyst и rc=0, получили rc=$rc [$out]"
+fi
+
+# --- 21. post-commit на ЗЕРКАЛЕ -> МОЛЧИТ (дом объявления один) ---------------
+H=$(mk_hook_root_repo c21)
+mkdir -p "$H/.codex-plugin"
+hook_manifest "$H/.codex-plugin/plugin.json" 0.2.0 catalyst
+git -C "$H" add .codex-plugin
+git -C "$H" commit -qm mirror-only
+out=$(run_hook "$H"); rc=$?
+if (( rc == 0 )) && [[ -z "$out" ]]; then
+  ok "21) коммит ТОЛЬКО зеркала .codex -- хук молчит: напоминание одно, не четыре"
+else
+  bad "21) зеркало: ждали пустой вывод и rc=0, получили rc=$rc [$out]"
 fi
 
 printf '\nplugin-ship teeth: прошло=%d провалов=%d ожидалось=%d\n' "$PASS" "$FAIL" "$EXPECTED_TEETH"
