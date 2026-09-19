@@ -15,7 +15,7 @@ import {
   verdictKey, memoUsable, effortOk, EFFORTS, markEffort,
   readComplete, blocksLine,
   MOD_VERSION, RUNG_COOLDOWN_MS, noteRungTimeout, rungsAfterCooldown,
-  failoverLadder, failoverLadderBind, loadAllowedByClass, loadWorld, nextFailoverModel, failoverAttemptModels,
+  failoverLadder, failoverLadderBind, loadAllowedByClass, loadWorld, worldFor, nextFailoverModel, failoverAttemptModels,
   isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP, chunkCarriesContent,
   failoverBindSet, failoverBindGet, failoverBindReset,
   FAILOVER_FOLD_PERIOD_MS, failoverAttemptIsBoring,
@@ -748,7 +748,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.39")
+  expect(MOD_VERSION).toBe("0.1.40")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1105,6 +1105,47 @@ test("loadWorld: два вызова в окне мемо -- одно чтени
   expect(reads.filter(p => p === table).length).toBe(1)
 })
 
+// CONSTRAINT: worldFor -- мемо уровня модуля, раннер держит один процесс на
+// файл, поэтому окно часов этого зуба (95_000_000) обязано держаться дальше
+// 5000 мс от часов соседей, иначе зуб мерил бы чужое мемо.
+// Два `$` моделируют один процесс со сменой рабочего каталога (#308: субагент
+// в другом worktree): часы общие, PWD разные.
+test("worldFor: смена рабочего каталога внутри окна мемо даёт projectHome вызывающего каталога", async () => {
+  const files: Record<string, string> = {
+    "/hh/.claude/probes/probes.toml": "[failover]\nenabled = true\n",
+    "/wA/.claude/probes/probes.toml": "[failover]\nenabled = true\n",
+    "/wB/.claude/probes/probes.toml": "[failover]\nenabled = false\n",
+  }
+  const a = fsEnv$(files, { HOME: "/hh", PWD: "/wA" }, 95_000_000)
+  const b = fsEnv$(files, { HOME: "/hh", PWD: "/wB" }, 95_000_000)
+  const wa = await worldFor(a.$)
+  const wb = await worldFor(b.$)
+  expect(wa.world.projectHome).toBe("/wA/.claude/probes")
+  expect(wb.world.projectHome).toBe("/wB/.claude/probes")
+  expect(wb.world.cwd).toBe("/wB")
+  const wa2 = await worldFor(a.$)
+  expect(wa2.world.projectHome).toBe("/wA/.claude/probes")
+})
+
+test("worldFor: неопределимый каталог не использует и не заполняет мемо мира", async () => {
+  const probesA = "/wA2/.claude/probes/probes.toml"
+  const files: Record<string, string> = {
+    [probesA]: "[failover]\nenabled = true\n",
+  }
+  // PWD не задана, store.get отдаёт "" -- каталог неопределим.
+  const a = fsEnv$(files, { HOME: "/hh2", PWD: "/wA2" }, 95_100_000)
+  const u = fsEnv$(files, { HOME: "/hh2" }, 95_100_000)
+  await worldFor(a.$)
+  const wu = await worldFor(u.$)
+  expect(wu.world.projectHome).toBe("")
+  expect(wu.world.cwd).toBe("")
+  // Неопределимый вызов не перезаписал мемо: повтор из известного каталога в
+  // том же окне обязан попасть в кэш -- мир A загружен ОДИН раз (два чтения
+  // probes-файла на загрузку: layerHit в findProjectHome + чтение проекта).
+  await worldFor(a.$)
+  expect(a.reads.concat(u.reads).filter(p => p === probesA).length).toBe(2)
+})
+
 test("loadAllowedByClass: битая env-таблица не выигрывает, цепочка env:unusable→marketplace", async () => {
   const envPath = "/tbl-bad/routing-table.toml"
   const market = "/cfg-ok/plugins/marketplaces/catalyst/hooks/routing-table.toml"
@@ -1202,6 +1243,9 @@ test("tool.call: два вызова в окне мемо -- одно чтени
   const { $, reads } = fsEnv$(files, {
     CLAUDE_PROBES_DIR: "/probes-wmemo",
     CATALYST_ROUTING_TABLE: table,
+    // Мемо мира ключуется рабочим каталогом (#308): без каталога мир не
+    // мемоится вовсе, и предмет этого зуба (окно мемо) исчезает.
+    PWD: "/work-wmemo",
   }, 96_000_000)
   $.agent = { list: async () => [] }
   let hook: any = null

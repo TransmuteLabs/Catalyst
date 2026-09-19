@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.39"
+export const MOD_VERSION = "0.1.40"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -1077,19 +1077,34 @@ async function applyPromptRules(
 
 // CONSTRAINT: command.describe fires 254 times per session and tool.describe 24
 // (measured 2026-09-12). Reading probes.toml per call would be 278 file reads
-// per session, so the world is memoised for a short window. Correctness never
-// depends on the memo — only cost does.
+// per session, so the world is memoised for a short window. The world is built
+// FROM the working directory (loadWorld -> findProjectHome reads the project
+// probes.toml), so the memo MUST be keyed by that directory: a cross-directory
+// hit inside the window answers with a foreign projectHome (#308).
 const WORLD_MEMO_MS = 5000
 let worldMemo: any = null
 let allowedMemo: { t: number, key: string, value: { allowedByClass: { [classId: string]: string[] }, allowedSrc: string } } | null = null
 
 export async function worldFor($: any): Promise<any> {
   const now = await nowMs($)
-  if (worldMemo && now - worldMemo.t < WORLD_MEMO_MS) return worldMemo
+  // CONSTRAINT: каталог -- ключ мемо, поэтому вычисляется ДО кэша той же
+  // логикой, что и потребитель (loadWorld), и передаётся ему: повторный
+  // расчёт поднимал бы стоимость горячего пути.
+  let cwd = ""
+  try { cwd = String(await $.env.get("PWD") || "").trim() } catch (x) { cwd = "" }
+  if (!cwd) {
+    try { cwd = String(await $.store.get(CWD_KEY) || "") } catch (x) { cwd = "" }
+  }
+  if (cwd && worldMemo && now - worldMemo.t < WORLD_MEMO_MS && worldMemo.cwd === cwd) {
+    return worldMemo
+  }
   const env = await envBundle($)
-  const world = await loadWorld($, env)
-  worldMemo = { t: now, env, world }
-  return worldMemo
+  const world = await loadWorld($, env, cwd)
+  const packed = { t: now, cwd, env, world }
+  // CONSTRAINT: при неопределимом каталоге мемо не используется и не
+  // заполняется -- неизвестный ключ никогда не считается совпавшим (#308).
+  if (cwd) worldMemo = packed
+  return packed
 }
 
 // Отсутствие поля sid и есть чинимый дефект: неудача обязана быть ВИДНА
@@ -1687,14 +1702,18 @@ export function memoUsable(stored: any, atMs: number, ttlMs: number): boolean {
   return Number.isFinite(stored.t) && (atMs - stored.t) <= ttlMs
 }
 
-export async function loadWorld($: any, env: any): Promise<any> {
+export async function loadWorld($: any, env: any, cwdArg?: string): Promise<any> {
   let globalHome = ""
   if (env.PROBES_DIR) globalHome = env.PROBES_DIR
   else if (env.CONFIG_DIR) globalHome = env.CONFIG_DIR + "/probes"
   else globalHome = env.HOME + "/.claude/probes"
-  let cwd = env.PWD
-  if (!cwd) {
-    try { cwd = String(await $.store.get(CWD_KEY) || "") } catch (x) { cwd = "" }
+  let cwd = ""
+  if (cwdArg !== undefined) cwd = cwdArg
+  else {
+    cwd = String(env.PWD || "")
+    if (!cwd) {
+      try { cwd = String(await $.store.get(CWD_KEY) || "") } catch (x) { cwd = "" }
+    }
   }
   const gToml = await readText($, globalHome + "/probes.toml")
   const gParsed = parseToml(gToml.text || "")
