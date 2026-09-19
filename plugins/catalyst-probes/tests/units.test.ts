@@ -748,7 +748,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.38")
+  expect(MOD_VERSION).toBe("0.1.39")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1815,7 +1815,7 @@ test("catch: каждое подписанное событие несёт об�
   expect(step.length, "turn.step -- одна стримовая регистрация").toBe(1)
   expect(step[0].h.constructor.name, "turn.step -- async-генератор").toBe("AsyncGeneratorFunction")
   const others = handlers.filter(x => x.ev !== "turn.step")
-  expect(others.length, "остальные девять регистраций -- не стрим").toBe(9)
+  expect(others.length, "остальные восемь регистраций -- не стрим").toBe(8)
   for (const x of others) {
     expect(typeof x.h, `${x.ev} несёт функцию`).toBe("function")
     expect(x.h.constructor.name, `${x.ev} не async-генератор`).not.toBe("AsyncGeneratorFunction")

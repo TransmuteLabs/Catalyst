@@ -208,24 +208,4 @@ reports which one it saw. The record carries `detail_<model>`, `stop_<model>`,
 the envelope: absent fields mean "there was nothing to measure with", while
 zeros would mean a measured zero.
 
-## #293 — AGENTS.md via `prompt.context` (mod copy of patch step 25)
-
-When `CLAUDE_MEMORY_CARRIER=mod`, the module subscribes to `prompt.context` and
-appends `AGENTS.md` / `.claude/AGENTS.md` discovered by `$.fs.ancestors`. The
-file is a reserve: it is skipped when that same directory already contributed
-a project/local `CLAUDE.md`, `.claude/CLAUDE.md`, or `CLAUDE.local.md`. Paths
-are deduped after `\`→`/` and trailing-slash strip; `content.trim()` matching
-an existing project/local record is also dropped (the file is already in the
-list under another name). Insertion sits at the first project/local whose
-directory is below the candidate, else after the last project/local, else
-before the first `memory`, else at the end.
-
-The handler changes only `instructionFiles`. Editing `blocks` in the same step
-makes the host void the list (`instructionFiles: undefined`). Any throw inside
-the handler, or an empty/failed `fs.ancestors`, returns the original list.
-Any value other than `mod` (including unset) is inert and does not call
-`fs.ancestors`. Default carrier remains the byte patch.
-
-User-level `~/.claude/AGENTS.md` is outside `fs.ancestors` by host construction
-(Managed/User homes excluded). This wave does not add a second reader for that
-layer. GEMINI/CRUSH/QWEN/IFLOW/WARP/copilot-instructions are out of this wave.
+## #306 — AGENTS.md carrier removed (2026-09-19): 2.1.277 ships `agents-md@builtin`

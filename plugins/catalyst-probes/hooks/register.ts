@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.38"
+export const MOD_VERSION = "0.1.39"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -1626,8 +1626,6 @@ async function envBundle($: any): Promise<any> {
   try { PWD = await $.env.get("PWD") } catch (x) {}
   let ROUTING_TABLE: any = ""
   try { ROUTING_TABLE = await $.env.get("CATALYST_ROUTING_TABLE") } catch (x) {}
-  let MEMORY_CARRIER: any = ""
-  try { MEMORY_CARRIER = await $.env.get("CLAUDE_MEMORY_CARRIER") } catch (x) {}
   return {
     JUDGE_CARRIER: String(JUDGE_CARRIER || ""),
     JUDGE: String(JUDGE || ""),
@@ -1645,7 +1643,6 @@ async function envBundle($: any): Promise<any> {
     HOME: String(HOME || ""),
     PWD: String(PWD || "").trim(),
     ROUTING_TABLE: String(ROUTING_TABLE || "").trim(),
-    MEMORY_CARRIER: String(MEMORY_CARRIER || ""),
   }
 }
 
@@ -2333,99 +2330,6 @@ async function* observerFailThroughStream($: any, e: any, next: any): AsyncGener
   return yield* driveNext(next(e))
 }
 
-function normMemPath(p: string): string {
-  let s = String(p || "").replace(/\\/g, "/")
-  while (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1)
-  return s
-}
-
-function dirOfMemPath(p: string): string {
-  const n = normMemPath(p)
-  const i = n.lastIndexOf("/")
-  if (i < 0) return n
-  if (i === 0) return "/"
-  return n.slice(0, i)
-}
-
-function isProjectOrLocal(kind: any): boolean {
-  return kind === "project" || kind === "local"
-}
-
-function claudeInSameDir(filePath: string, dir: string): boolean {
-  const n = normMemPath(filePath)
-  const d = normMemPath(dir)
-  return n === d + "/CLAUDE.md" || n === d + "/.claude/CLAUDE.md" || n === d + "/CLAUDE.local.md"
-}
-
-function dirIsBelow(recordDir: string, candDir: string): boolean {
-  const a = normMemPath(recordDir)
-  const b = normMemPath(candDir)
-  if (b === "/") return a !== "/"
-  return a !== b && a.startsWith(b + "/")
-}
-
-function agentsInsertionIndex(list: any[], candDir: string): number {
-  let lastProject = -1
-  let firstMemory = -1
-  let firstBelow = -1
-  for (let i = 0; i < list.length; i++) {
-    const rec = list[i]
-    const kind = rec && rec.kind
-    if (isProjectOrLocal(kind)) {
-      lastProject = i
-      if (firstBelow < 0 && dirIsBelow(dirOfMemPath(String(rec.path || "")), candDir)) {
-        firstBelow = i
-      }
-    } else if (kind === "memory" && firstMemory < 0) {
-      firstMemory = i
-    }
-  }
-  if (firstBelow >= 0) return firstBelow
-  if (lastProject >= 0) return lastProject + 1
-  if (firstMemory >= 0) return firstMemory
-  return list.length
-}
-
-function dirHasClaude(existing: any[], dir: string): boolean {
-  for (let i = 0; i < existing.length; i++) {
-    const rec = existing[i]
-    if (!rec || !isProjectOrLocal(rec.kind)) continue
-    if (claudeInSameDir(String(rec.path || ""), dir)) return true
-  }
-  return false
-}
-
-function shouldDropAgents(merged: any[], rec: any): boolean {
-  const np = normMemPath(String(rec.path || ""))
-  const body = String(rec.content || "").trim()
-  for (let i = 0; i < merged.length; i++) {
-    const m = merged[i]
-    if (!m) continue
-    if (normMemPath(String(m.path || "")) === np) return true
-    if (isProjectOrLocal(m.kind) && String(m.content || "").trim() === body) return true
-  }
-  return false
-}
-
-function mergeAgentsMd(existing: any[], found: any[]): any[] {
-  const merged = existing.slice()
-  for (let f = 0; f < found.length; f++) {
-    const hit = found[f]
-    if (!hit || !Array.isArray(hit.parts)) continue
-    const dir = String(hit.dir || "")
-    if (dirHasClaude(existing, dir)) continue
-    for (let i = 0; i < hit.parts.length; i++) {
-      const part = hit.parts[i]
-      if (!part) continue
-      const rec: any = { path: part.path, kind: "project", content: part.content }
-      if (i > 0) rec.parent = hit.parts[0].path
-      if (shouldDropAgents(merged, rec)) continue
-      merged.splice(agentsInsertionIndex(merged, dir), 0, rec)
-    }
-  }
-  return merged
-}
-
 export function register(on: any) {
   on("session.start", async ($: any, e: any, next: any) => {
     try { if (e && e.cwd) await $.store.set(CWD_KEY, String(e.cwd)) } catch (x) {}
@@ -2474,33 +2378,6 @@ export function register(on: any) {
     const r = await applyPromptRules($, w.world, w.env, "section", name, String((e && e.text) || ""))
     if (!r.applied.length) return next(e)
     return next(Object.assign({}, e, { text: r.text }))
-  })
-    .catch(observerFailThrough)
-
-  on("prompt.context", async ($: any, e: any, next: any) => {
-    try {
-      // CONSTRAINT: окружение читается через worldFor -- мемо-окно то же, что у
-      // соседних подписок; прямой envBundle здесь стоил бы полтора десятка
-      // round-trip'ов $.env.get на КАЖДЫЙ ход внутри бюджетного события.
-      let w: any = null
-      try { w = await worldFor($) } catch (x) { w = null }
-      if (!w || !w.env || String(w.env.MEMORY_CARRIER || "").trim().toLowerCase() !== "mod") {
-        return next(e)
-      }
-      if (!e || e.instructionFiles === undefined) return next(e)
-      let found: any = null
-      try {
-        found = await $.fs.ancestors({ names: ["AGENTS.md", ".claude/AGENTS.md"] })
-      } catch (x) {
-        return next(e)
-      }
-      if (!Array.isArray(found) || found.length === 0) return next(e)
-      const merged = mergeAgentsMd(e.instructionFiles, found)
-      // CONSTRAINT: не трогать blocks — правка обоих полей за один шаг обнуляет список на стороне хоста.
-      return next({ ...e, instructionFiles: merged })
-    } catch (x) {
-      return next(e)
-    }
   })
     .catch(observerFailThrough)
 
