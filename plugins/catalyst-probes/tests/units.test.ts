@@ -749,7 +749,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.42")
+  expect(MOD_VERSION).toBe("0.1.43")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1258,6 +1258,609 @@ test("tool.call: два вызова в окне мемо -- одно чтени
   await hook($, { tool: "Read" }, next)
   await hook($, { tool: "Read" }, next)
   expect(reads.filter(p => p === probes).length).toBe(1)
+})
+
+// --- #335: чужой носитель -- громкий отказ --------------------------------------
+//
+// CONSTRAINT: зубы секции идут через живой tool.call, а не через экспорт
+// внутренней функции: предмет -- поведение сайта вызова (дедуп журнала при
+// бездедупном отказе), которого прямой вызов вооружения не касался бы. У
+// каждого зуба свой PWD и свой домашний каталог: мемо мира и модульный дедуп
+// не переносят состояние между зубами; значения чужих ручек уникальны по той
+// же причине -- дедуп журнала ключуется парой «проба x значение ручки».
+
+function carrierHook335(): () => any {
+  let hook: any = null
+  register((ev: string, ...rest: any[]) => {
+    if (ev === "tool.call") hook = rest.length >= 2 ? rest[1] : rest[0]
+    return { catch: () => {} }
+  })
+  return () => hook
+}
+
+function carrierRefusals335(writes: { path: string, text: string }[]): any[] {
+  return writes
+    .filter(w => String(w.path).indexOf("/failover/journal.jsonl.shard.") >= 0)
+    .map(w => { try { return JSON.parse(String(w.text)) } catch (x) { return null } })
+    .filter(r => r && r.rec === "carrier-foreign-refused")
+}
+
+// Минимальный годный конфиг форм-пробы: все поля FORM_REQ непусты, ни один
+// образец не совпадает с предметными событиями зубов -- форма прогоняется,
+// но вердикт всегда pass. Без этого набора runForm молча выходит до улики.
+const FORM_CFG_335 = [
+  "[probe.form]",
+  "path_lines_min = 1",
+  'brief_path = "^zzz-brief-path"',
+  'brief_ref = "zzz-brief-ref"',
+  'brief_head = "^zzz-brief-head"',
+  'brief_tail = "zzz-brief-tail"',
+  'report_path = "report[.]md$"',
+  'fence = "^```"',
+  'arm_line = "^zzz-arm-line"',
+  'arm_ellipsis = "[$][$][$]"',
+  'arm_cmd = "^zzz-arm-cmd"',
+  'arm_remote = "zzz-arm-remote"',
+  'arm_log = "zzz-arm-log"',
+  'witness_remote = "zzz-witness-remote"',
+  'witness_worker = "zzz-witness-worker"',
+  'open_door = "zzz-open-door"',
+  'negation = "zzz-negation"',
+  'rule_line = "zzz-rule-line"',
+  'path_line = "^zzz-path-line"',
+  'decision_head = "^zzz-decision-head"',
+  'decision_basis = "zzz-decision-basis"',
+  'decision_referent = "zzz-decision-referent"',
+  'legalize = "zzz-legalize"',
+  'git_commit = "zzz-git-commit"',
+  'git_commit_ok = "zzz-git-commit-ok"',
+  'git_msg = "zzz-git-msg"',
+  'git_push = "zzz-git-push"',
+  'git_push_ok = "zzz-git-push-ok"',
+  'git_force = "zzz-git-force"',
+  'trailer_a = "zzz-trailer-a"',
+  'trailer_b = "zzz-trailer-b"',
+  'write_redirect = "zzz-write-redirect"',
+  'heredoc = "zzz-heredoc"',
+].join("\n") + "\n"
+
+test("#335 judge: включена, носитель НЕ задан -- вооружена (пустая ручка = мод)", async () => {
+  // Наблюдаемая обязана жить ПОСЛЕ точки отказа чужого носителя (за
+  // выключателем enabled): skip по classes_judge пишется только вооружённой
+  // пробе -- чужой носитель погасил бы диспатч раньше этой записи.
+  const files: Record<string, string> = {
+    "/probes-335-j1/probes.toml": "[probe.judge]\n[probe.judge.filter]\nclasses_judge = [\"exec-*\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-j1",
+    CLAUDE_JUDGE: "1",
+    PWD: "/work-335-j1",
+  }, 97_000_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(out.deny, "вооружённая проба диспатч не гасит").toBe(undefined)
+  // Свидетель вооружённости: включённый judge без маркера класса при
+  // выстреле (Agent) пишет skip (no_class_marker); невооружённая или
+  // задержанная чужим носителем проба записи не оставляет.
+  expect(writes.filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0).length).toBe(1)
+})
+
+test("#335 judge: включена, носитель patch -- громкий отказ, значение ручки в исходе = patch", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-j2/probes.toml": "[probe.judge]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-j2",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch",
+    PWD: "/work-335-j2",
+  }, 97_001_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(String(out.deny)).toContain("judge")
+  expect(String(out.deny)).toContain("CLAUDE_JUDGE_CARRIER")
+  expect(String(out.deny)).toContain("patch")
+  const shards = carrierRefusals335(writes)
+  expect(shards.length, "ровно одна запись carrier-foreign-refused").toBe(1)
+  expect(shards[0].probe).toBe("judge")
+  expect(shards[0].handle).toBe("CLAUDE_JUDGE_CARRIER")
+  expect(shards[0].value).toBe("patch")
+})
+
+test("#335 judge: ВЫКЛЮЧЕНА, носитель patch -- тихо: ни отказа, ни записи (выключатель старше носителя)", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-j3/probes.toml": "[probe.judge]\nenabled = false\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-j3",
+    CLAUDE_JUDGE: "0",
+    CLAUDE_JUDGE_CARRIER: "patch",
+    PWD: "/work-335-j3",
+  }, 97_002_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(out.deny, "выключенная проба молчит и при чужой ручке").toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+  expect(writes.filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0).length).toBe(0)
+})
+
+test("#335 form: включена, носитель НЕ задан -- вооружена", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-f1/probes.toml": FORM_CFG_335,
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-f1",
+    CLAUDE_FORM: "1",
+    PWD: "/work-335-f1",
+  }, 97_003_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Write", file_path: "/work-335-f1/report.md", content: "заголовок\nтело отчёта\n" }, async (e: any) => e)
+  expect(out.deny, "проходная форма диспатч не гасит").toBe(undefined)
+  // Свидетель вооружённости: form-проба прогоняет Write через runForm и
+  // пишет вердикт в form/journal.jsonl; невооружённая записи не оставляет.
+  expect(writes.filter(w => String(w.path).indexOf("/form/journal.jsonl.shard.") >= 0).length).toBe(1)
+})
+
+test("#335 form: включена, носитель patch -- громкий отказ, значение ручки в исходе = patch", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-f2/probes.toml": "[probe.form]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-f2",
+    CLAUDE_FORM: "1",
+    CLAUDE_FORM_CARRIER: "patch",
+    PWD: "/work-335-f2",
+  }, 97_004_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Write", file_path: "/work-335-f2/report.md", content: "тело отчёта\n" }, async (e: any) => e)
+  expect(String(out.deny)).toContain("form")
+  expect(String(out.deny)).toContain("CLAUDE_FORM_CARRIER")
+  expect(String(out.deny)).toContain("patch")
+  const shards = carrierRefusals335(writes)
+  expect(shards.length).toBe(1)
+  expect(shards[0].probe).toBe("form")
+  expect(shards[0].handle).toBe("CLAUDE_FORM_CARRIER")
+  expect(shards[0].value).toBe("patch")
+})
+
+test("#335 form: ВЫКЛЮЧЕНА (formOn), носитель patch -- тихо: ни отказа, ни записи", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-f3/probes.toml": FORM_CFG_335,
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-f3",
+    CLAUDE_FORM: "0",
+    CLAUDE_FORM_CARRIER: "patch",
+    PWD: "/work-335-f3",
+  }, 97_005_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Write", file_path: "/work-335-f3/report.md", content: "заголовок\nтело отчёта\n" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+  expect(writes.filter(w => String(w.path).indexOf("/form/journal.jsonl.shard.") >= 0).length).toBe(0)
+})
+
+test("#335 idle-watch: включена, носитель НЕ задан -- вооружена", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-i1/probes.toml": "[probe.idle-watch]\nact = \"log_only\"\n",
+  }
+  const { $ } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-i1",
+    CLAUDE_IDLE: "1",
+    PWD: "/work-335-i1",
+  }, 97_006_000)
+  $.agent = { list: async () => [] }
+  const storeSets: string[] = []
+  $.store = { get: async () => "", set: async (k: string, _v: any) => { storeSets.push(String(k)) } }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Read" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  // Свидетель вооружённости: выстрел log_only ставит cap- и last-ключи ДО
+  // запуска фонового канала; невооружённая проба стора не касается вовсе.
+  expect(storeSets.length).toBe(2)
+})
+
+test("#335 idle-watch: включена, носитель patch -- громкий отказ, значение ручки в исходе = patch", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-i2/probes.toml": "[probe.idle-watch]\nact = \"log_only\"\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-i2",
+    CLAUDE_IDLE: "1",
+    CLAUDE_IDLE_CARRIER: "patch",
+    PWD: "/work-335-i2",
+  }, 97_007_000)
+  $.agent = { list: async () => [] }
+  const storeSets: string[] = []
+  $.store = { get: async () => "", set: async (k: string, _v: any) => { storeSets.push(String(k)) } }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Read" }, async (e: any) => e)
+  expect(String(out.deny)).toContain("idle-watch")
+  expect(String(out.deny)).toContain("CLAUDE_IDLE_CARRIER")
+  expect(String(out.deny)).toContain("patch")
+  const shards = carrierRefusals335(writes)
+  expect(shards.length).toBe(1)
+  expect(shards[0].probe).toBe("idle-watch")
+  expect(shards[0].handle).toBe("CLAUDE_IDLE_CARRIER")
+  expect(shards[0].value).toBe("patch")
+  expect(storeSets.length, "до тела пробы дело не доходит").toBe(0)
+})
+
+test("#335 idle-watch: ВЫКЛЮЧЕНА, носитель patch -- тихо: ни отказа, ни записи, ни выстрела", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-i3/probes.toml": "[probe.idle-watch]\nact = \"log_only\"\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-i3",
+    CLAUDE_IDLE: "0",
+    CLAUDE_IDLE_CARRIER: "patch",
+    PWD: "/work-335-i3",
+  }, 97_008_000)
+  $.agent = { list: async () => [] }
+  const storeSets: string[] = []
+  $.store = { get: async () => "", set: async (k: string, _v: any) => { storeSets.push(String(k)) } }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Read" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+  expect(storeSets.length).toBe(0)
+})
+
+test("#335 дедуп журнала: два диспатча с чужим носителем -- ОДНА запись carrier-foreign-refused", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-d10/probes.toml": "[probe.judge]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-d10",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-dedup-10",
+    PWD: "/work-335-d10",
+  }, 97_009_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out1 = await hook()($, { tool: "Agent", prompt: "a" }, async (e: any) => e)
+  const out2 = await hook()($, { tool: "Task", prompt: "b" }, async (e: any) => e)
+  expect(String(out1.deny)).toContain("patch-dedup-10")
+  expect(String(out2.deny)).toContain("patch-dedup-10")
+  expect(carrierRefusals335(writes).length, "журнал -- однократно на процесс").toBe(1)
+})
+
+test("#335 отказ БЕЗ дедупа: второй диспатч с чужим носителем гасится так же, как первый", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-d11/probes.toml": "[probe.judge]\n",
+  }
+  const { $ } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-d11",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-dedup-11",
+    PWD: "/work-335-d11",
+  }, 97_010_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out1 = await hook()($, { tool: "Agent", prompt: "a" }, async (e: any) => e)
+  const out2 = await hook()($, { tool: "Task", prompt: "b" }, async (e: any) => e)
+  expect(String(out1.deny)).toContain("patch-dedup-11")
+  expect(String(out2.deny), "дедуп журнала НЕ распространяется на отказ").toContain("patch-dedup-11")
+})
+
+test("#335 нормализация носителя: \"  MOD  \" / \"MOD\" / \"mod \" / \" \" -- вооружена", async () => {
+  const hook = carrierHook335()
+  for (const carrier of ["  MOD  ", "MOD", "mod ", " "]) {
+    const tag = carrier.trim() || "spaces"
+    const files: Record<string, string> = {
+      ["/probes-335-t12-" + tag + "/probes.toml"]: "[probe.judge]\n[probe.judge.filter]\nclasses_judge = [\"exec-*\"]\n",
+    }
+    const { $, writes } = fsEnv$(files, {
+      CLAUDE_PROBES_DIR: "/probes-335-t12-" + tag,
+      CLAUDE_JUDGE: "1",
+      CLAUDE_JUDGE_CARRIER: carrier,
+      PWD: "/work-335-t12-" + tag,
+    }, 97_011_000)
+    $.agent = { list: async () => [] }
+    const out = await hook()($, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+    expect(out.deny, JSON.stringify(carrier) + " после trim+toLowerCase -- это мод (пустое = мод)").toBe(undefined)
+    expect(writes.filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0).length).toBe(1)
+    expect(carrierRefusals335(writes).length).toBe(0)
+  }
+})
+
+test("#335 отказ живёт без улики: appendJournal бросает -- диспатч всё равно гасится", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-e14/probes.toml": "[probe.judge]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-e14",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-err-14",
+    PWD: "/work-335-e14",
+  }, 97_013_000)
+  $.agent = { list: async () => [] }
+  const origWrite = $.fs.write
+  $.fs.write = async (p: string, t: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) throw new Error("EIO")
+    return origWrite(p, t)
+  }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(String(out.deny), "запись -- улика, отказ -- механизм: механизм живёт").toContain("patch-err-14")
+  expect(carrierRefusals335(writes).length, "улика не легла -- и не должна была").toBe(0)
+})
+
+test("#335 область: чужой носитель судьи + Read (не Agent/Task) -- вызов проходит, ни отказа, ни записи", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-n1/probes.toml": "[probe.judge]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-n1",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-scope-n1",
+    PWD: "/work-335-n1",
+  }, 97_020_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Read", file_path: "/work-335-n1/notes.txt" }, async (e: any) => e)
+  expect(out.deny, "судья действует только на Agent/Task -- вне их отказа быть не может").toBe(undefined)
+  expect(out.file_path, "вызов прошёл насквозь").toBe("/work-335-n1/notes.txt")
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 область: чужой носитель судьи + вызов из субагента (agentId) -- отказа нет", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-n2/probes.toml": "[probe.judge]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-n2",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-scope-n2",
+    PWD: "/work-335-n2",
+  }, 97_021_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "x", agentId: "ag-335-n2" }, async (e: any) => e)
+  expect(out.deny, "событие субагента не доходит до проб вовсе").toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 область: чужой носитель + проба выключена конфигурацией (enabled=false) -- тихо", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-n4/probes.toml": "[probe.judge]\nenabled = false\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-n4",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-scope-n4",
+    PWD: "/work-335-n4",
+  }, 97_022_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(out.deny, "конфигурационно выключенная проба -- тот же класс, что выключатель ручкой").toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+  // skip_disabled пишется как у вооружённой выключенной: решение о носителе
+  // приходит ПОСЛЕ конфигурационного выключателя.
+  expect(writes.filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0).length).toBe(1)
+})
+
+test("#335 область-регресс: вооружённая боевая конфигурация на Write -- форма действует, порядок как до волны", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-n5/probes.toml":
+      "[probe.judge]\nenabled = false\n" + FORM_CFG_335 + "[probe.idle-watch]\nenabled = false\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-n5",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "mod",
+    CLAUDE_FORM: "1",
+    CLAUDE_FORM_CARRIER: "mod",
+    CLAUDE_IDLE: "1",
+    CLAUDE_IDLE_CARRIER: "mod",
+    CLAUDE_PROBES: "1",
+    PWD: "/work-335-n5",
+  }, 97_023_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Write", file_path: "/work-335-n5/report.md", content: "заголовок\nтело\n" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(writes.filter(w => String(w.path).indexOf("/form/journal.jsonl.shard.") >= 0).length, "живая форма вынесла вердикт").toBe(1)
+  expect(writes.filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0).length, "судья на Write не действует").toBe(0)
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 область: чужой носитель формы + Read -- вызов проходит (форма не действует на Read)", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-n6/probes.toml": "[probe.form]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-n6",
+    CLAUDE_FORM: "1",
+    CLAUDE_FORM_CARRIER: "patch-scope-n6",
+    PWD: "/work-335-n6",
+  }, 97_024_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Read", file_path: "/work-335-n6/notes.txt" }, async (e: any) => e)
+  expect(out.deny, "форма действует на Write/Edit/Bash/Agent/Task/SendMessage -- Read не её точка действия").toBe(undefined)
+  expect(out.file_path, "вызов прошёл насквозь").toBe("/work-335-n6/notes.txt")
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 граница судьи: чужой носитель + classes_skip -- вызов ПРОХОДИТ", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-c1/probes.toml": "[probe.judge]\n[probe.judge.filter]\nclasses_skip = [\"skip-me\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-c1",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-c1",
+    PWD: "/work-335-c1",
+  }, 97_030_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "[dispatch-class:skip-me] работа" }, async (e: any) => e)
+  expect(out.deny, "вооружённый судья пропустил бы этот диспатч молча -- отказ вне границы действия").toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 граница судьи: чужой носитель + agents_skip -- вызов ПРОХОДИТ", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-c2/probes.toml": "[probe.judge]\n[probe.judge.filter]\nagents_skip = [\"scout-x1\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-c2",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-c2",
+    PWD: "/work-335-c2",
+  }, 97_031_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", subagent_type: "scout-x1", prompt: "без маркера класса" }, async (e: any) => e)
+  expect(out.deny, "пропуск по агенту -- та же граница действия, что и по классу").toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 граница судьи: чужой носитель + класс вне judge-списка (not_in_judge_list) -- вызов ПРОХОДИТ", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-c3/probes.toml": "[probe.judge]\n[probe.judge.filter]\nclasses_judge = [\"exec-*\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-c3",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-c3",
+    PWD: "/work-335-c3",
+  }, 97_032_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "[dispatch-class:crit-mech] работа" }, async (e: any) => e)
+  expect(out.deny, "судья, чьи judge-списки не берут этот класс, не действовал бы -- и не гасит").toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 граница судьи: чужой носитель + нет маркера класса при judge-списках (no_class_marker) -- вызов ПРОХОДИТ", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-c4/probes.toml": "[probe.judge]\n[probe.judge.filter]\nclasses_judge = [\"exec-*\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-c4",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-c4",
+    PWD: "/work-335-c4",
+  }, 97_033_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "диспатч без маркера класса" }, async (e: any) => e)
+  expect(out.deny, "без маркера судья со списками не судит -- отказа быть не может").toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 граница судьи: чужой носитель + диспатч, ПРОХОДЯЩИЙ все списки -- ОТКАЗ", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-c5/probes.toml": "[probe.judge]\n[probe.judge.filter]\nclasses_judge = [\"exec-*\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-c5",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-c5",
+    PWD: "/work-335-c5",
+  }, 97_034_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "[dispatch-class:exec-0p] работа" }, async (e: any) => e)
+  expect(String(out.deny), "граница с другой стороны: дошедший до суда диспатч гасится").toContain("patch-c5")
+  expect(carrierRefusals335(writes).length).toBe(1)
+  expect(carrierRefusals335(writes)[0].probe).toBe("judge")
+})
+
+test("#335 граница судьи: пропуск при чужом носителе МОЛЧИТ -- записи судьи нет вовсе", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-c6/probes.toml": "[probe.judge]\n[probe.judge.filter]\nclasses_skip = [\"skip-me\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-c6",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-c6",
+    PWD: "/work-335-c6",
+  }, 97_035_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "[dispatch-class:skip-me] работа" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  // Журнал судьи описывает содеянное ИМ; не работавший судья не оставляет
+  // записи решения -- ни своей, ни отказной.
+  expect(writes.filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0).length).toBe(0)
+  expect(carrierRefusals335(writes).length).toBe(0)
+})
+
+test("#335 carrier журнала: skip_disabled при чужом носителе несёт ФАКТИЧЕСКОЕ значение ручки", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-c7/probes.toml": "[probe.judge]\nenabled = false\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-c7",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-c7",
+    PWD: "/work-335-c7",
+  }, 97_036_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(out.deny, "конфигурационно выключенная проба молчит и при чужой ручке").toBe(undefined)
+  const recs = writes
+    .filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0)
+    .map(w => { try { return JSON.parse(String(w.text)) } catch (x) { return null } })
+  expect(recs.length).toBe(1)
+  expect(recs[0].outcome).toBe("skip_disabled")
+  expect(recs[0].carrier, "константа mod здесь лгала бы о том, кто работал").toBe("patch-c7")
+})
+
+test("#335 граница без списков: консультация БЕЗ списков классов + чужой носитель -- отказ звучит", async () => {
+  const files: Record<string, string> = {
+    "/probes-335-c8/probes.toml": "[probe.idle-watch]\n",
+  }
+  const { $ } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-c8",
+    CLAUDE_IDLE: "1",
+    CLAUDE_IDLE_CARRIER: "patch-c8",
+    PWD: "/work-335-c8",
+  }, 97_037_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Read" }, async (e: any) => e)
+  expect(String(out.deny), "у консультации без списков нет блока классов -- точка отказа не уезжает глубже").toContain("patch-c8")
+})
+
+test("#335 регресс: боевая конфигурация (все носители mod, все выключатели включены) ведёт себя как раньше", async () => {
+  // Судья живой: его skip-запись -- свидетель, что боевая конфигурация
+  // доходит до ТОЧКИ ДЕЙСТВИЯ и ведёт себя там как до волны.
+  const files: Record<string, string> = {
+    "/probes-335-r13/probes.toml":
+      "[probe.judge]\n[probe.judge.filter]\nclasses_judge = [\"exec-*\"]\n[probe.form]\nenabled = false\n[probe.idle-watch]\nenabled = false\n[probe.edge-no-carrier]\nkind = \"consult\"\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-335-r13",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "mod",
+    CLAUDE_FORM: "1",
+    CLAUDE_FORM_CARRIER: "mod",
+    CLAUDE_IDLE: "1",
+    CLAUDE_IDLE_CARRIER: "mod",
+    CLAUDE_PROBES: "1",
+    PWD: "/work-335-r13",
+  }, 97_012_000)
+  $.agent = { list: async () => [] }
+  const storeSets: string[] = []
+  $.store = { get: async () => "", set: async (k: string, _v: any) => { storeSets.push(String(k)) } }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(carrierRefusals335(writes).length).toBe(0)
+  expect(writes.filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0).length, "судья дошёл до точки действия и записал skip").toBe(1)
+  expect(storeSets.length).toBe(0)
 })
 
 test("failoverLadderBind: агентная лестница выигрывает у class и allowed", () => {

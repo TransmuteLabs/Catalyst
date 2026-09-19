@@ -28,8 +28,29 @@ enabledPlugins["catalyst-probes@catalyst"]=true
 
 `CLAUDE_JUDGE` / `CLAUDE_IDLE` empty = off (same as the splices).
 `CLAUDE_FORM` empty = on. `CLAUDE_PROBES` empty = on (new consultants only).
-Without `CLAUDE_*_CARRIER=mod` the matching splice-backed probe is inert here
-and the splice keeps running.
+A carrier handle left unset or empty now means `mod` (the patch copy of the
+probes is gone — there is no other carrier to name). The probe switch is
+asked BEFORE the carrier: a switched-off probe stays silent even when its
+carrier handle names something foreign, exactly as a switched-off probe
+always did. A switched-ON probe whose carrier handle (after trim +
+lowercase) is non-empty and not `mod` is a configuration naming a carrier
+that no longer exists. The refusal fires exactly where the probe would
+have acted — after its scope guards (main loop only, the judge's
+Agent/Task trigger and its class/agent skip lists — a computed boundary,
+the same notion as the form's tool list — and the form's tool list, the
+idle trigger) and after `enabled = false`: a probe disabled by config is
+the same class as a probe switched off by its handle, and stays silent.
+A dispatch the armed judge would have skipped leaves NO judge record
+under a foreign carrier — the judge never worked, so its journal has
+nothing to describe. Every call inside
+that scope is denied with an operator-facing text naming the probe, the
+handle and its actual value, and one `carrier-foreign-refused` line
+lands in `failover/journal.jsonl` (fields: probe, handle, value). The journal line is deduped per process
+per (probe, handle value) — the probe loop re-raises the refusal on every
+tool call and would otherwise flood the journal. The deny itself is NOT
+deduped: the second and every later dispatch must be cancelled exactly
+like the first — letting the journal dedup leak into the deny would
+silence a live configuration error after its first mention.
 
 Acceptance of a load is the debug line
 `hooks module catalyst-probes loaded (worker, environment 1, tier user)`

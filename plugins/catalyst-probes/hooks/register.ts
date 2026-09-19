@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.42"
+export const MOD_VERSION = "0.1.43"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -1186,6 +1186,13 @@ let allowedMemo: { t: number, key: string, value: { allowedByClass: { [classId: 
 // же причины после /resume не молчит вечно, но и не заливает журнал.
 const admissionRefusedSaid = new Set<string>()
 
+// CONSTRAINT (#335): громкий отказ чужого носителя пишет в журнал ОДИН раз на
+// процесс на пару «проба x значение ручки» -- цикл проб видит отказ на каждом
+// вызове инструмента, и без однократности он заливал бы журнал. Дедуп НЕ
+// распространяется на сам отказ: гасится КАЖДЫЙ диспатч -- второй и все
+// последующие тоже, без исключений.
+const carrierForeignSaid = new Set<string>()
+
 export async function worldFor($: any): Promise<any> {
   const now = await nowMs($)
   // CONSTRAINT: каталог -- ключ мемо, поэтому вычисляется ДО кэша той же
@@ -1825,20 +1832,70 @@ async function envBundle($: any): Promise<any> {
   }
 }
 
-function probeArmed(p: any, env: any): boolean {
-  if (p.id === "judge") {
-    if (env.JUDGE_CARRIER.trim().toLowerCase() !== "mod") return false
-    return envOn(env.JUDGE)
+// CONSTRAINT (#335): вооружение троично, исходы различаются ТИПОМ, а не
+// строкой-магией. Выключатель спрашивается РАНЬШЕ носителя: выключенная проба
+// с чужой ручкой обязана молчать. ПУСТАЯ ручка носителя означает мод --
+// копия в патче снята, другого носителя нет; непустая и не «mod» -- чужой
+// носитель, и такая конфигурация обязана отказать громко.
+type ArmState =
+  | { state: "armed" }
+  | { state: "off" }
+  | { state: "foreign-carrier", probe: string, handle: string, value: string }
+
+function armStateOf(p: any, env: any): ArmState {
+  const byCarrier = (field: string, handle: string, on: boolean): ArmState => {
+    if (!on) return { state: "off" }
+    const value = String(env[field] ?? "")
+    const norm = value.trim().toLowerCase()
+    if (norm !== "" && norm !== "mod") return { state: "foreign-carrier", probe: String(p.id), handle, value }
+    return { state: "armed" }
   }
-  if (p.id === "form") {
-    if (env.FORM_CARRIER.trim().toLowerCase() !== "mod") return false
-    return formOn(env.FORM)
+  if (p.id === "judge") return byCarrier("JUDGE_CARRIER", "CLAUDE_JUDGE_CARRIER", envOn(env.JUDGE))
+  if (p.id === "form") return byCarrier("FORM_CARRIER", "CLAUDE_FORM_CARRIER", formOn(env.FORM))
+  if (p.id === "idle-watch") return byCarrier("IDLE_CARRIER", "CLAUDE_IDLE_CARRIER", envOn(env.IDLE))
+  // Пробы без своей ручки носителя двузначны: носителя у них не спрашивают.
+  return formOn(env.PROBES) ? { state: "armed" } : { state: "off" }
+}
+
+// CONSTRAINT (#335): отказ чужого носителя живёт В ТОЧКЕ ДЕЙСТВИЯ пробы --
+// после области (mainLoopOnly), триггера (fire / список инструментов формы)
+// и конфигурационного выключателя (enabled): выключенная конфигурацией проба
+// -- тот же класс, что выключенная ручкой, о носителе она не кричит.
+async function refuseForeignCarrier($: any, world: any, arm: any, t0: number, sid: string): Promise<string> {
+  // CONSTRAINT: дедуп -- ТОЛЬКО у записи в журнал (один раз на процесс на
+  // пару «проба x значение ручки»: цикл проб видит отказ на каждом вызове
+  // инструмента). Текст отказа возвращается ВСЕГДА -- дедуп журнала не имеет
+  // права перейти на отказ: второй и последующие вызовы гасятся так же.
+  const saidKey = JSON.stringify([arm.probe, arm.handle, arm.value])
+  if (!carrierForeignSaid.has(saidKey)) {
+    carrierForeignSaid.add(saidKey)
+    try {
+      await appendJournal($, world.globalHome + "/failover/journal.jsonl", {
+        t: new Date(t0).toISOString(),
+        sid,
+        rec: "carrier-foreign-refused",
+        probe: arm.probe,
+        handle: arm.handle,
+        value: arm.value,
+      })
+    } catch (x) {}
   }
-  if (p.id === "idle-watch") {
-    if (env.IDLE_CARRIER.trim().toLowerCase() !== "mod") return false
-    return envOn(env.IDLE)
-  }
-  return formOn(env.PROBES)
+  // CONSTRAINT: возврат вне try -- отказ выставляется и когда запись не легла
+  // (appendJournal бросает): запись -- улика, отказ -- механизм.
+  return "Вызов инструмента погашен: проба «" + arm.probe + "» включена, а назначенный ею носитель не существует. " +
+    "Ручка " + arm.handle + " = «" + arm.value + "»; копия проб в патче снята, единственный носитель теперь мод. " +
+    "Это НЕ гейт routing-table.toml. Починка: установите " + arm.handle + "=mod или снимите ручку -- " +
+    "до исправления конфигурации гасится каждый вызов, на котором эта проба действует."
+}
+
+// CONSTRAINT (#335, Ч2): поле carrier журнала несёт ФАКТИЧЕСКОГО носителя
+// пробы -- нормализованное значение её ручки (пустое = мод), а не константу:
+// запись, подписанная «mod» при чужой ручке, лжёт о том, кто работал.
+function carrierOfJournal(p: any, env: any): string {
+  const field = p.id === "judge" ? "JUDGE_CARRIER" : p.id === "form" ? "FORM_CARRIER" : p.id === "idle-watch" ? "IDLE_CARRIER" : ""
+  if (!field) return "mod"
+  const norm = String(env[field] ?? "").trim().toLowerCase()
+  return norm === "" ? "mod" : norm
 }
 
 function lastKey(id: string, cwd: string): string {
@@ -1939,7 +1996,7 @@ function failoverOf(gParsed: any, pParsed: any): any {
 // уборки не красит и не прерывает консультацию. Разовость -- sweepDone:
 // на старте КАЖДОЙ сессии (прежнее место) уборка задерживала session.start
 // обходом стора, теперь она едет первой консультацией судьи.
-async function sweepVerdictStore($: any, world: any, sid: string): Promise<void> {
+async function sweepVerdictStore($: any, world: any, sid: string, env: any): Promise<void> {
   sweepDone = true
   try {
     const all = await $.store.keys()
@@ -1949,9 +2006,11 @@ async function sweepVerdictStore($: any, world: any, sid: string): Promise<void>
     // экземпляр условия здесь разошёлся бы с чтением молча: при настроенном
     // verdict_cache_ms длиннее умолчания уборка сносила бы ещё живые записи.
     let ttlMs = VERDICT_TTL_MS_DEFAULT
+    let judgeProbe: any = null
     for (let i = 0; i < world.probes.length; i++) {
       const p = world.probes[i]
       if (p.id !== "judge") continue
+      judgeProbe = p
       ttlMs = num(p.cfg && p.cfg.verdict_cache_ms, VERDICT_TTL_MS_DEFAULT, 1)
       break
     }
@@ -1969,7 +2028,7 @@ async function sweepVerdictStore($: any, world: any, sid: string): Promise<void>
     try {
       await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
         t: new Date(t0).toISOString(), outcome: "store_sweep", removed, scanned,
-        ttlMs, probe: "judge", carrier: "mod", sid,
+        ttlMs, probe: "judge", carrier: carrierOfJournal(judgeProbe || { id: "judge" }, env || {}), sid,
       })
     } catch (x) {}
   } catch (x) {}
@@ -1995,7 +2054,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
   const recName = modRecName(e)
   const recPath = modRecPath(world, id, e)
   const jpath = world.globalHome + "/" + id + "/journal.jsonl"
-  const rec: any = { id: e && e.tool_use_id, probe: id, tool, agent, t0, carrier: "mod", mod: MOD_VERSION, sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
+  const rec: any = { id: e && e.tool_use_id, probe: id, tool, agent, t0, carrier: carrierOfJournal(p, env), mod: MOD_VERSION, sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
   try {
     let sys = ""
     if (id === "judge" && env.JUDGE_PROMPT) {
@@ -2265,7 +2324,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       t: new Date(t0).toISOString(),
       probe: id, tool, agent, ms: rec.dtMs, outcome: oc,
       verdict: (kind + ": " + rest).slice(0, 400),
-      jm: rec.used, rec: recName, carrier: "mod", sid: rec.sid,
+      jm: rec.used, rec: recName, carrier: carrierOfJournal(p, env), sid: rec.sid,
     })
   } catch (x) {
     // CONSTRAINT: отказ журнальной дороги НЕ молчит. Улика уже на диске, и
@@ -2280,11 +2339,17 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
   return rec
 }
 
+// CONSTRAINT: список инструментов формы -- ОДИН дом: его читает и страж
+// runForm, и отказ чужого носителя (#335) -- вторая копия разошлась бы молча.
+function formActsOnTool(tool: string): boolean {
+  return tool === "Agent" || tool === "Task" || tool === "SendMessage" ||
+         tool === "Write" || tool === "Edit" || tool === "Bash"
+}
+
 async function runForm($: any, p: any, env: any, world: any, e: any): Promise<string | null> {
   const cfg = p.cfg
   const tool = String((e && e.tool) || "")
-  if (tool !== "Agent" && tool !== "Task" && tool !== "SendMessage" &&
-      tool !== "Write" && tool !== "Edit" && tool !== "Bash") return null
+  if (!formActsOnTool(tool)) return null
   for (let i = 0; i < FORM_REQ.length; i++) {
     if (typeof cfg[FORM_REQ[i]] !== "string" || !cfg[FORM_REQ[i]]) {
       return null
@@ -2374,7 +2439,7 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   try {
     await appendJournal($, jpath, {
       t: new Date(t0).toISOString(), tool, outcome: vk, verdict: clip(vd, 400),
-      cls, jm: "rules", tries: 0, rec: recName, carrier: "mod", sid: await sidFor($), probe: "form",
+      cls, jm: "rules", tries: 0, rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), probe: "form",
       skipped: sk.slice(0, 8),
     })
   } catch (x) {
@@ -2653,10 +2718,18 @@ export function register(on: any) {
 
     for (let i = 0; i < world.probes.length; i++) {
       const p = world.probes[i]
-      if (!probeArmed(p, env)) continue
+      const arm = armStateOf(p, env)
+      if (arm.state === "off") continue
       if (p.mainLoopOnly && ("agentId" in e)) continue
       if (p.kind === "form") {
         if (p.cfg && p.cfg.enabled === false) continue
+        // CONSTRAINT (#335): отказ -- в точке действия формы (её список
+        // инструментов); вне списка форма не действовала бы -- и не гасит.
+        if (arm.state === "foreign-carrier" && formActsOnTool(String((e && e.tool) || ""))) {
+          const d = await refuseForeignCarrier($, world, arm, t0, sid)
+          if (d && !hardDeny) hardDeny = d
+          continue
+        }
         const d = await runForm($, p, env, world, e)
         if (d && !hardDeny) hardDeny = d
         continue
@@ -2688,7 +2761,7 @@ export function register(on: any) {
           try {
             await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
               t: new Date(t0).toISOString(), tool, agent, outcome: "skip_disabled",
-              rec: recName, carrier: "mod", sid: await sidFor($), ms: 0, probe: "judge",
+              rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), ms: 0, probe: "judge",
             })
           } catch (x) {}
         }
@@ -2725,19 +2798,34 @@ export function register(on: any) {
           if (!hit) by = cl ? "not_in_judge_list" : "no_class_marker"
         }
         if (by) {
-          const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
-          try {
-            await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
-              t: new Date(t0).toISOString(), tool, agent, outcome: "skip",
-              rec: recName, carrier: "mod", sid: await sidFor($), reason: by, cls, ms: 0, probe: "judge",
-            })
-          } catch (x) {}
+          // CONSTRAINT (#335): чужой носитель не работал -- журнал судьи
+          // описывает содеянное им, а он не сделал ничего: пропуск молчит.
+          if (arm.state !== "foreign-carrier") {
+            const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
+            try {
+              await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
+                t: new Date(t0).toISOString(), tool, agent, outcome: "skip",
+                rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), reason: by, cls, ms: 0, probe: "judge",
+              })
+            } catch (x) {}
+          }
           continue
         }
       }
 
+      // CONSTRAINT (#335): точка отказа консультации -- за ВЫЧИСЛЯЕМОЙ
+      // границей действия судьи, его списками классов и агентов: пропуск по
+      // ним -- та же граница, что список инструментов у формы, вычисляемая,
+      // а не статическая. Консультация без списков блок не проходит вовсе,
+      // и её отказ стоит здесь же -- сразу за выключателем enabled.
+      if (arm.state === "foreign-carrier") {
+        const d = await refuseForeignCarrier($, world, arm, t0, sid)
+        if (d && !hardDeny) hardDeny = d
+        continue
+      }
+
       if (p.act === "cancel" || p.pending) {
-        if (!sweepDone) await sweepVerdictStore($, world, sid)
+        if (!sweepDone) await sweepVerdictStore($, world, sid, env)
         const key = verdictKey(p.id, sid, tool, agent, prompt)
         const ttlMs = num(p.cfg && p.cfg.verdict_cache_ms, VERDICT_TTL_MS_DEFAULT, 1)
         let stored: any
@@ -2752,7 +2840,7 @@ export function register(on: any) {
           let recErr = ""
           try {
             await $.fs.write(modRecPath(world, p.id, e), JSON.stringify({
-              id: e && e.tool_use_id, probe: p.id, tool, agent, t0, carrier: "mod",
+              id: e && e.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
               mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
               used: stored.used, dtMs: stored.dtMs,
             }))
@@ -2760,7 +2848,7 @@ export function register(on: any) {
           try {
             const jline: any = {
               t: new Date(t0).toISOString(), tool, agent, outcome: "memo", rec: recName,
-              carrier: "mod", sid, kind: String(stored.kind), ageMs, ms: 0, probe: p.id,
+              carrier: carrierOfJournal(p, env), sid, kind: String(stored.kind), ageMs, ms: 0, probe: p.id,
             }
             if (recErr) jline.recErr = recErr
             await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", jline)
@@ -2768,7 +2856,7 @@ export function register(on: any) {
             try {
               recErr = recErr || String((x && (x as any).message) || x).slice(0, 240)
               await $.fs.write(modRecPath(world, p.id, e), JSON.stringify({
-                id: e && e.tool_use_id, probe: p.id, tool, agent, t0, carrier: "mod",
+                id: e && e.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
                 mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
                 used: stored.used, dtMs: stored.dtMs, journalErr: recErr,
               }))
