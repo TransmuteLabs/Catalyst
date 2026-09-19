@@ -13,7 +13,7 @@ import type { Args, On } from "claude-code"
 
 // CONSTRAINT: версия берётся импортом, а не литералом: дом версии — register.ts
 // и .claude-plugin/plugin.json, их сверяет tests/scripts/test-mod-units.sh.
-import { MOD_VERSION, FAILOVER_FOLD_PERIOD_MS, failoverBindSet, failoverFoldReset, register, sessionExecutorsReset, verdictKey } from "../hooks/register.ts"
+import { MOD_VERSION, FAILOVER_FOLD_PERIOD_MS, failoverBindSet, failoverFoldReset, register, sessionExecutorsReset, rungCooldownReset, verdictKey } from "../hooks/register.ts"
 
 const HOME = "/probes-home"
 const SID = "sid-behavior-1"
@@ -1306,7 +1306,9 @@ describe("failover: agent.spawn + turn.step", () => {
 // маршрутом ($.agent.spawn + $.turn.step): прямому вызову хука мода op-существительные
 // отказаны («its hooks module does not call it» -- измерено 2026-09-16), журнала
 // у него нет. Модульное состояние (накопитель моделей исполнителей) переживает
-// тесты файла, поэтому каждый зуб начинает с sessionExecutorsReset().
+// тесты файла, поэтому каждый зуб начинает с sessionExecutorsReset() и
+// rungCooldownReset(): метки остывания -- та же процессная память, и без сброса
+// зуб, чья модель отказала соседу, молча меняет смысл (#313).
 describe("failover: проверяющий не уезжает на модель исполнителя (#226)", () => {
   function failover226Toml(critModels: string): string {
     return [
@@ -1354,6 +1356,7 @@ describe("failover: проверяющий не уезжает на модель
 
   test("#226 зуб 1: отказ носителя уводит проверяющего НЕ на модель исполнителя", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 110_000_000, {}, {
       [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
     })
@@ -1411,6 +1414,7 @@ describe("failover: проверяющий не уезжает на модель
 
   test("#226 зуб 2: лестница только из модели исполнителя — переход есть, отметка «нечем фильтровать»", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 120_000_000, {}, {
       [HOME + "/probes.toml"]: failover226Toml('["glm-5.3"]'),
     })
@@ -1468,6 +1472,7 @@ describe("failover: проверяющий не уезжает на модель
 
   test("#226 зуб 3: модель старта уже в накопителе — не переписывается, отметка в улике", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 130_000_000, {}, {
       [HOME + "/probes.toml"]: failover226Toml('["grok-4.6", "qwen3.8-flash"]'),
     })
@@ -1526,6 +1531,7 @@ describe("failover: проверяющий не уезжает на модель
 
   test("#226 зуб 4: класс вне обоих перечней (scout-enum) правилом не задет", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 140_000_000, {}, {
       [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
     })
@@ -1584,6 +1590,7 @@ describe("failover: проверяющий не уезжает на модель
 
   test("#226 зуб 5: /clear очищает накопитель — прежние модели исполнителей не влияют", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 150_000_000, {}, {
       [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "grok-4.6"]'),
     })
@@ -1655,17 +1662,24 @@ describe("failover: проверяющий не уезжает на модель
       agentId: critAgain.agentId,
     }))
     expect(second && second.answer, "после /clear накопитель пуст: годна и glm-5.3").toBe("from-glm-5.3")
-    expect(seen, "полная история обеих шагов").toEqual(["busy-model", "grok-4.6", "busy-model", "glm-5.3"])
-
     const lines = failoverLines(kept)
-    expect(lines).toHaveLength(4)
+    // ПРЯМАЯ улика предмета зуба -- накопитель: после /clear фильтровать нечем.
+    expect(lines.length).toBe(3)
     expect(lines[1].rungsFiltered, "до /clear одна ступень отфильтрована").toBe(1)
-    expect(lines[3].rungsFiltered, "после /clear фильтровать нечем").toBe(0)
-    expect(lines[3].modelRequested).toBe("glm-5.3")
+    expect(lines[2].rungsFiltered, "после /clear фильтровать нечем").toBe(0)
+    expect(lines[2].modelRequested).toBe("glm-5.3")
+    // ПРЯМАЯ улика взаимодействия с отсрочкой (#313): busy-model остывает от
+    // отказа шага 1 -- она в плане, но отложена, а не вычеркнута.
+    expect(lines[2].cooldownDeferred).toEqual(["busy-model"])
+    expect(lines[2]["cooldownReason_busy-model"]).toBe("carrier-refusal")
+    // Порядок попыток -- ВСПОМОГАТЕЛЬНАЯ проверка: отсрочка уводит busy-model
+    // в хвост, glm-5.3 отвечает первой попыткой.
+    expect(seen, "полная история обеих шагов").toEqual(["busy-model", "grok-4.6", "glm-5.3"])
   })
 
   test("#226 зуб 6: липкость не ставится на ступень-совпадение", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 160_000_000, {}, {
       [HOME + "/probes.toml"]: failover226Toml('["glm-5.3"]'),
     })
@@ -1717,13 +1731,26 @@ describe("failover: проверяющий не уезжает на модель
       agentId: crit.agentId,
     }))
     expect(second && second.answer).toBe("from-glm-5.3")
-    expect(seen, "второй шаг начинается с ИСХОДНОЙ модели, а не с прилипшего совпадения").toEqual([
-      "busy-model", "glm-5.3", "busy-model", "glm-5.3",
+    const lines = failoverLines(kept)
+    // ПРЯМАЯ улика предмета зуба -- липкость НЕ встала на совпадение glm-5.3:
+    // busy-model остаётся В ПЛАНЕ шага 2 (отложена отсрочкой #313, а не
+    // вытеснена липкостью). Ошибочная липкость на glm-5.3 выкинула бы
+    // busy-model из плана целиком -- поле cooldownDeferred исчезло бы.
+    const last = lines[lines.length - 1]
+    expect(last.cooldownDeferred).toEqual(["busy-model"])
+    expect(last["cooldownReason_busy-model"]).toBe("carrier-refusal")
+    expect(lines[0].ladderFullTaken, "первый шаг откатился на полную лестницу").toBe(true)
+    expect(last.stickyDropped, "липкость в шаге 1 НЕ встала: во втором снимать нечего").toBeUndefined()
+    // Порядок попыток -- ВСПОМОГАТЕЛЬНАЯ проверка: glm-5.3 отвечает первой
+    // попыткой шага 2 потому, что busy-model отложена, -- и это НЕ липкость.
+    expect(seen, "второй шаг: busy-model отложена, совпадение отвечает").toEqual([
+      "busy-model", "glm-5.3", "glm-5.3",
     ])
   })
 
   test("#226 зуб 7: липкая ступень снимается, когда модель ПОЗЖЕ стала моделью исполнителя", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 170_000_000, {}, {
       [HOME + "/probes.toml"]: failover226Toml('["grok-4.6", "qwen3.8-flash"]'),
     })
@@ -1776,12 +1803,110 @@ describe("failover: проверяющий не уезжает на модель
       agentId: crit.agentId,
     }))
     expect(second && second.answer, "липкость снята: шаг ушёл на оставшуюся ступень, не на модель исполнителя").toBe("from-qwen3.8-flash")
-    expect(seen, "grok-4.6 не звалась ни первой, ни вовсе").toEqual(["busy-model", "qwen3.8-flash"])
-
     const lines = failoverLines(kept)
     const last = lines[lines.length - 1]
+    // ПРЯМАЯ улика предмета зуба -- снятие липкости на использовании.
     expect(last && last.stickyDropped, "в улике: липкость снята на использовании").toBe(true)
     expect(last && last.modelRequested).toBe("qwen3.8-flash")
+    // ПРЯМАЯ улика взаимодействия (#313): busy-model не звали первой НЕ потому,
+    // что её вытеснила липкость grok-4.6, -- она отложена отсрочкой и в плане.
+    expect(last.cooldownDeferred).toEqual(["busy-model"])
+    expect(last["cooldownReason_busy-model"]).toBe("carrier-refusal")
+    // Порядок попыток -- ВСПОМОГАТЕЛЬНАЯ проверка: grok-4.6 не звалась вовсе.
+    expect(seen, "grok-4.6 не звалась ни первой, ни вовсе").toEqual(["qwen3.8-flash"])
+  })
+
+  // #313, стык двух механизмов: reviewer-фильтр вычёркивает модели
+  // исполнителя ДО построения плана, отсрочка переставляет готовый план --
+  // значит остывающая модель исполнителя не может вернуться в план хвостом.
+  // Оба механизма правильны ПО ОТДЕЛЬНОСТИ; этот зуб пинит именно стык.
+  // CONSTRAINT: движок грузит модуль плагина ОТДЕЛЬНО от импорта теста,
+  // поэтому накопитель и метки наполняются ПОВЕДЕНИЕМ хуков, а не ручным
+  // вызовом: стартовая модель исполнителя ложится в накопитель его spawn'ом,
+  // метка остывания glm-5.3 -- отказом носителя в его же шаге.
+  test("#313 стык: план после отсрочки не содержит моделей сессионного исполнителя", async ($, on) => {
+    sessionExecutorsReset()
+    rungCooldownReset()
+    const kept = wired(on, 180_000_000, {}, {
+      [HOME + "/probes.toml"]: failover226Toml('["glm-5.3", "qwen3.8-flash"]'),
+    })
+    const seen: string[] = []
+    on("agent.spawn", (_$, e) => {
+      const exec = String(e.prompt).indexOf("[dispatch-class:exec-0p]") >= 0
+      return exec
+        ? { model: "glm-5.3", agentId: "ag-313-x-exec" }
+        : { model: "busy-model", agentId: "ag-313-x-crit" }
+    })
+    // busy-model, qwen3.8-flash и glm-5.3 отказывают носителем, прочие отвечают.
+    on("turn.step", async function* (_$: unknown, e: any) {
+      seen.push(String(e.model))
+      if (e.model === "busy-model" || e.model === "qwen3.8-flash" || e.model === "glm-5.3") {
+        return {
+          turnId: e.turnId, index: e.index, answer: "", toolUses: [],
+          stopReason: null, usage: null,
+        }
+      }
+      return {
+        turnId: e.turnId, index: e.index, answer: "from-" + e.model, toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2, model: e.model },
+      }
+    })
+
+    // Предыстория стыка: исполнитель стартует на glm-5.3 (spawn кладёт её в
+    // накопитель), и glm-5.3 отказывает носителем в его шаге (веер ставит
+    // метку остывания) -- модель исполнителя ЕЩЁ и остывает.
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-313-x-exec",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(exec.agentId).toBe("ag-313-x-exec")
+    const execStep = await settleStep($.turn.step({
+      turnId: "turn-313-x-exec", index: 0, model: "glm-5.3", messageCount: 1,
+      agentId: exec.agentId,
+    }))
+    expect(seen, "шаг исполнителя: glm-5.3 отказала, grok-4.6 ответил").toEqual(["glm-5.3", "grok-4.6"])
+    expect(execStep && execStep.answer).toBe("from-grok-4.6")
+
+    seen.length = 0
+    const crit = await $.agent.spawn({
+      tool_use_id: "tu-313-x-crit",
+      prompt: "[dispatch-class:crit-mech] проверить работу исполнителя",
+      description: "crit",
+      subagentType: "gpt6-critic",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "busy-model",
+    })
+    expect(crit.agentId).toBe("ag-313-x-crit")
+
+    const out = await settleStep($.turn.step({
+      turnId: "turn-313-x-crit", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+    // busy-model и qwen отказали; план кончился отказом -- но НЕ моделью
+    // исполнителя: glm-5.3 не звалась ни разу, хотя она и в накопителе, и в
+    // остывании: фильтр вычеркнул её ДО плана, отсрочка не вернула хвостом.
+    expect(seen, "glm-5.3 не звалась: вычеркнута до плана, отсрочка её не вернула").toEqual(["busy-model", "qwen3.8-flash"])
+    const lines = failoverLines(kept)
+    const critLines = lines.filter((r: any) => String(r.rec).indexOf("turn-313-x-crit") >= 0)
+    expect(critLines.length).toBe(2)
+    for (const rec of critLines) {
+      expect(rec.modelRequested, "план после отсрочки без моделей исполнителя").not.toBe("glm-5.3")
+      expect(rec.cooldownDeferred, "остывающий исполнитель не вернулся в план хвостом").toBeUndefined()
+    }
+    expect(critLines[0].rungsFiltered, "glm-5.3 вычеркнута фильтром исполнителей").toBe(1)
   })
 })
 
@@ -2110,6 +2235,7 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
 
   test("#227-A зуб 1: скучный шаг файла не создаёт", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 230_000_000, {}, { [HOME + "/probes.toml"]: foldToml() })
     on("agent.spawn", (_$, e) => ({
       model: String((e && e.model) || "glm-5.3"),
@@ -2133,6 +2259,7 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
 
   test("#227-A зуб 2: полная улика сбрасывает агрегат ПЕРЕД собой", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 231_000_000, {}, { [HOME + "/probes.toml"]: foldToml() })
     on("agent.spawn", (_$, e) => ({
       model: String((e && e.model) || "glm-5.3"),
@@ -2177,6 +2304,7 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
 
   test("#227-A зуб 3: тик мок-часов пишет один агрегатный шард с верным n", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 232_000_000, {}, { [HOME + "/probes.toml"]: foldToml() })
     on("agent.spawn", (_$, e) => ({
       model: String((e && e.model) || "glm-5.3"),
@@ -2208,6 +2336,7 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
 
   test("#227-A зуб 4: тик при нулевом счётчике файла не создаёт", async ($, on) => {
     sessionExecutorsReset()
+    rungCooldownReset()
     const kept = wired(on, 233_000_000, {}, { [HOME + "/probes.toml"]: foldToml() })
     on("agent.spawn", (_$, e) => ({
       model: String((e && e.model) || "glm-5.3"),

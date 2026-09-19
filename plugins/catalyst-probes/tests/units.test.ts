@@ -23,6 +23,7 @@ import {
   failoverFoldObserve, failoverWouldSetSticky,
   sessionExecutorHas, sessionExecutorModelAdd, sessionExecutorsReset,
   cooldownSnapshot, ladderCommandText, clipLadderArg,
+  isModelCooling, noteRungCarrierRefusal, deferCoolingAttemptModels, rungCooldownReset,
   LADDER_COMMAND, LADDER_COMMAND_DESCRIPTION, LADDER_COMMAND_ARG_HINT,
   LADDER_COMMAND_ARG_MAX, register,
   COACHING, COACHING_SPLICE_SHA256,
@@ -108,7 +109,7 @@ function sha256hex(s: string): string {
 test("rung-cooldown: свежая метка исключает ступень, включая границу окна", () => {
   expect(RUNG_COOLDOWN_MS).toBe(900000)
   const ladder = [{ model: "cold", effort: "high" }, { model: "ready", timeout_ms: 42 }]
-  const marks = new Map<string, number>([["cold", 0]])
+  const marks = new Map<string, any>([["cold", { at: 0, reason: "rung-timeout" }]])
   expect(rungsAfterCooldown(ladder, 1, marks).ladder).toEqual([ladder[1]])
   expect(rungsAfterCooldown(ladder, RUNG_COOLDOWN_MS, marks).ladder).toEqual([ladder[1]])
   expect(ladder.length).toBe(2)
@@ -116,36 +117,36 @@ test("rung-cooldown: свежая метка исключает ступень, 
 
 test("rung-cooldown: просроченная метка возвращает ступень", () => {
   const ladder = [{ model: "expired" }, { model: "ready" }]
-  const marks = new Map<string, number>([["expired", 10]])
+  const marks = new Map<string, any>([["expired", { at: 10, reason: "rung-timeout" }]])
   expect(rungsAfterCooldown(ladder, 10 + RUNG_COOLDOWN_MS + 1, marks).ladder).toEqual(ladder)
   expect(rungsAfterCooldown(ladder, 10, new Map()).ladder).toEqual(ladder)
 })
 
 test("rung-cooldown: все метки не вырождают лестницу", () => {
   const ladder = [{ model: "a", max_tokens: 17 }, { model: "b", effort: "max" }]
-  const marks = new Map<string, number>([["a", 100], ["b", 100]])
+  const marks = new Map<string, any>([["a", { at: 100, reason: "rung-timeout" }], ["b", { at: 100, reason: "rung-timeout" }]])
   expect(rungsAfterCooldown(ladder, 101, marks).ladder).toEqual(ladder)
   expect(rungsAfterCooldown([ladder[0]], 101, marks).ladder).toEqual([ladder[0]])
   expect(rungsAfterCooldown([], 101, marks).ladder).toEqual([])
 })
 
 test("rung-cooldown: метка только на rung-deadline", () => {
-  const marks = new Map<string, number>()
+  const marks = new Map<string, any>()
   expect(noteRungTimeout("deadline", "Error: rung-deadline deadline 240000ms", 10, marks)).toBe(true)
-  expect(marks.get("deadline")).toBe(10)
+  expect(marks.get("deadline")).toEqual({ at: 10, reason: "rung-timeout" })
   expect(noteRungTimeout("deadline", "Error: rung-deadline deadline 240000ms", 20, marks)).toBe(true)
-  expect(marks.get("deadline")).toBe(20)
+  expect(marks.get("deadline")).toEqual({ at: 20, reason: "rung-timeout" })
   for (const errText of ["", "carrier refusal", "BLOCK: retry", "cancelled"]) {
     expect(noteRungTimeout("other", errText, 30, marks)).toBe(false)
     expect(marks.has("other")).toBe(false)
   }
   expect(noteRungTimeout("deadline", "carrier refusal", 30, marks)).toBe(false)
-  expect(marks.get("deadline")).toBe(20)
+  expect(marks.get("deadline")).toEqual({ at: 20, reason: "rung-timeout" })
 })
 
 test("rung-cooldown: улика называет только фактические пропуски и возраст", () => {
   const ladder = [{ model: "cold" }, { model: "ready" }]
-  const marks = new Map<string, number>([["cold", 100]])
+  const marks = new Map<string, any>([["cold", { at: 100, reason: "rung-timeout" }]])
   expect(rungsAfterCooldown(ladder, 123, marks).evidence).toEqual({
     rungCooldownSkipped: ["cold"], rungCooldownAgeMs_cold: 23,
   })
@@ -155,14 +156,14 @@ test("rung-cooldown: улика называет только фактическ
 })
 
 test("rung-cooldown: урезанный бюджет считается таймаутом без метки", () => {
-  const marks = new Map<string, number>()
+  const marks = new Map<string, any>()
   const error = "Error: rung-deadline model 10ms"
   expect(noteRungTimeout("model", error, 10, marks, true)).toBe(true)
   expect(marks.has("model")).toBe(false)
   expect(noteRungTimeout("model", error, 20, marks, false)).toBe(true)
-  expect(marks.get("model")).toBe(20)
+  expect(marks.get("model")).toEqual({ at: 20, reason: "rung-timeout" })
   expect(noteRungTimeout("model", error, 30, marks, true)).toBe(true)
-  expect(marks.get("model")).toBe(20)
+  expect(marks.get("model")).toEqual({ at: 20, reason: "rung-timeout" })
 })
 
 const RX_JUDGE = "OK|WARN|BLOCK|STOP|DENY"
@@ -748,7 +749,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.40")
+  expect(MOD_VERSION).toBe("0.1.41")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1597,6 +1598,7 @@ test("#251 зуб: отказ записи возвращает карту аг�
 
 test("failoverWouldSetSticky: бросок, отказ носителя, совпадение проверяющего -- false", () => {
   sessionExecutorsReset()
+  rungCooldownReset()
   const ok = { stopReason: "end_turn", usage: { input_tokens: 1, output_tokens: 1, model: "m" } }
   const empty = { stopReason: null, usage: null }
   expect(failoverWouldSetSticky(true, ok, false, "m")).toBe(false)
@@ -1607,6 +1609,7 @@ test("failoverWouldSetSticky: бросок, отказ носителя, сов�
   expect(failoverWouldSetSticky(false, ok, true, "glm-5.3")).toBe(false)
   expect(failoverWouldSetSticky(false, ok, true, "grok-4.6")).toBe(true)
   sessionExecutorsReset()
+  rungCooldownReset()
 })
 
 // --- #178w3: слэш-команда catalyst-ladder ---------------------------------------
@@ -1616,42 +1619,48 @@ test("failoverWouldSetSticky: бросок, отказ носителя, сов�
 // а не ответ хоста.
 
 test("ladder-cmd: snapshot возвращает остывающие с убывающим остатком; истёкшая не возвращается", () => {
-  const marks = new Map<string, number>([["glm-5.3", 1000], ["grok-4.6", 2000]])
+  const marks = new Map<string, any>([
+    ["glm-5.3", { at: 1000, reason: "rung-timeout" }],
+    ["grok-4.6", { at: 2000, reason: "carrier-refusal" }],
+  ])
   const a = cooldownSnapshot(61000, marks)
   expect(a).toStrictEqual([
-    { model: "glm-5.3", leftMs: RUNG_COOLDOWN_MS - 60000 },
-    { model: "grok-4.6", leftMs: RUNG_COOLDOWN_MS - 59000 },
+    { model: "glm-5.3", leftMs: RUNG_COOLDOWN_MS - 60000, reason: "rung-timeout" },
+    { model: "grok-4.6", leftMs: RUNG_COOLDOWN_MS - 59000, reason: "carrier-refusal" },
   ])
   const b = cooldownSnapshot(62000, marks)
   expect(b[0].leftMs).toBeLessThan(a[0].leftMs)
   // граница окна ровно: ещё остывает (тот же предикат, что у фильтра лестницы)
-  expect(cooldownSnapshot(1000 + RUNG_COOLDOWN_MS, new Map([["edge", 1000]])))
-    .toStrictEqual([{ model: "edge", leftMs: 0 }])
-  expect(cooldownSnapshot(1001 + RUNG_COOLDOWN_MS, new Map([["old", 1000]])))
+  expect(cooldownSnapshot(1000 + RUNG_COOLDOWN_MS, new Map<string, any>([["edge", { at: 1000, reason: "rung-timeout" }]])))
+    .toStrictEqual([{ model: "edge", leftMs: 0, reason: "rung-timeout" }])
+  expect(cooldownSnapshot(1001 + RUNG_COOLDOWN_MS, new Map<string, any>([["old", { at: 1000, reason: "rung-timeout" }]])))
     .toStrictEqual([])
 })
 
 test("ladder-cmd: ПУСТО не НОЛЬ -- без остывающих текст говорит об этом явно", () => {
-  const empty = new Map<string, number>()
+  const empty = new Map<string, any>()
   expect(cooldownSnapshot(12345, empty)).toStrictEqual([])
   const text0 = ladderCommandText(12345, "", empty)
   expect(text0).toContain("остывающих ступеней нет")
   // положительный контроль: тот же вызов с непустой картой несёт модель
-  const marks = new Map<string, number>([["glm-5.3", 100]])
+  const marks = new Map<string, any>([["glm-5.3", { at: 100, reason: "rung-timeout" }]])
   const text1 = ladderCommandText(12345, "", marks)
   expect(text1).toContain("glm-5.3")
   expect(text1.indexOf("остывающих ступеней нет")).toBe(-1)
 })
 
 test("ladder-cmd: текст несёт версию мода и окно остывания", () => {
-  const marks = new Map<string, number>([["glm-5.3", 0]])
+  const marks = new Map<string, any>([["glm-5.3", { at: 0, reason: "rung-timeout" }]])
   const text = ladderCommandText(1, "", marks)
   expect(text).toContain(MOD_VERSION)
   expect(text).toContain((RUNG_COOLDOWN_MS / 60000) + " мин")
 })
 
 test("ladder-cmd: фильтр-подстрока оставляет совпавшие; пусто после фильтра -- явная строка", () => {
-  const marks = new Map<string, number>([["glm-5.3", 0], ["grok-4.6", 0]])
+  const marks = new Map<string, any>([
+    ["glm-5.3", { at: 0, reason: "rung-timeout" }],
+    ["grok-4.6", { at: 0, reason: "rung-timeout" }],
+  ])
   const text = ladderCommandText(1, "glm", marks)
   expect(text).toContain("glm-5.3")
   expect(text.indexOf("grok-4.6")).toBe(-1)
@@ -1832,6 +1841,253 @@ test("catch: стримовая регистрация прогоняет пот
   const out = await drainStream(caught["turn.step"](Dollar, { turnId: "t1", index: 0, model: "m1" }, next))
   expect(out.chunks, "оба шага потока эмитились наружу").toEqual([first, second])
   expect(out.value, "возвращено значение потока, а не объект генератора").toBe("STREAM-RESULT")
+})
+
+// --- #313: веер turn.step помнит отказ носителя -------------------------------
+
+// CONSTRAINT: зубы веера прогоняют РЕАЛЬНЫЙ обработчик turn.step, снятый с
+// регистрации (catchOfRegister), с настоящей привязкой failoverBindSet:
+// прямой вызов функций памяти проверял бы не тот путь (промах волны #311).
+// Метки читаются из дефолтной карты процесса -- той самой, куда пишет веер;
+// имена моделей уникальны на зуб, карта между зубами не сбрасывается
+// (недоступность модели относится к процессу, не к сессии).
+const FAN313_NOW = 91_313_000
+
+function fan313$(): any {
+  const files: Record<string, string> = {
+    "/probes-f313/probes.toml": "[failover]\nenabled = true\n",
+  }
+  return {
+    clock: { now: async () => FAN313_NOW },
+    env: { get: async (k: string) => (k === "CLAUDE_PROBES_DIR" ? "/probes-f313" : "") },
+    store: { get: async () => "" },
+    fs: {
+      read: async (p: string) => {
+        if (files[p] !== undefined) return files[p]
+        throw new Error("ENOENT " + p)
+      },
+    },
+  }
+}
+
+function fan313Stream(script: { [model: string]: () => any }): any {
+  const seen: string[] = []
+  const next: any = (req: any) => {
+    const model = String(req && req.model)
+    seen.push(model)
+    const act = script[model]
+    if (!act) throw new Error("fan313: нет сценария для " + model)
+    return act()
+  }
+  next.seen = seen
+  return next
+}
+
+function fan313Refuse(): any {
+  return (async function* () { return { usage: null, stopReason: null } })()
+}
+
+function fan313RefuseAfterChunk(): any {
+  return (async function* () {
+    yield { kind: "text", text: "кусок до отказа" }
+    return { usage: null, stopReason: null }
+  })()
+}
+
+function fan313Throw(): any {
+  return (async function* () { throw new Error("transport-down") })()
+}
+
+function fan313Ok(tag: string): any {
+  return (async function* () {
+    return { usage: { out: 1 }, stopReason: "end_turn", text: "OK-" + tag }
+  })()
+}
+
+// CONSTRAINT: turn.step — основной хук сидит во ВТОРОМ аргументе on();
+// .catch-обработчик (observerFailThroughStream) — прозрачный next(e), он
+// ВЕЕРА НЕ НЕСЁТ: снятый с него «хук» прогонял бы только попытку original.
+function fan313Step(): any {
+  let fn: any = null
+  register((ev: string, ...rest: any[]) => {
+    if (ev === "turn.step") fn = rest.length >= 2 ? rest[1] : rest[0]
+    return { catch: () => {} }
+  })
+  return fn
+}
+
+async function fan313Run(aid: string, original: string, ladder: string[], next: any): Promise<any> {
+  failoverBindSet(aid, { ladder, subagentType: "fan313", class: "", sticky: null })
+  const step = fan313Step()
+  return await drainStream(step(fan313$(), { agentId: aid, turnId: "f313", index: 0, model: original }, next))
+}
+
+test("#313 T1: отказ носителя до содержимого ставит метку остывания", async () => {
+  failoverBindReset()
+  const next = fan313Stream({
+    "f313-t1-refuse": fan313Refuse,
+    "f313-t1-ok": () => fan313Ok("t1"),
+  })
+  const out = await fan313Run("f313-t1", "f313-t1-refuse", ["f313-t1-ok"], next)
+  expect(out.value && out.value.text).toBe("OK-t1")
+  expect(isModelCooling("f313-t1-refuse", FAN313_NOW + 1)).toBe(true)
+  const row = cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t1-refuse")
+  expect(row.length).toBe(1)
+  expect(row[0].reason).toBe("carrier-refusal")
+  expect(isModelCooling("f313-t1-ok", FAN313_NOW + 1)).toBe(false)
+  failoverBindReset()
+})
+
+test("#313 T2: отказ носителя ПОСЛЕ содержимого метки НЕ ставит", async () => {
+  failoverBindReset()
+  const next = fan313Stream({
+    "f313-t2-refuse": fan313RefuseAfterChunk,
+    "f313-t2-next": () => fan313Ok("t2"),
+  })
+  const out = await fan313Run("f313-t2", "f313-t2-refuse", ["f313-t2-next"], next)
+  expect(out.chunks.length).toBe(1)
+  expect(next.seen, "ступень с выданным содержимым состоялась -- перехода нет").toEqual(["f313-t2-refuse"])
+  expect(isModelCooling("f313-t2-refuse", FAN313_NOW + 1)).toBe(false)
+  expect(cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t2-refuse").length).toBe(0)
+  failoverBindReset()
+})
+
+test("#313 T3: бросок метки НЕ ставит -- различение #239 цело", async () => {
+  failoverBindReset()
+  const next = fan313Stream({
+    "f313-t3-throw": fan313Throw,
+    "f313-t3-ok": () => fan313Ok("t3"),
+  })
+  const out = await fan313Run("f313-t3", "f313-t3-throw", ["f313-t3-ok"], next)
+  expect(out.value && out.value.text).toBe("OK-t3")
+  expect(isModelCooling("f313-t3-throw", FAN313_NOW + 1)).toBe(false)
+  failoverBindReset()
+})
+
+test("#313 T4: удачная попытка метки НЕ ставит", async () => {
+  failoverBindReset()
+  const next = fan313Stream({ "f313-t4-ok": () => fan313Ok("t4") })
+  const out = await fan313Run("f313-t4", "f313-t4-ok", ["f313-t4-backup"], next)
+  expect(next.seen).toEqual(["f313-t4-ok"])
+  expect(isModelCooling("f313-t4-ok", FAN313_NOW + 1)).toBe(false)
+  failoverBindReset()
+})
+
+test("#313 T5: остывающая модель в плане -- перестановка в хвост, не вырезка", async () => {
+  failoverBindReset()
+  noteRungCarrierRefusal("f313-t5-cold", FAN313_NOW - 5000)
+  // CONSTRAINT: прямой ассерт перестановки идёт ДО веера -- веер этого зуба
+  // отказом каждой ступени сам ставит метки всем моделям плана, и после
+  // него перестановка стала бы тождественной.
+  const defer = deferCoolingAttemptModels(["f313-t5-h1", "f313-t5-cold", "f313-t5-h2"], FAN313_NOW)
+  expect(defer.plan.length).toBe(3)
+  expect(defer.plan).toEqual(["f313-t5-h1", "f313-t5-h2", "f313-t5-cold"])
+  const next = fan313Stream({
+    "f313-t5-h1": fan313Refuse,
+    "f313-t5-cold": fan313Refuse,
+    "f313-t5-h2": fan313Refuse,
+  })
+  // план failoverAttemptModels: [h1, cold, h2]; перестановка: холодная в хвост
+  const out = await fan313Run("f313-t5", "f313-t5-h1", ["f313-t5-cold", "f313-t5-h2"], next)
+  expect(next.seen, "остывающая достигнута последней, здоровые в прежнем порядке").toEqual(["f313-t5-h1", "f313-t5-h2", "f313-t5-cold"])
+  expect(isCarrierRefusal(out.value)).toBe(true)
+  failoverBindReset()
+})
+
+test("#313 T6: ВСЕ модели плана остывают -- план неизменен и полон", async () => {
+  failoverBindReset()
+  noteRungCarrierRefusal("f313-t6-x", FAN313_NOW)
+  noteRungCarrierRefusal("f313-t6-y", FAN313_NOW)
+  noteRungCarrierRefusal("f313-t6-solo", FAN313_NOW)
+  const next = fan313Stream({
+    "f313-t6-x": fan313Refuse,
+    "f313-t6-y": fan313Refuse,
+  })
+  const out = await fan313Run("f313-t6", "f313-t6-x", ["f313-t6-y"], next)
+  expect(next.seen, "перестановка тождественна: исходный порядок, обе попытки").toEqual(["f313-t6-x", "f313-t6-y"])
+  expect(isCarrierRefusal(out.value)).toBe(true)
+  // план из одного элемента, и он остывает: модель не теряется
+  const nextSolo = fan313Stream({ "f313-t6-solo": fan313Refuse })
+  const solo = await fan313Run("f313-t6-solo", "f313-t6-solo", ["f313-t6-solo"], nextSolo)
+  expect(nextSolo.seen).toEqual(["f313-t6-solo"])
+  expect(isCarrierRefusal(solo.value)).toBe(true)
+  expect(deferCoolingAttemptModels(["f313-t6-x", "f313-t6-y"], FAN313_NOW).plan).toEqual(["f313-t6-x", "f313-t6-y"])
+  expect(deferCoolingAttemptModels(["f313-t6-solo"], FAN313_NOW).plan).toEqual(["f313-t6-solo"])
+  failoverBindReset()
+})
+
+test("#313 T7: собственная модель агента остывает -- план держит её последней", async () => {
+  failoverBindReset()
+  noteRungCarrierRefusal("f313-t7-own", FAN313_NOW)
+  const next = fan313Stream({
+    "f313-t7-own": () => fan313Ok("t7-own"),
+    "f313-t7-step": fan313Refuse,
+  })
+  const out = await fan313Run("f313-t7", "f313-t7-own", ["f313-t7-step"], next)
+  expect(next.seen, "собственная модель достигается после здоровой ступени").toEqual(["f313-t7-step", "f313-t7-own"])
+  expect(out.value && out.value.text).toBe("OK-t7-own")
+  expect(isModelCooling("f313-t7-own", FAN313_NOW + 1), "метка пережила шаг").toBe(true)
+  failoverBindReset()
+})
+
+test("#313 T8: дорога консультаций судит ТОЛЬКО отказ по времени", () => {
+  const marks = new Map<string, any>([
+    ["f313-cons-carrier", { at: 100, reason: "carrier-refusal" }],
+    ["f313-cons-timeout", { at: 100, reason: "rung-timeout" }],
+  ])
+  const ladder = [{ model: "f313-cons-carrier" }, { model: "f313-cons-timeout" }, { model: "f313-cons-ready" }]
+  const got = rungsAfterCooldown(ladder, 200, marks)
+  expect(got.ladder, "метка отказа носителя ступень консультации НЕ выбрасывает").toEqual([{ model: "f313-cons-carrier" }, { model: "f313-cons-ready" }])
+  expect(got.evidence).toEqual({
+    rungCooldownSkipped: ["f313-cons-timeout"],
+    "rungCooldownAgeMs_f313-cons-timeout": 100,
+  })
+})
+
+test("#313 T9: дверь наблюдения называет причину метки", () => {
+  const marks = new Map<string, any>([
+    ["f313-t9-carrier", { at: 1000, reason: "carrier-refusal" }],
+    ["f313-t9-timeout", { at: 2000, reason: "rung-timeout" }],
+  ])
+  const snap = cooldownSnapshot(61_000, marks)
+  const reasons: { [m: string]: string } = {}
+  for (const r of snap) reasons[r.model] = r.reason
+  expect(reasons["f313-t9-carrier"]).toBe("carrier-refusal")
+  expect(reasons["f313-t9-timeout"]).toBe("rung-timeout")
+  const lines = ladderCommandText(61_000, "", marks).split("\n")
+  const carrierLine = lines.filter((l) => l.indexOf("f313-t9-carrier") >= 0)
+  const timeoutLine = lines.filter((l) => l.indexOf("f313-t9-timeout") >= 0)
+  expect(carrierLine.length).toBe(1)
+  expect(timeoutLine.length).toBe(1)
+  expect(carrierLine[0]).toContain("carrier-refusal")
+  expect(carrierLine[0].indexOf("rung-timeout")).toBe(-1)
+  expect(timeoutLine[0]).toContain("rung-timeout")
+  expect(timeoutLine[0].indexOf("carrier-refusal")).toBe(-1)
+})
+
+test("#313 T10: один дом предиката -- граница окна у трёх читателей одна", () => {
+  const marks = new Map<string, any>([["f313-t10-edge", { at: 1000, reason: "rung-timeout" }]])
+  const edge = 1000 + RUNG_COOLDOWN_MS
+  // мусорный ключ не бросает
+  expect(isModelCooling("f313-no-such-key", edge, marks)).toBe(false)
+  expect(isModelCooling("f313-t10-edge", edge, marks), "граница включающая").toBe(true)
+  // фильтр консультаций
+  const ladder = [{ model: "f313-t10-edge" }, { model: "f313-t10-ready" }]
+  expect(rungsAfterCooldown(ladder, edge, marks).ladder).toEqual([{ model: "f313-t10-ready" }])
+  // дверь наблюдения
+  expect(cooldownSnapshot(edge, marks)).toStrictEqual([{ model: "f313-t10-edge", leftMs: 0, reason: "rung-timeout" }])
+  // веер: остывающая уходит в хвост и не удаляется
+  expect(deferCoolingAttemptModels(["f313-t10-edge", "f313-t10-ready"], edge, marks).plan)
+    .toEqual(["f313-t10-ready", "f313-t10-edge"])
+})
+
+test("#313 R: дверь сброса меток -- вторая проверка с чистого листа", () => {
+  rungCooldownReset()
+  noteRungCarrierRefusal("f313-r-door", 1000)
+  expect(isModelCooling("f313-r-door", 1001)).toBe(true)
+  rungCooldownReset()
+  expect(isModelCooling("f313-r-door", 1001), "после сброса модель годна").toBe(false)
+  expect(cooldownSnapshot(1001)).toStrictEqual([])
 })
 
 // CONSTRAINT: семь наблюдательских регистраций не дёргаются решающими

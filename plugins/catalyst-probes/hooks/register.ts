@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.40"
+export const MOD_VERSION = "0.1.41"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -1145,27 +1145,61 @@ let sweepDone = false
 
 const failoverBinds = new Map<string, any>()
 // CONSTRAINT: недоступность модели относится к процессу, а не к сессии;
-// newSession не сбрасывает метки. Ключи — только модели лестниц консультаций.
-const rungCooldownMarks = new Map<string, number>()
+// newSession не сбрасывает метки. Ключи — модели лестниц консультаций И
+// модели веера turn.step (#313). Метка несёт ПРИЧИНУ: читатели засчитывают
+// РАЗНЫЕ наборы причин, и без причины в метке дорога консультаций молча
+// расширила бы то, что она судит.
+export type RungCooldownMark = { at: number; reason: string }
+export const RUNG_COOLDOWN_REASON_TIMEOUT = "rung-timeout"
+export const RUNG_COOLDOWN_REASON_CARRIER = "carrier-refusal"
+export const RUNG_COOLDOWN_REASONS_ALL = [RUNG_COOLDOWN_REASON_TIMEOUT, RUNG_COOLDOWN_REASON_CARRIER]
+const rungCooldownMarks = new Map<string, RungCooldownMark>()
 
-export function noteRungTimeout(model: string, errText: string, atMs: number, marks: Map<string, number> = rungCooldownMarks, budgetClipped: boolean = false): boolean {
+// CONSTRAINT: окно остывания судит ТОЛЬКО этот предикат. Второй дом правила
+// (rungsAfterCooldown против cooldownSnapshot против веера) спорил бы об
+// одном окне; до #313 два дома держались только комментарием.
+export function isModelCooling(model: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): boolean {
+  const mark = marks.get(model)
+  return mark !== undefined && reasons.indexOf(mark.reason) >= 0 && atMs - mark.at <= RUNG_COOLDOWN_MS
+}
+
+export function noteRungTimeout(model: string, errText: string, atMs: number, marks: Map<string, RungCooldownMark> = rungCooldownMarks, budgetClipped: boolean = false): boolean {
   if (errText.indexOf("rung-deadline") < 0) return false
   // CONSTRAINT: урезанный общим пределом бюджет доказывает таймаут,
   // но не недоступность модели; существующая метка тоже не продлевается.
-  if (!budgetClipped) marks.set(model, atMs)
+  if (!budgetClipped) marks.set(model, { at: atMs, reason: RUNG_COOLDOWN_REASON_TIMEOUT })
   return true
 }
 
-export function rungsAfterCooldown<T extends { model: string }>(ladder: T[], atMs: number, marks: ReadonlyMap<string, number> = rungCooldownMarks): { ladder: T[]; evidence: { [k: string]: any } } {
+// CONSTRAINT: метка отказа носителя ставится ТОЛЬКО на отказ ДО первого
+// содержимого. Бросок — транспортный отказ, а не отказ носителя (различение
+// #239); ступень, выдавшая содержимое, состоялась. Обе вырезки — прямые
+// аналоги budgetClipped у noteRungTimeout: метится только то, что доказывает
+// недоступность МОДЕЛИ.
+export function noteRungCarrierRefusal(model: string, atMs: number, marks: Map<string, RungCooldownMark> = rungCooldownMarks): void {
+  marks.set(model, { at: atMs, reason: RUNG_COOLDOWN_REASON_CARRIER })
+}
+
+// CONSTRAINT: дверь сброса — для ТЕСТОВОГО стенда и будущих ручек; продовое
+// поведение её не зовёт: недоступность модели относится к процессу и переживает
+// newSession (CONSTRAINT у карты выше). Без двери соседний зуб, чья модель
+// отказала в предыдущем, молча меняет смысл.
+export function rungCooldownReset(): void {
+  rungCooldownMarks.clear()
+}
+
+// CONSTRAINT: набор причин дороги консультаций — ТОЛЬКО отказ по времени:
+// расширение набора молча изменило бы то, что судья пропускает.
+export function rungsAfterCooldown<T extends { model: string }>(ladder: T[], atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = [RUNG_COOLDOWN_REASON_TIMEOUT]): { ladder: T[]; evidence: { [k: string]: any } } {
   const keep: T[] = []
   const skipped: string[] = []
   const ages: { [k: string]: number } = {}
   for (let i = 0; i < ladder.length; i++) {
     const rung = ladder[i]
-    const stamp = marks.get(rung.model)
-    if (stamp !== undefined && atMs - stamp <= RUNG_COOLDOWN_MS) {
+    if (isModelCooling(rung.model, atMs, marks, reasons)) {
+      const mark = marks.get(rung.model) as RungCooldownMark
       skipped.push(rung.model)
-      ages["rungCooldownAgeMs_" + rung.model] = atMs - stamp
+      ages["rungCooldownAgeMs_" + rung.model] = atMs - mark.at
     } else {
       keep.push(rung)
     }
@@ -1198,14 +1232,16 @@ export function clipLadderArg(arg: string): string {
   return String(arg || "").slice(0, LADDER_COMMAND_ARG_MAX)
 }
 
-// CONSTRAINT: предикат «ещё остывает» -- РОВНО тот, что у rungsAfterCooldown
-// (atMs - stamp <= RUNG_COOLDOWN_MS): второй дом правила сделал бы команду и
-// фильтр лестницы спорящими об одном окне.
-export function cooldownSnapshot(atMs: number, marks: Map<string, number> = rungCooldownMarks): Array<{ model: string; leftMs: number }> {
-  const out: Array<{ model: string; leftMs: number }> = []
-  marks.forEach((stamp: number, model: string) => {
-    if (atMs - stamp <= RUNG_COOLDOWN_MS) {
-      out.push({ model, leftMs: RUNG_COOLDOWN_MS - (atMs - stamp) })
+// CONSTRAINT: предикат «ещё остывает» — isModelCooling, ОДИН дом для фильтра
+// лестницы, этой команды и веера: второй дом правила сделал бы их спорящими
+// об одном окне.
+// CONSTRAINT: дверь наблюдения засчитывает ОБЕ причины метки и называет
+// причину в выводе — дверь, скрывающая половину меток, хуже отсутствующей.
+export function cooldownSnapshot(atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): Array<{ model: string; leftMs: number; reason: string }> {
+  const out: Array<{ model: string; leftMs: number; reason: string }> = []
+  marks.forEach((mark: RungCooldownMark, model: string) => {
+    if (isModelCooling(model, atMs, marks, reasons)) {
+      out.push({ model, leftMs: RUNG_COOLDOWN_MS - (atMs - mark.at), reason: mark.reason })
     }
   })
   return out
@@ -1214,7 +1250,7 @@ export function cooldownSnapshot(atMs: number, marks: Map<string, number> = rung
 // CONSTRAINT: пустая карта и отфильтрованная в ноль -- РАЗНЫЕ явные строки:
 // пустой вывод неотличим от молчания команды, а молчание наблюдатель принял бы
 // за ноль (ПУСТО != НОЛЬ).
-export function ladderCommandText(atMs: number, argRaw: string, marks: Map<string, number> = rungCooldownMarks): string {
+export function ladderCommandText(atMs: number, argRaw: string, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks): string {
   const arg = clipLadderArg(argRaw)
   const snap = cooldownSnapshot(atMs, marks)
   const rows = snap.filter((r) => !arg || r.model.indexOf(arg) >= 0)
@@ -1224,9 +1260,36 @@ export function ladderCommandText(atMs: number, argRaw: string, marks: Map<strin
   } else if (!rows.length) {
     lines.push("под фильтр не попала ни одна ступень")
   } else {
-    for (const r of rows) lines.push(r.model + ": остывать ещё " + Math.ceil(r.leftMs / 1000) + " с")
+    for (const r of rows) lines.push(r.model + ": остывать ещё " + Math.ceil(r.leftMs / 1000) + " с (" + r.reason + ")")
   }
   return lines.join("\n")
+}
+
+// --- #313: отсрочка остывающих моделей в плане веера --------------------------
+
+// CONSTRAINT: остывающая модель НИКОГДА не удаляется из плана — только
+// переставляется в хвост (стабильно: взаимный порядок и готовых, и остывающих
+// прежний). Удаление воспроизводило бы отклонённую #311: собственная
+// назначенная модель агента исчезала из плана, и агент возвращал отказ, ни
+// разу её не вызвав. Ложная или протухшая метка обязана стоить лишнего круга
+// веера, а не отказа при живой модели. Длина плана до и после совпадает.
+export function deferCoolingAttemptModels(plan: string[], atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): { plan: string[]; evidence: { [k: string]: any } } {
+  const ready: string[] = []
+  const deferred: string[] = []
+  for (let i = 0; i < plan.length; i++) {
+    if (isModelCooling(plan[i], atMs, marks, reasons)) deferred.push(plan[i])
+    else ready.push(plan[i])
+  }
+  // CONSTRAINT: при нуле отложенных полей улики нет вовсе — форма
+  // rungsAfterCooldown: пустой фильтр не несёт полей пропуска.
+  if (!deferred.length) return { plan, evidence: {} }
+  const evidence: { [k: string]: any } = { cooldownDeferred: deferred.slice() }
+  for (let i = 0; i < deferred.length; i++) {
+    const mark = marks.get(deferred[i]) as RungCooldownMark
+    evidence["cooldownAgeMs_" + deferred[i]] = atMs - mark.at
+    evidence["cooldownReason_" + deferred[i]] = mark.reason
+  }
+  return { plan: ready.concat(deferred), evidence }
 }
 
 export function failoverBindReset(): void {
@@ -2738,7 +2801,12 @@ export function register(on: any) {
       planSticky = null
       stickyDropped = true
     }
-    const plan = failoverAttemptModels(original, planSticky, planLadder)
+    // CONSTRAINT (#313): остывающие модели ОТКЛАДЫВАЮТСЯ в хвост плана, но не
+    // удаляются — удаление возвращало бы отказ при живой собственной модели
+    // (дефект отклонённой #311). Применяется ровно к результату
+    // failoverAttemptModels, до проверки пустоты.
+    const cooldownDefer = deferCoolingAttemptModels(failoverAttemptModels(original, planSticky, planLadder), await nowMs($))
+    const plan = cooldownDefer.plan
     if (!plan.length) return yield* driveNext(next(e))
     // Отметки шага #226 уезжают в КАЖДУЮ запись попытки: улика попытки
     // самодостаточна и без соседних строк шага.
@@ -2753,6 +2821,10 @@ export function register(on: any) {
     if (bind.rungsDropped) journalExtra.rungsDropped = bind.rungsDropped
     if (bind.source) journalExtra.source = bind.source
     if (bind.allowedSrc) journalExtra.allowedSrc = bind.allowedSrc
+    // CONSTRAINT (#313): улика отложенных остывающих моделей уезжает в КАЖДУЮ
+    // запись попытки, как отметки #226 выше; при нуле отложенных объект пуст
+    // и полей не добавляет вовсе.
+    Object.assign(journalExtra, cooldownDefer.evidence)
     let lastRes: any = null
     let lastThrow: any = null
     let sawThrow = false
@@ -2869,6 +2941,11 @@ export function register(on: any) {
         if (executor) sessionExecutorModelAdd(model)
         if (failoverWouldSetSticky(false, res, reviewer, model)) bind.sticky = model
       }
+      // CONSTRAINT (#313): метка недоступности — ТОЛЬКО на отказ носителя ДО
+      // первого содержимого (ровно предикат перехода на следующую ступень):
+      // бросок — транспортный отказ (различение #239), выдавшая содержимое
+      // ступень состоялась. Метка переживёт newSession — процессная.
+      if (refusal && !afterEmit) noteRungCarrierRefusal(model, t1)
       // CONSTRAINT: отказ носителя ПОСЛЕ выдачи уезжает вызывающему как есть:
       // куски первой ступени уже у сессии, вторая приклеила бы к ним чужой
       // хвост. До первой выдачи поведение прежнее -- отказ ведёт на следующую
