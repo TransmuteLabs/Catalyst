@@ -14,6 +14,8 @@ import {
   parseVal, parseToml, rungsOf, rungCtx, parseVerdict,
   verdictKey, memoUsable, effortOk, EFFORTS, markEffort,
   readComplete, blocksLine,
+  outcomeOf, verdictVocabSeed, verdictVocabReset,
+  formVerdictUpper, formVocabRefusal,
   MOD_VERSION, RUNG_COOLDOWN_MS, noteRungTimeout, rungsAfterCooldown,
   failoverLadder, failoverLadderBind, loadAllowedByClass, loadWorld, worldFor, nextFailoverModel, failoverAttemptModels,
   isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP, chunkCarriesContent,
@@ -640,6 +642,95 @@ test("parseVerdict: пробелы в rest съедаются; пробелы в
   expect(parseVerdict("BLOCK: x", "OK | BLOCK")).toStrictEqual({ kind: "BLOCK", rest: "x" })
 })
 
+// --- исход: один дом, одна свёртка (#374) ----------------------------------------
+// CONSTRAINT: таблица ниже -- ДОГОВОР мода с прибором (judge/compact.py):
+// для КАЖДОЙ клетки оба дают ОДИН класс. Пин снимается с дома файла
+// (VERDICT_VOCAB); смена любой строки дома обязана краснеть здесь.
+
+test("outcomeOf: семь клеток таблицы -- один класс с прибором", () => {
+  expect(outcomeOf("OK", "judge")).toBe("ok")
+  expect(outcomeOf("WARN", "judge")).toBe("ok")
+  expect(outcomeOf("BLOCK", "judge")).toBe("block")
+  expect(outcomeOf("STOP", "judge")).toBe("block")
+  expect(outcomeOf("DENY", "judge")).toBe("block")
+  expect(outcomeOf("PASS", "form")).toBe("ok")
+  expect(outcomeOf("WARN", "form")).toBe("block")
+  expect(outcomeOf("REFUSE", "form")).toBe("block")
+  expect(outcomeOf("SILENT", "idle-watch")).toBe("ok")
+  expect(outcomeOf("NUDGE", "idle-watch")).toBe("block")
+})
+
+test("outcomeOf: служебные исходы -- вне словаря, литерально", () => {
+  expect(outcomeOf("NONE", "judge")).toBe("block_no_verdict")
+  expect(outcomeOf("TIMEOUT", "judge")).toBe("skip")
+  expect(outcomeOf("TRUNCATED", "form")).toBe("skip")
+  expect(outcomeOf("SKIP", "idle-watch")).toBe("skip")
+  expect(outcomeOf("STALE_EPOCH", "judge")).toBe("skip")
+})
+
+test("outcomeOf: удаление строки дома меняет класс мода -- профиль падает на *", () => {
+  try {
+    verdictVocabSeed([
+      { probe: "idle-watch", emits: "SILENT|NUDGE", folds: "NUDGE" },
+      { probe: "*", emits: "OK|WARN|BLOCK|SILENT|NUDGE", folds: "BLOCK" },
+    ])
+    // строки «form» и «judge» нет: их виды ищутся в профиле «*», где WARN
+    // не свёрнут, PASS/REFUSE/STOP/DENY не объявлены вовсе -- каждый класс
+    // отличается от дома файла. Второй потребитель дома не имеет права
+    // молча пережить такую смену.
+    expect(outcomeOf("WARN", "form")).toBe("ok")
+    expect(outcomeOf("PASS", "form")).toBe("skip")
+    expect(outcomeOf("REFUSE", "form")).toBe("skip")
+    expect(outcomeOf("STOP", "judge")).toBe("skip")
+    expect(outcomeOf("DENY", "judge")).toBe("skip")
+  } finally {
+    verdictVocabReset()
+  }
+  expect(outcomeOf("WARN", "form"), "после сброса -- дом файла").toBe("block")
+  expect(outcomeOf("STOP", "judge"), "после сброса -- дом файла").toBe("block")
+})
+
+// --- #375: рассогласование дома и правил формы -------------------------------
+//
+// CONSTRAINT: зубы стоят ЗДЕСЬ, а не в behavior: официальный стенд исполняет
+// хук в экземпляре модуля, недоступном посеву, и поведенческий сценарий
+// проверял бы дом файла вместо посеянного.
+
+test("formVerdictUpper: дом файла знает все три вида правил формы", () => {
+  expect(formVerdictUpper("pass")).toBe("PASS")
+  expect(formVerdictUpper("warn")).toBe("WARN")
+  expect(formVerdictUpper("refuse")).toBe("REFUSE")
+})
+
+test("formVerdictUpper: вида нет в доме -- null, а НЕ пустая строка", () => {
+  try {
+    verdictVocabSeed([
+      { probe: "form", emits: "PASS|WARN", folds: "WARN" },
+      { probe: "*", emits: "OK|WARN|BLOCK|SILENT|NUDGE", folds: "BLOCK" },
+    ])
+    expect(formVerdictUpper("refuse"), "дом не знает вид -- отказ, не пустой вид").toBe(null)
+    expect(formVerdictUpper("pass"), "известный вид продолжает разбираться").toBe("PASS")
+  } finally {
+    verdictVocabReset()
+  }
+  expect(formVerdictUpper("refuse"), "после сброса -- дом файла").toBe("REFUSE")
+})
+
+test("formVocabRefusal: причина называет и вид, и текущий emits дома", () => {
+  try {
+    verdictVocabSeed([
+      { probe: "form", emits: "PASS|WARN", folds: "WARN" },
+      { probe: "*", emits: "OK|WARN|BLOCK|SILENT|NUDGE", folds: "BLOCK" },
+    ])
+    const why = formVocabRefusal("refuse")
+    expect(why, "причина называет вид").toContain('вид "refuse"')
+    expect(why, "причина называет emits дома").toContain("PASS|WARN")
+    expect(why, "причина не называет несуществующий в доме вид").not.toContain("REFUSE")
+  } finally {
+    verdictVocabReset()
+  }
+})
+
 // --- classesOf -------------------------------------------------------------------
 
 test("classesOf: маркер извлечён; повтор не дублируется", () => {
@@ -749,7 +840,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.44")
+  expect(MOD_VERSION).toBe("0.1.45")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------

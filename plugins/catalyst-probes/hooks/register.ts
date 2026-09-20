@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.44"
+export const MOD_VERSION = "0.1.45"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -820,16 +820,39 @@ export function blocksLine(blocks: { type: string; len: number }[] | null): stri
 // -- профиль пользовательских проб (profileOf, ветка по умолчанию) и
 // защитный дефолт parseVerdict, который пробу не знает; прибор читает
 // только три именованные записи -- корпус размечается по встроенным пробам.
-const VERDICT_VOCAB: { probe: string; emits: string; folds: string }[] = [
+type VocabRow = { probe: string; emits: string; folds: string }
+
+const VERDICT_VOCAB_FILE: VocabRow[] = [
   { probe: "judge", emits: "OK|BLOCK|STOP|DENY|WARN", folds: "BLOCK|STOP|DENY" },
   { probe: "form", emits: "PASS|WARN|REFUSE", folds: "REFUSE|WARN" },
   { probe: "idle-watch", emits: "SILENT|NUDGE", folds: "NUDGE" },
   { probe: "*", emits: "OK|WARN|BLOCK|SILENT|NUDGE", folds: "BLOCK" },
 ]
 
-function vocabRow(probe: string): { probe: string; emits: string; folds: string } {
+let VERDICT_VOCAB: VocabRow[] = VERDICT_VOCAB_FILE
+
+// CONSTRAINT: посев -- шов стенда для дома словаря, и он ОБЯЗАН быть
+// возвратным: verdictVocabReset возвращает ровно объявленный в файле набор,
+// иначе порядок сценариев стал бы несущим, а дом -- зависящим от того, какой
+// тест отработал раньше.
+export function verdictVocabSeed(rows: VocabRow[]): void {
+  VERDICT_VOCAB = (rows || []).slice()
+}
+
+export function verdictVocabReset(): void {
+  VERDICT_VOCAB = VERDICT_VOCAB_FILE
+}
+
+// CONSTRAINT: запасная строка -- ЛИТЕРАЛ, а не рекурсивный поиск "*": таблица,
+// в которой строки "*" нет, зациклила бы vocabRow на себе. Её пустой emits
+// означает «вид неизвестен» для любого вида -- сломанный дом не пропускает
+// вердикт, а гасит его, и это направление выбрано сознательно.
+const VOCAB_FALLBACK: VocabRow = { probe: "*", emits: "", folds: "" }
+
+function vocabRow(probe: string): VocabRow {
   for (let i = 0; i < VERDICT_VOCAB.length; i++) if (VERDICT_VOCAB[i].probe === probe) return VERDICT_VOCAB[i]
-  return vocabRow("*")
+  if (probe !== "*") for (let i = 0; i < VERDICT_VOCAB.length; i++) if (VERDICT_VOCAB[i].probe === "*") return VERDICT_VOCAB[i]
+  return VOCAB_FALLBACK
 }
 
 function emitsOf(probe: string): string { return vocabRow(probe).emits }
@@ -852,6 +875,23 @@ function passKind(probe: string, kind: string): boolean {
   return row.emits.split("|").indexOf(kind) >= 0 && row.folds.split("|").indexOf(kind) < 0
 }
 
+// CONSTRAINT (#375): выбор прописного вида формы -- ЧИСТАЯ функция над домом,
+// а не выражение внутри runForm. Официальный стенд исполняет хук в экземпляре
+// модуля, недоступном посеву из теста, поэтому рассогласование дома и правил
+// проверяемо ТОЛЬКО здесь; выражение, спрятанное в runForm, не имело бы зуба
+// вовсе. null означает «дом такого вида не знает» -- это отказ прибора, а не
+// пустая строка, которая уходила в улику видом вердикта.
+export function formVerdictUpper(vk: string): string | null {
+  const upper = emitsOf("form").split("|")
+  const lower = upper.map((s) => s.toLowerCase())
+  const i = lower.indexOf(vk)
+  return i >= 0 ? upper[i] : null
+}
+
+export function formVocabRefusal(vk: string): string {
+  return 'словарь пробы "form" не знает вид "' + vk + '"; emits дома: ' + emitsOf("form")
+}
+
 export function parseVerdict(raw: string, rx: string): { kind: string; rest: string } | null {
   // CONSTRAINT: дефолт -- профиль "*", а не судейский: parseVerdict не знает
   // пробы, и защитный словарь обязан быть общим надёжным над всеми видами.
@@ -872,7 +912,7 @@ export function parseVerdict(raw: string, rx: string): { kind: string; rest: str
   return null
 }
 
-function outcomeOf(kind: string, probe: string): string {
+export function outcomeOf(kind: string, probe: string): string {
   if (passKind(probe, kind)) return "ok"
   if (foldedKind(probe, kind)) return "block"
   if (kind === "NONE") return "block_no_verdict"
@@ -2355,15 +2395,21 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     }
   }
   if (clockBad) rec.clockBad = true
+  const kind = String(rec.kind || "NONE")
+  const rest = String(rec.rest || "")
+  const enforce = p.id === "judge" ? (env.JUDGE === "enforce" || bl3(cfg.enforce, true)) : bl3(cfg.enforce, p.act === "cancel")
+  let oc = outcomeOf(kind, p.id)
+  if (foldedKind(p.id, kind) && !enforce) oc = "block_not_enforced"
+  // CONSTRAINT (#374): класс свёртки считается ЗДЕСЬ ОДИН раз, едет в улику
+  // полем outcome, и журнальная строка переиспользует ЭТО ЖЕ значение. Второй
+  // потребитель (прибор judge/compact.py) обязан читать готовое поле, а не
+  // пересчитывать его по собственной копии таблицы: копии разошлись молча на
+  // пяти видах, и расхождение было видно только сличением двух домов.
+  rec.outcome = oc
   if (cfg.record !== false) {
     try { await $.fs.write(recPath, JSON.stringify(rec)) } catch (x) {}
   }
   try {
-    const kind = String(rec.kind || "NONE")
-    const rest = String(rec.rest || "")
-    let oc = outcomeOf(kind, p.id)
-    const enforce = p.id === "judge" ? (env.JUDGE === "enforce" || bl3(cfg.enforce, true)) : bl3(cfg.enforce, p.act === "cancel")
-    if (foldedKind(p.id, kind) && !enforce) oc = "block_not_enforced"
     await appendJournal($, jpath, {
       t: new Date(t0).toISOString(),
       probe: id, tool, agent, ms: rec.dtMs, outcome: oc,
@@ -2476,10 +2522,27 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   // CONSTRAINT: прописной вид строится из emits дома пробы "form"; строчные
   // pass/warn/refuse -- поле outcome улики, отдельное от verdict, и в доме
   // не участвуют.
-  const formUpper = emitsOf("form").split("|")
-  const formLower = formUpper.map((s) => s.toLowerCase())
-  const upperIdx = formLower.indexOf(vk)
-  const vd = (upperIdx >= 0 ? formUpper[upperIdx] : "") + ": " +
+  const upper = formVerdictUpper(vk)
+  // CONSTRAINT (#375): рассогласование дома и правил формы -- ОТКАЗ ПРИБОРА, а
+  // не пустой вид. Пока голова vd собиралась тернаром, улика и журнальная
+  // строка уходили на диск с пустым видом, и «вердикта нет» становилось
+  // неотличимо от «вердикт есть»: увидеть подмену можно было только сличением
+  // двух домов. ГРАНИЦА отказа -- ровно построение вида: вызов без событий
+  // формы вернулся выше (evs.length), чужие пробы сюда не заходят, и отказ не
+  // вправе гасить ничего за пределами этой точки.
+  if (upper === null) {
+    const why = formVocabRefusal(vk)
+    try {
+      await appendJournal($, world.globalHome + "/form/journal.jsonl", {
+        t: new Date(await nowMs($)).toISOString(), tool, outcome: "form-vocab-refused",
+        verdict: clip(why, 400), cls, jm: "rules", tries: 0,
+        carrier: carrierOfJournal(p, env), sid: await sidFor($), probe: "form",
+      })
+    } catch (x) {}
+    return "Form probe refused the call (not the routing gate): " + why +
+      " -- the probe returns deny instead of writing a record with an empty verdict kind."
+  }
+  const vd = upper + ": " +
     (vk === "pass" ? lbl : cnts + " — " + lbl + " — " + (src3 ? src3.c : "") + " :" + (src3 ? src3.n : "") + " " + (src3 ? src3.q : ""))
   const t0 = await nowMs($)
   const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
@@ -2496,7 +2559,13 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
     formJournalErr = String((x && (x as any).message) || x).slice(0, 240)
   }
   if (vk !== "pass") {
-    const formRec: any = { ev: tool, cls, refuse: rf, warn: wn, vd }
+    // CONSTRAINT (#374): улика формы несёт вид ОТДЕЛЬНЫМ полем kind, как и
+    // улика судьи. Пока вид жил только внутри склеенной строки vd, проектор
+    // прибора (judge/compact.py, _line_from_mod) не мог определить класс
+    // свёртки записи формы ВООБЩЕ -- поля kind у неё не было, и проход
+    // `--probe form` упирался бы в улику без вида. Поле добавлено, а не
+    // выведено разбором строки: разбор склейки -- второй дом формата.
+    const formRec: any = { ev: tool, cls, refuse: rf, warn: wn, vd, kind: upper, rest: vd.slice(upper.length + 2) }
     if (formJournalErr) formRec.journalErr = formJournalErr
     try { await $.fs.write(recPath, JSON.stringify(formRec)) } catch (x) {}
   }

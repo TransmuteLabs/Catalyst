@@ -2389,3 +2389,121 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
     expect(foldShards(kept).length, "второй тик при нуле не пишет").toBe(afterFirst)
   })
 })
+
+// --- #374: класс исхода вычисляется в моде ОДИН раз и едет в улике ----------------
+//
+// CONSTRAINT: до волны класс считался ПОСЛЕ записи улики и жил только в
+// журнальной строке; прибору приходилось пересчитывать его своей таблицей, и
+// две таблицы разошлись на пяти видах из семи. Зубы ниже требуют ПОЛЕ в
+// улике и ТО ЖЕ значение в журнале -- одно вычисление, два потребителя.
+
+describe("исход в улике (#374)", () => {
+  const JUDGE_TOML = '[probe.judge]\nmodels = ["m1"]\n'
+
+  test("BLOCK при enforce: улика несёт outcome, журнал берёт то же значение", async ($, on) => {
+    const kept = wired(
+      on, 240_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      {
+        [HOME + "/probes.toml"]: JUDGE_TOML,
+        [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+      },
+      {},
+      ["BLOCK: no subject"],
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await $.tool.call({
+      tool: "Agent", description: "brew",
+      prompt: "[dispatch-class:exec-0p] make tea", subagent_type: "scout",
+    })
+
+    expect(res).toEqual({
+      deny:
+        "Subagent dispatch cancelled by the dispatch judge (this is NOT the " +
+        "routing-table.toml gate). Reason: no subject",
+    })
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.outcome, "класс вычислен ДО записи и лежит в улике").toBe("block")
+    const journal = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/judge/journal.jsonl.shard.") &&
+      w.text.includes('"outcome":"block"'),
+    )
+    expect(String(journal?.text || ""), "журнал берёт ТО ЖЕ значение, не вторую таблицу")
+      .toContain('"outcome":"block"')
+  })
+
+  test("BLOCK без enforce: block_not_enforced едет в улику тем же полем", async ($, on) => {
+    const kept = wired(
+      on, 246_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "log" },
+      {
+        // enforce=false при не-enforce ручке: свёрнутый вид не гасит диспатч,
+        // но класс исхода обязан назвать это своим именем, а не «block».
+        [HOME + "/probes.toml"]: '[probe.judge]\nmodels = ["m1"]\nenforce = false\n',
+        [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+      },
+      {},
+      ["BLOCK: no subject"],
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await $.tool.call({
+      tool: "Agent", description: "brew",
+      prompt: "[dispatch-class:exec-0p] make tea", subagent_type: "scout",
+    })
+
+    expect(res, "не-enforce суд не гасит диспатч").toEqual({ result: "ran anyway" })
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.outcome).toBe("block_not_enforced")
+    const journal = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/judge/journal.jsonl.shard.") &&
+      w.text.includes('"outcome":"block_not_enforced"'),
+    )
+    expect(journal, "журнал несёт то же значение").toBeTruthy()
+  })
+
+  test("TIMEOUT: skip едет в улику тем же полем", async ($, on) => {
+    const neverAnswers = () => new Promise<void>(() => {})
+    const kept = wired(
+      on, 252_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      {
+        [HOME + "/probes.toml"]: '[probe.judge]\nmodels = ["m1", "m2"]\ntimeout_ms = 5000\n',
+        [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+      },
+      {},
+      [],
+      { onComplete: () => neverAnswers() },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const running = $.tool.call({
+      tool: "Agent", description: "brew",
+      prompt: "[dispatch-class:exec-0p] make tea", subagent_type: "scout",
+    })
+    await kept.clock!.settle()
+    await kept.clock!.advance(5000)
+    await kept.clock!.advance(5000)
+    const res = await running
+
+    expect(res, "молчащий судья не запрещает").toEqual({ result: "ran" })
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.kind, "фикстура дошла до таймаута").toBe("TIMEOUT")
+    expect(rec.outcome).toBe("skip")
+    const journal = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/judge/journal.jsonl.shard.") &&
+      w.text.includes('"verdict":"TIMEOUT'),
+    )
+    expect(String(journal?.text || ""), "журнал несёт то же значение")
+      .toContain('"outcome":"skip"')
+  })
+})
+
+// CONSTRAINT (#375): поведенческого зуба на рассогласование дома и правил
+// формы здесь НЕТ и быть не может. Официальный стенд поднимает плагин в
+// экземпляре модуля, недоступном посеву из этого файла (замерено: посев
+// меняет класс вида на импортированном модуле, но хук стенда продолжает
+// читать дом файла), а рассогласование иначе как подменой дома не
+// достижимо -- правила формы дают ровно pass/warn/refuse. Зубы защиты
+// живут в tests/units.test.ts на чистых formVerdictUpper / formVocabRefusal.
