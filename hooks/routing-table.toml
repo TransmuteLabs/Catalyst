@@ -104,7 +104,7 @@ reason = "§1e: glm-5.3 (безлимит, дисциплина флагов/г�
 # остальных точках — только в проектном override (правило 09-06).
 [classes.critique]
 label = "критика диффа / ревью / док-критика"
-allowed = ["glm-5.3-flash", "glm-5.3", "grok-4.6", "deepseek-flash", "qwen3.8-flash"]
+allowed = ["glm-5.3-flash", "glm-5.3", "grok-4.6", "deepseek-flash", "qwen3.8-flash", "devin/swe-2"]
 reason = "ядро §4: grok-4.6 ратифицирован 2026-08-13 (0 ложных, вкл. конкурентный код; «дефолтный per-task критик» — исторический состав, новые назначения по [selection].instruction: GLM первый в допущенном пуле); glm-5.3 (замер FIX-163B: 9 находок, 0 ложных, уники по границам; «второй дефолтный голос» — исторический состав); flash — дешёвый добор веера (6 прогонов, 0 ложных); kimi — рефутации перечнями; opus — по триггерам (критичный механизм, регрессия → BASE-vs-HEAD). Дифф исполнителя критикует ДРУГАЯ модель. Состав под конкретный дифф выбирает контроллер. qwen3.8-flash — критика ратифицирована 2026-08-31 (CR-W27/R48/W18 — text-vs-code + claim-truth, дополняет тяжёлые голоса), восстановлен в пуле 2026-09-13 по слову юзера; crit-mech не заменяет обязательную пару. СЕТКА 09-07: старый id несёт ТОЛЬКО дешёвых носителей; дорогая модель требует ТОЧКИ сетки в маркере."
 
 [classes.audit]
@@ -114,7 +114,7 @@ reason = "§7: пары без пересечения профилей; grok-4.6
 
 [classes.analysis]
 label = "диагноз / root-cause / расследование"
-allowed = ["glm-5.3-flash", "glm-5.3", "grok-4.6", "deepseek-flash", "qwen3.8-flash"]
+allowed = ["glm-5.3-flash", "glm-5.3", "grok-4.6", "deepseek-flash", "qwen3.8-flash", "devin/swe-2"]
 reason = "§2: «дефолт класса — веер grok+flash» — исторический состав (арена E: оба 8/8, 0 ложных; flash 14,5 мин — лучшая цена/качество, kimi — лучшая систематизация, но дорог временем); новые назначения — по [selection].instruction, ширина веера остаётся обязательной; opus/fable — по триггерам (конкуренция/локи/durability, зависания, расхождение веера, высокая цена ошибки). qwen3.8-flash — анализ ратифицирован 2026-08-31 (fan #291 — observed-failures, рефутация якоря), восстановлен в пуле 2026-09-13 по слову юзера; an-system — только рядом с верхним голосом сетки. СЕТКА 09-07: старый id несёт ТОЛЬКО дешёвых носителей; дорогая модель требует ТОЧКИ сетки в маркере."
 
 [classes.scout]
@@ -183,17 +183,17 @@ allowed = ["gpt-6-astra", "glm-5.3", "opus", "claude-opus-5[1m]", "fable", "fabl
 [classes.crit-form]
 label = "СЕТКА: критика ФОРМЫ — списки/конформанс/кванторы/паритет/вакуумность (пересчёт)"
 parent = "critique"
-allowed = ["glm-5.3-flash", "glm-5.3", "grok-4.6", "deepseek-flash", "qwen3.8-flash"]
+allowed = ["glm-5.3-flash", "glm-5.3", "grok-4.6", "deepseek-flash", "qwen3.8-flash", "devin/swe-2"]
 
 [classes.crit-mech]
 label = "СЕТКА: критика МЕХАНИЗМА — гарантии/гонки/drop-порядок/дрейф намерения (рассуждение)"
 parent = "critique"
-allowed = ["gpt-6-astra", "gpt-5.6-sol", "grok-4.6", "glm-5.3", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
+allowed = ["gpt-6-astra", "gpt-5.6-sol", "grok-4.6", "glm-5.3", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
 
 [classes.crit-doc]
 label = "СЕТКА: док-критика claim-truth (состав §7-Д)"
 parent = "critique"
-allowed = ["glm-5.3-flash", "grok-4.6", "glm-5.3", "gpt-5.6-sol", "deepseek-flash", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
+allowed = ["glm-5.3-flash", "grok-4.6", "glm-5.3", "gpt-5.6-sol", "deepseek-flash", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
 
 [classes.audit-form]
 label = "СЕТКА: аудит claim-truth / артефакты vs заявки / ценз соответствия"
@@ -208,12 +208,12 @@ allowed = ["gpt-6-astra", "glm-5.3", "deepseek-flash", "grok-4.6", "opus", "clau
 [classes.an-cause]
 label = "СЕТКА: причина конкретного отказа, ряд воспроизводим"
 parent = "analysis"
-allowed = ["glm-5.3-flash", "grok-4.6", "deepseek-flash", "glm-5.3", "qwen3.8-flash"]
+allowed = ["glm-5.3-flash", "grok-4.6", "deepseek-flash", "glm-5.3", "qwen3.8-flash", "devin/swe-2"]
 
 [classes.an-system]
 label = "СЕТКА: взаимодействие механизмов / конкуренция / без ряда — пара с верхним тиром, никогда один flash-голос"
 parent = "analysis"
-allowed = ["glm-5.3", "gpt-6-astra", "glm-5.3-flash", "grok-4.6", "gpt-5.6-sol", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
+allowed = ["glm-5.3", "gpt-6-astra", "glm-5.3-flash", "grok-4.6", "gpt-5.6-sol", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
 
 [classes.scout-enum]
 label = "СЕТКА: перечисление по правилу (file:line, счётчики) — без классификации"
@@ -293,6 +293,7 @@ class = "adjudication"
 "gpt-6-astra" = ["high", "xhigh", "max"]   # все три приняты прокси живьём 2026-09-05; ВЕЕР #750 (1) 2026-09-10: crit-mech ПИН xhigh; исполнение 1b/1c — high (open-697B/621, ратиф. 09-07)
 "glm-5.3" = ["max"]                        # ТОЛЬКО max (директива юзера 2026-08-14)
 "kimi-k3" = ["high"]                       # max даёт ложные находки (§0)
+"devin/swe-2" = ["high"]                    # наследует пин kimi-k3 (max давал ложные находки, §0): дообученный kimi-k3, слово юзера 2026-09-20; веер эффорта — к замеру
 "grok-4.6" = ["medium", "max"]             # max — исполнитель/скаут (прокси/Agent-путь; CLI-потолок high — это envoy); medium — crit-mech ПИН (веер #750 (2) 2026-09-10, вся линейка на одной критике: medium 7 подтверждённых / 0 ложных, high 6/0, low 1 ложная, xhigh и max — по 2 ложные Important); scout-enum ПИН medium (веер #750 (5) 2026-09-11, grok-scout.md)
 "gpt-5.6-sol" = ["high", "xhigh"]          # леджер
 "gpt-5.6-luna" = ["max"]                   # леджер (замер 2026-08-09)
@@ -311,7 +312,7 @@ class = "adjudication"
 # ---------------------------------------------------------------------------
 
 [channels.agent]
-effort_required_for = ["glm-5.3", "grok-4.6", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-luna", "deepseek-flash", "deepseek-v4-pro", "gpt-6-astra", "qwen3.8-flash"]
+effort_required_for = ["glm-5.3", "grok-4.6", "kimi-k3", "devin/swe-2", "gpt-5.6-sol", "gpt-5.6-luna", "deepseek-flash", "deepseek-v4-pro", "gpt-6-astra", "qwen3.8-flash"]
 
 # ---------------------------------------------------------------------------
 # Bash-каналы: требования к effort (§0). Тихий дефолт вендора — дефект
