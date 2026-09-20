@@ -1,0 +1,160 @@
+# Двери хоста, ИЗМЕРЕННЫЕ присутствующими в ПРИСТИННОМ образе головной версии.
+# CONSTRAINT: список пинует ИМЕНА, а не догадки. Источник -- ценз
+# Catalyst-programs/2026-09-19-doors-278/DOORS-2.1.278.txt, образ
+# ~/.local/share/claude/versions/2.1.278.orig, 217695408 Б, sha256
+# bd245662fb8a0e321b3bf133e930371d6563c387527885f30b2613aef3ba14d6, вхождений tweakcc -- 0.
+# Замер по ПАТЧЕНОМУ образу дал бы список, включающий нашу собственную правку.
+# Пополняется ТОЛЬКО перезамером на новой головной версии.
+# CONSTRAINT: имя записывается в ТОЙ форме, в которой дверь адресуется
+# потребителем; классик-семейство -- в форме classic.<хвост>, одной формой
+# на дверь (#361, #356).
+# CONSTRAINT: голых имён (без пространства имён) в наборе не бывает: сверка
+# стенда идёт ПОЛНЫМ именем, голый хвост не совпал бы ни с одной подпиской
+# никогда (#336).
+# CONSTRAINT: api_retry и error_status -- контроли метода ценза, НЕ двери;
+# выведены из набора имён в ключи CONTROL= (ключевая форма, как VERSION=).
+VERSION=2.1.278
+IMAGE_SHA256=bd245662fb8a0e321b3bf133e930371d6563c387527885f30b2613aef3ba14d6
+CONTROL=api_retry
+CONTROL=error_status
+agent.list
+agent.offer
+agent.register
+agent.spawn
+attribution.text
+audio.play
+audio.speak
+classic.ConfigChange
+classic.CwdChanged
+classic.DirectoryAdded
+classic.Elicitation
+classic.ElicitationResult
+classic.FileChanged
+classic.InstructionsLoaded
+classic.MessageDisplay
+classic.Notification
+classic.PermissionDenied
+classic.PermissionRequest
+classic.PostCompact
+classic.PostModelSwitch
+classic.PostToolBatch
+classic.PostToolUse
+classic.PostToolUseFailure
+classic.PreCompact
+classic.PreModelSwitch
+classic.PreToolUse
+classic.SessionEnd
+classic.SessionStart
+classic.Setup
+classic.Stop
+classic.StopFailure
+classic.SubagentStart
+classic.SubagentStop
+classic.TaskCompleted
+classic.TaskCreated
+classic.TeammateIdle
+classic.UserPromptExpansion
+classic.UserPromptSubmit
+classic.WorktreeCreate
+classic.WorktreeRemove
+clock.after
+clock.every
+clock.now
+clock.sleep
+command.describe
+command.list
+command.register
+command.run
+config.describe
+config.list
+config.set
+engine.create
+env.get
+env.set
+flag.value
+fs.ancestors
+fs.exists
+fs.list
+fs.read
+fs.stat
+fs.write
+http.fetch
+mcp.call
+model.classify
+model.complete
+model.fork
+plugin.register
+process.run
+prompt.attachment
+prompt.context
+prompt.edit
+prompt.fill
+prompt.read
+prompt.section
+prompt.submit
+prompt.suggest
+session.attach
+session.authorize
+session.compact
+session.cwd
+session.deleted
+session.detach
+session.end
+session.error
+session.id
+session.measure
+session.messages
+session.mint
+session.model
+session.receive
+session.refresh
+session.repo
+session.root
+session.start
+session.status_idle
+session.status_rescheduled
+session.status_running
+session.status_terminated
+session.surface
+session.surfaces
+session.thread_created
+session.thread_status_created
+session.thread_status_idle
+session.thread_status_rescheduled
+session.thread_status_running
+session.thread_status_terminated
+session.turns
+session.updated
+session.usage
+settings.read
+skill.prompt
+store.delete
+store.get
+store.keys
+store.set
+tool.call
+tool.check
+tool.describe
+tool.list
+tool.register
+turn.abort
+turn.complete
+turn.start
+turn.step
+ui.blit
+ui.close
+ui.focus
+ui.input
+ui.invalidate
+ui.log
+ui.message
+ui.notice
+ui.open
+ui.panes
+ui.press
+ui.render
+ui.resolve
+ui.scroll
+ui.select
+ui.status
+ui.toast
