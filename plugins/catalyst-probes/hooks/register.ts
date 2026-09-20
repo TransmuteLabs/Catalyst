@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.45"
+export const MOD_VERSION = "0.1.46"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -629,6 +629,22 @@ function listOf(cfg: any, key: string): string[] {
   return out
 }
 
+// CONSTRAINT (#391): негодный образец из конфига НАЗЫВАЕТСЯ уликой -- пустой
+// catch делал опечатку в списке неотличимой от решения не сработать. Возврат
+// false негодного -- НЕ разрешение: решение принимает вызывающий, читая bad.
+// Пустой subject проверяется ДО компиляции: образец, до которого дело не
+// дошло, уликой не считается (иначе список судьи гас бы на промте без класса).
+// Граница 64 символа -- та же, что у effortBad (parseRungItem).
+export function reTestMark(src: string, subject: string, field: string, bad: string[]): boolean {
+  if (!subject) return false
+  try {
+    return new RegExp(src).test(subject)
+  } catch (x) {
+    bad.push(field + "=" + String(src).slice(0, 64))
+    return false
+  }
+}
+
 // CONSTRAINT: ось эффорта -- ЗАКРЫТЫЙ перечень канона (MODEL-ROUTING-PLAYBOOK.md
 // §"Effort в Agent-канале": `effort: low|medium|high|xhigh|max`). Сравнение
 // строгое и регистрозависимое: значение уезжает провайдеру ДОСЛОВНО (шаг 31
@@ -892,12 +908,18 @@ export function formVocabRefusal(vk: string): string {
   return 'словарь пробы "form" не знает вид "' + vk + '"; emits дома: ' + emitsOf("form")
 }
 
-export function parseVerdict(raw: string, rx: string): { kind: string; rest: string } | null {
+// CONSTRAINT (#391): накопитель bad -- та же дорога улики, что у reTestMark, и
+// потому ТРЕТИЙ аргумент, а не поле результата: негодный словарь обязан быть
+// назван и тогда, когда разбор вернул null, а форма результата покрыта зубами.
+export function parseVerdict(raw: string, rx: string, bad?: string[]): { kind: string; rest: string } | null {
   // CONSTRAINT: дефолт -- профиль "*", а не судейский: parseVerdict не знает
   // пробы, и защитный словарь обязан быть общим надёжным над всеми видами.
   const vocab = String(rx || emitsOf("*")).replace(/\s+/g, "")
   let re: RegExp
   try { re = new RegExp("^(" + vocab + "):\\s*(.*)$") } catch (x) {
+    // CONSTRAINT (#391): подмена словаря ОСТАЁТСЯ -- без словаря разбора нет;
+    // но молча она выдавала вердикт ЧУЖОГО профиля за вердикт этого.
+    if (bad) bad.push("rx=" + vocab.slice(0, 64))
     re = new RegExp("^(" + emitsOf("*") + "):\\s*(.*)$")
   }
   const text = String(raw ?? "")
@@ -960,7 +982,18 @@ function pred(when: any, ctx: any): boolean {
     return false
   }
   if (Object.prototype.hasOwnProperty.call(when, "matches")) {
-    try { return new RegExp(String(when.matches)).test(String(field ?? "")) } catch (x) { return false }
+    try { return new RegExp(String(when.matches)).test(String(field ?? "")) } catch (x) {
+      // CONSTRAINT (#391): fail-closed к срабатыванию ОСТАЁТСЯ -- мёртвое
+      // правило не имеет права запускать пробу; но мертвело оно МОЛЧА. Улика
+      // копится в ctx (сигнатуру pred менять нельзя: рекурсия all/any/not),
+      // а читает её вызывающий -- он же передаёт ctx дальше в consultBg.
+      if (ctx && typeof ctx === "object") {
+        const add = "matches=" + String(when.matches).slice(0, 64)
+        const cur = String(ctx.whenBad || "")
+        if (cur.split(" ").indexOf(add) < 0) ctx.whenBad = cur ? cur + " " + add : add
+      }
+      return false
+    }
   }
   if (Object.prototype.hasOwnProperty.call(when, "count_below")) return Number(field) < Number(when.count_below)
   if (Object.prototype.hasOwnProperty.call(when, "count_at_least")) return Number(field) >= Number(when.count_at_least)
@@ -1318,10 +1351,21 @@ async function sidFor($: any): Promise<string> {
 }
 
 let rxCache: any = {}
-function K(s: string, f: string): RegExp {
+// CONSTRAINT (#391): третий аргумент -- ИМЯ поля конфига, откуда приехал
+// образец. Fail-closed выше по стеку верен и не меняется, но его текст
+// («hook threw») не называл причину: оператор не узнавал, что отказ вызван
+// опечаткой в ЕГО конфиге и в каком именно поле.
+function K(s: string, f: string, field?: string): RegExp {
   const key = f + "|" + s
   if (rxCache[key]) return rxCache[key]
-  const r = new RegExp(s, f)
+  let r: RegExp
+  try {
+    r = new RegExp(s, f)
+  } catch (x) {
+    throw new Error(
+      "негодный образец конфига форм" + (field ? " (" + field + ")" : "") +
+      ": " + String(s).slice(0, 64))
+  }
   rxCache[key] = r
   return r
 }
@@ -1744,10 +1788,10 @@ function newSession() {
 function formKind(p: string, t: string, c: any): string | null {
   const path = String(p ?? "")
   const text = String(t ?? "")
-  if (K(c.brief_path, "u").test(path)) {
-    if (!text || K(c.brief_head, "iu").test(text.split("\n")[0])) return "brief"
+  if (K(c.brief_path, "u", "brief_path").test(path)) {
+    if (!text || K(c.brief_head, "iu", "brief_head").test(text.split("\n")[0])) return "brief"
   }
-  if (K(c.report_path, "u").test(path)) return "report"
+  if (K(c.report_path, "u", "report_path").test(path)) return "report"
   return null
 }
 
@@ -1760,7 +1804,7 @@ function formEval(ev: any, c: any): { refuse: any[]; warn: any[] } {
   const ls = t.split("\n")
   let inn = false
   const op = ls.map((l: string) => {
-    if (K(c.fence, "u").test(l)) { inn = !inn; return false }
+    if (K(c.fence, "u", "fence").test(l)) { inn = !inn; return false }
     return !inn
   })
   if (ev.kind === "brief") {
@@ -1775,75 +1819,84 @@ function formEval(ev: any, c: any): { refuse: any[]; warn: any[] } {
     for (let i = 0; i < ls.length; i++) {
       let cs2: string[] = []
       if (!op[i]) cs2 = [ls[i]]
-      else if (K(c.arm_line, "u").test(ls[i]))
+      else if (K(c.arm_line, "u", "arm_line").test(ls[i]))
         cs2 = [...ls[i].matchAll(/`([^`]*)`/g)].map((m) => m[1])
       for (let j = 0; j < cs2.length; j++) {
         let b = cs2[j], el = false
-        if (K(c.arm_ellipsis, "u").test(b)) {
+        if (K(c.arm_ellipsis, "u", "arm_ellipsis").test(b)) {
           el = true
-          b = b.replace(K(c.arm_ellipsis, "u"), "")
+          b = b.replace(K(c.arm_ellipsis, "u", "arm_ellipsis"), "")
         }
-        if (!K(c.arm_cmd, "u").test(b)) continue
+        if (!K(c.arm_cmd, "u", "arm_cmd").test(b)) continue
         ac++
-        if (el || !K(c.arm_remote, "u").test(b) || !K(c.arm_log, "u").test(b))
+        if (el || !K(c.arm_remote, "u", "arm_remote").test(b) || !K(c.arm_log, "u", "arm_log").test(b))
           F("A2", i + 1, cs2[j])
       }
     }
-    if (ac && !K(c.witness_remote, "iu").test(t))
+    if (ac && !K(c.witness_remote, "iu", "witness_remote").test(t))
       F("A2", 0, "арма есть, свидетель [RCH] remote не назван")
-    if (K(c.witness_worker, "u").test(t)) {
+    if (K(c.witness_worker, "u", "witness_worker").test(t)) {
       for (let i = 0; i < ls.length; i++)
-        if (K(c.witness_worker, "u").test(ls[i])) { F("A2", i + 1, ls[i]); break }
+        if (K(c.witness_worker, "u", "witness_worker").test(ls[i])) { F("A2", i + 1, ls[i]); break }
     }
-    const a3 = new RegExp("(?<!(?:" + c.negation + ")\\s{0,16})(?:" + c.open_door + ")", "iu")
+    // CONSTRAINT (#391): собранный из ДВУХ полей образец называет оба -- иначе
+    // оператор не знает, которое из них он сломал.
+    let a3: RegExp
+    try {
+      a3 = new RegExp("(?<!(?:" + c.negation + ")\\s{0,16})(?:" + c.open_door + ")", "iu")
+    } catch (x) {
+      throw new Error(
+        "негодный образец конфига форм (negation|open_door): " +
+        String(c.negation).slice(0, 32) + " | " + String(c.open_door).slice(0, 32))
+    }
     for (let i = 0; i < ls.length; i++) {
       if (op[i] && a3.test(ls[i])) F("A3", i + 1, ls[i])
     }
     let pc = 0, rl = false
     for (let i = 0; i < ls.length; i++) {
-      if (K(c.path_line, "u").test(ls[i])) pc++
-      if (K(c.rule_line, "iu").test(ls[i])) rl = true
+      if (K(c.path_line, "u", "path_line").test(ls[i])) pc++
+      if (K(c.rule_line, "iu", "rule_line").test(ls[i])) rl = true
     }
     if (pc >= c.path_lines_min && !rl)
       F("A4", 0, "строк-путей " + pc + ", строчки правила нет")
   }
   if (ev.kind === "report" || ev.kind === "message") {
     for (let i = 0; i < ls.length; i++) {
-      if (op[i] && K(c.legalize, "iu").test(ls[i])) { F("C1", i + 1, ls[i]); break }
+      if (op[i] && K(c.legalize, "iu", "legalize").test(ls[i])) { F("C1", i + 1, ls[i]); break }
     }
-    if (K(c.witness_worker, "u").test(t) && !K(c.witness_remote, "iu").test(t)) {
+    if (K(c.witness_worker, "u", "witness_worker").test(t) && !K(c.witness_remote, "iu", "witness_remote").test(t)) {
       for (let i = 0; i < ls.length; i++)
-        if (K(c.witness_worker, "u").test(ls[i])) { F("C2", i + 1, ls[i]); break }
+        if (K(c.witness_worker, "u", "witness_worker").test(ls[i])) { F("C2", i + 1, ls[i]); break }
     }
   }
   if (ev.kind === "message") {
     let h = -1
     for (let i = 0; i < ls.length; i++) if (ls[i].trim()) { h = i; break }
-    if (h >= 0 && K(c.decision_head, "u").test(ls[h]) &&
-        (!K(c.decision_basis, "iu").test(t) || !K(c.decision_referent, "iu").test(t)))
+    if (h >= 0 && K(c.decision_head, "u", "decision_head").test(ls[h]) &&
+        (!K(c.decision_basis, "iu", "decision_basis").test(t) || !K(c.decision_referent, "iu", "decision_referent").test(t)))
       F("B", h + 1, ls[h])
   }
   if (ev.kind === "command") {
-    if (K(c.git_commit, "u").test(t)) {
-      if (!K(c.git_commit_ok, "u").test(t))
+    if (K(c.git_commit, "u", "git_commit").test(t)) {
+      if (!K(c.git_commit_ok, "u", "git_commit_ok").test(t))
         F("F", 1, "git commit: нет " + c.git_commit_ok)
-      const ms = [...t.matchAll(K(c.git_msg, "gu"))].map((m) => m[1] ?? m[2] ?? m[3] ?? "")
-      const hd = K(c.heredoc, "u").exec(t)
+      const ms = [...t.matchAll(K(c.git_msg, "gu", "git_msg"))].map((m) => m[1] ?? m[2] ?? m[3] ?? "")
+      const hd = K(c.heredoc, "u", "heredoc").exec(t)
       const ct = hd ? hd[2] : ms.join("\n\n")
       if (ct) {
         const cm = ct.split("\n")
         let ia = -1, ib = -1
         for (let i = 0; i < cm.length; i++) {
-          if (ia < 0 && K(c.trailer_a, "mu").test(cm[i])) ia = i
-          if (ib < 0 && K(c.trailer_b, "mu").test(cm[i])) ib = i
+          if (ia < 0 && K(c.trailer_a, "mu", "trailer_a").test(cm[i])) ia = i
+          if (ib < 0 && K(c.trailer_b, "mu", "trailer_b").test(cm[i])) ib = i
         }
         if (ia >= 0 && ib >= 0 && Math.abs(ia - ib) !== 1)
           F("F", ia + 1, "трейлеры Session: и Co-Authored-By: не соседние")
       }
     }
-    if (K(c.git_push, "u").test(t)) {
-      if (!K(c.git_push_ok, "u").test(t)) F("F", 1, "git push: нет " + c.git_push_ok)
-      if (K(c.git_force, "u").test(t)) F("F", 1, t)
+    if (K(c.git_push, "u", "git_push").test(t)) {
+      if (!K(c.git_push_ok, "u", "git_push_ok").test(t)) F("F", 1, "git push: нет " + c.git_push_ok)
+      if (K(c.git_force, "u", "git_force").test(t)) F("F", 1, t)
     }
   }
   return { refuse: Rf, warn: Wr }
@@ -2183,6 +2236,8 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     }
     rec.att = att
     if (world && world.cfgUnread) rec.cfgUnread = world.cfgUnread
+    if (ctx && ctx.badPattern) rec.badPattern = ctx.badPattern
+    if (ctx && ctx.whenBad) rec.whenBad = ctx.whenBad
 
     let msgs: any[] = []
     try { msgs = await $.session.messages() } catch (x) { msgs = [] }
@@ -2324,7 +2379,9 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
           }
           if (ans.outTok !== null) rec["outTok_" + used] = ans.outTok
         }
-        verdict = parseVerdict(rawS, p.rx)
+        const vocabBad: string[] = []
+        verdict = parseVerdict(rawS, p.rx, vocabBad)
+        if (vocabBad.length) rec["vocabBad_" + used] = vocabBad[0]
         if (verdict) break
         // CONSTRAINT: ответ, оборванный ПОТОЛКОМ, -- отказ ПРИБОРА, а не
         // суждение о задаче: вердикта в нём нет потому, что ступени не дали
@@ -2460,7 +2517,7 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   if (tool === "Agent" || tool === "Task" || tool === "SendMessage") {
     const tx = String((e && (e.prompt || e.message || e.text)) || "")
     const pu: string[] = []
-    const re = K(cfg.brief_ref, "gu")
+    const re = K(cfg.brief_ref, "gu", "brief_ref")
     let m: RegExpExecArray | null
     while ((m = re.exec(tx)) && pu.length < 4) {
       const rp = resolvePath(m[0], env.HOME, world.cwd)
@@ -2487,10 +2544,10 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
     }
   } else {
     const cmd = String((e && e.command) || "")
-    const wr = K(cfg.write_redirect, "u").exec(cmd)
+    const wr = K(cfg.write_redirect, "u", "write_redirect").exec(cmd)
     if (wr) {
       const fp = resolvePath(wr[1], env.HOME, world.cwd)
-      const hd = K(cfg.heredoc, "u").exec(cmd)
+      const hd = K(cfg.heredoc, "u", "heredoc").exec(cmd)
       let body = hd ? hd[2] : ""
       let post = body
       if (/>>|tee/.test(wr[0])) {
@@ -2690,9 +2747,12 @@ function decisiveFailClosed($: any, event: string, e: any, next: any): any {
   const err: any = next && next.error
   const timedOut = !!(err && err.kind === "timeout")
   const why = timedOut ? "timed out without answering" : "threw"
+  // CONSTRAINT (#391): текст броска доезжает до оператора -- отказ обязан
+  // называть СВОЮ причину, а не только факт. Fail-closed не ослабляется.
+  const msg = !timedOut && err && err.message ? " (" + String(err.message).slice(0, 200) + ")" : ""
   return {
     deny:
-      "Subagent dispatch cancelled: the catalyst-probes " + event + " hook " + why +
+      "Subagent dispatch cancelled: the catalyst-probes " + event + " hook " + why + msg +
       " [" + (timedOut ? "timeout" : "throw") + "]. Fail-closed: the dispatch " +
       "never runs unreviewed. This is NOT the routing-table.toml gate. Tell the " +
       "human and do the work without a subagent, or retry later.",
@@ -2872,7 +2932,22 @@ export function register(on: any) {
       if (p.builtin) fire = builtinTrigger(p, e, ctx)
       else if (p.cfg && p.cfg.when) fire = pred(p.cfg.when, ctx)
       else continue
-      if (!fire) continue
+      if (!fire) {
+        // CONSTRAINT (#391): при несработавшем правиле consultBg не зовётся, и
+        // улика из ctx не доехала бы никуда -- поэтому мёртвое правило пишет
+        // СВОЮ строку. Граница молчания чужого носителя -- та же, что у
+        // пропуска судьи (#335): он не работал, ему не о чем отчитываться.
+        if (ctx.whenBad && arm.state !== "foreign-carrier") {
+          try {
+            await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", {
+              t: new Date(t0).toISOString(), tool, agent, outcome: "when_bad",
+              rec: modRecName(e), carrier: carrierOfJournal(p, env), sid: await sidFor($),
+              whenBad: ctx.whenBad, ms: 0, probe: p.id,
+            })
+          } catch (x) {}
+        }
+        continue
+      }
 
       if (p.cfg && p.cfg.enabled === false) {
         if (p.id === "judge") {
@@ -2895,37 +2970,46 @@ export function register(on: any) {
         const skipA = listOf(p.cfg, "agents_skip")
         const judgeC = listOf(p.cfg, "classes_judge")
         const judgeA = listOf(p.cfg, "agents_judge")
+        const badPat: string[] = []
         let by: string | null = null
         if (!amb) {
           for (let s = 0; s < skipC.length; s++) {
-            try { if (cl && new RegExp(skipC[s]).test(cl)) { by = "classes_skip"; break } } catch (x) {}
+            if (reTestMark(skipC[s], cl, "classes_skip", badPat)) { by = "classes_skip"; break }
           }
         }
         if (!by) {
           for (let s = 0; s < skipA.length; s++) {
-            try { if (agent && new RegExp(skipA[s]).test(agent)) { by = "agents_skip"; break } } catch (x) {}
+            if (reTestMark(skipA[s], agent, "agents_skip", badPat)) { by = "agents_skip"; break }
           }
         }
         if (!by && (judgeC.length > 0 || judgeA.length > 0) && !amb) {
           let hit = false
+          const badBefore = badPat.length
           for (let s = 0; s < judgeC.length; s++) {
-            try { if (cl && new RegExp(judgeC[s]).test(cl)) hit = true } catch (x) {}
+            if (reTestMark(judgeC[s], cl, "classes_judge", badPat)) hit = true
           }
           for (let s = 0; s < judgeA.length; s++) {
-            try { if (agent && new RegExp(judgeA[s]).test(agent)) hit = true } catch (x) {}
+            if (reTestMark(judgeA[s], agent, "agents_judge", badPat)) hit = true
           }
-          if (!hit) by = cl ? "not_in_judge_list" : "no_class_marker"
+          // CONSTRAINT (#391): негодный образец в списках СУДЬИ судью НЕ
+          // снимает -- направление отказа в сторону защиты. Негодность
+          // skip-списков сюда не считается (там пропуск просто не случится),
+          // потому граница берётся по длине bad ДО этих двух циклов.
+          if (!hit && badPat.length === badBefore) by = cl ? "not_in_judge_list" : "no_class_marker"
         }
+        if (badPat.length) ctx.badPattern = badPat.join(" ")
         if (by) {
           // CONSTRAINT (#335): чужой носитель не работал -- журнал судьи
           // описывает содеянное им, а он не сделал ничего: пропуск молчит.
           if (arm.state !== "foreign-carrier") {
             const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
             try {
-              await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
+              const jskip: any = {
                 t: new Date(t0).toISOString(), tool, agent, outcome: "skip",
                 rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), reason: by, cls, ms: 0, probe: "judge",
-              })
+              }
+              if (badPat.length) jskip.badPattern = badPat.join(" ")
+              await appendJournal($, world.globalHome + "/judge/journal.jsonl", jskip)
             } catch (x) {}
           }
           continue

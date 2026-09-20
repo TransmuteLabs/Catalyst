@@ -13,7 +13,7 @@ import {
   bl3, num, clip, classesOf, normTmp, resolvePath,
   parseVal, parseToml, rungsOf, rungCtx, parseVerdict,
   verdictKey, memoUsable, effortOk, EFFORTS, markEffort,
-  readComplete, blocksLine,
+  readComplete, blocksLine, reTestMark,
   outcomeOf, verdictVocabSeed, verdictVocabReset,
   formVerdictUpper, formVocabRefusal,
   MOD_VERSION, RUNG_COOLDOWN_MS, noteRungTimeout, rungsAfterCooldown,
@@ -514,6 +514,32 @@ test("effortOk: не-строка -- false, даже если приводитс
   expect(effortOk(undefined)).toBe(false)
 })
 
+test("#391 B: негодный словарь профиля подменяется общим, и подмена НАЗВАНА", () => {
+  const bad: string[] = []
+  expect(parseVerdict("BLOCK: причина", "OK|(BLOCK", bad))
+    .toStrictEqual({ kind: "BLOCK", rest: "причина" })
+  expect(bad, "разбор чужим словарём перестал быть молчаливым").toStrictEqual(["rx=OK|(BLOCK"])
+  const bad2: string[] = []
+  expect(parseVerdict("текст без вердикта", "(", bad2)).toBe(null)
+  expect(bad2, "улика доезжает и когда разбор не нашёл ничего").toStrictEqual(["rx=("])
+  const bad3: string[] = []
+  parseVerdict("BLOCK: x", RX_JUDGE, bad3)
+  expect(bad3, "годный словарь улики не даёт").toStrictEqual([])
+})
+
+test("#391 reTestMark: негодный образец даёт false и улику с именем поля", () => {
+  const bad: string[] = []
+  expect(reTestMark("exec-.*", "exec-0p", "classes_judge", bad)).toBe(true)
+  expect(bad).toStrictEqual([])
+  expect(reTestMark("exec-(", "exec-0p", "classes_judge", bad)).toBe(false)
+  expect(bad).toStrictEqual(["classes_judge=exec-("])
+  expect(reTestMark("exec-(", "", "classes_judge", bad), "пустой предмет: до компиляции дело не доходит").toBe(false)
+  expect(bad.length, "образец, который не тестировали, уликой не считается").toBe(1)
+  const long = "(" + "y".repeat(80)
+  reTestMark(long, "z", "agents_judge", bad)
+  expect(bad[1], "граница 64 символа -- та же, что у effortBad").toBe("agents_judge=" + long.slice(0, 64))
+})
+
 test("rungsOf: негодный эффорт НЕ уезжает, а называется effortBad", () => {
   expect(rungsOf({ models: [{ model: "m", effort: "higj", max_tokens: 100 }] }, ""))
     .toStrictEqual([{ model: "m", effortBad: "higj", max_tokens: 100 }])
@@ -840,7 +866,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.45")
+  expect(MOD_VERSION).toBe("0.1.46")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1369,11 +1395,29 @@ function carrierHook335(): () => any {
   return () => hook
 }
 
+// CONSTRAINT (#391): carrierHook335 обработчик отказа выбрасывает, поэтому
+// текст fail-closed им НЕ проверяем. Здесь он перехватывается -- иначе правка
+// текста отказа осталась бы без зуба вовсе.
+function failClosedHandler391(): any {
+  let handler: any = null
+  register((ev: string, ...rest: any[]) => {
+    return { catch: (h: any) => { if (ev === "tool.call") handler = h } }
+  })
+  return handler
+}
+
 function carrierRefusals335(writes: { path: string, text: string }[]): any[] {
   return writes
     .filter(w => String(w.path).indexOf("/failover/journal.jsonl.shard.") >= 0)
     .map(w => { try { return JSON.parse(String(w.text)) } catch (x) { return null } })
     .filter(r => r && r.rec === "carrier-foreign-refused")
+}
+
+function judgeSkips391(writes: { path: string, text: string }[]): any[] {
+  return writes
+    .filter(w => String(w.path).indexOf("/judge/journal.jsonl.shard.") >= 0)
+    .map(w => { try { return JSON.parse(String(w.text)) } catch (x) { return null } })
+    .filter(r => r && r.outcome === "skip")
 }
 
 // Минимальный годный конфиг форм-пробы: все поля FORM_REQ непусты, ни один
@@ -1494,6 +1538,41 @@ test("#335 form: включена, носитель НЕ задан -- воор�
   // Свидетель вооружённости: form-проба прогоняет Write через runForm и
   // пишет вердикт в form/journal.jsonl; невооружённая записи не оставляет.
   expect(writes.filter(w => String(w.path).indexOf("/form/journal.jsonl.shard.") >= 0).length).toBe(1)
+})
+
+test("#391 D2: fail-closed несёт ПРИЧИНУ броска, не только факт", async () => {
+  const h = failClosedHandler391()
+  expect(typeof h, "обработчик отказа tool.call зарегистрирован").toBe("function")
+  const out = await h({}, { tool: "Write" }, {
+    called: false,
+    error: new Error("негодный образец конфига форм (report_path): report[.]md$("),
+  })
+  expect(String(out && out.deny), "fail-closed не ослаблен").toContain("Fail-closed")
+  expect(String(out && out.deny), "причина названа").toContain("report_path")
+  const timed = await h({}, { tool: "Write" }, { called: false, error: { kind: "timeout" } })
+  expect(String(timed && timed.deny), "молчание по времени -- по-прежнему своя ветка").toContain("timeout")
+})
+
+test("#391 D: бросок на негодном образце конфига форм НАЗЫВАЕТ поле", async () => {
+  // Fail-closed выше по стеку верен и НЕ меняется -- проверяется ровно то,
+  // что текст броска называет поле конфига, а не только факт отказа.
+  const files: Record<string, string> = {
+    "/probes-391-d/probes.toml": FORM_CFG_335.replace(
+      'report_path = "report[.]md$"', 'report_path = "report[.]md$("'),
+  }
+  const { $ } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-391-d",
+    CLAUDE_FORM: "1",
+    PWD: "/work-391-d",
+  }, 97_043_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  let thrown = ""
+  try {
+    await hook()($, { tool: "Write", file_path: "/work-391-d/report.md", content: "тело\n" }, async (e: any) => e)
+  } catch (x) { thrown = String(x) }
+  expect(thrown, "отказ называет ИМЯ поля конфига").toContain("report_path")
+  expect(thrown, "и сам негодный образец").toContain("report[.]md$(")
 })
 
 test("#335 form: включена, носитель patch -- громкий отказ, значение ручки в исходе = patch", async () => {
@@ -1865,6 +1944,72 @@ test("#335 граница судьи: чужой носитель + диспат
   expect(String(out.deny), "граница с другой стороны: дошедший до суда диспатч гасится").toContain("patch-c5")
   expect(carrierRefusals335(writes).length).toBe(1)
   expect(carrierRefusals335(writes)[0].probe).toBe("judge")
+})
+
+test("#391 A: негодный образец в classes_judge НЕ снимает судью -- диспатч гасится", async () => {
+  // Зуб подкласса A: до фикса пустой catch оставлял hit=false, ветка уходила
+  // в not_in_judge_list, и защита снималась ОПЕЧАТКОЙ в конфиге. Направление
+  // отказа при негодном образце -- в сторону защиты.
+  const files: Record<string, string> = {
+    "/probes-391-a1/probes.toml": "[probe.judge]\n[probe.judge.filter]\nclasses_judge = [\"exec-(\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-391-a1",
+    CLAUDE_JUDGE: "1",
+    CLAUDE_JUDGE_CARRIER: "patch-391-a1",
+    PWD: "/work-391-a1",
+  }, 97_040_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "[dispatch-class:crit-mech] работа" }, async (e: any) => e)
+  expect(String(out.deny), "опечатка в списке судьи не имеет права снимать защиту").toContain("patch-391-a1")
+  expect(carrierRefusals335(writes).length).toBe(1)
+})
+
+test("#391 A': негодный образец в classes_skip ветку НЕ меняет, но НАЗВАН уликой", async () => {
+  // Зуб подкласса A': направление пропуска уже безопасное (пропуск просто не
+  // случится), поэтому ветка остаётся прежней -- проверяется ИМЕННО это, плюс
+  // что негодность skip-списка не включает судью через границу badBefore.
+  const files: Record<string, string> = {
+    "/probes-391-a2/probes.toml": "[probe.judge]\n[probe.judge.filter]\nclasses_skip = [\"skip-(\"]\nclasses_judge = [\"exec-*\"]\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-391-a2",
+    CLAUDE_JUDGE: "1",
+    PWD: "/work-391-a2",
+  }, 97_041_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "[dispatch-class:crit-mech] работа" }, async (e: any) => e)
+  expect(out.deny, "негодный skip-образец отказа не создаёт").toBe(undefined)
+  const sk = judgeSkips391(writes)
+  expect(sk.length, "пропуск записан").toBe(1)
+  expect(sk[0].reason, "ветка прежняя: негодность skip-списка судью не включает").toBe("not_in_judge_list")
+  expect(sk[0].badPattern, "негодный образец назван вместе с именем поля").toBe("classes_skip=skip-(")
+})
+
+test("#391 C: негодный образец в when пробу НЕ запускает, но правило названо мёртвым", async () => {
+  const files: Record<string, string> = {
+    "/probes-391-c/probes.toml":
+      "[probe.judge]\nenabled = false\n[probe.form]\nenabled = false\n" +
+      "[probe.idle-watch]\nenabled = false\n[probe.dead-rule]\nkind = \"consult\"\n" +
+      "[probe.dead-rule.when]\nfield = \"tool\"\nmatches = \"Age(nt\"\n",
+  }
+  const { $, writes } = fsEnv$(files, {
+    CLAUDE_PROBES_DIR: "/probes-391-c",
+    PWD: "/work-391-c",
+  }, 97_042_000)
+  $.agent = { list: async () => [] }
+  const hook = carrierHook335()
+  const out = await hook()($, { tool: "Agent", prompt: "работа" }, async (e: any) => e)
+  expect(out.deny, "fail-closed к срабатыванию: мёртвое правило пробу не запускает").toBe(undefined)
+  const j = writes
+    .filter(w => String(w.path).indexOf("/dead-rule/journal.jsonl.shard.") >= 0)
+    .map(w => { try { return JSON.parse(String(w.text)) } catch (x) { return null } })
+    .filter(r => r)
+  expect(j.length, "мёртвое правило оставило СВОЮ строку -- иначе улика никуда не доедет").toBe(1)
+  expect(j[0].outcome).toBe("when_bad")
+  expect(j[0].whenBad, "названо поле и сам образец").toBe("matches=Age(nt")
 })
 
 test("#335 граница судьи: пропуск при чужом носителе МОЛЧИТ -- записи судьи нет вовсе", async () => {
