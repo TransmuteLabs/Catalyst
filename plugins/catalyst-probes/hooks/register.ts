@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.43"
+export const MOD_VERSION = "0.1.44"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -810,11 +810,55 @@ export function blocksLine(blocks: { type: string; len: number }[] | null): stri
   return out.join(",")
 }
 
+// CONSTRAINT: ЕДИНСТВЕННЫЙ дом словаря вердиктов. emits -- то, что проба
+// ПИШЕТ в поле `verdict` улики (ПРОПИСНЫЕ виды); folds -- класс
+// эквивалентности, в который МЕТРИКИ прибора сворачивают вид при подсчёте
+// (Catalyst-CC-Patch/judge/validate.py:440, adjudicate.py:107), а НЕ «что
+// проба отменяет». Поле `act` здесь не используется: в моде оно занято
+// именем режима (cancel/nudge/log_only/form), и вторая семантика под тем же
+// именем -- тот дефект, которым словарь разошлся с поведением. Запись "*"
+// -- профиль пользовательских проб (profileOf, ветка по умолчанию) и
+// защитный дефолт parseVerdict, который пробу не знает; прибор читает
+// только три именованные записи -- корпус размечается по встроенным пробам.
+const VERDICT_VOCAB: { probe: string; emits: string; folds: string }[] = [
+  { probe: "judge", emits: "OK|BLOCK|STOP|DENY|WARN", folds: "BLOCK|STOP|DENY" },
+  { probe: "form", emits: "PASS|WARN|REFUSE", folds: "REFUSE|WARN" },
+  { probe: "idle-watch", emits: "SILENT|NUDGE", folds: "NUDGE" },
+  { probe: "*", emits: "OK|WARN|BLOCK|SILENT|NUDGE", folds: "BLOCK" },
+]
+
+function vocabRow(probe: string): { probe: string; emits: string; folds: string } {
+  for (let i = 0; i < VERDICT_VOCAB.length; i++) if (VERDICT_VOCAB[i].probe === probe) return VERDICT_VOCAB[i]
+  return vocabRow("*")
+}
+
+function emitsOf(probe: string): string { return vocabRow(probe).emits }
+
+// CONSTRAINT: «действующий» и «не действующий» -- один предикат и его
+// отрицание НА ОБЛАСТИ СЛОВАРЯ пробы: foldedKind требует вхождения и в
+// emits, и в folds, passKind -- в emits и НЕ в folds. Вид из folds не может
+// пройти как не-действующий ни в одной точке поведения. NONE, TIMEOUT,
+// TRUNCATED, SKIP, STALE_EPOCH под предикат НЕ подводятся: это служебные
+// исходы прибора («вердикта нет» и причины), а не виды -- их места остаются
+// литеральными (outcomeOf, memo-ветка диспатча), и это решение, а не
+// недосмотр.
+function foldedKind(probe: string, kind: string): boolean {
+  const row = vocabRow(probe)
+  return row.emits.split("|").indexOf(kind) >= 0 && row.folds.split("|").indexOf(kind) >= 0
+}
+
+function passKind(probe: string, kind: string): boolean {
+  const row = vocabRow(probe)
+  return row.emits.split("|").indexOf(kind) >= 0 && row.folds.split("|").indexOf(kind) < 0
+}
+
 export function parseVerdict(raw: string, rx: string): { kind: string; rest: string } | null {
-  const vocab = String(rx || "OK|WARN|BLOCK").replace(/\s+/g, "")
+  // CONSTRAINT: дефолт -- профиль "*", а не судейский: parseVerdict не знает
+  // пробы, и защитный словарь обязан быть общим надёжным над всеми видами.
+  const vocab = String(rx || emitsOf("*")).replace(/\s+/g, "")
   let re: RegExp
   try { re = new RegExp("^(" + vocab + "):\\s*(.*)$") } catch (x) {
-    re = /^(OK|WARN|BLOCK):\s*(.*)$/
+    re = new RegExp("^(" + emitsOf("*") + "):\\s*(.*)$")
   }
   const text = String(raw ?? "")
   const first = text.split("\n")[0].trim()
@@ -828,9 +872,9 @@ export function parseVerdict(raw: string, rx: string): { kind: string; rest: str
   return null
 }
 
-function outcomeOf(kind: string): string {
-  if (kind === "OK" || kind === "WARN" || kind === "SILENT" || kind === "NUDGE") return "ok"
-  if (kind === "BLOCK" || kind === "STOP" || kind === "DENY") return "block"
+function outcomeOf(kind: string, probe: string): string {
+  if (passKind(probe, kind)) return "ok"
+  if (foldedKind(probe, kind)) return "block"
   if (kind === "NONE") return "block_no_verdict"
   // CONSTRAINT: «никто не ответил ВОВРЕМЯ» ПРОПУСКАЕТ диспатч, а не запрещает
   // его (решение юзера 2026-09-16: таймаут -> следующая ступень -> никто не
@@ -974,7 +1018,7 @@ function profileOf(id: string, cfg: any): any {
     return {
       id, cfg, kind: "consult",
       act: String(cfg.act || "cancel"),
-      rx: String(cfg.rx || "OK|WARN|BLOCK|STOP|DENY"),
+      rx: String(cfg.rx || emitsOf("judge")),
       builtin: true, coaching: true, pending: true,
       mainLoopOnly: true,
     }
@@ -983,7 +1027,7 @@ function profileOf(id: string, cfg: any): any {
     return {
       id, cfg, kind: "consult",
       act: String(cfg.act || "nudge"),
-      rx: String(cfg.rx || "SILENT|NUDGE"),
+      rx: String(cfg.rx || emitsOf("idle-watch")),
       builtin: true, coaching: false, pending: false,
       mainLoopOnly: true,
     }
@@ -1000,7 +1044,7 @@ function profileOf(id: string, cfg: any): any {
   return {
     id, cfg, kind,
     act: String(cfg.act || "log_only"),
-    rx: String(cfg.rx || "OK|WARN|BLOCK|SILENT|NUDGE"),
+    rx: String(cfg.rx || emitsOf("*")),
     builtin: false,
     coaching: String(cfg.inject_section || "") === "communication:L",
     pending: String(cfg.act || "log_only") === "cancel",
@@ -1917,9 +1961,9 @@ export function verdictKey(id: string, sid: string, tool: string, agent: string,
 // принимающего $, и затенение делает сканер загрузчика неоднозначным:
 // `claude plugin validate` отбивает ВЕСЬ модуль («declared more than once»),
 // а зубы, bun build и набор стендов при этом остаются зелёными (измерено 15.09).
-export function memoUsable(stored: any, atMs: number, ttlMs: number): boolean {
+export function memoUsable(stored: any, atMs: number, ttlMs: number, probe = "*"): boolean {
   if (!stored || typeof stored !== "object" || !stored.kind) return false
-  if (stored.kind === "OK" || stored.kind === "WARN") return false
+  if (passKind(probe, stored.kind)) return false
   return Number.isFinite(stored.t) && (atMs - stored.t) <= ttlMs
 }
 
@@ -2022,7 +2066,7 @@ async function sweepVerdictStore($: any, world: any, sid: string, env: any): Pro
       scanned++
       let v: any
       try { v = await $.store.get(k) } catch (x) { v = undefined }
-      if (memoUsable(v, t0, ttlMs)) continue
+      if (memoUsable(v, t0, ttlMs, "judge")) continue
       try { await $.store.delete(k); removed++ } catch (x) {}
     }
     try {
@@ -2281,10 +2325,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       // CONSTRAINT: кэш -- только отказ: одобренный диспатч исполняется,
       // шторм повторов бывает после отказа, кэш OK/WARN не защищал ни от
       // чего и молча гасил суд для всех будущих сессий.
-      if ((p.pending || p.act === "cancel") && verdict.kind !== "OK" && verdict.kind !== "WARN") {
+      if ((p.pending || p.act === "cancel") && !passKind(p.id, verdict.kind)) {
         try { await $.store.set(key, { kind: verdict.kind, rest: verdict.rest, used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {}
       }
-      if (verdict.kind === "NUDGE" && p.act === "nudge") {
+      if (foldedKind(p.id, verdict.kind) && p.act === "nudge") {
         try { await $.ui.toast((id) + ": " + verdict.rest.slice(0, 200)) } catch (x) { rec.toastErr = String(x).slice(0, 160) }
       }
     } else {
@@ -2317,9 +2361,9 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
   try {
     const kind = String(rec.kind || "NONE")
     const rest = String(rec.rest || "")
-    let oc = outcomeOf(kind)
+    let oc = outcomeOf(kind, p.id)
     const enforce = p.id === "judge" ? (env.JUDGE === "enforce" || bl3(cfg.enforce, true)) : bl3(cfg.enforce, p.act === "cancel")
-    if ((kind === "BLOCK" || kind === "STOP" || kind === "DENY") && !enforce) oc = "block_not_enforced"
+    if (foldedKind(p.id, kind) && !enforce) oc = "block_not_enforced"
     await appendJournal($, jpath, {
       t: new Date(t0).toISOString(),
       probe: id, tool, agent, ms: rec.dtMs, outcome: oc,
@@ -2429,7 +2473,13 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   const src3 = rf[0] || wn[0]
   const lbl = src3 ? src3.src : (evs[0] ? evs[0].label : tool)
   const cnts = cls.map((c3) => c3 + "×" + rf.concat(wn).filter((x) => x.c === c3).length).join(", ")
-  const vd = (vk === "pass" ? "PASS" : vk === "warn" ? "WARN" : "REFUSE") + ": " +
+  // CONSTRAINT: прописной вид строится из emits дома пробы "form"; строчные
+  // pass/warn/refuse -- поле outcome улики, отдельное от verdict, и в доме
+  // не участвуют.
+  const formUpper = emitsOf("form").split("|")
+  const formLower = formUpper.map((s) => s.toLowerCase())
+  const upperIdx = formLower.indexOf(vk)
+  const vd = (upperIdx >= 0 ? formUpper[upperIdx] : "") + ": " +
     (vk === "pass" ? lbl : cnts + " — " + lbl + " — " + (src3 ? src3.c : "") + " :" + (src3 ? src3.n : "") + " " + (src3 ? src3.q : ""))
   const t0 = await nowMs($)
   const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
@@ -2832,7 +2882,7 @@ export function register(on: any) {
         try { stored = await $.store.get(key) } catch (x) { stored = undefined }
         const enforce = p.id === "judge" ? (env.JUDGE === "enforce" || bl3(p.cfg.enforce, true)) : bl3(p.cfg.enforce, true)
         const failClosed = bl3(p.cfg.fail_closed, p.id === "judge")
-        if (memoUsable(stored, t0, ttlMs)) {
+        if (memoUsable(stored, t0, ttlMs, p.id)) {
           // CONSTRAINT: попадание в кэш обязано оставлять тот же след, что и
           // консульт, -- без улики и строки журнала оно отменяло суд молча.
           const recName = modRecName(e)
@@ -2862,7 +2912,7 @@ export function register(on: any) {
               }))
             } catch (y) {}
           }
-          if (stored.kind === "BLOCK" || stored.kind === "STOP" || stored.kind === "DENY") {
+          if (foldedKind(p.id, String(stored.kind))) {
             if (!enforce) continue
             hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(stored.rest || stored.kind)
             continue
@@ -2876,8 +2926,8 @@ export function register(on: any) {
         let rec: any = null
         try { rec = await consultBg($, p, env, world, e, ctx, key, epCall) } catch (x) { rec = null }
         const kind = rec && rec.kind ? String(rec.kind) : ""
-        if (kind === "OK" || kind === "WARN") continue
-        if (kind === "BLOCK" || kind === "STOP" || kind === "DENY") {
+        if (passKind(p.id, kind)) continue
+        if (foldedKind(p.id, kind)) {
           if (enforce) {
             hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(rec.rest || kind)
           }
