@@ -12,7 +12,7 @@ set -u
 # неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
 # агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
 # дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
-EXPECTED_TEETH=257
+EXPECTED_TEETH=261
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -670,10 +670,19 @@ check "t16 empty field is not a decl"       deny  "$(gate "$(task_dc nomodel opu
 T="$BASE_TABLE"; O="$WORK/absent-override.toml"; P="$WORK/absent-override.toml"
 lim_codex='codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:exec-1n]'
 
+# CONSTRAINT: боевая таблица несёт [limits].deny_enabled=false (решение юзера
+# 2026-09-21). Ряды, чей предмет -- САМ МЕХАНИЗМ отказа, ВООРУЖАЮТ его этим
+# оверрайдом: иначе снятие политики унесло бы с собой и доказательство, что
+# механизм существует, и включать его обратно было бы нечему. Саму боевую
+# политику пинят ряды lim19/lim20 ниже, на таблице БЕЗ оверрайда.
+printf 'schema_version = 1\n[limits]\ndeny_enabled = true\n' > "$WORK/override-lim-denyon.toml"
+
+O="$WORK/override-lim-denyon.toml"
 pb_table codex=100
 check "lim1 exhausted pool denied"           deny  "$(gate "$(bashcmd "$lim_codex")")"
 out=$(gate_out "$(bashcmd "$lim_codex")")
 case "$out" in *2099-*) check "lim1 deny carries resets_at" 0 0 ;; *) check "lim1 deny carries resets_at" 0 1 ;; esac
+O="$WORK/absent-override.toml"
 
 pb_table codex=85
 check "lim2 85% warns, dispatch runs"        warn  "$(gate "$(bashcmd "$lim_codex")")"
@@ -698,8 +707,10 @@ pb_n0=$(pb_count)
 check "lim6 glm model passes"                allow "$(gate "$(task_nomodel withmodel "[dispatch-class:1e]")")"
 check "lim6 glm leaves the socket alone"     "$pb_n0" "$(pb_count)"
 
+O="$WORK/override-lim-denyon.toml"
 pb_table codex=0,100
 check "lim7 windows are conjunctive"         deny  "$(gate "$(bashcmd "$lim_codex")")"
+O="$WORK/absent-override.toml"
 
 pb_table "codex=100;5"
 check "lim8 accounts are alternatives"       allow "$(gate "$(bashcmd "$lim_codex")")"
@@ -721,7 +732,7 @@ check "lim11 MUTANT deny_at=100.1 flips"     warn  "$(gate "$(bashcmd "$lim_code
 O="$WORK/absent-override.toml"
 
 # unlisted gpt-* ids ride the "gpt-" prefix; glm-* match nothing
-printf 'schema_version = 1\n[experiment]\nallow_all_models = true\n' > "$WORK/override-hatch2.toml"
+printf 'schema_version = 1\n[limits]\ndeny_enabled = true\n[experiment]\nallow_all_models = true\n' > "$WORK/override-hatch2.toml"
 O="$WORK/override-hatch2.toml"
 pb_table codex=100
 check "lim12 unlisted gpt id hits its pool"  deny  "$(gate "$(task implementer gpt-5.9-nova "[dispatch-class:1a] x")")"
@@ -732,7 +743,7 @@ check "lim12 glm leaves the socket alone"    "$pb_n0" "$(pb_count)"
 O="$WORK/absent-override.toml"
 
 # longest prefix wins: luna pinned to kimicode over the family "gpt-" = codex
-printf 'schema_version = 1\n[limits.models]\n"gpt-" = ["codex"]\n"gpt-5.6-luna" = ["kimicode"]\n' > "$WORK/override-lim-prefix.toml"
+printf 'schema_version = 1\n[limits]\ndeny_enabled = true\n[limits.models]\n"gpt-" = ["codex"]\n"gpt-5.6-luna" = ["kimicode"]\n' > "$WORK/override-lim-prefix.toml"
 O="$WORK/override-lim-prefix.toml"
 pb_table codex=1 kimicode=100
 check "lim13 longest prefix reroutes luna"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-luna --effort high x [dispatch-class:res-fact]')")"
@@ -743,7 +754,7 @@ O="$WORK/absent-override.toml"
 
 # a model may sit in several pools: deny only when EVERY pool is exhausted,
 # and a pool that never answers BLOCKS the deny (fail-open, element-wise)
-printf 'schema_version = 1\n[limits.models]\n"gpt-" = ["codex", "opencodegokey"]\n' > "$WORK/override-lim-multi.toml"
+printf 'schema_version = 1\n[limits]\ndeny_enabled = true\n[limits.models]\n"gpt-" = ["codex", "opencodegokey"]\n' > "$WORK/override-lim-multi.toml"
 O="$WORK/override-lim-multi.toml"
 pb_table codex=100 opencodegokey=5
 check "lim14 live second pool admits"        allow "$(gate "$(bashcmd "$lim_codex")")"
@@ -770,6 +781,22 @@ pb_table codex=EMPTYWIN
 check "lim18 causeless empty is fail-open"    warn  "$(gate "$(bashcmd "$lim_codex")")"
 out=$(gate_out "$(bashcmd "$lim_codex")")
 case "$out" in *"no usable windows"*) check "lim18 causeless keeps the generic phrase" 0 0 ;; *) check "lim18 causeless keeps the generic phrase" 0 1 ;; esac
+# ---- [limits].deny_enabled: предмет этих рядов -- БОЕВАЯ ПОЛИТИКА и сам
+# выключатель, поэтому оверрайда здесь нет. lim19 краснеет, если отказ вернётся
+# в таблицу молча; lim20 -- если выключатель окажется fail-open на мусорном
+# значении (нелогическое значение обязано читаться как ВКЛЮЧЁННЫЙ отказ).
+pb_table codex=100
+check "lim19 production table warns not denies" warn "$(gate "$(bashcmd "$lim_codex")")"
+out=$(gate_out "$(bashcmd "$lim_codex")")
+case "$out" in *deny_enabled*) check "lim19 warn names the switch" 0 0 ;; *) check "lim19 warn names the switch" 0 1 ;; esac
+
+printf 'schema_version = 1\n[limits]\ndeny_enabled = "false"\n' > "$WORK/override-lim-denybad.toml"
+O="$WORK/override-lim-denybad.toml"
+check "lim20 non-boolean switch fails closed" deny "$(gate "$(bashcmd "$lim_codex")")"
+out=$(gate_out "$(bashcmd "$lim_codex")")
+case "$out" in *"not a boolean"*) check "lim20 bad switch names itself" 0 0 ;; *) check "lim20 bad switch names itself" 0 1 ;; esac
+O="$WORK/absent-override.toml"
+
 pb_table codex=1 xaicli=1 kimicode=1
 
 # ---- truth 11: a grid point declares its parent class ([classes.<point>].parent) —

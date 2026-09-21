@@ -905,6 +905,12 @@ def check_limits(sink, table):
     A model may sit in several pools — deny only when EVERY pool answered AND
     every binding is at or above deny_at; an unanswered pool blocks the deny
     and is named in the warn text (fail-open, element-wise).
+
+    CONSTRAINT: [limits].deny_enabled=false снимает ОТКАЗ по квоте, оставляя
+    замер видимым предупреждением. Сам выключатель fail-closed: значение не
+    булева типа читается как «отказ включён» — опечатка не снимает гвард.
+    Причина отключения названа в таблице, а не здесь: число ОДНОГО пула не
+    есть доступность модели, когда у вендора несколько аккаунтов.
     """
     providers, lim = limits_providers(sink, table)
     if not providers:
@@ -916,6 +922,14 @@ def check_limits(sink, table):
         print_warn("Dispatch gate: quota check skipped (fail-open) — [limits] "
                    "warn_at/deny_at are not numbers")
         return
+    raw_switch = lim.get("deny_enabled", True)
+    if isinstance(raw_switch, bool):
+        deny_enabled = raw_switch
+    else:
+        print_warn("Dispatch gate: [limits].deny_enabled is not a boolean "
+                   "(%r) — выключатель прочитан как ВКЛЮЧЁННЫЙ отказ"
+                   % (raw_switch,))
+        deny_enabled = True
     answered = []
     unanswered = []
     for prov in providers:
@@ -933,6 +947,14 @@ def check_limits(sink, table):
                        "unanswered pools (fail-open): " + "; ".join(unanswered)
                        + " — " + _limits_summary(answered)
                        + ". Pick another model of the class or wait for the reset.")
+            return
+        if not deny_enabled:
+            print_warn("Dispatch gate: quota exhausted but deny is DISABLED by "
+                       "[limits].deny_enabled=false — "
+                       + _limits_summary(answered)
+                       + ". Отказ снят решением юзера 2026-09-21: у вендора "
+                         "несколько аккаунтов, а пул назван одной строкой, "
+                         "то есть число пула не есть доступность модели.")
             return
         emit_deny("model quota exhausted: " + _limits_summary(answered)
                   + " — pick another model of the class or wait for the reset.")
