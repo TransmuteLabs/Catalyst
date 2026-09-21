@@ -95,6 +95,11 @@ type WiredOpts = {
   sidOf?: () => string
   clockBreak?: () => boolean
   onComplete?: () => Promise<void> | void
+  // CONSTRAINT (#393): официальный mock.env отвечает значением каждому имени и
+  // БРОСАТЬ не умеет -- отказ чтения ручки был бы неизмерим. Указанный набор
+  // переворачивает env на ручную подписку (по образцу clockBreak, забирающего
+  // часы целиком): имена набора получают отказ чтения, остальные -- значение.
+  envRefuses?: () => string[]
 }
 
 function wired(
@@ -120,7 +125,17 @@ function wired(
   } else {
     clock = mock.clock(on, { now })
   }
-  mock.env(on, { CLAUDE_PROBES_DIR: HOME, PWD: "/work", ...env })
+  if (opts.envRefuses) {
+    const vals: Record<string, string> = { CLAUDE_PROBES_DIR: HOME, PWD: "/work", ...env }
+    on("env.get", (_$, e) => {
+      if (opts.envRefuses && opts.envRefuses().indexOf(e.name) >= 0) {
+        throw new Error("env.get: scripted read refusal for " + e.name)
+      }
+      return { value: vals[e.name] ?? "" }
+    })
+  } else {
+    mock.env(on, { CLAUDE_PROBES_DIR: HOME, PWD: "/work", ...env })
+  }
   const store = storeOf(on, stored)
 
   const kept: Kept = { writes: [], reads: [], completes: [], toasts: [], store, clock }
@@ -2507,3 +2522,215 @@ describe("исход в улике (#374)", () => {
 // читать дом файла), а рассогласование иначе как подменой дома не
 // достижимо -- правила формы дают ровно pass/warn/refuse. Зубы защиты
 // живут в tests/units.test.ts на чистых formVerdictUpper / formVocabRefusal.
+
+// CONSTRAINT (#393): до этой волны пустой catch в envBundle приравнивал отказ
+// чтения ручки к пустому значению: нечитаемый выключатель читался как
+// «выключено» (судья молча выключался одним неудачным чтением), нечитаемый
+// носитель -- как «мод». Зубы ниже отличают отказ чтения от «ручка не
+// закреплена» через наблюдаемое: deny с именем ручки, ноль консультаций и
+// своя запись журнала. Часы идут с шагом 6000 мс (worldMemo 5000 мс).
+describe("#393: отказ чтения ручки отличим от «ручка не закреплена»", () => {
+  const JUDGE_TOML = '[probe.judge]\nmodels = ["m1"]\n'
+  const JUDGE_FILES = {
+    [HOME + "/probes.toml"]: JUDGE_TOML,
+    [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+  }
+  const dispatch = ($: any) => $.tool.call({
+    tool: "Agent", description: "brew",
+    prompt: "[dispatch-class:exec-0p] make tea", subagent_type: "scout",
+  })
+
+  test("нечитаемый ВЫКЛЮЧАТЕЛЬ судьи гасит вызов с названной ручкой, а не читается как «выключено»", async ($, on) => {
+    const kept = wired(
+      on, 258_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod" },
+      JUDGE_FILES, {}, [],
+      { envRefuses: () => ["CLAUDE_JUDGE"] },
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await dispatch($)
+
+    expect(res.deny, "отказ называет ручку и причину «не прочитана»").toContain("CLAUDE_JUDGE")
+    expect(res.deny).toContain("НЕ ПРОЧИТАНА")
+    expect(kept.completes, "судья не консультировался -- его состояние неизвестно, не «off»").toEqual([])
+    const line = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/failover/journal.jsonl.shard.") &&
+      w.text.includes('"rec":"carrier-env-unreadable-refused"'),
+    )
+    expect(line, "журнал несёт свою запись отказа").toBeTruthy()
+    const rec = JSON.parse(String(line?.text))
+    expect(rec.probe).toBe("judge")
+    expect(rec.handle).toBe("CLAUDE_JUDGE")
+    expect(rec.value, "материал учётки не печатается -- отказ чтения не имеет значения").toBe(undefined)
+  })
+
+  test("нечитаемый НОСИТЕЛЬ судьи гасит вызов, а не читается как «мод»", async ($, on) => {
+    const kept = wired(
+      on, 264_000_000,
+      { CLAUDE_JUDGE: "enforce" },
+      JUDGE_FILES, {}, [],
+      { envRefuses: () => ["CLAUDE_JUDGE_CARRIER"] },
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await dispatch($)
+
+    expect(res.deny).toContain("CLAUDE_JUDGE_CARRIER")
+    expect(res.deny).toContain("НЕ ПРОЧИТАНА")
+    expect(kept.completes, "консультации не было -- носитель неизвестен, а не «мод»").toEqual([])
+  })
+
+  test("причина отказа отлична от «чужой носитель»: своя запись журнала и свой текст", async ($, on) => {
+    const kept = wired(
+      on, 270_000_000,
+      { CLAUDE_JUDGE_CARRIER: "gpt-6", CLAUDE_JUDGE: "enforce" },
+      JUDGE_FILES, {}, [],
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await dispatch($)
+
+    expect(res.deny, "сторона «чужой носитель» остаётся собой").toContain("назначенный ею носитель не существует")
+    expect(res.deny, "текст отказа env-unreadable не совпадает с текстом чужого носителя")
+      .not.toContain("НЕ ПРОЧИТАНА")
+    const line = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/failover/journal.jsonl.shard.") &&
+      w.text.includes('"rec":"carrier-foreign-refused"'),
+    )
+    expect(line, "запись чужого носителя живёт под СВОИМ rec").toBeTruthy()
+    const rec = JSON.parse(String(line?.text))
+    expect(rec.handle).toBe("CLAUDE_JUDGE_CARRIER")
+    expect(rec.value).toBe("gpt-6")
+  })
+
+  test("дедуп журнала: две пробы подряд дают ДВА отказа и ОДНУ запись", async ($, on) => {
+    const kept = wired(
+      on, 276_000_000,
+      {},
+      {
+        [HOME + "/probes.toml"]:
+          '[probe.dup393]\nwhen = { field = "tool_name", equals = "Agent" }\n',
+      }, {}, [],
+      { envRefuses: () => ["CLAUDE_PROBES"] },
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const first = await dispatch($)
+    const second = await dispatch($)
+
+    expect(first.deny, "отказ -- каждый вызов, дедуп на него не переходит").toContain("CLAUDE_PROBES")
+    expect(second.deny, "второй вызов погашен так же громко").toContain("CLAUDE_PROBES")
+    const lines = kept.writes.filter(w =>
+      w.path.startsWith(HOME + "/failover/journal.jsonl.shard.") &&
+      w.text.includes('"rec":"carrier-env-unreadable-refused"') &&
+      w.text.includes('"probe":"dup393"'),
+    )
+    expect(lines, "журнал -- один раз на процесс на пару «проба x ручка»").toHaveLength(1)
+  })
+
+  test("порядок опроса: нечитаемый выключатель при ЧИТАЕМОМ чужом носителе отказывает по выключателю", async ($, on) => {
+    const kept = wired(
+      on, 282_000_000,
+      { CLAUDE_JUDGE_CARRIER: "gpt-6" },
+      JUDGE_FILES, {}, [],
+      { envRefuses: () => ["CLAUDE_JUDGE"] },
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await dispatch($)
+
+    expect(res.deny, "имя ручки в отказе -- выключателя").toContain("CLAUDE_JUDGE")
+    expect(res.deny, "ручка носителя в отказ не подмешана").not.toContain("CLAUDE_JUDGE_CARRIER")
+    expect(kept.completes).toEqual([])
+  })
+
+  test("форма с нечитаемым выключателем гасит вызов В ТОЧКЕ действия (список инструментов)", async ($, on) => {
+    const kept = wired(
+      on, 288_000_000,
+      {},
+      { [HOME + "/probes.toml"]: "[probe.form]\n" },
+      {}, [],
+      { envRefuses: () => ["CLAUDE_FORM"] },
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await dispatch($)
+
+    expect(res.deny, "форма действует на Agent -- отказ в точке действия").toContain("CLAUDE_FORM")
+    expect(res.deny).toContain("НЕ ПРОЧИТАНА")
+    const line = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/failover/journal.jsonl.shard.") &&
+      w.text.includes('"probe":"form"'),
+    )
+    expect(line).toBeTruthy()
+  })
+
+  test("нечитаемая CLAUDE_PROBES гасит консультацию кастомной пробы, а не выключает её молча", async ($, on) => {
+    const kept = wired(
+      on, 294_000_000,
+      {},
+      {
+        [HOME + "/probes.toml"]:
+          '[probe.gen393]\nwhen = { field = "tool_name", equals = "Agent" }\n',
+      }, {}, [],
+      { envRefuses: () => ["CLAUDE_PROBES"] },
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await dispatch($)
+
+    expect(res.deny, "выключатель пробы без своего носителя назван по имени").toContain("CLAUDE_PROBES")
+    expect(res.deny).toContain("НЕ ПРОЧИТАНА")
+    const line = kept.writes.find(w =>
+      w.path.startsWith(HOME + "/failover/journal.jsonl.shard.") &&
+      w.text.includes('"probe":"gen393"'),
+    )
+    expect(line).toBeTruthy()
+  })
+
+  test("when_bad не отчитывается за пробу, чьё состояние неизвестно: молчание как у чужого носителя", async ($, on) => {
+    const kept = wired(
+      on, 300_000_000,
+      {},
+      {
+        // негодный regex: правило fail-closed к срабатыванию, но копит whenBad
+        [HOME + "/probes.toml"]: '[probe.wb393]\nwhen = { matches = "(" }\n',
+      }, {}, [],
+      { envRefuses: () => ["CLAUDE_PROBES"] },
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await dispatch($)
+
+    expect(res, "правило не сработало -- вызов прошёл, отказа нет").toEqual({ result: "ran anyway" })
+    const bad = kept.writes.filter(w => w.text.includes('"outcome":"when_bad"') && w.text.includes('"probe":"wb393"'))
+    expect(bad, "проба не работала -- ей не о чем отчитываться").toEqual([])
+  })
+
+  test("skip судьи молчит при нечитаемой ручке: журнал не называет ложную причину пропуска", async ($, on) => {
+    const kept = wired(
+      on, 306_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod" },
+      {
+        // skip-фильтр срабатывает на класс промпта: судья ДОХОДИТ до своих
+        // списков (listOf читает подсекцию filter) и уходит в пропуск --
+        // контроль срабатывания даёт мутация, снимающая подавление
+        // (запись обязана появиться).
+        [HOME + "/probes.toml"]: '[probe.judge]\nmodels = ["m1"]\n[probe.judge.filter]\nclasses_skip = ["exec-0p"]\n',
+        [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+      }, {}, [],
+      { envRefuses: () => ["CLAUDE_JUDGE"] },
+    )
+    on("tool.call", () => ({ result: "ran anyway" }))
+
+    const res = await dispatch($)
+
+    expect(res, "пропуск по списку -- вычисляемая граница действия: за ней судья не действовал, гасить нечего").toEqual({ result: "ran anyway" })
+    expect(kept.completes, "консультации не было").toEqual([])
+    const skip = kept.writes.filter(w =>
+      w.text.includes('"outcome":"skip"') && w.text.includes('"probe":"judge"'),
+    )
+    expect(skip, "состояние пробы неизвестно -- журнал не приписывает ей решение по спискам и не подписывает носителя").toEqual([])
+  })
+})

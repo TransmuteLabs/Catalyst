@@ -866,7 +866,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.46")
+  expect(MOD_VERSION).toBe("0.1.47")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1126,12 +1126,17 @@ function spawnHook(): any {
   return fn
 }
 
-function fsEnv$(files: Record<string, string>, env: Record<string, string>, now: number) {
+function fsEnv$(files: Record<string, string>, env: Record<string, string>, now: number, envRefuses: string[] = []) {
   const reads: string[] = []
   const writes: { path: string, text: string }[] = []
   const $: any = {
     clock: { now: async () => now },
-    env: { get: async (k: string) => env[k] || "" },
+    // CONSTRAINT (#393): дверь env ДОЛЖНА уметь БРОСАТЬ -- иначе отказ чтения
+    // ручки неотличим от «ручка не закреплена» и дефект неизмерим.
+    env: { get: async (k: string) => {
+      if (envRefuses.indexOf(k) >= 0) throw new Error("env.get: scripted read refusal for " + k)
+      return env[k] || ""
+    } },
     fs: {
       read: async (p: string) => {
         reads.push(p)
@@ -2966,4 +2971,26 @@ test("catch: каждое подписанное событие несёт об�
     expect(x.h.constructor.name, `${x.ev} не async-генератор`).not.toBe("AsyncGeneratorFunction")
     expect(x.h.constructor.name, `${x.ev} не sync-генератор`).not.toBe("GeneratorFunction")
   }
+})
+
+// CONSTRAINT (#393): окна часов держатся дальше 5000 мс от соседей по файлу
+// (worldMemo уровня модуля, раннер -- один процесс на файл).
+test("envBundle (#393): отказ чтения ручки виден поимённо в UNREADABLE, без отказов -- пустой массив", async () => {
+  const files: Record<string, string> = {
+    "/wU1/.claude/probes/probes.toml": "[failover]\nenabled = true\n",
+  }
+  // Порядок -- порядок чтения в envBundle (register.ts:1921..1951).
+  const ALL16 = [
+    "CLAUDE_JUDGE_CARRIER", "CLAUDE_JUDGE", "CLAUDE_JUDGE_MODEL", "CLAUDE_JUDGE_PROMPT",
+    "CLAUDE_JUDGE_TIMEOUT_MS", "CLAUDE_FORM_CARRIER", "CLAUDE_FORM", "CLAUDE_IDLE_CARRIER",
+    "CLAUDE_IDLE", "CLAUDE_PROBES", "CLAUDE_PROMPTS", "CLAUDE_PROBES_DIR", "CLAUDE_CONFIG_DIR",
+    "HOME", "PWD", "CATALYST_ROUTING_TABLE",
+  ]
+  const bad = fsEnv$(files, { HOME: "/hhU1", PWD: "/wU1" }, 95_200_000, ALL16)
+  const w = await worldFor(bad.$)
+  expect(w.env.UNREADABLE, "каждая из 16 ручек -- поимённо, отсортировано")
+    .toEqual(ALL16.slice().sort())
+  const good = fsEnv$(files, { HOME: "/hhU1b", PWD: "/wU1b" }, 95_200_000)
+  const wg = await worldFor(good.$)
+  expect(wg.env.UNREADABLE, "без отказов чтения UNREADABLE пуст -- «ручка не закреплена» не подмешивается").toEqual([])
 })

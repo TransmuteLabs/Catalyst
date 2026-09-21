@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.46"
+export const MOD_VERSION = "0.1.47"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -1310,6 +1310,12 @@ const admissionRefusedSaid = new Set<string>()
 // последующие тоже, без исключений.
 const carrierForeignSaid = new Set<string>()
 
+// CONSTRAINT (#393): дедуп журнала нечитаемой ручки -- один раз на процесс на
+// пару «проба x ручка», по образцу carrierForeignSaid: цикл проб видит отказ
+// на каждом вызове инструмента. Отказ НЕ дедуплицируется -- гасится КАЖДЫЙ
+// вызов, как и у чужого носителя.
+const carrierEnvUnreadableSaid = new Set<string>()
+
 export async function worldFor($: any): Promise<any> {
   const now = await nowMs($)
   // CONSTRAINT: каталог -- ключ мемо, поэтому вычисляется ДО кэша той же
@@ -1913,42 +1919,47 @@ function formTextOf(cfg: any, cls: string): string {
   return String((a && a[cls]) || cls)
 }
 
+// CONSTRAINT (#393): отказ ЧТЕНИЯ ручки и «ручка не закреплена» обязаны быть
+// различимы: до этой волны пустой catch приравнивал отказ к пустому значению,
+// а пустое значение -- законное «не задано». Отказы собираются в UNREADABLE
+// ИМЕНАМИ (значения учётки не печатаются никогда), отсортированными.
 async function envBundle($: any): Promise<any> {
   // CONSTRAINT: env names are string literals. A computed name at $.env.get
   // is not a loadable site — new consultants switch from toml `enabled`,
   // plus CLAUDE_PROBES for the non-splice ids.
+  const unreadable: string[] = []
   let JUDGE_CARRIER: any = ""
-  try { JUDGE_CARRIER = await $.env.get("CLAUDE_JUDGE_CARRIER") } catch (x) {}
+  try { JUDGE_CARRIER = await $.env.get("CLAUDE_JUDGE_CARRIER") } catch (x) { unreadable.push("CLAUDE_JUDGE_CARRIER") }
   let JUDGE: any = ""
-  try { JUDGE = await $.env.get("CLAUDE_JUDGE") } catch (x) {}
+  try { JUDGE = await $.env.get("CLAUDE_JUDGE") } catch (x) { unreadable.push("CLAUDE_JUDGE") }
   let JUDGE_MODEL: any = ""
-  try { JUDGE_MODEL = await $.env.get("CLAUDE_JUDGE_MODEL") } catch (x) {}
+  try { JUDGE_MODEL = await $.env.get("CLAUDE_JUDGE_MODEL") } catch (x) { unreadable.push("CLAUDE_JUDGE_MODEL") }
   let JUDGE_PROMPT: any = ""
-  try { JUDGE_PROMPT = await $.env.get("CLAUDE_JUDGE_PROMPT") } catch (x) {}
+  try { JUDGE_PROMPT = await $.env.get("CLAUDE_JUDGE_PROMPT") } catch (x) { unreadable.push("CLAUDE_JUDGE_PROMPT") }
   let JUDGE_TIMEOUT: any = ""
-  try { JUDGE_TIMEOUT = await $.env.get("CLAUDE_JUDGE_TIMEOUT_MS") } catch (x) {}
+  try { JUDGE_TIMEOUT = await $.env.get("CLAUDE_JUDGE_TIMEOUT_MS") } catch (x) { unreadable.push("CLAUDE_JUDGE_TIMEOUT_MS") }
   let FORM_CARRIER: any = ""
-  try { FORM_CARRIER = await $.env.get("CLAUDE_FORM_CARRIER") } catch (x) {}
+  try { FORM_CARRIER = await $.env.get("CLAUDE_FORM_CARRIER") } catch (x) { unreadable.push("CLAUDE_FORM_CARRIER") }
   let FORM: any = ""
-  try { FORM = await $.env.get("CLAUDE_FORM") } catch (x) {}
+  try { FORM = await $.env.get("CLAUDE_FORM") } catch (x) { unreadable.push("CLAUDE_FORM") }
   let IDLE_CARRIER: any = ""
-  try { IDLE_CARRIER = await $.env.get("CLAUDE_IDLE_CARRIER") } catch (x) {}
+  try { IDLE_CARRIER = await $.env.get("CLAUDE_IDLE_CARRIER") } catch (x) { unreadable.push("CLAUDE_IDLE_CARRIER") }
   let IDLE: any = ""
-  try { IDLE = await $.env.get("CLAUDE_IDLE") } catch (x) {}
+  try { IDLE = await $.env.get("CLAUDE_IDLE") } catch (x) { unreadable.push("CLAUDE_IDLE") }
   let PROBES: any = ""
-  try { PROBES = await $.env.get("CLAUDE_PROBES") } catch (x) {}
+  try { PROBES = await $.env.get("CLAUDE_PROBES") } catch (x) { unreadable.push("CLAUDE_PROBES") }
   let PROMPTS: any = ""
-  try { PROMPTS = await $.env.get("CLAUDE_PROMPTS") } catch (x) {}
+  try { PROMPTS = await $.env.get("CLAUDE_PROMPTS") } catch (x) { unreadable.push("CLAUDE_PROMPTS") }
   let PROBES_DIR: any = ""
-  try { PROBES_DIR = await $.env.get("CLAUDE_PROBES_DIR") } catch (x) {}
+  try { PROBES_DIR = await $.env.get("CLAUDE_PROBES_DIR") } catch (x) { unreadable.push("CLAUDE_PROBES_DIR") }
   let CONFIG_DIR: any = ""
-  try { CONFIG_DIR = await $.env.get("CLAUDE_CONFIG_DIR") } catch (x) {}
+  try { CONFIG_DIR = await $.env.get("CLAUDE_CONFIG_DIR") } catch (x) { unreadable.push("CLAUDE_CONFIG_DIR") }
   let HOME: any = ""
-  try { HOME = await $.env.get("HOME") } catch (x) {}
+  try { HOME = await $.env.get("HOME") } catch (x) { unreadable.push("HOME") }
   let PWD: any = ""
-  try { PWD = await $.env.get("PWD") } catch (x) {}
+  try { PWD = await $.env.get("PWD") } catch (x) { unreadable.push("PWD") }
   let ROUTING_TABLE: any = ""
-  try { ROUTING_TABLE = await $.env.get("CATALYST_ROUTING_TABLE") } catch (x) {}
+  try { ROUTING_TABLE = await $.env.get("CATALYST_ROUTING_TABLE") } catch (x) { unreadable.push("CATALYST_ROUTING_TABLE") }
   return {
     JUDGE_CARRIER: String(JUDGE_CARRIER || ""),
     JUDGE: String(JUDGE || ""),
@@ -1966,31 +1977,41 @@ async function envBundle($: any): Promise<any> {
     HOME: String(HOME || ""),
     PWD: String(PWD || "").trim(),
     ROUTING_TABLE: String(ROUTING_TABLE || "").trim(),
+    UNREADABLE: unreadable.slice().sort(),
   }
 }
 
-// CONSTRAINT (#335): вооружение троично, исходы различаются ТИПОМ, а не
-// строкой-магией. Выключатель спрашивается РАНЬШЕ носителя: выключенная проба
-// с чужой ручкой обязана молчать. ПУСТАЯ ручка носителя означает мод --
-// копия в патче снята, другого носителя нет; непустая и не «mod» -- чужой
+// CONSTRAINT (#335): вооружение различается ТИПОМ, а не строкой-магией.
+// Выключатель спрашивается РАНЬШЕ носителя: выключенная проба с чужой
+// ручкой обязана молчать. ПУСТАЯ ручка носителя означает мод -- копия в
+// патче снята, другого носителя нет; непустая и не «mod» -- чужой
 // носитель, и такая конфигурация обязана отказать громко.
+// CONSTRAINT (#393): НЕЧИТАЕМАЯ ручка (отказ чтения окружения) -- четвёртый
+// исход: нечитаемый выключатель НЕ читается как «выключено», нечитаемый
+// носитель -- как «мод»; состояние пробы неизвестно и отказывает громко.
 type ArmState =
   | { state: "armed" }
   | { state: "off" }
   | { state: "foreign-carrier", probe: string, handle: string, value: string }
+  | { state: "env-unreadable", probe: string, handle: string }
 
 function armStateOf(p: any, env: any): ArmState {
-  const byCarrier = (field: string, handle: string, on: boolean): ArmState => {
+  const unreadable = (handle: string): boolean =>
+    Array.isArray(env.UNREADABLE) && env.UNREADABLE.indexOf(handle) >= 0
+  const byCarrier = (field: string, handle: string, onHandle: string, on: boolean): ArmState => {
+    if (unreadable(onHandle)) return { state: "env-unreadable", probe: String(p.id), handle: onHandle }
     if (!on) return { state: "off" }
+    if (unreadable(handle)) return { state: "env-unreadable", probe: String(p.id), handle }
     const value = String(env[field] ?? "")
     const norm = value.trim().toLowerCase()
     if (norm !== "" && norm !== "mod") return { state: "foreign-carrier", probe: String(p.id), handle, value }
     return { state: "armed" }
   }
-  if (p.id === "judge") return byCarrier("JUDGE_CARRIER", "CLAUDE_JUDGE_CARRIER", envOn(env.JUDGE))
-  if (p.id === "form") return byCarrier("FORM_CARRIER", "CLAUDE_FORM_CARRIER", formOn(env.FORM))
-  if (p.id === "idle-watch") return byCarrier("IDLE_CARRIER", "CLAUDE_IDLE_CARRIER", envOn(env.IDLE))
+  if (p.id === "judge") return byCarrier("JUDGE_CARRIER", "CLAUDE_JUDGE_CARRIER", "CLAUDE_JUDGE", envOn(env.JUDGE))
+  if (p.id === "form") return byCarrier("FORM_CARRIER", "CLAUDE_FORM_CARRIER", "CLAUDE_FORM", formOn(env.FORM))
+  if (p.id === "idle-watch") return byCarrier("IDLE_CARRIER", "CLAUDE_IDLE_CARRIER", "CLAUDE_IDLE", envOn(env.IDLE))
   // Пробы без своей ручки носителя двузначны: носителя у них не спрашивают.
+  if (unreadable("CLAUDE_PROBES")) return { state: "env-unreadable", probe: String(p.id), handle: "CLAUDE_PROBES" }
   return formOn(env.PROBES) ? { state: "armed" } : { state: "off" }
 }
 
@@ -2023,6 +2044,37 @@ async function refuseForeignCarrier($: any, world: any, arm: any, t0: number, si
     "Ручка " + arm.handle + " = «" + arm.value + "»; копия проб в патче снята, единственный носитель теперь мод. " +
     "Это НЕ гейт routing-table.toml. Починка: установите " + arm.handle + "=mod или снимите ручку -- " +
     "до исправления конфигурации гасится каждый вызов, на котором эта проба действует."
+}
+
+// CONSTRAINT (#393): отказ нечитаемой ручки живёт В ТОЧКЕ ДЕЙСТВИЯ пробы --
+// та же граница, что у чужого носителя. Причина отказа ОБЯЗАНА отличаться от
+// «чужой носитель»: это отказ чтения окружения, состояние вооружения пробы
+// неизвестно, значения ручки нет и печатать нечего.
+async function refuseEnvUnreadable($: any, world: any, arm: any, t0: number, sid: string): Promise<string> {
+  // CONSTRAINT: дедуп -- ТОЛЬКО у записи в журнал (один раз на процесс на
+  // пару «проба x ручка»). Текст отказа возвращается ВСЕГДА -- дедуп журнала
+  // не имеет права перейти на отказ: второй и последующие вызовы гасятся
+  // так же.
+  const saidKey = JSON.stringify([arm.probe, arm.handle])
+  if (!carrierEnvUnreadableSaid.has(saidKey)) {
+    carrierEnvUnreadableSaid.add(saidKey)
+    try {
+      await appendJournal($, world.globalHome + "/failover/journal.jsonl", {
+        t: new Date(t0).toISOString(),
+        sid,
+        rec: "carrier-env-unreadable-refused",
+        probe: arm.probe,
+        handle: arm.handle,
+      })
+    } catch (x) {}
+  }
+  // CONSTRAINT: возврат вне try -- отказ выставляется и когда запись не легла
+  // (appendJournal бросает): запись -- улика, отказ -- механизм.
+  return "Вызов инструмента погашен: ручка " + arm.handle + " НЕ ПРОЧИТАНА -- отказ чтения окружения, " +
+    "а не пустое значение и не чужой носитель. Состояние вооружения пробы «" + arm.probe + "» неизвестно: " +
+    "нечитаемый выключатель не читается как «выключено», нечитаемый носитель -- как «мод». " +
+    "Это НЕ гейт routing-table.toml. Починка: сделайте чтение ручки работающим -- " +
+    "до исправления гасится каждый вызов, на котором эта проба действует."
 }
 
 // CONSTRAINT (#335, Ч2): поле carrier журнала несёт ФАКТИЧЕСКОГО носителя
@@ -2904,6 +2956,12 @@ export function register(on: any) {
         if (p.cfg && p.cfg.enabled === false) continue
         // CONSTRAINT (#335): отказ -- в точке действия формы (её список
         // инструментов); вне списка форма не действовала бы -- и не гасит.
+        // CONSTRAINT (#393): нечитаемая ручка -- та же точка действия.
+        if (arm.state === "env-unreadable" && formActsOnTool(String((e && e.tool) || ""))) {
+          const d = await refuseEnvUnreadable($, world, arm, t0, sid)
+          if (d && !hardDeny) hardDeny = d
+          continue
+        }
         if (arm.state === "foreign-carrier" && formActsOnTool(String((e && e.tool) || ""))) {
           const d = await refuseForeignCarrier($, world, arm, t0, sid)
           if (d && !hardDeny) hardDeny = d
@@ -2937,7 +2995,8 @@ export function register(on: any) {
         // улика из ctx не доехала бы никуда -- поэтому мёртвое правило пишет
         // СВОЮ строку. Граница молчания чужого носителя -- та же, что у
         // пропуска судьи (#335): он не работал, ему не о чем отчитываться.
-        if (ctx.whenBad && arm.state !== "foreign-carrier") {
+        // Нечитаемая ручка (#393) -- та же граница: состояние неизвестно.
+        if (ctx.whenBad && arm.state !== "foreign-carrier" && arm.state !== "env-unreadable") {
           try {
             await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", {
               t: new Date(t0).toISOString(), tool, agent, outcome: "when_bad",
@@ -3001,7 +3060,10 @@ export function register(on: any) {
         if (by) {
           // CONSTRAINT (#335): чужой носитель не работал -- журнал судьи
           // описывает содеянное им, а он не сделал ничего: пропуск молчит.
-          if (arm.state !== "foreign-carrier") {
+          // CONSTRAINT (#393): нечитаемая ручка -- та же граница молчания:
+          // состояние пробы неизвестно, журнал не называет ложную причину
+          // пропуска и не подписывает неизвестного носителя.
+          if (arm.state !== "foreign-carrier" && arm.state !== "env-unreadable") {
             const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
             try {
               const jskip: any = {
@@ -3021,6 +3083,12 @@ export function register(on: any) {
       // ним -- та же граница, что список инструментов у формы, вычисляемая,
       // а не статическая. Консультация без списков блок не проходит вовсе,
       // и её отказ стоит здесь же -- сразу за выключателем enabled.
+      // CONSTRAINT (#393): нечитаемая ручка отказывает в той же точке.
+      if (arm.state === "env-unreadable") {
+        const d = await refuseEnvUnreadable($, world, arm, t0, sid)
+        if (d && !hardDeny) hardDeny = d
+        continue
+      }
       if (arm.state === "foreign-carrier") {
         const d = await refuseForeignCarrier($, world, arm, t0, sid)
         if (d && !hardDeny) hardDeny = d
