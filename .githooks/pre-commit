@@ -92,11 +92,37 @@ EOF
   [ "$has_code" = 1 ] || continue
   staged_v=$(git show ":$manifest" 2>/dev/null | json_version) || continue
   git rev-parse -q --verify HEAD >/dev/null 2>&1 || continue
-  git show "HEAD:$manifest" >/dev/null 2>&1 || continue   # нет в HEAD -- новый плагин, не отказ
-  head_v=$(git show "HEAD:$manifest" 2>/dev/null | json_version) || continue
-  if [ "$staged_v" = "$head_v" ]; then
-    fail "ВЕРСИЯ_НЕ_ПОДНЯТА: $d -- код изменён, а version в .claude-plugin/plugin.json ($staged_v) не отличается от HEAD"
+
+  # CONSTRAINT: предков у коммита бывает БОЛЬШЕ ОДНОГО, и сравнение только с HEAD
+  # (первым родителем) отбивало слияние, версию которого подняла ВТОРАЯ сторона:
+  # поднимать там нечего, а отказ назывался бы ВЕРСИЯ_НЕ_ПОДНЯТА, то есть ЧУЖОЙ
+  # причиной. Правило ниже общее для обычного коммита и для слияния: версия
+  # обязана отличаться от версии КАЖДОГО предка, чей код отличается от
+  # ставленного. Предок, чей код совпал со ставленным, версии не требует --
+  # слияние, взявшее сторону целиком, не вносит ничего своего.
+  parents="HEAD"
+  if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+    while IFS= read -r mh; do
+      [ -n "$mh" ] && parents="$parents $mh"
+    done < "$(git rev-parse --git-dir)/MERGE_HEAD"
   fi
+
+  for p in $parents; do
+    git show "$p:$manifest" >/dev/null 2>&1 || continue   # нет у предка -- новый плагин, не отказ
+    # CONSTRAINT: манифест исключён из сравнения кода той же границей, что и в
+    # has_code выше -- иначе подъём одной только версии сам считался бы правкой
+    # кода и требовал бы второго подъёма.
+    if [ "$d" = "." ]; then
+      git diff --cached --quiet "$p" -- skills agents commands hooks .claude-plugin \
+        ":(exclude)$manifest" && continue
+    else
+      git diff --cached --quiet "$p" -- "$d" ":(exclude)$manifest" && continue
+    fi
+    p_v=$(git show "$p:$manifest" 2>/dev/null | json_version) || continue
+    if [ "$staged_v" = "$p_v" ]; then
+      fail "ВЕРСИЯ_НЕ_ПОДНЯТА: $d -- код отличается от предка $(git rev-parse --short "$p"), а version в .claude-plugin/plugin.json ($staged_v) совпадает с версией этого предка"
+    fi
+  done
 done
 
 # CONSTRAINT: приборы осей B и C спрашиваются, только если есть что ими мерить.

@@ -15,7 +15,7 @@ set -u
 # неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
 # агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
 # дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
-EXPECTED_TEETH=16
+EXPECTED_TEETH=19
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DOOR="$(cd "$HERE/../.." && pwd)/.githooks/pre-commit"
@@ -366,6 +366,94 @@ else
     ok "16) стадия 5 под GIT_INDEX_FILE хука (абсолютный путь) -- стенд получает чистое окружение, rc=0"
   else
     bad "16) окружение хука протекло в стенд: rc=$rc [$out]"
+  fi
+fi
+
+# --- 17. ОСЬ A на СЛИЯНИИ: версию подняла ВТОРАЯ сторона -> дверь МОЛЧИТ ------
+# У merge-коммита предков ДВА, и сравнение только с HEAD (первым родителем)
+# отбивало слияние, в котором поднимать нечего: версию уже подняла сливаемая
+# сторона. Отказ при этом назывался ВЕРСИЯ_НЕ_ПОДНЯТА -- ЧУЖОЙ причиной, а
+# обход требовал искусственного подъёма, врущего в истории выпусков.
+R=$(mk_world merge_side)
+git -C "$R" checkout -q -b side
+register_two "$R/plugins/mini/hooks/register.ts"
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.5
+git -C "$R" add plugins/mini
+git -C "$R" commit -qm side
+git -C "$R" checkout -q -
+printf 'doc A\n' > "$R/docs/d.md"
+git -C "$R" add docs/d.md
+git -C "$R" commit -qm mainside
+if ! git -C "$R" merge --no-commit --no-ff -q side >/dev/null; then
+  bad "17) фикстура: слияние не состоялось, ряд ничего не измерил"
+else
+  # положительный контроль фикстуры: без MERGE_HEAD ряд мерил бы обычный коммит
+  if [ ! -f "$R/.git/MERGE_HEAD" ]; then
+    bad "17) фикстура: MERGE_HEAD отсутствует -- состояние слияния не построено"
+  else
+    out=$(run_door "$R"); rc=$?
+    if (( rc == 0 )) && [[ "$out" != *"ВЕРСИЯ_НЕ_ПОДНЯТА"* ]]; then
+      ok "17) слияние, версию поднял второй предок -- дверь молчит, rc=0"
+    else
+      bad "17) слияние отбито: ждали rc=0 без ВЕРСИЯ_НЕ_ПОДНЯТА, получили rc=$rc [$out]"
+    fi
+  fi
+fi
+
+# --- 18. ОСЬ A на СЛИЯНИИ: СОБСТВЕННАЯ правка сверх обеих сторон -> отказ -----
+# Зеркало ряда 17: послабление не должно стать дырой. Разрешение слияния внесло
+# код, которого нет НИ У ОДНОГО предка, а версия осталась равной версии второго
+# предка -- одна версия называла бы ДВА разных дерева.
+R=$(mk_world merge_edit)
+git -C "$R" checkout -q -b side2
+register_two "$R/plugins/mini/hooks/register.ts"
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.5
+git -C "$R" add plugins/mini
+git -C "$R" commit -qm side2
+git -C "$R" checkout -q -
+printf 'doc A\n' > "$R/docs/d.md"
+git -C "$R" add docs/d.md
+git -C "$R" commit -qm mainside2
+if ! git -C "$R" merge --no-commit --no-ff -q side2 >/dev/null; then
+  bad "18) фикстура: слияние не состоялось, ряд ничего не измерил"
+else
+  printf '// resolved\n' >> "$R/plugins/mini/hooks/register.ts"
+  git -C "$R" add plugins/mini
+  out=$(run_door "$R"); rc=$?
+  why=$(check_only "ВЕРСИЯ_НЕ_ПОДНЯТА" "$out")
+  if (( rc == 1 )) && [[ -z "$why" ]]; then
+    ok "18) слияние с собственной правкой сверх обеих сторон -- ВЕРСИЯ_НЕ_ПОДНЯТА и только она"
+  else
+    bad "18) слияние с правкой: ждали rc=1 ВЕРСИЯ_НЕ_ПОДНЯТА, получили rc=$rc $why[$out]"
+  fi
+fi
+
+# --- 19. ОСЬ A на СЛИЯНИИ: обе стороны подняли до ОДНОГО числа -> отказ -------
+# ЖИВОЙ СЛУЧАЙ 2026-09-21: две параллельные сессии в одном дереве независимо
+# подняли версию до одного и того же номера. Слитое дерево -- ТРЕТЬЕ, отличное
+# от обоих, и носит тот же номер. Отказ здесь ВЕРЕН: одна версия не может
+# называть два разных дерева. Ряд стоит сторожем послабления рядов 17/18 --
+# пропуск предка с совпавшим кодом не должен снимать этот отказ.
+R=$(mk_world merge_same_ver)
+git -C "$R" checkout -q -b side3
+register_two "$R/plugins/mini/hooks/register.ts"
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.5
+git -C "$R" add plugins/mini
+git -C "$R" commit -qm side3
+git -C "$R" checkout -q -
+# та же правка манифеста ДОСЛОВНО -> git сливает её без конфликта
+mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.5
+git -C "$R" add plugins/mini
+git -C "$R" commit -qm mainside3
+if ! git -C "$R" merge --no-commit --no-ff -q side3 >/dev/null; then
+  bad "19) фикстура: слияние не состоялось, ряд ничего не измерил"
+else
+  out=$(run_door "$R"); rc=$?
+  why=$(check_only "ВЕРСИЯ_НЕ_ПОДНЯТА" "$out")
+  if (( rc == 1 )) && [[ -z "$why" ]]; then
+    ok "19) слияние, обе стороны подняли до одного числа -- ВЕРСИЯ_НЕ_ПОДНЯТА и только она"
+  else
+    bad "19) одинаковый номер у обеих сторон: ждали rc=1 ВЕРСИЯ_НЕ_ПОДНЯТА, получили rc=$rc $why[$out]"
   fi
 fi
 
