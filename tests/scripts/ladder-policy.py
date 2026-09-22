@@ -79,13 +79,13 @@ except ImportError:  # Python < 3.11 -- fail-closed с названной при
 # Короткое имя вне списка (новый opus-подобный id) НЕ опознано -- это
 # «семейство не определено», прибор краснеет, а не молчит.
 ANTHROPIC_EXACT_IDS = (
-    "opus", "claude-opus-5[1m]", "fable", "fable-5-1",
+    "opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "fable", "fable-5-1",
     "claude-fable-5-1", "claude-fable-5-1[1m]",
 )
 ANTHROPIC_PREFIXES = ("claude",)
 # Вендорские семейства -- префиксы id из допуска сетки
 # (hooks/routing-table.toml [classes.*].allowed, ценз 2026-09-16) и флота:
-# glm-5.3/5.3-flash, grok-4.6, qwen3.8-flash, gpt-6-astra, gpt-5.6-sol/luna,
+# glm-5.3/5.3-flash, grok-4.6, qwen3.8-flash, gpt-6-astra, gpt-6-sol/luna,
 # deepseek-flash/v4-pro, kimi-k3 -- там же; MiniMax-M3 --
 # tests/scripts/test-dispatch-stats.sh (модель флота).
 VENDOR_FAMILY_PREFIXES = (

@@ -36,7 +36,7 @@ effort_for() {
     glm-5.2)     echo xhigh ;;
     kimi-k3)     echo high ;;
     grok-4.5)    echo max ;;
-    gpt-5.6-sol) echo high ;;
+    gpt-6-sol)   echo high ;;
     MiniMax-M3)  echo high ;;
     *)           echo "" ;;
   esac
@@ -75,7 +75,7 @@ case "$out" in *grok*)           check "s1 nudge names its models"    0 0 ;; *) 
 # ---- 2: a fleet that IS being used stays silent — the nudge must not be noise ----
 fresh div
 out=$(send implementer opus 1b)$(send a grok-4.5 1a)$(send b glm-5.2 1e)$(send catalyst:critic fable critique)
-out="$out$(send c kimi-k3 1c)$(send d gpt-5.6-sol 1a)$(send catalyst:auditor opus audit)$(send e glm-5.2 1e)"
+out="$out$(send c kimi-k3 1c)$(send d gpt-6-sol 1a)$(send catalyst:auditor opus audit)$(send e glm-5.2 1e)"
 case "$out" in '') check "s2 diverse run is silent" 0 0 ;; *) check "s2 diverse run is silent" 0 1 ;; esac
 
 # ---- 3: throttled — one nudge per remind_every, not one per dispatch ----
@@ -103,10 +103,10 @@ T="$BASE_TABLE"
 
 # ---- 6: Bash channels count too — the fleet is not only the Agent tool ----
 fresh bash
-sendbash 'codex exec --model gpt-5.6-sol --effort high go' >/dev/null
+sendbash 'codex exec --model gpt-6-sol --effort high go' >/dev/null
 sendbash 'node envoy-companion.mjs task --vendor kimi --effort high go' >/dev/null
 rep=$(report)
-case "$rep" in *gpt-5.6-sol*) check "s6 direct CLI recorded"  0 0 ;; *) check "s6 direct CLI recorded"  0 1 ;; esac
+case "$rep" in *gpt-6-sol*) check "s6 direct CLI recorded"  0 0 ;; *) check "s6 direct CLI recorded"  0 1 ;; esac
 case "$rep" in *kimi*)        check "s6 envoy run recorded"   0 0 ;; *) check "s6 envoy run recorded"   0 1 ;; esac
 case "$rep" in *cli*)         check "s6 channel recorded"     0 0 ;; *) check "s6 channel recorded"     0 1 ;; esac
 # The marker rides in the COMMAND text on these channels, not in a ``prompt``
@@ -114,7 +114,7 @@ case "$rep" in *cli*)         check "s6 channel recorded"     0 0 ;; *) check "s
 # classless, which understated the coverage signal: a fleet rotating properly
 # across cases still looked like it worked a single one.
 fresh bashcls
-sendbash 'codex exec --model gpt-5.6-sol --effort high go [dispatch-class:1a]' >/dev/null
+sendbash 'codex exec --model gpt-6-sol --effort high go [dispatch-class:1a]' >/dev/null
 sendbash 'node envoy-companion.mjs task --vendor kimi --effort high go [dispatch-class:1c]' >/dev/null
 st=$(cat "$WORK/home/.claude/catalyst/stats/$SES.json" 2>/dev/null)
 case "$st" in *'"class": "1a"'*) check "s6 CLI class from command"   0 0 ;; *) check "s6 CLI class from command"   0 1 ;; esac
@@ -123,7 +123,7 @@ case "$st" in *'"class": "?"'*)  check "s6 no classless leftover"    0 1 ;; *) c
 # A vendor command with no marker stays "?" — the recorder reports what is
 # there; requiring the marker is the gate's job, not bookkeeping's.
 fresh bashnomark
-sendbash 'codex exec --model gpt-5.6-sol --effort high go' >/dev/null
+sendbash 'codex exec --model gpt-6-sol --effort high go' >/dev/null
 st=$(cat "$WORK/home/.claude/catalyst/stats/$SES.json" 2>/dev/null)
 case "$st" in *'"class": "?"'*)  check "s6 unmarked stays unknown"   0 0 ;; *) check "s6 unmarked stays unknown"   0 1 ;; esac
 

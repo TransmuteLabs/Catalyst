@@ -495,7 +495,7 @@ def check_known_model(model, table, where):
         emit_deny(f"{where}: model '{model}' is not named in any case table "
                   f"([classes.*] in hooks/routing-table.toml), so it is "
                   f"permitted nowhere. Matching is EXACT: an unmeasured sibling "
-                  f"(gpt-5.6-luna vs gpt-5.6-sol, kimi-k3-256k vs kimi-k3) is a "
+                  f"(gpt-6-luna vs gpt-6-sol, kimi-k3-256k vs kimi-k3) is a "
                   f"different model. Measure it, then list it in the cases where it "
                   f"is ratified. Testing an unmeasured model on purpose? Set "
                   f"[experiment] allow_all_models = true in "

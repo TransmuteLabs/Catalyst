@@ -37,12 +37,12 @@ printf -- '---\nname: pinned1a\ndescription: x\neffort: max\n---\nbody\n'       
 printf -- '---\nname: badeffort\ndescription: x\nmodel: glm-5.3\neffort: turbo\n---\nbody\n' > "$WORK/agents/badeffort.md"
 printf -- '---\nname: kimipin\ndescription: x\nmodel: kimi-k3\neffort: max\n---\nbody\n'     > "$WORK/agents/kimipin.md"
 printf -- '---\nname: kimipinok\ndescription: x\nmodel: kimi-k3\neffort: high\n---\nbody\n'  > "$WORK/agents/kimipinok.md"
-printf -- '---\nname: gptmedium\ndescription: x\nmodel: gpt-5.6-sol\neffort: medium\n---\nbody\n' > "$WORK/agents/gptmedium.md"
+printf -- '---\nname: gptmedium\ndescription: x\nmodel: gpt-6-sol\neffort: medium\n---\nbody\n' > "$WORK/agents/gptmedium.md"
 # Analysis-role fixtures: model+effort are VALID, so a denial can only come from
 # the role floor — otherwise the effort rule would deny first and prove nothing.
 printf -- '---\nname: debug-glm\ndescription: x\nmodel: glm-5.3\neffort: max\n---\nbody\n'  > "$WORK/agents/debug-glm.md"
 printf -- '---\nname: sleuth-grok\ndescription: x\nmodel: grok-4.6\neffort: max\n---\nbody\n' > "$WORK/agents/sleuth-grok.md"
-printf -- '---\nname: analyzer-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/analyzer-gpt.md"
+printf -- '---\nname: analyzer-gpt\ndescription: x\nmodel: gpt-6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/analyzer-gpt.md"
 printf -- '---\nname: debug-kimi\ndescription: x\nmodel: kimi-k3\neffort: high\n---\nbody\n' > "$WORK/agents/debug-kimi.md"
 # a model the table KNOWS (it rides exec-1n/1w/2, an-system, crit-mech …) but
 # that the old id `analysis` does not carry: the only fixture able to pin the
@@ -53,10 +53,10 @@ printf -- '---\nname: debug-gpt6\ndescription: x\nmodel: gpt-6-astra\neffort: hi
 printf -- '---\nname: scout-minimax\ndescription: x\nmodel: MiniMax-M3\neffort: high\n---\nbody\n' > "$WORK/agents/scout-minimax.md"
 # grid 09-07 keeps glm-5.3-flash in scout (deepseek-v4-pro left every class)
 printf -- '---\nname: scout-glmflash\ndescription: x\nmodel: glm-5.3-flash\neffort: high\n---\nbody\n' > "$WORK/agents/scout-glmflash.md"
-printf -- '---\nname: impl-gpt\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/impl-gpt.md"
+printf -- '---\nname: impl-gpt\ndescription: x\nmodel: gpt-6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/impl-gpt.md"
 # quota-rule positive control: a critic-named agent on a ratified non-Anthropic
 # model — model+effort VALID, so only the quota rule could deny it
-printf -- '---\nname: gpt-sol-critic\ndescription: x\nmodel: gpt-5.6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/gpt-sol-critic.md"
+printf -- '---\nname: gpt-sol-critic\ndescription: x\nmodel: gpt-6-sol\neffort: high\n---\nbody\n' > "$WORK/agents/gpt-sol-critic.md"
 
 # ---- fake potionbard daemon for the [limits] quota check ----
 # One AF_UNIX server; canned replies come from a JSON file re-read on every
@@ -278,15 +278,15 @@ check "t3 class 1a accepts grok"            allow "$(gate "$(task pinned1a grok-
 check "t3 unknown class marker is loud"     deny  "$(gate "$(task implementer opus "[dispatch-class:9z] fix")")"
 # allowed lists carry MODEL names only: a vendor/channel name ("codex") would
 # admit the literal string model="codex" AND bypass effort_required_for, which
-# lists no such pattern. The real id is gpt-5.6-sol and needs an effort.
+# lists no such pattern. The real id is gpt-6-sol and needs an effort.
 check "t3 vendor name is not a model"       deny  "$(gate "$(task implementer codex "[dispatch-class:1a] fix")")"
 check "t3 vendor name denied in analysis"   deny  "$(gate "$(task debug-agent codex "[dispatch-class:analysis] x")")"
-check "t3 real gpt id needs effort"         deny  "$(gate "$(task implementer gpt-5.6-sol "[dispatch-class:exec-1n] fix")")"
+check "t3 real gpt id needs effort"         deny  "$(gate "$(task implementer gpt-6-sol "[dispatch-class:exec-1n] fix")")"
 check "t3 real gpt id with effort ok"       allow "$(gate "$(printf '{"tool_name":"Task","tool_input":{"subagent_type":"impl-gpt","prompt":"[dispatch-class:exec-1n] fix"},"cwd":"%s"}' "$WORK/rw")")"
 
 # ---- ratified-model registry: family patterns match by substring, so only an
 # exact registered id may pass — an unmeasured variant is NOT the measured model
-check "t6 luna outside its one class denied" deny "$(gate "$(task implementer gpt-5.6-luna "[dispatch-class:1a] fix")")"
+check "t6 luna outside its one class denied" deny "$(gate "$(task implementer gpt-6-luna "[dispatch-class:1a] fix")")"
 check "t6 kimi-2.7 denied"                  deny  "$(gate "$(task implementer kimi-2.7 "[dispatch-class:1c] fix")")"
 check "t6 opus-4.8 string denied"           deny  "$(gate "$(task catalyst:critic opus-4.8 "[dispatch-class:critique] x")")"
 check "t6 garbage sharing a family denied"  deny  "$(gate "$(task catalyst:critic opusadjfhk "[dispatch-class:critique] x")")"
@@ -319,16 +319,16 @@ T="$BASE_TABLE"
 # ---- truth 12: a vendor CLI launched DIRECTLY (outside envoy) is the same
 # channel — same models, same effort discipline; otherwise the whole table is
 # one `codex exec` away from advisory ----
-check "t12 direct codex without effort"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol do-it')")"
-check "t12 direct codex ratified ok"        allow "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:exec-1n]')")"
-check "t12 direct codex unmeasured model"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-luna --effort high do-it')")"
+check "t12 direct codex without effort"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-6-sol do-it')")"
+check "t12 direct codex ratified ok"        allow "$(gate "$(bashcmd 'codex exec --model gpt-6-sol --effort high do-it [dispatch-class:exec-1n]')")"
+check "t12 direct codex unmeasured model"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-6-luna --effort high do-it')")"
 check "t12 direct codex naming no model"    deny  "$(gate "$(bashcmd 'codex exec --effort high do-it')")"
 T="$WORK/table-with-kimi.toml"
 check "t12 kimi needs no effort flag"       allow "$(gate "$(bashcmd 'kimi --model kimi-k3 -p task [dispatch-class:kimionly]')")"
 T="$BASE_TABLE"
 check "t12 kimi unmeasured sibling denied"  deny  "$(gate "$(bashcmd 'kimi --model kimi-k3-256k -p task')")"
-check "t12 env prefix does not hide it"     deny  "$(gate "$(bashcmd 'RCH_ENABLED=0 codex exec --model gpt-5.6-sol do-it')")"
-check "t12 vendor after && still caught"    deny  "$(gate "$(bashcmd 'cd /x && codex exec --model gpt-5.6-sol do-it')")"
+check "t12 env prefix does not hide it"     deny  "$(gate "$(bashcmd 'RCH_ENABLED=0 codex exec --model gpt-6-sol do-it')")"
+check "t12 vendor after && still caught"    deny  "$(gate "$(bashcmd 'cd /x && codex exec --model gpt-6-sol do-it')")"
 # CLI ceilings are the vendor's own; [pins] are the Agent/proxy accepted efforts.
 # Applying them here would deny a legitimate run (grok-CLI tops out at high).
 check "t12 CLI does not inherit the pins"   allow "$(gate "$(bashcmd 'grok --model grok-4.6 --effort high go [dispatch-class:1a]')")"
@@ -345,7 +345,7 @@ check "t12 escaped pipe outside quotes"     allow "$(gate "$(bashcmd 'grep vendo
 check "t12 unquoted pipe still an operator" deny  "$(gate "$(bashcmd 'sort notes.md | grok summarise')")"
 sed '/^\[channels\.cli\.vendors\.codex\]/,/^model_required/d' "$BASE_TABLE" > "$WORK/table-no-cli-codex.toml"
 T="$WORK/table-no-cli-codex.toml"
-check "t12 MUTANT vendor gone from table"   allow "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol do-it')")"
+check "t12 MUTANT vendor gone from table"   allow "$(gate "$(bashcmd 'codex exec --model gpt-6-sol do-it')")"
 T="$BASE_TABLE"
 # The early-exit hint is a CODE constant (it must work with an unreadable table),
 # so it can silently fall behind the table. Pin the two together.
@@ -517,7 +517,7 @@ check "t16 envoy with bad wave denied"      deny  "$(gate "$(bashcmd 'node envoy
 # exists, is not the default, and costs exactly that bindingness ----
 check "t14 shipped mode blocks"             deny  "$(gate "$(task implementer opus)")"
 check "t14 shipped blocks model out of class" deny "$(gate "$(task implementer opus "[dispatch-class:1a] x")")"
-check "t14 shipped blocks unratified model" deny  "$(gate "$(task implementer gpt-5.6-luna "[dispatch-class:1a] x")")"
+check "t14 shipped blocks unratified model" deny  "$(gate "$(task implementer gpt-6-luna "[dispatch-class:1a] x")")"
 slice_deny=$(CATALYST_ROUTING_TABLE="$SHIPPED_TABLE" CATALYST_ROUTING_OVERRIDE="$O" \
   CATALYST_ROUTING_PROJECT_OVERRIDE="$WORK/absent-override.toml" python3 "$GATE" --render-slice)
 case "$slice_deny" in *ОТКАЗ*) check "t14 slice says refusal" 0 0 ;; *) check "t14 slice says refusal" 0 1 ;; esac
@@ -599,8 +599,8 @@ T="$SHIPPED_TABLE"; O="$WORK/absent-override.toml"
 check "t15 envoy without marker"            deny  "$(gate "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing')")"
 out=$(gate_out "$(bashcmd 'node /p/envoy-companion.mjs task --vendor grok --effort high do-thing')")
 case "$out" in *"declares no class"*) check "t15 envoy denial names the marker" 0 0 ;; *) check "t15 envoy denial names the marker" 0 1 ;; esac
-check "t15 direct CLI without marker"       deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it')")"
-out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it')")
+check "t15 direct CLI without marker"       deny  "$(gate "$(bashcmd 'codex exec --model gpt-6-sol --effort high do-it')")"
+out=$(gate_out "$(bashcmd 'codex exec --model gpt-6-sol --effort high do-it')")
 case "$out" in *"declares no class"*) check "t15 CLI denial names the marker" 0 0 ;; *) check "t15 CLI denial names the marker" 0 1 ;; esac
 check "t15 proxy POST without marker"       deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"glm-5.3\",\"reasoning_effort\":\"max\"}')")"
 check "t15 proxy-critique without marker"   deny  "$(gate "$(bashcmd 'proxy-critique.sh glm-5.3 max brief.md out.md a.rs')")"
@@ -608,8 +608,8 @@ check "t15 proxy-critique without marker"   deny  "$(gate "$(bashcmd 'proxy-crit
 check "t15 ordinary bash needs no marker"   allow "$(gate "$(bashcmd 'cargo test --lib')")"
 check "t15 vendor word off exec position"   allow "$(gate "$(bashcmd 'grep codex notes.md')")"
 # The declared case governs the named model on these channels as it does on Agent.
-check "t15 CLI model outside its class"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1c]')")"
-out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:1c]')")
+check "t15 CLI model outside its class"     deny  "$(gate "$(bashcmd 'codex exec --model gpt-6-sol --effort high do-it [dispatch-class:1c]')")"
+out=$(gate_out "$(bashcmd 'codex exec --model gpt-6-sol --effort high do-it [dispatch-class:1c]')")
 case "$out" in *"outside class '1c'"*) check "t15 CLI denial names the class" 0 0 ;; *) check "t15 CLI denial names the class" 0 1 ;; esac
 check "t15 proxy model outside its class"   deny  "$(gate "$(bashcmd 'curl -s http://127.0.0.1:8317/v1/chat/completions -d {\"model\":\"kimi-k3\",\"reasoning_effort\":\"high\"} [dispatch-class:research]')")"
 check "t15 proxy-critique outside class"    deny  "$(gate "$(bashcmd 'proxy-critique.sh kimi-k3 high brief.md out.md a.rs [dispatch-class:research]')")"
@@ -668,7 +668,7 @@ check "t16 empty field is not a decl"       deny  "$(gate "$(task_dc nomodel opu
 # ---- truth 17 ([limits]): potionbard quota check — last in the denial order,
 # fail-open on a dead daemon, prefix-mapped pools codex/grok/kimi only ----
 T="$BASE_TABLE"; O="$WORK/absent-override.toml"; P="$WORK/absent-override.toml"
-lim_codex='codex exec --model gpt-5.6-sol --effort high do-it [dispatch-class:exec-1n]'
+lim_codex='codex exec --model gpt-6-sol --effort high do-it [dispatch-class:exec-1n]'
 
 # CONSTRAINT: боевая таблица несёт [limits].deny_enabled=false (решение юзера
 # 2026-09-21). Ряды, чей предмет -- САМ МЕХАНИЗМ отказа, ВООРУЖАЮТ его этим
@@ -720,7 +720,7 @@ check "lim9 garbage reply fail-opens"        warn  "$(gate "$(bashcmd "$lim_code
 
 # the quota check is LAST: an effortless run is denied for effort, not quota
 pb_table codex=100
-out=$(gate_out "$(bashcmd 'codex exec --model gpt-5.6-sol do-it')")
+out=$(gate_out "$(bashcmd 'codex exec --model gpt-6-sol do-it')")
 case "$out" in *effort*) check "lim10 effort denial wins the order" 0 0 ;; *) check "lim10 effort denial wins the order" 0 1 ;; esac
 case "$out" in *2099-*)  check "lim10 no quota talk there" 0 1 ;; *) check "lim10 no quota talk there" 0 0 ;; esac
 
@@ -743,10 +743,10 @@ check "lim12 glm leaves the socket alone"    "$pb_n0" "$(pb_count)"
 O="$WORK/absent-override.toml"
 
 # longest prefix wins: luna pinned to kimicode over the family "gpt-" = codex
-printf 'schema_version = 1\n[limits]\ndeny_enabled = true\n[limits.models]\n"gpt-" = ["codex"]\n"gpt-5.6-luna" = ["kimicode"]\n' > "$WORK/override-lim-prefix.toml"
+printf 'schema_version = 1\n[limits]\ndeny_enabled = true\n[limits.models]\n"gpt-" = ["codex"]\n"gpt-6-luna" = ["kimicode"]\n' > "$WORK/override-lim-prefix.toml"
 O="$WORK/override-lim-prefix.toml"
 pb_table codex=1 kimicode=100
-check "lim13 longest prefix reroutes luna"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-5.6-luna --effort high x [dispatch-class:res-fact]')")"
+check "lim13 longest prefix reroutes luna"   deny  "$(gate "$(bashcmd 'codex exec --model gpt-6-luna --effort high x [dispatch-class:res-fact]')")"
 check "lim13 daemon asked for kimicode"      "REQ kimicode" "$(tail -n 1 "$PB_LOG")"
 check "lim13 sibling gpt goes to codex"      allow "$(gate "$(bashcmd "$lim_codex")")"
 check "lim13 daemon asked for codex"         "REQ codex" "$(tail -n 1 "$PB_LOG")"
