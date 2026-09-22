@@ -166,7 +166,7 @@ allowed = ["gpt-6-astra", "glm-5.3"]
 
 [classes.exec-2]
 label = "СЕТКА: Р2 — дизайн/диагноз внутри (= 1c-open)"
-allowed = ["gpt-6-astra", "glm-5.3", "opus", "claude-opus-5[1m]", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
+allowed = ["gpt-6-astra", "glm-5.3", "opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
 
 [classes.exec-test]
 label = "СЕТКА: любое Р при нулевом прод-радиусе (= 1h); Р2 внутри теста → exec-2"
@@ -178,7 +178,7 @@ allowed = ["glm-5.3", "gpt-6-astra"]
 
 [classes.doc-spec]
 label = "СЕТКА: авторство, где текст = решение (спеки, дизайн-ноты)"
-allowed = ["gpt-6-astra", "glm-5.3", "opus", "claude-opus-5[1m]", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
+allowed = ["gpt-6-astra", "glm-5.3", "opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
 
 [classes.crit-form]
 label = "СЕТКА: критика ФОРМЫ — списки/конформанс/кванторы/паритет/вакуумность (пересчёт)"
@@ -188,12 +188,12 @@ allowed = ["glm-5.3-flash", "glm-5.3", "grok-4.6", "grok-4.7", "deepseek-flash",
 [classes.crit-mech]
 label = "СЕТКА: критика МЕХАНИЗМА — гарантии/гонки/drop-порядок/дрейф намерения (рассуждение)"
 parent = "critique"
-allowed = ["gpt-6-astra", "gpt-5.6-sol", "grok-4.6", "grok-4.7", "glm-5.3", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
+allowed = ["gpt-6-astra", "gpt-5.6-sol", "grok-4.6", "grok-4.7", "glm-5.3", "opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
 
 [classes.crit-doc]
 label = "СЕТКА: док-критика claim-truth (состав §7-Д)"
 parent = "critique"
-allowed = ["glm-5.3-flash", "grok-4.6", "grok-4.7", "glm-5.3", "gpt-5.6-sol", "deepseek-flash", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
+allowed = ["glm-5.3-flash", "grok-4.6", "grok-4.7", "glm-5.3", "gpt-5.6-sol", "deepseek-flash", "opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
 
 [classes.audit-form]
 label = "СЕТКА: аудит claim-truth / артефакты vs заявки / ценз соответствия"
@@ -203,7 +203,7 @@ allowed = ["glm-5.3-flash", "gpt-5.6-sol", "grok-4.6", "grok-4.7", "deepseek-fla
 [classes.audit-mech]
 label = "СЕТКА: аудит-атака на новые механизмы, ненаправленный поиск"
 parent = "audit"
-allowed = ["gpt-6-astra", "glm-5.3", "deepseek-flash", "grok-4.6", "grok-4.7", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
+allowed = ["gpt-6-astra", "glm-5.3", "deepseek-flash", "grok-4.6", "grok-4.7", "opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
 
 [classes.an-cause]
 label = "СЕТКА: причина конкретного отказа, ряд воспроизводим"
@@ -213,7 +213,7 @@ allowed = ["glm-5.3-flash", "grok-4.6", "grok-4.7", "deepseek-flash", "glm-5.3",
 [classes.an-system]
 label = "СЕТКА: взаимодействие механизмов / конкуренция / без ряда — пара с верхним тиром, никогда один flash-голос"
 parent = "analysis"
-allowed = ["glm-5.3", "gpt-6-astra", "glm-5.3-flash", "grok-4.6", "grok-4.7", "gpt-5.6-sol", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
+allowed = ["glm-5.3", "gpt-6-astra", "glm-5.3-flash", "grok-4.6", "grok-4.7", "gpt-5.6-sol", "opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]", "devin/swe-2"]
 
 [classes.scout-enum]
 label = "СЕТКА: перечисление по правилу (file:line, счётчики) — без классификации"
@@ -233,7 +233,7 @@ allowed = ["glm-5.3-flash", "gpt-5.6-luna", "glm-5.3", "qwen3.8-flash"]
 [classes.res-synth]
 label = "СЕТКА: внешнее сравнение/синтез, меняющий продуктовое решение — пара"
 parent = "research"
-allowed = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "glm-5.3", "glm-5.3-flash", "opus", "claude-opus-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
+allowed = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "glm-5.3", "glm-5.3-flash", "opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "qwen3.8-flash", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
 
 [classes.1d]
 label = "авторство спек / архитектурных доков / аннексов канона по брифу (текст = решение)"
@@ -247,7 +247,7 @@ reason = "Легаси-id семьи авторства; сетка 09-07 раз
 # промпте. Дом канона: MODEL-ROUTING-PLAYBOOK.md «0-квота».
 # ---------------------------------------------------------------------------
 [quota]
-guarded_models = ["opus", "claude-opus-5[1m]", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
+guarded_models = ["opus", "claude-opus-5[1m]", "claude-opus-5-5", "claude-opus-5-5[1m]", "fable", "fable-5-1", "claude-fable-5-1", "claude-fable-5-1[1m]"]
 guarded_classes = ["critique", "audit", "analysis", "scout", "research"]
 exception_marker = "anthropic-exception"
 
@@ -462,7 +462,10 @@ deliberate_model = ""
 # неизмеренного однофамильца.
 
 [stats.aliases]
-"claude-opus-5[1m]" = "opus"
+# Цель схлопывания — ЯВНОЕ имя модели, никогда версионно-зависимый указатель
+# ("opus" на 2.1.278 = claude-opus-5, на 2.1.280 = claude-opus-5-5).
+"claude-opus-5[1m]" = "claude-opus-5"
+"claude-opus-5-5[1m]" = "claude-opus-5-5"
 
 # ---------------------------------------------------------------------------
 # ЛИМИТЫ ПУЛА (potionbard) — финальная проверка: у диспатча, чья эффективная

@@ -11,7 +11,7 @@ set -u
 # неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
 # агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
 # дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
-EXPECTED_TEETH=31
+EXPECTED_TEETH=33
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HOOK="$ROOT/hooks/dispatch-stats.py"
@@ -135,11 +135,19 @@ case "$out" in *DISPATCH-FLEET*) check "s9 two-model rotation caught" 0 0 ;; *) 
 case "$out" in *grok-4.6*)        check "s9 names the idle models"   0 0 ;; *) check "s9 names the idle models"   0 1 ;; esac
 
 # ---- 10: one model under two ids is one model, not fleet diversity ----
+# The alias target is an EXPLICIT model id, never the version-dependent
+# pointer "opus" (2.1.278: claude-opus-5; 2.1.280: claude-opus-5-5).
 fresh alias
-out=$(spam 4 opus 1b)$(spam 4 'claude-opus-5[1m]' 1b)
+out=$(spam 4 claude-opus-5-5 1b)$(spam 4 'claude-opus-5-5[1m]' 1b)
 case "$out" in *"на одну модель"*) check "s10 alias collapses for counting" 0 0 ;; *) check "s10 alias collapses for counting" 0 1 ;; esac
 rep=$(report)
-case "$rep" in *"claude-opus-5"*) check "s10 report shows one name" 0 1 ;; *) check "s10 report shows one name" 0 0 ;; esac
+case "$rep" in *"claude-opus-5-5[1m]"*) check "s10 report shows one name" 0 1 ;; *) check "s10 report shows one name" 0 0 ;; esac
+fresh alias5
+out=$(spam 4 claude-opus-5 1b)$(spam 4 'claude-opus-5[1m]' 1b)
+case "$out" in *"на одну модель"*) check "s10 opus-5 alias collapses" 0 0 ;; *) check "s10 opus-5 alias collapses" 0 1 ;; esac
+fresh aliasptr
+out=$(spam 4 opus 1b)$(spam 4 'claude-opus-5-5[1m]' 1b)
+case "$out" in *"на одну модель"*) check "s10 pointer opus stays apart" 0 1 ;; *) check "s10 pointer opus stays apart" 0 0 ;; esac
 
 # ---- 11: the verdict is passed on the RECENT slice, not a week of history ----
 fresh stale

@@ -1,0 +1,8 @@
+{
+  "name": "catalyst-swe-request",
+  "version": "0.1.0",
+  "description": "Request-text policy for devin/swe-2: registers one rule in the host's $.requestText noun.",
+  "author": {
+    "name": "Marat Karimov"
+  }
+}

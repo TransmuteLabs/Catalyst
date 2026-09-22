@@ -14,6 +14,11 @@
       "name": "catalyst-probes",
       "source": "./plugins/catalyst-probes",
       "description": "Consultation engine as a function-hooks module. Consultants are [probe.<id>] tables in probes.toml — a new judge is a table plus a prompt, not a new plugin. Pair splice-backed probes with CLAUDE_*_CARRIER=mod."
+    },
+    {
+      "name": "catalyst-swe-request",
+      "source": "./plugins/catalyst-swe-request",
+      "description": "Request-text policy for devin/swe-2 as data: registers one rule in the host's $.requestText noun (patch step 34 is the key, this plugin is the policy)."
     }
   ]
 }
