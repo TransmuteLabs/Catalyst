@@ -19,6 +19,11 @@
       "name": "catalyst-swe-request",
       "source": "./plugins/catalyst-swe-request",
       "description": "Request-text policy for devin/swe-2 as data: registers one rule in the host's $.requestText noun (patch step 34 is the key, this plugin is the policy)."
+    },
+    {
+      "name": "catalyst-refusal-watch",
+      "source": "./plugins/catalyst-refusal-watch",
+      "description": "Makes every response the service filter stopped visible at once and adds a rule: report it, do not drop work silently."
     }
   ]
 }

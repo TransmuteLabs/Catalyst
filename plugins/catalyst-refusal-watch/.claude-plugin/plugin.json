@@ -1,0 +1,8 @@
+{
+  "name": "catalyst-refusal-watch",
+  "version": "0.1.0",
+  "description": "Makes every response the service filter stopped visible at once and adds a rule: report it, do not drop work silently.",
+  "author": {
+    "name": "Marat Karimov"
+  }
+}
