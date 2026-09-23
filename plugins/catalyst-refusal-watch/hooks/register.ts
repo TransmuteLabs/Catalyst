@@ -8,11 +8,18 @@ const STORE_MAX = 100
 let count = 0
 let windowUntil = 0
 const lastTurnAlert = new Map<string, number>()
+// CONSTRAINT: два обработчика (главный цикл и субагент) иначе читают один и тот же массив и затирают записи друг друга.
+let storeQueue: Promise<void> = Promise.resolve()
 
 export function __reset(): void {
   count = 0
   windowUntil = 0
   lastTurnAlert.clear()
+  storeQueue = Promise.resolve()
+}
+
+export function __dedupSize(): number {
+  return lastTurnAlert.size
 }
 
 // CONSTRAINT: один предикат на чанк `stop` и на `stopReason` результата —
@@ -38,6 +45,7 @@ export function formatAlert(info: any): string {
   return (
     "⚠ После обрыва фильтром остановлена фоновая задача " +
     info.taskId +
+    (info.agentId ? " (остановил агент " + info.agentId + ")" : "") +
     " — проверь, что это было одобрено"
   )
 }
@@ -74,18 +82,49 @@ function reportChannelFailure($: any, name: string, x: any): void {
   }
 }
 
+async function nowOf($: any): Promise<number> {
+  try {
+    const t = Number(await $.clock.now())
+    if (Number.isFinite(t)) return t
+    reportChannelFailure($, "clock", new Error("не число: " + String(t)))
+  } catch (x) {
+    reportChannelFailure($, "clock", x)
+  }
+  return Date.now()
+}
+
+async function appendRecord($: any, rec: any): Promise<void> {
+  try {
+    const prev = await $.store.get("log")
+    const entries = Array.isArray(prev) ? prev.slice() : []
+    entries.push(rec)
+    const kept = entries.length > STORE_MAX ? entries.slice(entries.length - STORE_MAX) : entries
+    await $.store.set("log", kept)
+  } catch (x) {
+    reportChannelFailure($, "store", x)
+  }
+}
+
 async function alert($: any, info: any): Promise<void> {
   try {
-    const now = Number(await $.clock.now())
+    const now = await nowOf($)
     const counts = info.via === "step" || info.via === "complete"
     let bump = counts
     if (info.via === "complete" && info.turnId != null) {
       const prev = lastTurnAlert.get(String(info.turnId))
-      if (typeof prev === "number" && now - prev <= DEDUP_MS) bump = false
+      if (typeof prev === "number") {
+        const d = now - prev
+        if (d >= 0 && d <= DEDUP_MS) bump = false
+      }
     }
     if (bump) count += 1
     if (counts) windowUntil = now + WINDOW_MS
-    if (info.via === "step" && info.turnId != null) lastTurnAlert.set(String(info.turnId), now)
+    if (info.via === "step" && info.turnId != null) {
+      for (const [k, t] of lastTurnAlert) {
+        if (now - t > DEDUP_MS || t > now) lastTurnAlert.delete(k)
+      }
+      lastTurnAlert.set(String(info.turnId), now)
+    }
     const text = formatAlert(info)
     try {
       $.ui.toast(text, { timeoutMs: 20000 })
@@ -110,18 +149,28 @@ async function alert($: any, info: any): Promise<void> {
     } catch (x) {
       reportChannelFailure($, "log", x)
     }
-    try {
-      const prev = await $.store.get("log")
-      const entries = Array.isArray(prev) ? prev.slice() : []
-      entries.push(recordOf(info, now))
-      const kept = entries.length > STORE_MAX ? entries.slice(entries.length - STORE_MAX) : entries
-      await $.store.set("log", kept)
-    } catch (x) {
-      reportChannelFailure($, "store", x)
-    }
+    storeQueue = storeQueue.then(() => appendRecord($, recordOf(info, now)))
+    await storeQueue
   } catch (x) {
     reportChannelFailure($, "alert", x)
   }
+}
+
+// CONSTRAINT: `yield*` сам делегирует throw/return нижнему потоку и сохраняет исходную ошибку; методы throw/return у наблюдателя есть ровно тогда, когда они есть у нижнего — иначе `yield*` вёл бы себя иначе, чем на голом итераторе.
+function observed(inner: any, watch: (chunk: any) => void): any {
+  const pass = (r: any) => {
+    if (r != null && r.done === false) watch(r.value)
+    return r
+  }
+  const o: any = {
+    [Symbol.asyncIterator]() {
+      return o
+    },
+    next: async (v?: any) => pass(await inner.next(v)),
+  }
+  if (typeof inner.throw === "function") o.throw = async (x?: any) => pass(await inner.throw(x))
+  if (typeof inner.return === "function") o.return = async (v?: any) => pass(await inner.return(v))
+  return o
 }
 
 export function register(on: any): void {
@@ -134,29 +183,26 @@ export function register(on: any): void {
     const it = stream[Symbol.asyncIterator]()
     const tools: string[] = []
     let sawStop = false
-    let r: any
-    // CONSTRAINT: ручная итерация (ради наблюдения чанков) не закрывает нижний
-    // поток при отмене сверху, как закрыл бы `yield*` — закрываем явно.
+    let result: any
+    let finished = false
     try {
-      while (!(r = await it.next()).done) {
-        const chunk = r.value
+      result = yield* observed(it, (chunk) => {
         if (chunk != null && chunk.kind === "tool" && typeof chunk.name === "string") tools.push(chunk.name)
         if (chunk != null && chunk.kind === "stop" && stoppedByFilter(chunk.stopReason)) sawStop = true
-        yield chunk
-      }
-    } finally {
-      if (!r?.done && typeof it.return === "function") await it.return(undefined)
-    }
-    const result = r.value
-    if (stoppedByFilter(result?.stopReason) || sawStop) {
-      await alert($, {
-        via: "step",
-        model: e.model,
-        agentId: e.agentId,
-        turnId: e.turnId,
-        step: e.index,
-        tools,
       })
+      finished = true
+    } finally {
+      // CONSTRAINT: уже распознанный обрыв объявляется и при исключении, и при отмене сверху; `alert` не бросает.
+      if (sawStop || (finished && stoppedByFilter(result?.stopReason))) {
+        await alert($, {
+          via: "step",
+          model: e.model,
+          agentId: e.agentId,
+          turnId: e.turnId,
+          step: e.index,
+          tools,
+        })
+      }
     }
     return result
   })
@@ -177,13 +223,13 @@ export function register(on: any): void {
 
   on("tool.call", { tool: "TaskStop" }, async ($: any, e: any, next: any) => {
     const r = await next(e)
-    try {
-      const now = Number(await $.clock.now())
-      if (now < windowUntil) {
-        await alert($, { via: "taskstop", taskId: e.task_id ?? e.shell_id ?? "?" })
-      }
-    } catch (x) {
-      reportChannelFailure($, "clock", x)
+    const now = await nowOf($)
+    if (r != null && r.deny == null && r.isError !== true && now < windowUntil) {
+      await alert($, {
+        via: "taskstop",
+        taskId: e.task_id ?? e.shell_id ?? "?",
+        agentId: e.agentId,
+      })
     }
     return r
   })
@@ -205,5 +251,10 @@ export function register(on: any): void {
     }
     if (!placed) blocks.push({ name: "refusalHandling", text: RULE_TEXT })
     return { ...r, blocks }
+  })
+
+  on("session.start", async ($: any, e: any, next: any) => {
+    __reset()
+    return next(e)
   })
 }

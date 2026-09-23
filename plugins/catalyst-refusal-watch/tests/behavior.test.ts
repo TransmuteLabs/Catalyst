@@ -1,11 +1,16 @@
-// Behavior teeth for plugins/catalyst-refusal-watch on the official harness
-// (`claude plugin test`).
 import { test, expect } from "claude-code/testing"
-import { register, RULE_TEXT, __reset } from "../hooks/register.ts"
+import { register, RULE_TEXT, __reset, __dedupSize } from "../hooks/register.ts"
 
 // CONSTRAINT: модуль не экспортирует обработчики — единственный путь позвать
 // их с подставным $ — исполнить register с фейковым `on` и перехватить.
-function capture(): { step: any; complete: any; taskstop: any; taskstopMatcher: any; context: any } {
+function capture(): {
+  step: any
+  complete: any
+  taskstop: any
+  taskstopMatcher: any
+  context: any
+  sessionStart: any
+} {
   const got: any = {}
   register(((event: string, a: any, b?: any) => {
     if (event === "tool.call") {
@@ -14,19 +19,25 @@ function capture(): { step: any; complete: any; taskstop: any; taskstopMatcher: 
     } else if (event === "turn.step") got.step = a
     else if (event === "turn.complete") got.complete = a
     else if (event === "prompt.context") got.context = a
+    else if (event === "session.start") got.sessionStart = a
   }) as any)
   return got
 }
 
 const hooks = capture()
 
-function make$(o?: { toastThrows?: boolean; now?: (tick: number) => number }) {
+function make$(o?: {
+  toastThrows?: boolean
+  now?: (tick: number) => number | undefined
+  clockReject?: boolean
+}) {
   const toast: any[] = []
   const status: any[] = []
   const log: any[] = []
   const storeSets: any[] = []
   let storeLog: any[] = []
   let tick = 0
+  let fixedNow: number | undefined
   const $ = {
     ui: {
       toast(text: string, options?: any) {
@@ -52,11 +63,23 @@ function make$(o?: { toastThrows?: boolean; now?: (tick: number) => number }) {
     clock: {
       async now() {
         tick += 1
+        if (o?.clockReject) throw new Error("clock-boom")
+        if (fixedNow !== undefined) return fixedNow
         return o?.now ? o.now(tick) : 1_700_000_000_000
       },
     },
   }
-  return { $, toast, status, log, storeSets, store: () => storeLog }
+  return {
+    $,
+    toast,
+    status,
+    log,
+    storeSets,
+    store: () => storeLog,
+    setNow(ms: number) {
+      fixedNow = ms
+    },
+  }
 }
 
 async function* chunksOf(chunks: readonly any[], result: any): AsyncGenerator<any, any, any> {
@@ -382,4 +405,399 @@ test("T13 early close from above closes the stream beneath", async () => {
   await gen.return(undefined)
   expect(closed, "beneath stream closed on early return").toBe(true)
   expect(env.toast.length, "no alert on cancelled step").toBe(0)
+})
+
+test("T14 a refusal stop chunk alerts even when the result is end_turn", async () => {
+  __reset()
+  const env = make$()
+  const stop = { kind: "stop", stopReason: "refusal", usage: null }
+  const result = {
+    turnId: "t14",
+    index: 0,
+    answer: "",
+    toolUses: [],
+    stopReason: "end_turn",
+    usage: null,
+  }
+  await runStep(env, [stop], result, { model: "m", turnId: "t14", index: 0 })
+  expect(env.toast.length, "exactly one toast").toBe(1)
+})
+
+test("T15 a refusal result alerts when no stop chunk arrived", async () => {
+  __reset()
+  const env = make$()
+  const text = { kind: "text", index: 0, text: "partial" }
+  const result = {
+    turnId: "t15",
+    index: 0,
+    answer: "",
+    toolUses: [],
+    stopReason: "refusal",
+    usage: null,
+  }
+  await runStep(env, [text], result, { model: "m", turnId: "t15", index: 0 })
+  expect(env.toast.length, "exactly one toast").toBe(1)
+})
+
+test("T16 window closes at exactly 1800000ms", async () => {
+  const t0 = 1_700_000_000_000
+  const spec = refusalChunks()
+  const stepEvent = { model: "m", turnId: "w", index: 0 }
+
+  __reset()
+  const inside = make$()
+  inside.setNow(t0)
+  await runStep(inside, spec.chunks, spec.result, stepEvent)
+  inside.setNow(t0 + 1_799_999)
+  const sentIn = { result: { ok: true } }
+  const outIn = await hooks.taskstop(
+    inside.$,
+    { tool: "TaskStop", tool_use_id: "use-in", task_id: "bg-in" },
+    async () => sentIn,
+  )
+  expect(outIn, "inside window returns next").toBe(sentIn)
+  expect(
+    inside.toast.some((row: any) => String(row[0]).includes("bg-in")),
+    "toast inside the open window",
+  ).toBe(true)
+
+  __reset()
+  const edge = make$()
+  edge.setNow(t0)
+  await runStep(edge, spec.chunks, spec.result, stepEvent)
+  edge.setNow(t0 + 1_800_000)
+  const sentEdge = { result: { ok: true } }
+  const outEdge = await hooks.taskstop(
+    edge.$,
+    { tool: "TaskStop", tool_use_id: "use-edge", task_id: "bg-edge" },
+    async () => sentEdge,
+  )
+  expect(outEdge, "edge returns next").toBe(sentEdge)
+  expect(
+    edge.toast.some((row: any) => String(row[0]).includes("bg-edge")),
+    "no task toast at the closed edge",
+  ).toBe(false)
+})
+
+test("T17 dedup does not merge a gap, another turn, or a clock step back", async () => {
+  const t0 = 1_700_000_000_000
+  const spec = refusalChunks()
+  const completeOf = (turnId: string) => ({
+    reason: "refusal",
+    turnId,
+    refusal: { category: null, explanation: null },
+    answer: "",
+    durationMs: 1,
+    isAborted: false,
+  })
+
+  __reset()
+  const gap = make$()
+  gap.setNow(t0)
+  await runStep(gap, spec.chunks, spec.result, { model: "m", turnId: "same", index: 0 })
+  gap.setNow(t0 + 60_001)
+  await hooks.complete(gap.$, completeOf("same"), async () => ({ text: "c" }))
+  expect(gap.status[gap.status.length - 1], "60001ms gap counts again").toContain(
+    "обрывов фильтром за сессию: 2",
+  )
+
+  __reset()
+  const other = make$()
+  other.setNow(t0)
+  await runStep(other, spec.chunks, spec.result, { model: "m", turnId: "turn-a", index: 0 })
+  other.setNow(t0 + 1_000)
+  await hooks.complete(other.$, completeOf("turn-b"), async () => ({ text: "c" }))
+  expect(other.status[other.status.length - 1], "a different turnId counts").toContain(
+    "обрывов фильтром за сессию: 2",
+  )
+
+  __reset()
+  const back = make$()
+  back.setNow(t0)
+  await runStep(back, spec.chunks, spec.result, { model: "m", turnId: "back", index: 0 })
+  back.setNow(t0 - 1)
+  await hooks.complete(back.$, completeOf("back"), async () => ({ text: "c" }))
+  expect(back.status[back.status.length - 1], "a clock step backward counts").toContain(
+    "обрывов фильтром за сессию: 2",
+  )
+})
+
+test("T18 rule text is an independent oracle", async () => {
+  __reset()
+  expect(RULE_TEXT, "opens with the first-line duty").toContain("первой строкой следующего ответа")
+  expect(RULE_TEXT, "forbids stopping background work").toContain(
+    "не останавливай фоновые задачи и агентов",
+  )
+  expect(RULE_TEXT, "leaves the decision to the user").toContain("принимает пользователь")
+  const env = make$()
+  const out = await hooks.context(env.$, { blocks: [] }, async () => ({ blocks: [] }))
+  const block = out.blocks.find((b: any) => b.name === "refusalHandling")
+  expect(typeof block?.text, "the block has text").toBe("string")
+  expect(block.text.length > 300, "the block text is longer than 300").toBe(true)
+})
+
+test("T19 TaskStop alerts only after a successful stop and names the agent", async () => {
+  __reset()
+  const env = make$()
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "m", turnId: "t19", index: 0 })
+  const taskToasts = () =>
+    env.toast.filter((row: any) => String(row[0]).includes("остановлена фоновая"))
+
+  const denied = { deny: "x" }
+  const outDeny = await hooks.taskstop(
+    env.$,
+    { tool: "TaskStop", tool_use_id: "use-d", task_id: "bg-deny", agentId: "sub-9" },
+    async () => denied,
+  )
+  expect(outDeny, "deny result is returned").toBe(denied)
+  expect(taskToasts().length, "a denied stop does not toast").toBe(0)
+
+  const errored = { isError: true, result: "no", text: "no" }
+  const outErr = await hooks.taskstop(
+    env.$,
+    { tool: "TaskStop", tool_use_id: "use-e", task_id: "bg-err", agentId: "sub-9" },
+    async () => errored,
+  )
+  expect(outErr, "isError result is returned").toBe(errored)
+  expect(taskToasts().length, "an errored stop does not toast").toBe(0)
+
+  const ok = { result: { task_id: "bg-19", message: "stopped" } }
+  const outOk = await hooks.taskstop(
+    env.$,
+    { tool: "TaskStop", tool_use_id: "use-ok", task_id: "bg-19", agentId: "sub-9" },
+    async () => ok,
+  )
+  expect(outOk, "success result is returned").toBe(ok)
+  expect(taskToasts().length, "a successful stop toasts once").toBe(1)
+  expect(taskToasts()[0][0], "toast names the task").toContain("bg-19")
+  expect(taskToasts()[0][0], "toast names the agent").toContain("остановил агент sub-9")
+  const recs = env.store().filter((r: any) => r.via === "taskstop")
+  expect(recs.length, "one taskstop record").toBe(1)
+  expect(recs[0].agentId, "store record keeps the agent").toBe("sub-9")
+})
+
+test("T20 parallel stops keep both store records", async () => {
+  __reset()
+  let reads = 0
+  let settled = false
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    setTimeout(release, 50)
+  })
+  const env = make$()
+  const origGet = env.$.store.get.bind(env.$.store)
+  env.$.store.get = async (key: string) => {
+    if (key !== "log") return origGet(key)
+    const snapshot = await origGet(key)
+    reads += 1
+    if (reads >= 2) release()
+    else await gate
+    return snapshot
+  }
+  const spec = refusalChunks()
+  await Promise.all([
+    runStep(env, spec.chunks, spec.result, { model: "m1", turnId: "p-1", index: 0 }),
+    runStep(env, spec.chunks, spec.result, { model: "m2", turnId: "p-2", index: 1 }),
+  ])
+  expect(env.store().length, "both parallel records are kept").toBe(2)
+})
+
+test("T21 a throwing clock still delivers the toast and a real time", async () => {
+  __reset()
+  const env = make$({ clockReject: true })
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "m", turnId: "t21", index: 0 })
+  expect(env.toast.length, "toast is delivered").toBe(1)
+  expect(env.status.length, "status is delivered").toBe(1)
+  expect(env.status[0], "status time is HH:MM").toMatch(/\d\d:\d\d/)
+  expect(
+    env.log.some((row: any) => String(row[0]).includes("канал clock не сработал")),
+    "clock failure is on the debug line",
+  ).toBe(true)
+})
+
+test("T22 a non-numeric clock opens the window from Date.now", async () => {
+  __reset()
+  let calls = 0
+  const env = make$({
+    now: () => {
+      calls += 1
+      return calls === 1 ? undefined : Date.now()
+    },
+  })
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "m", turnId: "t22", index: 0 })
+  expect(String(env.status[0]), "status has no NaN").not.toContain("NaN")
+  const sent = { result: { ok: true } }
+  await hooks.taskstop(
+    env.$,
+    { tool: "TaskStop", tool_use_id: "use-22", task_id: "bg-22" },
+    async () => sent,
+  )
+  expect(
+    env.toast.some((row: any) => String(row[0]).includes("bg-22")),
+    "TaskStop in the same moment toasts",
+  ).toBe(true)
+})
+
+test("T23 a later next() failure keeps the same error and still alerts", async () => {
+  __reset()
+  const env = make$()
+  const cut = new Error("cut")
+  let i = 0
+  const chunks = [{ kind: "stop", stopReason: "refusal", usage: null }]
+  const it = {
+    async next() {
+      if (i < chunks.length) {
+        const value = chunks[i]
+        i += 1
+        return { done: false, value }
+      }
+      throw cut
+    },
+    async return(v: any) {
+      return { done: true, value: v }
+    },
+  }
+  const stream = {
+    [Symbol.asyncIterator]() {
+      return it
+    },
+  }
+  const gen = hooks.step(env.$, { model: "m", turnId: "t23", index: 0 }, () => stream)
+  const first = await gen.next()
+  expect(first.done, "the stop chunk is yielded").toBe(false)
+  let thrown: unknown
+  try {
+    await gen.next()
+  } catch (e) {
+    thrown = e
+  }
+  expect(thrown, "the same error object propagates").toBe(cut)
+  expect(env.toast.length, "the recognized stop still alerts").toBe(1)
+})
+
+test("T24 return from above after a refusal stop alerts and closes", async () => {
+  __reset()
+  const env = make$()
+  let closed = false
+  async function* beneath(): AsyncGenerator<any, any, any> {
+    try {
+      yield { kind: "stop", stopReason: "refusal", usage: null }
+      yield { kind: "text", index: 0, text: "later" }
+      return { stopReason: "end_turn" }
+    } finally {
+      closed = true
+    }
+  }
+  const gen = hooks.step(env.$, { model: "m", turnId: "t24", index: 1 }, () => beneath())
+  const first = await gen.next()
+  expect(first.done, "the stop chunk arrives").toBe(false)
+  expect(first.value.kind, "the chunk is the stop").toBe("stop")
+  await gen.return(undefined)
+  expect(closed, "the stream beneath closed").toBe(true)
+  expect(env.toast.length, "the recognized stop still alerts").toBe(1)
+})
+
+test("T25 throw from above reaches the generator beneath", async () => {
+  __reset()
+  const env = make$()
+  async function* beneath(): AsyncGenerator<any, any, any> {
+    try {
+      yield { kind: "text", index: 0, text: "before" }
+    } catch {
+      yield { kind: "text", index: 0, text: "recovered" }
+    }
+    return { stopReason: "end_turn" }
+  }
+  const gen = hooks.step(env.$, { model: "m", turnId: "t25", index: 0 }, () => beneath())
+  const first = await gen.next()
+  expect(first.value.text, "the first chunk is yielded").toBe("before")
+  const second = await gen.throw(new Error("boom"))
+  expect(second.done, "the recovered chunk is not a completion").toBe(false)
+  expect(second.value.text, "the recovered chunk arrives above").toBe("recovered")
+})
+
+test("T26 a throwing iterator next does not call return", async () => {
+  __reset()
+  const env = make$()
+  const broke = new Error("broke")
+  let returns = 0
+  const it = {
+    async next() {
+      throw broke
+    },
+    async return() {
+      returns += 1
+      throw new Error("close")
+    },
+  }
+  const stream = {
+    [Symbol.asyncIterator]() {
+      return it
+    },
+  }
+  const gen = hooks.step(env.$, { model: "m", turnId: "t26", index: 0 }, () => stream)
+  let thrown: unknown
+  try {
+    await gen.next()
+  } catch (e) {
+    thrown = e
+  }
+  expect(thrown, "the next() error is the one above").toBe(broke)
+  expect(returns, "return() was not called").toBe(0)
+})
+
+test("T27 dedup map drops turn ids older than the window", async () => {
+  __reset()
+  const start = 8_000_000_000_000
+  const env = make$({ now: (tick: number) => start + (tick - 1) * 60_001 })
+  const spec = refusalChunks()
+  for (let i = 0; i < 1000; i++) {
+    await runStep(env, spec.chunks, spec.result, { model: "m", turnId: "t-" + i, index: i })
+  }
+  expect(__dedupSize(), "stale turn ids are dropped").toBeLessThanOrEqual(1)
+})
+
+test("T28 status carries the model and the local HH:MM; toast failure logs debug", async () => {
+  __reset()
+  const fixed = 1_700_000_000_000
+  const d = new Date(fixed)
+  const stamp =
+    String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0")
+  const env = make$({ now: () => fixed })
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "opus-t28", turnId: "t28", index: 3 })
+  expect(env.status[0], "status names the model").toContain("opus-t28")
+  expect(env.status[0], "status names the local time").toContain(stamp)
+
+  __reset()
+  const env2 = make$({ now: () => fixed, toastThrows: true })
+  await runStep(env2, spec.chunks, spec.result, { model: "opus-t28", turnId: "t28b", index: 4 })
+  const debug = env2.log.filter((row: any) => row[1] != null && row[1].to === "debug")
+  expect(debug.length > 0, "a debug line is emitted").toBe(true)
+  expect(debug[0][1], "debug line options").toEqual({ to: "debug" })
+})
+
+test("T29 session.start resets the session count and returns next", async () => {
+  __reset()
+  const env = make$()
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "m", turnId: "s1", index: 0 })
+  expect(env.status[env.status.length - 1], "the first stop counts as one").toContain(
+    "обрывов фильтром за сессию: 1",
+  )
+  const sentinel = { started: true }
+  const out = await hooks.sessionStart(env.$, {}, async () => sentinel)
+  expect(out, "session.start returns next's result").toBe(sentinel)
+  await runStep(env, spec.chunks, spec.result, { model: "m", turnId: "s2", index: 1 })
+  expect(env.status[env.status.length - 1], "the count starts over").toContain(
+    "обрывов фильтром за сессию: 1",
+  )
 })
