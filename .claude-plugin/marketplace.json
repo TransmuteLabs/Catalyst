@@ -24,6 +24,11 @@
       "name": "catalyst-refusal-watch",
       "source": "./plugins/catalyst-refusal-watch",
       "description": "Makes every response the service filter stopped visible at once and adds a rule: report it, do not drop work silently."
+    },
+    {
+      "name": "catalyst-statusline",
+      "source": "./plugins/catalyst-statusline",
+      "description": "Status line under the prompt: git, dir, model+effort, context, 5h/7d limits, session, cost; hover details; /statusline-mod picks segments, order and scheme. Based on ClaudeCodeMods statusline (MIT)."
     }
   ]
 }

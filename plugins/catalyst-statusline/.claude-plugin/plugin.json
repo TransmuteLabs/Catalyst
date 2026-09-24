@@ -1,0 +1,33 @@
+{
+  "name": "catalyst-statusline",
+  "version": "0.3.0",
+  "description": "Status line under the prompt with hover details and /statusline-mod picker (segments, order, scheme). Based on konsta95/ClaudeCodeMods statusline 0.3.2 (MIT, c49ad4a).",
+  "author": {
+    "name": "Marat Karimov"
+  },
+  "userConfig": {
+    "scheme": {
+      "type": "string",
+      "title": "Colour scheme",
+      "default": "claude-code",
+      "options": [
+        "claude-code",
+        "codex",
+        "mono"
+      ],
+      "description": "Which palette paints the segments. mono paints nothing and dims every segment."
+    },
+    "details": {
+      "type": "boolean",
+      "title": "Hover details",
+      "default": true,
+      "description": "Reveal the details of the segment under the mouse pointer on a card over the row above the bar. Needs the fullscreen terminal with mouse tracking."
+    },
+    "pin_status": {
+      "type": "boolean",
+      "title": "Pin a plain status line",
+      "default": false,
+      "description": "Also pin the bar as plain text under the prompt, where no hover is needed."
+    }
+  }
+}
