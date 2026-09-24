@@ -1,33 +1,209 @@
 {
   "name": "catalyst-statusline",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Status line under the prompt with hover details and /statusline-mod picker (segments, order, scheme). Based on konsta95/ClaudeCodeMods statusline 0.3.2 (MIT, c49ad4a).",
   "author": {
     "name": "Marat Karimov"
   },
   "userConfig": {
-    "scheme": {
+    "template": {
       "type": "string",
-      "title": "Colour scheme",
-      "default": "claude-code",
+      "title": "Статус-строка: раскладка",
+      "description": "Строки разделяются « ;; », сегменты — «||». Сегмент: id=текст с переменными {ns.field}, например ctx={ctx.text}||model={model.text}. Пусто — раскладка по умолчанию. Пустая строка раскладки отбрасывается с диагностикой.",
+      "default": ""
+    },
+    "separator": {
+      "type": "string",
+      "title": "Статус-строка: разделитель",
+      "description": "Ставится МЕЖДУ выжившими сегментами; исчезнувший сегмент уносит свой разделитель. Пусто — разделитель темы.",
+      "default": ""
+    },
+    "evictOrder": {
+      "type": "string",
+      "title": "Статус-строка: порядок вытеснения",
+      "description": "Ключи сегментов через запятую, первый уходит первым при нехватке ширины; вытеснение построчное. Неназванные вытесняются после названных. Пусто — порядок по умолчанию.",
+      "default": ""
+    },
+    "theme": {
+      "type": "string",
+      "title": "Статус-строка: тема",
+      "description": "Именованный набор значений осей вида: default, plain, powerline, pill, claude-code, codex, mono, либо имя сохранённой темы. Неизвестное имя — диагностика и последняя удачная конфигурация.",
+      "default": "default"
+    },
+    "placement": {
+      "type": "string",
+      "title": "Статус-строка: место",
+      "description": "above — полоса над промптом (несколько строк, предел maxRows; при опросе движка уступает место). hint — строка под промптом, первая строка раскладки, строка движка после неё.",
       "options": [
-        "claude-code",
-        "codex",
-        "mono"
+        "above",
+        "hint"
       ],
-      "description": "Which palette paints the segments. mono paints nothing and dims every segment."
+      "default": "above"
     },
     "details": {
-      "type": "boolean",
-      "title": "Hover details",
-      "default": true,
-      "description": "Reveal the details of the segment under the mouse pointer on a card over the row above the bar. Needs the fullscreen terminal with mouse tracking."
+      "type": "string",
+      "title": "Статус-строка: карточки деталей",
+      "description": "hover — наведение на сегмент раскрывает карточку с полной записью величины над полосой; off — карточек нет.",
+      "options": [
+        "off",
+        "hover"
+      ],
+      "default": "hover"
     },
-    "pin_status": {
-      "type": "boolean",
-      "title": "Pin a plain status line",
-      "default": false,
-      "description": "Also pin the bar as plain text under the prompt, where no hover is needed."
+    "shape": {
+      "type": "string",
+      "title": "Статус-строка: форма сегмента",
+      "description": "Как сегмент одет: plain — текст с разделителем; lean — минимализм без разделителя; pill, powerline, classic — контейнеры с кэпами и заливкой.",
+      "options": [
+        "theme",
+        "plain",
+        "lean",
+        "pill",
+        "powerline",
+        "classic"
+      ],
+      "default": "theme"
+    },
+    "caps": {
+      "type": "string",
+      "title": "Статус-строка: кэпы сегмента",
+      "description": "Глифы-кэпы на краях сегмента: round и arrow — Nerd PUA, unicode-round — ◖◗, none — без кэпов. PUA-кэпы требуют glyphs=nerd, ASCII снимает кэпы.",
+      "options": [
+        "theme",
+        "none",
+        "round",
+        "arrow",
+        "unicode-round"
+      ],
+      "default": "theme"
+    },
+    "glyphs": {
+      "type": "string",
+      "title": "Статус-строка: набор глифов",
+      "description": "Набор глифов оформления: ascii — только байты ASCII в оформлении; nerd разрешает PUA-кэпы. Значения данных не транслитерируются.",
+      "options": [
+        "theme",
+        "none",
+        "ascii",
+        "unicode",
+        "emoji",
+        "nerd"
+      ],
+      "default": "theme"
+    },
+    "fill": {
+      "type": "string",
+      "title": "Статус-строка: заливка",
+      "description": "none — без фона; segment — фон каждого сегмента его цветом; band — полноширинная полоса; inverse — инверсия видео.",
+      "options": [
+        "theme",
+        "none",
+        "segment",
+        "band",
+        "inverse"
+      ],
+      "default": "theme"
+    },
+    "bar": {
+      "type": "string",
+      "title": "Статус-строка: полоса заполнения",
+      "description": "Пара глифов заполнения: blocks █░, parallelogram ▰▱, ascii #-, shade ▓░, baseline █▁, low-blocks ▇▁, pie ○◔◑◕●, либо пара-литерал из двух графем.",
+      "options": [
+        "theme",
+        "blocks",
+        "parallelogram",
+        "ascii",
+        "shade",
+        "baseline",
+        "low-blocks",
+        "pie"
+      ],
+      "default": "theme"
+    },
+    "barWidth": {
+      "type": "string",
+      "title": "Статус-строка: ширина полосы заполнения",
+      "description": "adaptive — 10/6/4 клетки по ширине окна, либо число клеток.",
+      "options": [
+        "theme",
+        "adaptive"
+      ],
+      "default": "theme"
+    },
+    "palette": {
+      "type": "string",
+      "title": "Статус-строка: палитра",
+      "description": "semantic — только пороговые цвета; mono — без цвета, приглушение; codex и claude-code — таблицы слотов ClaudeCodeStatusline (DATA §2).",
+      "options": [
+        "theme",
+        "semantic",
+        "mono",
+        "codex",
+        "claude-code"
+      ],
+      "default": "theme"
+    },
+    "thresholds": {
+      "type": "string",
+      "title": "Статус-строка: пороги",
+      "description": "Два числа через запятую: warn,hot (например 50,75). Процент ниже warn — ok, от warn до hot — mid, от hot — high.",
+      "default": "theme"
+    },
+    "face": {
+      "type": "string",
+      "title": "Статус-строка: начертание",
+      "description": "Роли label/value/alert: label=bold,value=,alert=inverse. Значения: bold, italic, underline, strikethrough, inverse, dim, blink, hover; пусто — обычное.",
+      "default": "theme"
+    },
+    "border": {
+      "type": "string",
+      "title": "Статус-строка: рамка",
+      "description": "Рамка вокруг полосы: none, single, double, round. ASCII вырождает контур, данные остаются.",
+      "options": [
+        "theme",
+        "none",
+        "single",
+        "double",
+        "round"
+      ],
+      "default": "theme"
+    },
+    "overflow": {
+      "type": "string",
+      "title": "Статус-строка: узкое окно",
+      "description": "evict — вытеснять сегменты по evictOrder; wrap — не вытеснять, переносить.",
+      "options": [
+        "theme",
+        "evict",
+        "wrap"
+      ],
+      "default": "theme"
+    },
+    "numbers": {
+      "type": "string",
+      "title": "Статус-строка: формат чисел",
+      "description": "raw — дословно из источника; compact — короткая запись (k/M), ненулевое никогда не становится нулём.",
+      "options": [
+        "raw",
+        "compact"
+      ],
+      "default": "raw"
+    },
+    "model_label": {
+      "type": "string",
+      "title": "Статус-строка: имя модели",
+      "description": "raw — $.session.model() дословно, с тегом [1m]; display — отображаемое имя без тега.",
+      "options": [
+        "raw",
+        "display"
+      ],
+      "default": "raw"
+    },
+    "segmentColors": {
+      "type": "string",
+      "title": "Статус-строка: цвет по сегменту",
+      "description": "id=цвет;id=цвет, цвет — имя или #RRGGBB. Негодная запись отбрасывается по одной с диагностикой. Сегментам с пороговой шкалой цвет не предлагается.",
+      "default": ""
     }
   }
 }

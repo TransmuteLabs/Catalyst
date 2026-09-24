@@ -4,7 +4,52 @@ Catalyst packaging of the ClaudeCodeMods `statusline` mod (konsta95, MIT, upstre
 0.3.2 at `c49ad4a`; licence in `LICENSE-ClaudeCodeMods`). Install:
 `claude plugin install catalyst-statusline@catalyst`. The mod needs function hooks
 enabled (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`). Options live in `/config`; the
-picker is `/statusline-mod`. Everything below is the upstream README.
+picker is `/statusline-mod`.
+
+## Wave A (0.4.0): template, lines, themes, axes
+
+The bar is now a template over a self-describing segment registry, several lines
+tall, with named themes and per-axis view settings.
+
+- **Layout** (`template`): lines are separated by ` ;; `, segments inside a line
+  by `||`. A segment is `id=body` with `{ns.field}` variables, e.g.
+  `ctx={ctx.text}||model={model.text} ;; cost={cost.text}`. A template without
+  ` ;; ` is one line, so 0.2.0 settings read unchanged. A segment is an atom:
+  one absent variable removes it whole; `…` (no data yet) and `~` (stale) keep
+  it. Unknown variables show as `{?name}` in the bar and in the diagnostics. The
+  separator is drawn by the renderer between the surviving segments — a missing
+  source takes its separator with it, no doubles, none hanging on the edges.
+  Narrow windows evict segments per line by `evictOrder`; the last survivor
+  stays. Beyond the band's `maxRows` the extra lines are not drawn, with a
+  diagnostic.
+- **Themes** (`theme`): `default`, `plain`, `powerline`, `pill`, `claude-code`,
+  `codex`, `mono`, or a theme saved from the picker (stored in `$.store`).
+  An unknown name is a diagnostic and the last good configuration applies.
+- **View axes** (each `theme` by default, an explicit value wins): `shape`
+  (`plain`/`lean`/`pill`/`powerline`/`classic`), `caps`, `glyphs` (with `ascii`
+  keeping every decoration byte ASCII), `fill`, `bar`, `barWidth`, `palette`
+  (`semantic`/`mono`/`codex`/`claude-code`), `thresholds`, `face`, `border`,
+  `overflow` (`evict`/`wrap`), `separator`. Pinned axes with their own options:
+  `placement` (`above` the prompt, several lines, yields to a survey; `hint`
+  draws the first line under the prompt with the engine's hint after it),
+  `details` (`hover` cards over the row above / `off`), `model_label`
+  (`raw` keeps the `[1m]` tag, `display` drops it), and `numbers`.
+- **`numbers`** (`raw`/`compact`): `raw` prints the source's own figure verbatim;
+  `compact` shortens (`k`/`M`) but never writes a nonzero value as zero.
+- **`segmentColors`**: `id=colour;id=colour`; a bad entry is dropped one by one
+  with a diagnostic. Segments whose colour carries their threshold scale
+  (context, the rate-limit windows) are offered no colour.
+- **Picker `/statusline-mod`**: a pane with a row of pills per line and the
+  buttons ◀ ▶ ▲ ▼ ✕ (hotkeys `h` `l` `k` `j` `x`), an «Доступные» list with a
+  filter, layout presets (`default`, `ClaudeCodeStatusline`, `claude-hud`),
+  a preview rendered by the same builder as the band, and
+  `Сохранить` · `Отмена` · `По умолчанию` · `Отменить` (an undo stack of 30).
+  Saving writes the plugin's own `/config` rows; a `{ deny }` is shown in the
+  panel; the draft and the open flag live under the session id, so a reload
+  restores them. `/statusline-mod reset` writes every field back to its default.
+
+Everything below is the upstream README of the base the mod was merged from;
+where it and the section above disagree, the section above is the 0.4.0 mod.
 
 ## statusline (upstream)
 
