@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.47"
+export const MOD_VERSION = "0.1.48"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -58,12 +58,19 @@ const FORM_REQ = [
 // улика помечается `clockBad`.
 let clockBad = false
 
-async function nowMs($: any): Promise<number> {
+// CONSTRAINT: время вне диапазона Date (±8.64e15) -- отказ часов: такое значение рвёт isoOf-поля и проход свёртки compact.py.
+export async function nowMs($: any): Promise<number> {
   let v: any = null
   try { v = await $.clock.now() } catch (x) { v = null }
-  if (typeof v === "number" && isFinite(v)) return v
+  if (typeof v === "number" && isFinite(v) && Math.abs(v) <= 8.64e15) return v
   clockBad = true
   return Date.now()
+}
+
+// CONSTRAINT: `new Date(x).toISOString()` бросает RangeError вне ±8.64e15 и на NaN; время записи журнала не имеет права уносить запись (и состояние сброса) с собой.
+function isoOf(t: number): string {
+  const d = new Date(t)
+  return Number.isFinite(d.getTime()) ? d.toISOString() : "invalid-time:" + String(t)
 }
 
 // CONSTRAINT: временную границу ступени держит ЭТОТ сторож, а не одна лишь
@@ -961,6 +968,33 @@ function fieldOf(ctx: any, name: string): any {
   return undefined
 }
 
+// CONSTRAINT: дедуп when_bad -- один дом на оба источника мёртвого правила:
+// негодный образец здесь (pred) и неизвестное поле ctx выше по стеку
+// (whenFields). Вторая копия дедупа разошлась бы с первой молча.
+function addWhenBad(ctx: any, add: string): void {
+  if (ctx && typeof ctx === "object") {
+    const cur = String(ctx.whenBad || "")
+    if (cur.split(" ").indexOf(add) < 0) ctx.whenBad = cur ? cur + " " + add : add
+  }
+}
+
+function whenFields(when: any): string[] {
+  const out: string[] = []
+  if (!when || typeof when !== "object") return out
+  if (Array.isArray(when.all) || Array.isArray(when.any)) {
+    const rows: any[] = Array.isArray(when.all) ? when.all : when.any
+    for (let i = 0; i < rows.length; i++) {
+      const sub = whenFields(rows[i])
+      for (let j = 0; j < sub.length; j++) if (out.indexOf(sub[j]) < 0) out.push(sub[j])
+    }
+    return out
+  }
+  if (when.not) return whenFields(when.not)
+  const f = String(when.field || "")
+  if (f) out.push(f)
+  return out
+}
+
 function pred(when: any, ctx: any): boolean {
   if (!when || typeof when !== "object") return true
   if (Array.isArray(when.all)) {
@@ -987,11 +1021,7 @@ function pred(when: any, ctx: any): boolean {
       // правило не имеет права запускать пробу; но мертвело оно МОЛЧА. Улика
       // копится в ctx (сигнатуру pred менять нельзя: рекурсия all/any/not),
       // а читает её вызывающий -- он же передаёт ctx дальше в consultBg.
-      if (ctx && typeof ctx === "object") {
-        const add = "matches=" + String(when.matches).slice(0, 64)
-        const cur = String(ctx.whenBad || "")
-        if (cur.split(" ").indexOf(add) < 0) ctx.whenBad = cur ? cur + " " + add : add
-      }
+      addWhenBad(ctx, "matches=" + String(when.matches).slice(0, 64))
       return false
     }
   }
@@ -1030,31 +1060,67 @@ async function readTextNull($: any, path: string): Promise<string | null> {
 }
 
 let journalWriteErr = ""
+let journalErrSeq = 0
 
 async function appendJournal($: any, jpath: string, obj: any) {
   // CONSTRAINT: ОДИН дом формата шарда (имя jpath+".shard."+safe(rec)).
   // Отказ записи ПРОБРАСЫВАЕТСЯ; след кладётся в journalWriteErr и уезжает
   // в СЛЕДУЮЩУЮ удачную запись -- пустой catch здесь возвращал бы молчаливую
   // потерю полной улики (тот же класс, что волна 1 чинила у агрегата).
-  const recObj = journalWriteErr ? Object.assign({}, obj, { journalWriteErr }) : obj
-  const line = JSON.stringify(recObj) + "\n"
-  const rec = String((recObj && (recObj.rec || recObj.t)) || ("t" + String(await nowMs($))))
-  let safe = ""
-  for (let i = 0; i < rec.length; i++) {
-    const c = rec.charAt(i)
-    safe += /[A-Za-z0-9._-]/.test(c) ? c : "_"
-  }
+  let lostSnap: Record<string, { n: number; last: string }> | null = null
   try {
+    const carriedErr = journalWriteErr
+    const carriedSeq = journalErrSeq
+    lostSnap = lostWrites
+    lostWrites = {}
+    const extra: any = {}
+    if (carriedErr) extra.journalWriteErr = carriedErr
+    if (lostSnap && Object.keys(lostSnap).length) extra.lost = lostSnap
+    const recObj = Object.keys(extra).length ? Object.assign({}, obj, extra) : obj
+    const line = JSON.stringify(recObj) + "\n"
+    const rec = String((recObj && (recObj.rec || recObj.t)) || ("t" + String(await nowMs($))))
+    let safe = ""
+    for (let i = 0; i < rec.length; i++) {
+      const c = rec.charAt(i)
+      safe += /[A-Za-z0-9._-]/.test(c) ? c : "_"
+    }
     await $.fs.write(jpath + ".shard." + safe, line)
-    journalWriteErr = ""
+    // CONSTRAINT: запись очищает только ошибку, которую сама унесла; отказ соседней записи за время этой -- даже с тем же текстом -- меняет journalErrSeq и остаётся на следующую.
+    if (journalErrSeq === carriedSeq) journalWriteErr = ""
   } catch (x) {
     // CONSTRAINT: след НАЗЫВАЕТ владельца отказавшего журнала. Один
     // journalWriteErr обслуживает все пробы, и следующая удачная запись
     // может принадлежать ДРУГОЙ пробе -- без пути читатель отнесёт отказ не
     // к тому журналу. Сообщение носителя путь не гарантирует, поэтому он
     // приписывается здесь.
+    journalErrSeq++
     journalWriteErr = (jpath + ": " + String((x && (x as any).message) || x)).slice(0, 240)
+    if (lostSnap) {
+      for (const k of Object.keys(lostSnap)) {
+        lostWrites[k] = { n: lostSnap[k].n + (lostWrites[k] ? lostWrites[k].n : 0), last: lostWrites[k] ? lostWrites[k].last : lostSnap[k].last }
+      }
+    }
     throw x
+  }
+}
+
+// CONSTRAINT: отказ записи/состояния учитывается по имени места и уезжает полем
+// `lost` следующей удачной записи журнала; пустой catch терял его бесследно (#393).
+let lostWrites: Record<string, { n: number; last: string }> = {}
+
+export function lostWritesSnapshot(): Record<string, { n: number; last: string }> {
+  return JSON.parse(JSON.stringify(lostWrites))
+}
+
+function noteLost(site: string, x: any, $?: any): void {
+  const m = String((x && x.message) || x).slice(0, 200)
+  const cur = lostWrites[site]
+  lostWrites[site] = { n: (cur ? cur.n : 0) + 1, last: m }
+  // CONSTRAINT: проверка «$ передан» не может быть if ($) — валидатор хоста
+  // запрещает читать $ вне $.noun.verb; отсутствие $ даёт тот же пойманный
+  // отказ, что и отказ самого канала debug.
+  try { $.ui.log("catalyst-probes: " + site + ": " + m, { to: "debug" }) } catch (y) {
+    // CONSTRAINT: отказал и канал debug — отказ уже учтён в lostWrites и уедет следующей удачной записью журнала.
   }
 }
 
@@ -1278,12 +1344,12 @@ async function applyPromptRules(
       await $.fs.write(
         world.globalHome + "/prompts/records/applied-" + safeId(r.id) + ".json",
         JSON.stringify({
-          t: new Date(await nowMs($)).toISOString(), id: r.id, kind: r.kind,
+          t: isoOf(await nowMs($)), id: r.id, kind: r.kind,
           target: r.target, mode: r.mode, chars_before: before, chars_after: out.length,
           builtin: r.builtin === true,
         }),
       )
-    } catch (x) {}
+    } catch (x) { noteLost("prompt-applied-record", x, $) }
   }
   return { text: out, applied }
 }
@@ -1322,9 +1388,9 @@ export async function worldFor($: any): Promise<any> {
   // логикой, что и потребитель (loadWorld), и передаётся ему: повторный
   // расчёт поднимал бы стоимость горячего пути.
   let cwd = ""
-  try { cwd = String(await $.env.get("PWD") || "").trim() } catch (x) { cwd = "" }
-  if (!cwd) {
-    try { cwd = String(await $.store.get(CWD_KEY) || "") } catch (x) { cwd = "" }
+  try { cwd = String(await $.env.get("PWD") || "").trim() } catch (x) { cwd = ""; noteLost("cwd-env-read", x, $) }
+  if (!cwd && !cwdStoreStale) {
+    try { cwd = String(await $.store.get(CWD_KEY) || "") } catch (x) { cwd = ""; noteLost("cwd-store-read", x, $) }
   }
   if (cwd && worldMemo && now - worldMemo.t < WORLD_MEMO_MS && worldMemo.cwd === cwd) {
     return worldMemo
@@ -1384,6 +1450,35 @@ function K(s: string, f: string, field?: string): RegExp {
 // из другой сессии (см. consultBg).
 let epoch = 0
 let sweepDone = false
+// CONSTRAINT: отказ уборки не бьёт по каждой консультации судьи: повтор
+// не раньше SWEEP_RETRY_MS от момента отказа по СВЕЖЕМУ чтению часов (t0
+// консультации, начатой до чужого отказа, окно не мерит); шаг часов назад за
+// момент отказа повтор разрешает; отказ в момент 0 окно держит (флаг, не
+// время); стоящие часы окно не держат дольше SWEEP_RETRY_CALLS пропусков;
+// нечисловое время окно меряет только счётом пропусков; счёт пропусков --
+// на консультацию: конкурентные консультации одного окна -- каждая свой пропуск.
+let sweepFailed = false
+let sweepFailedAt = 0
+let sweepSkips = 0
+let sweepRunning = false
+let sweepGen = 0
+const SWEEP_RETRY_MS = 600000
+export const SWEEP_RETRY_CALLS = 64
+
+export function sweepRetryDue(tn: number): boolean {
+  const timed = Number.isFinite(tn) && Number.isFinite(sweepFailedAt)
+  if (timed && (tn < sweepFailedAt || tn - sweepFailedAt >= SWEEP_RETRY_MS)) return true
+  if (sweepSkips >= SWEEP_RETRY_CALLS) return true
+  sweepSkips++
+  return false
+}
+// CONSTRAINT: несостоявшаяся запись cwd оставляет в сторе каталог ПРОШЛОЙ
+// сессии; фолбэк на него давал бы чужой projectHome и чужой допуск классов.
+let cwdStoreStale = false
+// CONSTRAINT: отказ стора не обнуляет счёт и отметку: без зеркала отказ записи
+// снимал кэп и кулдаун.
+const capMirror = new Map<string, number>()
+const lastMirror = new Map<string, number>()
 
 const failoverBinds = new Map<string, any>()
 // CONSTRAINT: недоступность модели относится к процессу, а не к сессии;
@@ -1605,6 +1700,12 @@ export function failoverWouldSetSticky(didThrow: boolean, res: any, reviewer: bo
 // Нулевой агрегат файла не пишет: короткий период сам по себе шардов не плодит.
 export const FAILOVER_FOLD_PERIOD_MS = 1000
 
+// CONSTRAINT: повтор взвода после отказа часов держится окном от момента
+// отказа; без окна каждый шаг часового колбэка бил бы в отказавший clock.every.
+export const FOLD_ARM_RETRY_MS = 60000
+// CONSTRAINT: стоящие часы не держат окно вечно -- после стольких пропущенных вызовов взвод повторяется.
+export const FOLD_ARM_RETRY_CALLS = 64
+
 let boringN = 0
 let boringT0 = 0
 let boringT1 = 0
@@ -1619,12 +1720,107 @@ let foldWait: Array<() => void> = []
 let foldSeq = 0
 let foldWorld: any = null
 let foldTimer: { cancel: () => void } | null = null
+let foldArmFailed = false
+let foldArmFailedAt = 0
+let foldArmSkips = 0
+// CONSTRAINT: таймер, чью отмену хост отказал, после сброса инертен: колбэк
+// сверяет поколение.
+let foldGen = 0
 let foldSid = ""
 let foldWriteErr = ""
 let foldSplitLost = 0
+let foldResetLost = 0
+let foldWriteErrCut = 0
+let foldLostFrom: string[] = []
+let foldLostFromMore = 0
 
 export function failoverFoldCount(): number {
   return boringN
+}
+
+export function failoverFoldWriteErr(): string {
+  return foldWriteErr
+}
+
+export function failoverFoldSplitLost(): number {
+  return foldSplitLost
+}
+
+export function failoverFoldResetLost(): number {
+  return foldResetLost
+}
+
+const FOLD_ERR_CAP = 720
+const FOLD_LOST_FROM_CAP = 16
+
+// CONSTRAINT: текст ошибок свёртки держит голову (новое) и режет старое; отрезанное не молчит -- число отброшенных символов копится в foldWriteErrCut и едет записью.
+function joinFoldErr(parts: string[]): { text: string; cut: number } {
+  const all = parts.filter(s => !!s).join(" | ")
+  if (all.length <= FOLD_ERR_CAP) return { text: all, cut: 0 }
+  return { text: all.slice(0, FOLD_ERR_CAP), cut: all.length - FOLD_ERR_CAP }
+}
+
+// CONSTRAINT: "" -- только foldSid до первого наблюдения: при старте модуля и после сброса (`failoverFoldReset`); потери в состоянии при нём уже помечены прежним сбросом или хвостом, поэтому "" пропускается и в lostFromMore не идёт; «sid неизвестен» -- SID_UNAVAILABLE, не "".
+function addLostFrom(sids: any[], more: number): void {
+  for (const s0 of sids) {
+    const s = String(s0 || "")
+    if (!s || foldLostFrom.indexOf(s) >= 0) continue
+    if (foldLostFrom.length < FOLD_LOST_FROM_CAP) foldLostFrom.push(s)
+    else foldLostFromMore++
+  }
+  foldLostFromMore += num(more, 0, 0)
+}
+
+type FoldCarry = { split: number; reset: number; err: string; cut: number; from: string[]; fromMore: number }
+
+function takeFoldCarry(): FoldCarry {
+  const c: FoldCarry = { split: foldSplitLost, reset: foldResetLost, err: foldWriteErr, cut: foldWriteErrCut, from: foldLostFrom, fromMore: foldLostFromMore }
+  foldSplitLost = 0
+  foldResetLost = 0
+  foldWriteErr = ""
+  foldWriteErrCut = 0
+  foldLostFrom = []
+  foldLostFromMore = 0
+  return c
+}
+
+function putFoldCarry(rec: any, c: FoldCarry): void {
+  if (c.err) rec.foldWriteErr = c.err
+  if (c.cut) rec.foldWriteErrCut = c.cut
+  if (c.split) rec.foldSplitLost = c.split
+  if (c.reset) rec.foldResetLost = c.reset
+  if (c.from.length) rec.lostFrom = c.from.slice()
+  if (c.fromMore) rec.lostFromMore = c.fromMore
+}
+
+// CONSTRAINT: возврат забранного: новый отказ впереди, затем то, что успело накопиться за время записи, затем забранное; steps/stepsSid -- шаги старой свёртки (чужой sid) при отказе записи после сброса; msgCut -- символы сообщения отказа, отрезанные до 240 у вызывающего.
+function returnFoldCarry(c: FoldCarry, msg: string, steps: number, stepsSid: string, msgCut: number): void {
+  foldSplitLost += c.split
+  foldResetLost += c.reset + num(steps, 0, 0)
+  const j = joinFoldErr([msg, foldWriteErr, c.err])
+  foldWriteErr = j.text
+  foldWriteErrCut += c.cut + j.cut + num(msgCut, 0, 0)
+  addLostFrom(c.from, c.fromMore)
+  if (steps > 0) addLostFrom([stepsSid], 0)
+}
+
+// CONSTRAINT: неписаный хвост сброса не теряет содержимое: его шаги уезжают счётом foldResetLost (в boringN не вливаются -- чужой sid) с происхождением lostFrom, потери, ошибка хвоста и отрезанное возвращаются в состояние; доставка -- следующей записью свёртки или хвостом следующего сброса.
+export function failoverFoldTailLost(rec: any, x: any): void {
+  const full = String((x && (x as any).message) || x)
+  returnFoldCarry(
+    {
+      split: num(rec && rec.foldSplitLost, 0, 0),
+      reset: num(rec && rec.foldResetLost, 0, 0),
+      err: rec && rec.foldWriteErr ? String(rec.foldWriteErr) : "",
+      cut: num(rec && rec.foldWriteErrCut, 0, 0),
+      from: rec && Array.isArray(rec.lostFrom) ? rec.lostFrom : [],
+      fromMore: num(rec && rec.lostFromMore, 0, 0),
+    },
+    full.slice(0, 240),
+    num(rec && rec.n, 0, 0),
+    rec && rec.sid ? String(rec.sid) : "",
+    Math.max(0, full.length - 240),
+  )
 }
 
 export function failoverFoldNote(tMs: number, sticky?: string, aid?: string): void {
@@ -1636,7 +1832,40 @@ export function failoverFoldNote(tMs: number, sticky?: string, aid?: string): vo
   if (a) boringAgents.set(a, (boringAgents.get(a) || 0) + 1)
 }
 
-export function failoverFoldReset(): void {
+function foldRecord(n: number, t0: number, t1: number, sticky: string, agents: Map<string, number>, sid: string): any {
+  foldSeq++
+  const recKey = "agg-" + String(foldSeq) + "-" + String(t0) + "-" + String(n)
+  const rec: any = {
+    t: isoOf(t1),
+    rec: recKey,
+    fold: true,
+    n,
+    sticky,
+    tFirst: isoOf(t0),
+    tLast: isoOf(t1),
+    dtMs: t1 - t0,
+    carrier: "mod",
+    probe: "failover",
+    sid,
+  }
+  if (agents.size) rec.agents = Object.fromEntries(agents)
+  return rec
+}
+
+export function failoverFoldReset(): { rec: any; world: any } | null {
+  const waiters = foldWait
+  // CONSTRAINT: накопленный хвост -- та же запись свёртки (тот же строитель),
+  // но с resetTail: сброс не молчит о несказанном окне, запись уезжает вызывающему.
+  let tail: { rec: any; world: any } | null = null
+  if (boringN > 0) {
+    tail = { rec: foldRecord(boringN, boringT0, boringT1, boringSticky, boringAgents, foldSid), world: foldWorld }
+    tail.rec.resetTail = true
+    putFoldCarry(tail.rec, takeFoldCarry())
+  } else if (foldWriteErr || foldSplitLost || foldResetLost) {
+    // CONSTRAINT: без шагов хвоста нет: недоставленное остаётся в состоянии и уедет записью новой сессии -- с происхождением прежней.
+    addLostFrom([foldSid], 0)
+  }
+  foldGen++
   boringN = 0
   boringT0 = 0
   boringT1 = 0
@@ -1646,12 +1875,17 @@ export function failoverFoldReset(): void {
   foldWait = []
   foldWorld = null
   foldSid = ""
-  foldWriteErr = ""
-  foldSplitLost = 0
+  foldArmFailed = false
+  foldArmFailedAt = 0
+  foldArmSkips = 0
   if (foldTimer) {
-    try { foldTimer.cancel() } catch (x) {}
+    try { foldTimer.cancel() } catch (x) { noteLost("failover-fold-timer-cancel", x) }
     foldTimer = null
   }
+  // CONSTRAINT: сброс не бросает ожидающих: их резолверы были взяты из
+  // СТАРОГО foldWait, и без пробуждения здесь ожидание висело бы вечно.
+  for (let i = 0; i < waiters.length; i++) waiters[i]()
+  return tail
 }
 
 export function failoverAttemptIsBoring(rec: any, stickyChanged: boolean): boolean {
@@ -1671,18 +1905,47 @@ export function failoverAttemptIsBoring(rec: any, stickyChanged: boolean): boole
   return true
 }
 
-function armFailoverFoldTimer($: any, world: any): void {
+export function armFailoverFoldTimer($: any, world: any, tMs: number): void {
   if (world) foldWorld = world
   if (foldTimer) return
+  // CONSTRAINT: отказ часов учитывается один раз на окно, не на каждый шаг; отказ в момент 0 окно держит (флаг, не время); откат часов за момент отказа окно снимает; нечисловое время окно меряет только счётом пропусков.
+  if (foldArmFailed) {
+    const timed = Number.isFinite(tMs) && Number.isFinite(foldArmFailedAt)
+    const inWindow = timed ? tMs >= foldArmFailedAt && tMs - foldArmFailedAt < FOLD_ARM_RETRY_MS : true
+    if (inWindow && foldArmSkips < FOLD_ARM_RETRY_CALLS) {
+      foldArmSkips++
+      return
+    }
+  }
   try {
+    const gen = foldGen
     const h = $.clock.every(FAILOVER_FOLD_PERIOD_MS, async () => {
+      if (gen !== foldGen) return
+      // CONSTRAINT: своё состояние по отказу записи ставит failoverFoldFlush
+      // в СВОЁМ поколении (перед броском); здесь после await поколение могло
+      // смениться, и запись в catch относила бы ошибку чужой сессии к новой.
       try { await failoverFoldFlush($, foldWorld) } catch (x) {
-        if (!foldWriteErr) foldWriteErr = String((x && (x as any).message) || x).slice(0, 240)
+        noteLost("failover-fold-timer-flush", x, $)
       }
     })
-    foldTimer = (h && typeof h.cancel === "function") ? h : { cancel() {} }
+    // CONSTRAINT: ручка без cancel видима как потеря -- молчаливая пустышка
+    // делала бы таймер «стоящим» без возможности снять или узнать об этом.
+    if (h && typeof h.cancel === "function") foldTimer = h
+    else {
+      foldTimer = { cancel() {} }
+      noteLost("failover-fold-timer-handle", new Error("clock.every returned no cancel"), $)
+    }
+    foldArmFailed = false
+    foldArmFailedAt = 0
+    foldArmSkips = 0
   } catch (x) {
-    foldTimer = { cancel() {} }
+    // CONSTRAINT: пустышка здесь запрещена: она гасила бы повтор попытки до
+    // конца сессии -- foldTimer = null даёт следующему вызову новую попытку.
+    foldTimer = null
+    foldArmFailed = true
+    foldArmFailedAt = tMs
+    foldArmSkips = 0
+    noteLost("failover-fold-timer-arm", x, $)
   }
 }
 
@@ -1695,6 +1958,7 @@ function restoreFoldSnapshot(n: number, t0: number, t1: number, sticky: string, 
 }
 
 export async function failoverFoldObserve($: any, world: any, tMs: number, sticky: string, sid: string, aid?: string): Promise<void> {
+  const gen = foldGen
   const s = String(sticky || "")
   if (boringN > 0 && boringSticky && s && boringSticky !== s) {
     try {
@@ -1703,9 +1967,14 @@ export async function failoverFoldObserve($: any, world: any, tMs: number, stick
       // CONSTRAINT: шаг с новой липкостью нельзя влить в возвращённый снимок
       // старого окна. Потеря считается и уезжает в следующую запись полем
       // foldSplitLost -- пишется только при n>0 (отсутствие поля ≠ ноль).
-      foldSplitLost++
+      if (gen === foldGen) foldSplitLost++
+      else noteLost("failover-fold-stale-split", x, $)
       throw x
     }
+  }
+  if (gen !== foldGen) {
+    noteLost("failover-fold-stale-attempt", new Error("attempt of a reset session"), $)
+    return
   }
   failoverFoldNote(tMs, s, aid)
   foldSid = sid
@@ -1713,8 +1982,12 @@ export async function failoverFoldObserve($: any, world: any, tMs: number, stick
 }
 
 export async function failoverFoldFlush($: any, world: any): Promise<void> {
+  // CONSTRAINT: сброс сессии меняет поколение; запись, начатая до сброса, не
+  // трогает состояние новой сессии, а её отказ учитывается как потерянный.
+  const gen = foldGen
   while (foldBusy) {
     await new Promise<void>(r => { foldWait.push(r) })
+    if (gen !== foldGen) return
   }
   foldBusy = true
   try {
@@ -1729,7 +2002,6 @@ export async function failoverFoldFlush($: any, world: any): Promise<void> {
     const sid = foldSid
     const sticky = boringSticky
     const agents = boringAgents
-    const prevErr = foldWriteErr
     boringN = 0
     boringT0 = 0
     boringT1 = 0
@@ -1742,41 +2014,35 @@ export async function failoverFoldFlush($: any, world: any): Promise<void> {
       restoreFoldSnapshot(n, t0, t1, sticky, agents)
       return
     }
-    foldSeq++
-    const recKey = "agg-" + String(foldSeq) + "-" + String(t0) + "-" + String(n)
-    const rec: any = {
-      t: new Date(t1).toISOString(),
-      rec: recKey,
-      fold: true,
-      n,
-      sticky,
-      tFirst: new Date(t0).toISOString(),
-      tLast: new Date(t1).toISOString(),
-      dtMs: t1 - t0,
-      carrier: "mod",
-      probe: "failover",
-      sid,
-    }
-    if (prevErr) rec.foldWriteErr = prevErr
-    if (foldSplitLost) rec.foldSplitLost = foldSplitLost
-    if (agents.size) rec.agents = Object.fromEntries(agents)
+    const rec = foldRecord(n, t0, t1, sticky, agents, sid)
+    // CONSTRAINT: недоставленное забирается в запись при отправке и возвращается только отказом: каждая единица потери живёт ровно в одном месте -- в состоянии или в одной записи в полёте; удача ничего не вычитает.
+    const sent = takeFoldCarry()
+    putFoldCarry(rec, sent)
     try {
       await appendJournal($, jpath, rec)
-      foldWriteErr = ""
-      foldSplitLost = 0
     } catch (x) {
+      const full = String((x && (x as any).message) || x)
+      const msg = full.slice(0, 240)
+      if (gen !== foldGen) {
+        // CONSTRAINT: отказ записи, начатой до сброса: шаги старой свёртки уезжают счётом foldResetLost (чужой sid, в boringN не вливаются) с происхождением, забранное возвращается -- правило хвоста сброса.
+        noteLost("failover-fold-stale", x, $)
+        returnFoldCarry(sent, msg, n, sid, Math.max(0, full.length - 240))
+        return
+      }
       restoreFoldSnapshot(n, t0, t1, sticky, agents)
-      foldWriteErr = String((x && (x as any).message) || x).slice(0, 240)
+      returnFoldCarry(sent, msg, 0, "", Math.max(0, full.length - 240))
       throw x
     }
   } finally {
-    foldBusy = false
-    const nxt = foldWait.shift()
-    if (nxt) nxt()
+    if (gen === foldGen) {
+      foldBusy = false
+      const nxt = foldWait.shift()
+      if (nxt) nxt()
+    }
   }
 }
 
-function newSession() {
+function newSession(): { rec: any; world: any } | null {
   epoch++
   sidMemo = null
   worldMemo = null
@@ -1785,10 +2051,14 @@ function newSession() {
   rxCache = {}
   clockBad = false
   sweepDone = false
+  sweepFailed = false
+  sweepFailedAt = 0
+  sweepSkips = 0
+  sweepRunning = false
+  sweepGen++
   failoverBindReset()
   sessionExecutorsReset()
-  failoverFoldReset()
-  journalWriteErr = ""
+  return failoverFoldReset()
 }
 
 function formKind(p: string, t: string, c: any): string | null {
@@ -2029,14 +2299,19 @@ async function refuseForeignCarrier($: any, world: any, arm: any, t0: number, si
     carrierForeignSaid.add(saidKey)
     try {
       await appendJournal($, world.globalHome + "/failover/journal.jsonl", {
-        t: new Date(t0).toISOString(),
+        t: isoOf(t0),
         sid,
         rec: "carrier-foreign-refused",
         probe: arm.probe,
         handle: arm.handle,
         value: arm.value,
       })
-    } catch (x) {}
+    } catch (x) {
+      // CONSTRAINT: дедуп держит только УДАВШУЮСЯ запись: при отказе ключ снимается,
+      // и следующий такой же отказ пишет строку снова.
+      carrierForeignSaid.delete(saidKey)
+      noteLost("journal-carrier-foreign", x, $)
+    }
   }
   // CONSTRAINT: возврат вне try -- отказ выставляется и когда запись не легла
   // (appendJournal бросает): запись -- улика, отказ -- механизм.
@@ -2060,13 +2335,18 @@ async function refuseEnvUnreadable($: any, world: any, arm: any, t0: number, sid
     carrierEnvUnreadableSaid.add(saidKey)
     try {
       await appendJournal($, world.globalHome + "/failover/journal.jsonl", {
-        t: new Date(t0).toISOString(),
+        t: isoOf(t0),
         sid,
         rec: "carrier-env-unreadable-refused",
         probe: arm.probe,
         handle: arm.handle,
       })
-    } catch (x) {}
+    } catch (x) {
+      // CONSTRAINT: дедуп держит только УДАВШУЮСЯ запись: при отказе ключ снимается,
+      // и следующий такой же отказ пишет строку снова.
+      carrierEnvUnreadableSaid.delete(saidKey)
+      noteLost("journal-carrier-env-unreadable", x, $)
+    }
   }
   // CONSTRAINT: возврат вне try -- отказ выставляется и когда запись не легла
   // (appendJournal бросает): запись -- улика, отказ -- механизм.
@@ -2112,19 +2392,12 @@ export function memoUsable(stored: any, atMs: number, ttlMs: number, probe = "*"
   return Number.isFinite(stored.t) && (atMs - stored.t) <= ttlMs
 }
 
-export async function loadWorld($: any, env: any, cwdArg?: string): Promise<any> {
+export async function loadWorld($: any, env: any, cwdArg: string): Promise<any> {
   let globalHome = ""
   if (env.PROBES_DIR) globalHome = env.PROBES_DIR
   else if (env.CONFIG_DIR) globalHome = env.CONFIG_DIR + "/probes"
   else globalHome = env.HOME + "/.claude/probes"
-  let cwd = ""
-  if (cwdArg !== undefined) cwd = cwdArg
-  else {
-    cwd = String(env.PWD || "")
-    if (!cwd) {
-      try { cwd = String(await $.store.get(CWD_KEY) || "") } catch (x) { cwd = "" }
-    }
-  }
+  const cwd = cwdArg
   const gToml = await readText($, globalHome + "/probes.toml")
   const gParsed = parseToml(gToml.text || "")
   let projectHome = ""
@@ -2148,13 +2421,18 @@ export async function loadWorld($: any, env: any, cwdArg?: string): Promise<any>
       admissionRefusedSaid.add(refKey)
       try {
         await appendJournal($, globalHome + "/failover/journal.jsonl", {
-          t: new Date(await nowMs($)).toISOString(),
+          t: isoOf(await nowMs($)),
           sid: await sidFor($),
           rec: "routing-admission-refused",
           reason: refKey,
           allowedSrc: allowedLoaded.allowedSrc,
         })
-      } catch (x) {}
+      } catch (x) {
+        // CONSTRAINT: дедуп держит только УДАВШУЮСЯ запись: при отказе ключ снимается,
+        // и следующий такой же отказ пишет строку снова.
+        admissionRefusedSaid.delete(refKey)
+        noteLost("journal-admission-refused", x, $)
+      }
     }
   }
   return {
@@ -2184,9 +2462,23 @@ function failoverOf(gParsed: any, pParsed: any): any {
 // Префикс v:judge: обязателен: стор общий, чужих ключей не трогаем. Отказ
 // уборки не красит и не прерывает консультацию. Разовость -- sweepDone:
 // на старте КАЖДОЙ сессии (прежнее место) уборка задерживала session.start
-// обходом стора, теперь она едет первой консультацией судьи.
+// обходом стора, теперь она едет первой консультацией судьи. Отказ, частичный
+// или полный, повторяет уборку не раньше SWEEP_RETRY_MS -- без этого
+// постоянный отказ стора обходил бы его на каждой консультации.
 async function sweepVerdictStore($: any, world: any, sid: string, env: any): Promise<void> {
   sweepDone = true
+  sweepFailed = false
+  sweepFailedAt = 0
+  sweepSkips = 0
+  sweepRunning = true
+  const gen = sweepGen
+  // CONSTRAINT: отказ публикуется флагом и моментом одним шагом ПОСЛЕ чтения часов и только в своём поколении: уборка, начатая до /clear, не пишет отказ в новую сессию.
+  const fail = async () => {
+    const tf = await nowMs($)
+    if (gen !== sweepGen) return
+    sweepFailedAt = tf
+    sweepFailed = true
+  }
   try {
     const all = await $.store.keys()
     const t0 = await nowMs($)
@@ -2205,22 +2497,44 @@ async function sweepVerdictStore($: any, world: any, sid: string, env: any): Pro
     }
     let removed = 0
     let scanned = 0
+    let deleteFailed = 0
+    let goneMeanwhile = 0
+    let deleteErr = ""
+    let readFailed = 0
     for (let i = 0; i < all.length && removed < 400; i++) {
       const k = String(all[i])
       if (k.indexOf("v:judge:") !== 0) continue
       scanned++
       let v: any
-      try { v = await $.store.get(k) } catch (x) { v = undefined }
+      try { v = await $.store.get(k) } catch (x) { readFailed++; continue }
       if (memoUsable(v, t0, ttlMs, "judge")) continue
-      try { await $.store.delete(k); removed++ } catch (x) {}
+      try { await $.store.delete(k); removed++ } catch (x) {
+        // CONSTRAINT: удаление, отказавшее на ключе, которого уже нет (снесла соседняя уборка после /clear), -- не отказ уборки; отказ -- только если ключ остался или перечитать нельзя.
+        let still = true
+        try { still = (await $.store.get(k)) !== undefined } catch (y) { still = true }
+        if (still) { deleteFailed++; deleteErr = String((x && (x as any).message) || x).slice(0, 240) }
+        else goneMeanwhile++
+      }
+    }
+    if (deleteFailed + readFailed > 0) {
+      noteLost("judge-store-sweep-items", new Error("delete " + deleteFailed + ", read " + readFailed + ": " + deleteErr), $)
+      await fail()
     }
     try {
-      await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
-        t: new Date(t0).toISOString(), outcome: "store_sweep", removed, scanned,
+      const sweepRec: any = {
+        t: isoOf(t0), outcome: "store_sweep", removed, scanned,
         ttlMs, probe: "judge", carrier: carrierOfJournal(judgeProbe || { id: "judge" }, env || {}), sid,
-      })
-    } catch (x) {}
-  } catch (x) {}
+        deleteFailed, goneMeanwhile, readFailed,
+      }
+      if (deleteErr) sweepRec.deleteErr = deleteErr
+      await appendJournal($, world.globalHome + "/judge/journal.jsonl", sweepRec)
+    } catch (x) { noteLost("journal-store-sweep", x, $) }
+  } catch (x) {
+    noteLost("judge-store-sweep", x, $)
+    await fail()
+  } finally {
+    if (gen === sweepGen) sweepRunning = false
+  }
 }
 
 // CONSTRAINT: имя и путь улики одним домом -- улика консульта и улика
@@ -2292,7 +2606,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     if (ctx && ctx.whenBad) rec.whenBad = ctx.whenBad
 
     let msgs: any[] = []
-    try { msgs = await $.session.messages() } catch (x) { msgs = [] }
+    try { msgs = await $.session.messages() } catch (x) { msgs = []; rec.messagesUnread = true; noteLost("session-messages", x, $) }
     const ctxLines: string[] = []
     if (Array.isArray(msgs)) {
       for (let i = 0; i < msgs.length; i++) {
@@ -2308,7 +2622,9 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     // собирается в цикле ступеней, общая обрезка ВНЕ цикла давала всем ступеням
     // один и тот же текст.
     const buildFull = (ctxN: number): string => {
-      const context = ctxAll.slice(-ctxN)
+      // CONSTRAINT: нечитаемый контекст -- не пустой; модель различает
+      // «сообщений нет» и «сообщения недоступны» (как live_works_unknown).
+      const context = rec.messagesUnread ? "[session messages unreadable]" : ctxAll.slice(-ctxN)
       const dchars = num(cfg.dispatch_chars, 16000, 0) || 16000
       const parts: string[] = []
       parts.push("=== SESSION SO FAR ===\n" + context)
@@ -2318,7 +2634,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         }))
       }
       if (p.id === "idle-watch" || (Array.isArray(cfg.show) && cfg.show.indexOf("fleet") >= 0)) {
-        parts.push("=== FLEET ===\n" + JSON.stringify({ live_works: ctx.live_works, tool }))
+        parts.push("=== FLEET ===\n" + JSON.stringify(ctx.live_works === null ? { live_works: null, live_works_unknown: true, tool } : { live_works: ctx.live_works, tool }))
       }
       if (Array.isArray(cfg.show) && cfg.show.indexOf("tool") >= 0 && p.id !== "idle-watch") {
         parts.push("=== TOOL ===\n" + tool)
@@ -2348,7 +2664,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     // инцидент 2026-09-16 (час ожидания) не виден ни в одной из 47 записей
     // своего окна, и диагностировать вис по уликам было нечем.
     if (cfg.record !== false) {
-      try { await $.fs.write(recPath, JSON.stringify(Object.assign({}, rec, { inflight: true }))) } catch (x) {}
+      try { await $.fs.write(recPath, JSON.stringify(Object.assign({}, rec, { inflight: true }))) } catch (x) {
+        rec.inflightWriteErr = String((x && (x as any).message) || x).slice(0, 240)
+        noteLost("judge-record-inflight", x, $)
+      }
     }
     for (let i = 0; i < ladder.length; i++) {
       // CONSTRAINT: предел суда проверяется ПЕРЕД ступенью, а не после неё:
@@ -2475,7 +2794,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       // шторм повторов бывает после отказа, кэш OK/WARN не защищал ни от
       // чего и молча гасил суд для всех будущих сессий.
       if ((p.pending || p.act === "cancel") && !passKind(p.id, verdict.kind)) {
-        try { await $.store.set(key, { kind: verdict.kind, rest: verdict.rest, used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {}
+        try { await $.store.set(key, { kind: verdict.kind, rest: verdict.rest, used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {
+          rec.cacheErr = String((x && (x as any).message) || x).slice(0, 240)
+          noteLost("judge-verdict-cache", x, $)
+        }
       }
       if (foldedKind(p.id, verdict.kind) && p.act === "nudge") {
         try { await $.ui.toast((id) + ": " + verdict.rest.slice(0, 200)) } catch (x) { rec.toastErr = String(x).slice(0, 160) }
@@ -2492,7 +2814,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       // состояния канала и бюджета, а не свойства диспатча: закэшировав их, мы
       // гасили бы будущие суды по причине, которой уже нет.
       if (!timedOut && !truncated && (p.pending || p.act === "cancel")) {
-        try { await $.store.set(key, { kind: "NONE", used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {}
+        try { await $.store.set(key, { kind: "NONE", used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {
+          rec.cacheErr = String((x && (x as any).message) || x).slice(0, 240)
+          noteLost("judge-verdict-cache", x, $)
+        }
       }
     }
   } catch (x) {
@@ -2500,7 +2825,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     rec.dtMs = await nowMs($) - t0
     rec.kind = "NONE"
     if (p.pending || p.act === "cancel") {
-      try { await $.store.set(key, { kind: "NONE", threw: rec.threw, t: await nowMs($), dtMs: rec.dtMs }) } catch (y) {}
+      try { await $.store.set(key, { kind: "NONE", threw: rec.threw, t: await nowMs($), dtMs: rec.dtMs }) } catch (y) {
+        rec.cacheErr = String((y && (y as any).message) || y).slice(0, 240)
+        noteLost("judge-verdict-cache", y, $)
+      }
     }
   }
   if (clockBad) rec.clockBad = true
@@ -2516,11 +2844,11 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
   // пяти видах, и расхождение было видно только сличением двух домов.
   rec.outcome = oc
   if (cfg.record !== false) {
-    try { await $.fs.write(recPath, JSON.stringify(rec)) } catch (x) {}
+    try { await $.fs.write(recPath, JSON.stringify(rec)) } catch (x) { noteLost("judge-record", x, $) }
   }
   try {
     await appendJournal($, jpath, {
-      t: new Date(t0).toISOString(),
+      t: isoOf(t0),
       probe: id, tool, agent, ms: rec.dtMs, outcome: oc,
       verdict: (kind + ": " + rest).slice(0, 400),
       jm: rec.used, rec: recName, carrier: carrierOfJournal(p, env), sid: rec.sid,
@@ -2533,7 +2861,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     try {
       rec.journalErr = String((x && (x as any).message) || x).slice(0, 240)
       if (cfg.record !== false) await $.fs.write(recPath, JSON.stringify(rec))
-    } catch (y) {}
+    } catch (y) { noteLost("judge-record-journalErr", y, $) }
   }
   return rec
 }
@@ -2643,11 +2971,11 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
     const why = formVocabRefusal(vk)
     try {
       await appendJournal($, world.globalHome + "/form/journal.jsonl", {
-        t: new Date(await nowMs($)).toISOString(), tool, outcome: "form-vocab-refused",
+        t: isoOf(await nowMs($)), tool, outcome: "form-vocab-refused",
         verdict: clip(why, 400), cls, jm: "rules", tries: 0,
         carrier: carrierOfJournal(p, env), sid: await sidFor($), probe: "form",
       })
-    } catch (x) {}
+    } catch (x) { noteLost("journal-form-vocab-refused", x, $) }
     return "Form probe refused the call (not the routing gate): " + why +
       " -- the probe returns deny instead of writing a record with an empty verdict kind."
   }
@@ -2660,7 +2988,7 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   let formJournalErr = ""
   try {
     await appendJournal($, jpath, {
-      t: new Date(t0).toISOString(), tool, outcome: vk, verdict: clip(vd, 400),
+      t: isoOf(t0), tool, outcome: vk, verdict: clip(vd, 400),
       cls, jm: "rules", tries: 0, rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), probe: "form",
       skipped: sk.slice(0, 8),
     })
@@ -2676,7 +3004,7 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
     // выведено разбором строки: разбор склейки -- второй дом формата.
     const formRec: any = { ev: tool, cls, refuse: rf, warn: wn, vd, kind: upper, rest: vd.slice(upper.length + 2) }
     if (formJournalErr) formRec.journalErr = formJournalErr
-    try { await $.fs.write(recPath, JSON.stringify(formRec)) } catch (x) {}
+    try { await $.fs.write(recPath, JSON.stringify(formRec)) } catch (x) { noteLost("form-record", x, $) }
   }
   if (vk === "refuse") {
     let cancel = false
@@ -2696,6 +3024,9 @@ function builtinTrigger(p: any, e: any, ctx: any): boolean {
   if (p.id === "judge") return tool === "Agent" || tool === "Task"
   if (p.id === "idle-watch") {
     if (tool === "Agent" || tool === "Task") return false
+    // CONSTRAINT: неизвестный флот — не пустой флот: наблюдатель простоя не
+    // срабатывает, причина уходит в when_bad.
+    if (ctx.live_works === null) { addWhenBad(ctx, "unknown=live_works"); return false }
     if (Number(ctx.live_works) > 0) return false
     const cd = num(p.cfg.cooldown_min, 30, 0) * 60 * 1000
     const last = Number(ctx.last_consultation || 0)
@@ -2830,7 +3161,7 @@ async function* observerFailThroughStream($: any, e: any, next: any): AsyncGener
 
 export function register(on: any) {
   on("session.start", async ($: any, e: any, next: any) => {
-    try { if (e && e.cwd) await $.store.set(CWD_KEY, String(e.cwd)) } catch (x) {}
+    try { if (e && e.cwd) { await $.store.set(CWD_KEY, String(e.cwd)); cwdStoreStale = false } } catch (x) { cwdStoreStale = true; noteLost("session-cwd", x, $) }
     // CONSTRAINT: регистрация -- ДО next(e) и под отдельным глухим try: отказ
     // двери не имеет права уронить старт сессии. Повторная регистрация --
     // тихая замена (волна 2 #178), поэтому каждый session.start регистрирует
@@ -2843,7 +3174,7 @@ export function register(on: any) {
         argumentHint: LADDER_COMMAND_ARG_HINT,
         immediate: false,
       })
-    } catch (x) {}
+    } catch (x) { noteLost("ladder-command-register", x, $) }
     return next(e)
   })
     .catch(observerFailThrough)
@@ -2853,7 +3184,24 @@ export function register(on: any) {
     // CONSTRAINT: сброс строго ПОСЛЕ next(e) (образ -- официальный мод diff):
     // команда обязана отработать и при отказе сброса, поэтому newSession
     // взведён под отдельным try.
-    try { newSession() } catch (x) {}
+    // CONSTRAINT: хвост пишется отдельно от ответа команды -- запись не
+    // задерживает /clear, отказ учитывается по месту failover-fold-reset-tail.
+    let tail: any = null
+    try { tail = newSession() } catch (x) { noteLost("new-session", x, $) }
+    if (tail) {
+      const w = tail.world
+      const jpath = w && w.globalHome ? w.globalHome + "/failover/journal.jsonl" : ""
+      if (!jpath) {
+        const x = new Error("no journal home, n=" + String(tail.rec.n))
+        noteLost("failover-fold-reset-tail", x, $)
+        failoverFoldTailLost(tail.rec, x)
+      } else void (async () => {
+        try { await appendJournal($, jpath, tail.rec) } catch (x) {
+          noteLost("failover-fold-reset-tail", x, $)
+          failoverFoldTailLost(tail.rec, x)
+        }
+      })()
+    }
     return result
   })
     .catch(observerFailThrough)
@@ -2934,17 +3282,28 @@ export function register(on: any) {
     // свежую метку -- её вердикт применился бы к новому миру, но лёг бы под
     // ключ кэша, посчитанный из СТАРОГО sid (строка ниже).
     const epCall = epoch
-    let live = 0
+    let live: number | null = 0
     try {
       const lst = await $.agent.list()
       if (Array.isArray(lst)) live = lst.length
-    } catch (x) {}
+      // CONSTRAINT: не-массив -- не «ноль живых», а неизвестность: live=null
+      // уводит when по live_works в ветку unknown, а не в ложное срабатывание.
+      else { live = null; noteLost("agent-list-shape", new Error("agent.list returned " + typeof lst), $) }
+    } catch (x) { live = null; noteLost("agent-list", x, $) }
 
     let hardDeny: string | null = null
     let cap = 0
     // CONSTRAINT: счётчик сессионный по ключу -- бессрочный кросс-сессионный
     // ключ навсегда хоронил ветку nudge/log_only на значении capMax.
-    try { cap = Number(await $.store.get(CAP_KEY + ":" + sid) || 0) } catch (x) { cap = 0 }
+    let capStore = 0
+    try { capStore = Number(await $.store.get(CAP_KEY + ":" + sid) || 0) } catch (x) { noteLost("session-cap-read", x, $) }
+    // CONSTRAINT: максимум, не последнее чтение: свои записи кэпа и отметки
+    // монотонны; стор ниже зеркала значит упавшую свою запись, не законное понижение.
+    cap = Math.max(capStore, capMirror.get(sid) || 0)
+    // CONSTRAINT: зеркало пишется и при удачном чтении: без этого ветка
+    // «кэп исчерпан» leave зеркало пустым, и следующий отказ чтения стора
+    // снимал бы кэп целиком.
+    capMirror.set(sid, cap)
     const capMax = 8
 
     for (let i = 0; i < world.probes.length; i++) {
@@ -2974,7 +3333,16 @@ export function register(on: any) {
       if (p.kind !== "consult") continue
 
       let last = 0
-      try { last = Number(await $.store.get(lastKey(p.id, world.cwd)) || 0) } catch (x) { last = 0 }
+      let lastStore = 0
+      try { lastStore = Number(await $.store.get(lastKey(p.id, world.cwd)) || 0) } catch (x) { noteLost("consult-last-read", x, $) }
+      // CONSTRAINT: максимум, не последнее чтение: зеркало ставится синхронно, стор --
+      // после await; стор ниже зеркала бывает и при упавшей своей записи, и при
+      // чередовании двух консультаций (запись поздней отметки завершилась раньше
+      // ранней). Шаг часов назад понижает оба дома одной отметкой.
+      last = Math.max(lastStore, lastMirror.get(lastKey(p.id, world.cwd)) || 0)
+      // CONSTRAINT: зеркало отметки пишется и при удачном чтении -- та же
+      // дыра, что у кэпа: отказ чтения стора не должен открывать окно.
+      lastMirror.set(lastKey(p.id, world.cwd), last)
       const ctx: any = {
         now: t0,
         tool_name: tool,
@@ -2982,13 +3350,14 @@ export function register(on: any) {
         subagent_type: agent,
         prompt,
         live_works: live,
+        unknown: live === null ? ["live_works"] : [],
         last_consultation: last,
         agent_id: undefined,
       }
 
       let fire = false
       if (p.builtin) fire = builtinTrigger(p, e, ctx)
-      else if (p.cfg && p.cfg.when) fire = pred(p.cfg.when, ctx)
+      else if (p.cfg && p.cfg.when) { const u = whenFields(p.cfg.when).filter((f) => ctx.unknown.indexOf(f) >= 0); if (u.length) { for (const f of u) addWhenBad(ctx, "unknown=" + f); fire = false } else fire = pred(p.cfg.when, ctx) }
       else continue
       if (!fire) {
         // CONSTRAINT (#391): при несработавшем правиле consultBg не зовётся, и
@@ -2999,11 +3368,11 @@ export function register(on: any) {
         if (ctx.whenBad && arm.state !== "foreign-carrier" && arm.state !== "env-unreadable") {
           try {
             await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", {
-              t: new Date(t0).toISOString(), tool, agent, outcome: "when_bad",
+              t: isoOf(t0), tool, agent, outcome: "when_bad",
               rec: modRecName(e), carrier: carrierOfJournal(p, env), sid: await sidFor($),
               whenBad: ctx.whenBad, ms: 0, probe: p.id,
             })
-          } catch (x) {}
+          } catch (x) { noteLost("journal-when-bad", x, $) }
         }
         continue
       }
@@ -3013,10 +3382,10 @@ export function register(on: any) {
           const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
           try {
             await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
-              t: new Date(t0).toISOString(), tool, agent, outcome: "skip_disabled",
+              t: isoOf(t0), tool, agent, outcome: "skip_disabled",
               rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), ms: 0, probe: "judge",
             })
-          } catch (x) {}
+          } catch (x) { noteLost("journal-skip-disabled", x, $) }
         }
         continue
       }
@@ -3067,12 +3436,12 @@ export function register(on: any) {
             const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
             try {
               const jskip: any = {
-                t: new Date(t0).toISOString(), tool, agent, outcome: "skip",
+                t: isoOf(t0), tool, agent, outcome: "skip",
                 rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), reason: by, cls, ms: 0, probe: "judge",
               }
               if (badPat.length) jskip.badPattern = badPat.join(" ")
               await appendJournal($, world.globalHome + "/judge/journal.jsonl", jskip)
-            } catch (x) {}
+            } catch (x) { noteLost("journal-skip", x, $) }
           }
           continue
         }
@@ -3096,11 +3465,19 @@ export function register(on: any) {
       }
 
       if (p.act === "cancel" || p.pending) {
-        if (!sweepDone) await sweepVerdictStore($, world, sid, env)
+        // CONSTRAINT: допуск повтора уборки решается синхронно ПОСЛЕ чтения часов: идущая уборка и уже снятый отказ повтора не открывают, две консультации одного окна не запускают две уборки.
+        if (!sweepRunning && (!sweepDone || sweepFailed)) {
+          let due = !sweepDone
+          if (!due) {
+            const tn = await nowMs($)
+            due = !sweepRunning && sweepFailed && sweepRetryDue(tn)
+          }
+          if (due) await sweepVerdictStore($, world, sid, env)
+        }
         const key = verdictKey(p.id, sid, tool, agent, prompt)
         const ttlMs = num(p.cfg && p.cfg.verdict_cache_ms, VERDICT_TTL_MS_DEFAULT, 1)
         let stored: any
-        try { stored = await $.store.get(key) } catch (x) { stored = undefined }
+        try { stored = await $.store.get(key) } catch (x) { stored = undefined; noteLost("verdict-cache-read", x, $) }
         const enforce = p.id === "judge" ? (env.JUDGE === "enforce" || bl3(p.cfg.enforce, true)) : bl3(p.cfg.enforce, true)
         const failClosed = bl3(p.cfg.fail_closed, p.id === "judge")
         if (memoUsable(stored, t0, ttlMs, p.id)) {
@@ -3118,7 +3495,7 @@ export function register(on: any) {
           } catch (x) { recErr = String(x).slice(0, 240) }
           try {
             const jline: any = {
-              t: new Date(t0).toISOString(), tool, agent, outcome: "memo", rec: recName,
+              t: isoOf(t0), tool, agent, outcome: "memo", rec: recName,
               carrier: carrierOfJournal(p, env), sid, kind: String(stored.kind), ageMs, ms: 0, probe: p.id,
             }
             if (recErr) jline.recErr = recErr
@@ -3131,7 +3508,7 @@ export function register(on: any) {
                 mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
                 used: stored.used, dtMs: stored.dtMs, journalErr: recErr,
               }))
-            } catch (y) {}
+            } catch (y) { noteLost("judge-memo-record", y, $) }
           }
           if (foldedKind(p.id, String(stored.kind))) {
             if (!enforce) continue
@@ -3165,8 +3542,10 @@ export function register(on: any) {
           continue
         }
         cap++
-        try { await $.store.set(CAP_KEY + ":" + sid, cap) } catch (x) {}
-        try { await $.store.set(lastKey(p.id, world.cwd), t0) } catch (x) {}
+        capMirror.set(sid, cap)
+        try { await $.store.set(CAP_KEY + ":" + sid, cap) } catch (x) { noteLost("session-cap", x, $) }
+        lastMirror.set(lastKey(p.id, world.cwd), t0)
+        try { await $.store.set(lastKey(p.id, world.cwd), t0) } catch (x) { noteLost("consult-last", x, $) }
         ;(async () => { await consultBg($, p, env, world, e, ctx, "", epCall) })()
       }
     }
@@ -3210,7 +3589,7 @@ export function register(on: any) {
         // Тот же гард несёт писатель попыток ниже.
         const jpath = world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
         if (jpath) await appendJournal($, jpath, {
-          t: new Date(t1).toISOString(),
+          t: isoOf(t1),
           sid,
           rec: "empty-ladder-" + String(result.agentId),
           agentId: String(result.agentId),
@@ -3219,7 +3598,7 @@ export function register(on: any) {
           source: info.source,
           allowedSrc: world.allowedSrc,
         })
-      } catch (x) {}
+      } catch (x) { noteLost("journal-empty-ladder", x, $) }
     }
     return result
   })
@@ -3345,7 +3724,7 @@ export function register(on: any) {
             const jpathR = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
             if (jpathR) {
               const recR: any = {
-                t: new Date(tR).toISOString(),
+                t: isoOf(tR),
                 sid: sidR,
                 rec: String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt) + "-rung-effort-refused",
                 agentId: String(aid),
@@ -3369,7 +3748,7 @@ export function register(on: any) {
               if (bind.effortBad && bind.effortBad[model]) recR["effortBad_" + model] = bind.effortBad[model]
               await appendJournal($, jpathR, recR)
             }
-          } catch (x) {}
+          } catch (x) { noteLost("journal-rung-effort-refused", x, $) }
           continue
         }
         req = Object.assign({}, e, { model, effort: pin })
@@ -3409,11 +3788,11 @@ export function register(on: any) {
       const stickyChanged = !!(willSetSticky && bind.sticky !== model)
       try {
         let sid = ""
-        try { sid = await sidFor($) } catch (x) { sid = "" }
+        try { sid = await sidFor($) } catch (x) { sid = SID_UNAVAILABLE }
         const jpath = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
         if (jpath) {
           const rec: any = {
-            t: new Date(t1).toISOString(),
+            t: isoOf(t1),
             sid,
             rec: recKey,
             agentId: String(aid),
@@ -3433,7 +3812,7 @@ export function register(on: any) {
           }
           if (declared && model !== original) rec.rungEffortRequested = declared
           if (bind.effortBad && bind.effortBad[model]) rec["effortBad_" + model] = bind.effortBad[model]
-          armFailoverFoldTimer($, world)
+          armFailoverFoldTimer($, world, t1)
           if (failoverAttemptIsBoring(rec, stickyChanged)) {
             await failoverFoldObserve($, world, t1, String(bind.sticky || model || ""), sid, String(aid))
           } else {
@@ -3441,7 +3820,7 @@ export function register(on: any) {
             await appendJournal($, jpath, rec)
           }
         }
-      } catch (x) {}
+      } catch (x) { noteLost("failover-fold-journal", x, $) }
       if (didThrow) {
         // CONSTRAINT: исключение носителя гасится ТОЛЬКО пока есть следующая
         // ступень. На последней оно уезжает вызывающему нетронутым: съеденное

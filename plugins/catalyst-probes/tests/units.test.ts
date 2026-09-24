@@ -20,8 +20,8 @@ import {
   failoverLadder, failoverLadderBind, loadAllowedByClass, loadWorld, worldFor, nextFailoverModel, failoverAttemptModels,
   isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP, chunkCarriesContent,
   failoverBindSet, failoverBindGet, failoverBindReset,
-  FAILOVER_FOLD_PERIOD_MS, failoverAttemptIsBoring,
-  failoverFoldCount, failoverFoldNote, failoverFoldFlush, failoverFoldReset,
+  FAILOVER_FOLD_PERIOD_MS, FOLD_ARM_RETRY_MS, failoverAttemptIsBoring, armFailoverFoldTimer,
+  failoverFoldCount, failoverFoldNote, failoverFoldFlush, failoverFoldReset, failoverFoldWriteErr, failoverFoldSplitLost, failoverFoldResetLost,
   failoverFoldObserve, failoverWouldSetSticky,
   sessionExecutorHas, sessionExecutorModelAdd, sessionExecutorsReset,
   cooldownSnapshot, ladderCommandText, clipLadderArg,
@@ -30,6 +30,11 @@ import {
   LADDER_COMMAND_ARG_MAX, register,
   COACHING, COACHING_SPLICE_SHA256,
 } from "../hooks/register.ts"
+// CONSTRAINT (#393-A2): lostWrites -- состояние МОДУЛЯ, а раннер держит один
+// процесс на файл; снапшот читается через namespace-импорт, потому что на коде
+// ДО волны экспорта lostWritesSnapshot нет и именованный импорт ронял бы весь
+// файл -- красная фаза обязана показывать отказ КАЖДОГО зуба отдельной строкой.
+import * as registerModule393 from "../hooks/register.ts"
 
 // CONSTRAINT: sha256-прибор несёт сам набор юнитов: раннер отказывает
 // node:test/node:assert/node:fs, а веб-глобалы (crypto, TextEncoder) в нём
@@ -866,7 +871,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.47")
+  expect(MOD_VERSION).toBe("0.1.48")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1223,8 +1228,8 @@ test("loadWorld: два вызова в окне мемо -- одно чтени
     CATALYST_ROUTING_TABLE: table,
   }, 92_000_000)
   const env = { PROBES_DIR: "/probes-memo", ROUTING_TABLE: table, CONFIG_DIR: "", HOME: "", PWD: "/work" }
-  await loadWorld($, env)
-  await loadWorld($, env)
+  await loadWorld($, env, env.PWD)
+  await loadWorld($, env, env.PWD)
   expect(reads.filter(p => p === table).length).toBe(1)
 })
 
@@ -1299,7 +1304,7 @@ test("loadWorld: живой файл таблицы доезжает до сту
   }, 94_000_000)
   const world = await loadWorld($, {
     PROBES_DIR: "/probes-live", ROUTING_TABLE: table, CONFIG_DIR: "", HOME: "", PWD: "/work",
-  })
+  }, "/work")
   const info = failoverLadderBind(world.failover, "any-agent", "1a", world.allowedByClass, "glm-5.3-flash")
   expect(info.ladder).toStrictEqual(["glm-5.3", "grok-4.6"])
   expect(info.source).toBe("allowed")
@@ -2361,7 +2366,7 @@ test("#227-A зуб 12: след отказа НАЗЫВАЕТ журнал-вл
 })
 
 test("#227-A зуб 11: шаг, потерянный на разрезе окна, назван и не смешан со старым", async () => {
-  failoverFoldReset()
+  await drainFold393()
   const writes: { path: string; text: string }[] = []
   let fail = true
   const $: any = {
@@ -2576,6 +2581,9 @@ test("ladder-cmd: отказ двери регистрации не ломает
   const out = await started[0].fn($, { cwd: "/probe" }, next)
   expect(out).toBe("NEXT-OK")
   expect(nextArg).toEqual({ cwd: "/probe" })
+  const snapCmd = registerModule393.lostWritesSnapshot()
+  expect(snapCmd["ladder-command-register"] && snapCmd["ladder-command-register"].n >= 1,
+    "отказ двери регистрации назван в lostWrites").toBe(true)
 })
 
 // --- Обработчик отказа регистрации (.catch): решающие ветви -------------------
@@ -2976,6 +2984,7 @@ test("catch: каждое подписанное событие несёт об�
 // CONSTRAINT (#393): окна часов держатся дальше 5000 мс от соседей по файлу
 // (worldMemo уровня модуля, раннер -- один процесс на файл).
 test("envBundle (#393): отказ чтения ручки виден поимённо в UNREADABLE, без отказов -- пустой массив", async () => {
+  await drainFold393()
   const files: Record<string, string> = {
     "/wU1/.claude/probes/probes.toml": "[failover]\nenabled = true\n",
   }
@@ -2993,4 +3002,2679 @@ test("envBundle (#393): отказ чтения ручки виден поимё
   const good = fsEnv$(files, { HOME: "/hhU1b", PWD: "/wU1b" }, 95_200_000)
   const wg = await worldFor(good.$)
   expect(wg.env.UNREADABLE, "без отказов чтения UNREADABLE пуст -- «ручка не закреплена» не подмешивается").toEqual([])
+})
+
+// --- #393-A2: 29 пустых catch -- отказ обязан быть виден ------------------------
+//
+// CONSTRAINT: у каждого зуба свои каталоги, своё значение ручек и свой сид:
+// дедупи, мемо и зеркала модуля переживают зубы (один процесс на файл), и без
+// этого сосед молча менял бы смысл зуба. Убеждается каждый зуб, которому нужен
+// чистый старт (sweepDone, sidMemo), -- через command.run clear.
+// Хук сброса зовётся с настоящим $ стенда: пустой $ ронял запись хвоста и оставлял journalWriteErr и lost следующему зубу.
+
+function lostSnap393(): Record<string, { n: number; last: string }> {
+  return registerModule393.lostWritesSnapshot()
+}
+
+function lostN393(site: string): number {
+  const snap = lostSnap393()
+  return snap[site] ? Number(snap[site].n) : 0
+}
+
+type Fail393 = {
+  fsWrite?: (path: string, text: string) => boolean
+  fsReadErr?: string[]
+  storeGet?: (key: string) => boolean
+  storeSet?: (key: string) => boolean
+  storeDelete?: (key: string) => boolean
+  storeKeys?: () => boolean
+  agentList?: () => boolean
+  everyCancel?: boolean
+}
+
+function mod$393(o: {
+  files?: Record<string, string>
+  env?: Record<string, string>
+  now?: number
+  sid?: string
+  stored?: Record<string, unknown>
+  answers?: any[]
+  envRefuses?: string[]
+  fail?: Fail393
+}) {
+  let now = o.now ?? 97_600_000
+  const sid = o.sid ?? "sid-units"
+  const writes: { path: string; text: string }[] = []
+  const storeSets: { key: string; value: any }[] = []
+  const storeDeletes: string[] = []
+  const everyCbs: any[] = []
+  const store = new Map<string, any>(Object.entries(o.stored || {}))
+  const $: any = {
+    clock: {
+      now: async () => now,
+      every: (_ms: number, cb: any) => {
+        everyCbs.push(cb)
+        return {
+          cancel: () => { if (o.fail && o.fail.everyCancel) throw new Error("clock.every: scripted cancel refusal") },
+        }
+      },
+    },
+    env: {
+      get: async (k: string) => {
+        if ((o.envRefuses || []).indexOf(k) >= 0) throw new Error("env.get: scripted read refusal for " + k)
+        return (o.env || {})[k] ?? ""
+      },
+    },
+    fs: {
+      read: async (p: string) => {
+        if (o.fail && (o.fail.fsReadErr || []).indexOf(p) >= 0) throw new Error("EIO: scripted read refusal for " + p)
+        const t = (o.files || {})[p]
+        if (t === undefined) throw new Error("ENOENT " + p)
+        return t
+      },
+      write: async (p: string, text: string) => {
+        if (o.fail && o.fail.fsWrite && o.fail.fsWrite(String(p), String(text))) {
+          throw new Error("EIO: scripted write refusal for " + p)
+        }
+        writes.push({ path: String(p), text: String(text) })
+      },
+    },
+    store: {
+      get: async (k: string) => {
+        if (o.fail && o.fail.storeGet && o.fail.storeGet(String(k))) throw new Error("store.get: scripted refusal for " + k)
+        return store.get(String(k))
+      },
+      set: async (k: string, v: any) => {
+        if (o.fail && o.fail.storeSet && o.fail.storeSet(String(k))) throw new Error("store.set: scripted refusal for " + k)
+        store.set(String(k), v)
+        storeSets.push({ key: String(k), value: v })
+      },
+      delete: async (k: string) => {
+        if (o.fail && o.fail.storeDelete && o.fail.storeDelete(String(k))) throw new Error("store.delete: scripted refusal for " + k)
+        store.delete(String(k))
+        storeDeletes.push(String(k))
+      },
+      keys: async () => {
+        if (o.fail && o.fail.storeKeys && o.fail.storeKeys()) throw new Error("store.keys: scripted refusal")
+        return [...store.keys()]
+      },
+    },
+    session: { id: async () => sid, messages: async () => [] },
+    agent: {
+      list: async () => {
+        if (o.fail && o.fail.agentList && o.fail.agentList()) throw new Error("agent.list: scripted refusal")
+        return []
+      },
+    },
+    model: {
+      complete: async (arg: any) => {
+        const a = (o.answers || []).shift()
+        if (a === undefined) throw new Error("model.complete: no answer scripted for " + String(arg && arg.model))
+        return a
+      },
+    },
+    command: { register: async () => {} },
+    ui: { toast: async () => {} },
+  }
+  return { $, writes, storeSets, storeDeletes, store, everyCbs, setNow: (n: number) => { now = n } }
+}
+
+function subs393(): Array<{ ev: string; matcher: any; fn: any }> {
+  const subs: Array<{ ev: string; matcher: any; fn: any }> = []
+  register((...a: any[]) => {
+    if (a.length >= 3) subs.push({ ev: a[0], matcher: a[1], fn: a[2] })
+    else subs.push({ ev: a[0], matcher: null, fn: a[1] })
+    return { catch: () => {} }
+  })
+  return subs
+}
+
+function hook393(subs: Array<{ ev: string; matcher: any; fn: any }>, ev: string): any {
+  const hit = subs.filter(s => s.ev === ev && !s.matcher)
+  expect(hit.length, ev + " -- ровно одна подписка без матчера").toBe(1)
+  return hit[0].fn
+}
+
+async function clear393(): Promise<void> {
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  const m = mod$393({})
+  await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+}
+
+function shards393(writes: { path: string; text: string }[], infix: string): any[] {
+  return writes
+    .filter(w => String(w.path).indexOf(infix) >= 0)
+    .map(w => { try { return JSON.parse(String(w.text)) } catch (x) { return null } })
+    .filter(r => r)
+}
+
+function sweeps393(writes: { path: string; text: string }[]): number {
+  return shards393(writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+}
+
+async function settle393(): Promise<void> {
+  for (let i = 0; i < 500; i++) await Promise.resolve()
+}
+
+// CONSTRAINT: сброс сам называет потерю (отмена таймера), а слить её может только удачная запись ПОСЛЕ него; зубы, сравнивающие перенос и lostWrites на равенство, стартуют с пустого состояния, а не с оставленного соседом; хвост второго сброса обязан быть пуст: непустой = шаг возник между записью и сбросом, и его перенос ушёл бы мимо проверки.
+async function drainFold393(): Promise<any[]> {
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-drain/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-drain" },
+    now: 98_799_000,
+  })
+  const world = { globalHome: "/probes-drain" }
+  await failoverFoldObserve(m.$, world, 98_799_001, "sticky-drain", "sid-drain", "ag-drain")
+  await failoverFoldFlush(m.$, world)
+  const tail2 = failoverFoldReset()
+  if (tail2 !== null)
+    throw new Error("drainFold393: второй сброс вернул хвост: " + JSON.stringify(tail2.rec))
+  const left = Object.keys(registerModule393.lostWritesSnapshot())
+  if (failoverFoldWriteErr() !== "" || failoverFoldResetLost() !== 0 || failoverFoldSplitLost() !== 0 || left.length !== 0)
+    throw new Error("drainFold393: состояние не слито: err=" + JSON.stringify(failoverFoldWriteErr()) + " reset=" + failoverFoldResetLost() + " split=" + failoverFoldSplitLost() + " lost=" + left.join(","))
+  return shards393(m.writes, "/failover/journal.jsonl.shard.")
+}
+
+function judgeFiles393(home: string): Record<string, string> {
+  return {
+    [home + "/probes.toml"]: '[probe.judge]\nmodels = ["m1"]\n',
+    [home + "/judge/prompt.md"]: "JUDGE PROMPT",
+  }
+}
+
+test("#393-A2 B(1286) prompt-applied-record: отказ записи applied- назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-a2-1286/probes.toml": '[prompt.pr1]\ntool = "Read"\ntext = "RULE-A2-1286"\n' },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-1286", PWD: "/work-a2-1286" },
+    now: 97_601_000,
+    fail: { fsWrite: (p) => p.indexOf("/prompts/records/applied-") >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.describe")(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+  expect(out.description, "поведение пути не изменилось: текст применён").toContain("RULE-A2-1286")
+  expect(lostN393("prompt-applied-record") >= 1, "отказ записи назван местом").toBe(true)
+})
+
+test("#393-A2 B(2039) journal-carrier-foreign: отказ журнала чужого носителя назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-2039"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-2039", PWD: "/work-a2-2039", CLAUDE_JUDGE: "1", CLAUDE_JUDGE_CARRIER: "patch-a2-2039" },
+    now: 97_602_000,
+    fail: { fsWrite: (p) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(String(out.deny)).toContain("patch-a2-2039")
+  expect(lostN393("journal-carrier-foreign") >= 1).toBe(true)
+})
+
+test("#393-A2 B(2069) journal-carrier-env-unreadable: отказ журнала нечитаемой ручки назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-2069"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-2069", PWD: "/work-a2-2069", CLAUDE_JUDGE: "1", CLAUDE_JUDGE_CARRIER: "mod" },
+    envRefuses: ["CLAUDE_JUDGE"],
+    now: 97_603_000,
+    fail: { fsWrite: (p) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(String(out.deny)).toContain("CLAUDE_JUDGE")
+  expect(lostN393("journal-carrier-env-unreadable") >= 1).toBe(true)
+})
+
+test("#393-A2 B(2157) journal-admission-refused: отказ журнала слоя допуска назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: {
+      "/probes-a2-2157/probes.toml": "[probe.judge]\n",
+      "/tbl-a2-2157/routing-table.toml": '[classes.x]\nallowed = ["m"]\n',
+    },
+    env: {
+      CLAUDE_PROBES_DIR: "/probes-a2-2157", PWD: "/work-a2-2157", CLAUDE_JUDGE: "0",
+      CATALYST_ROUTING_TABLE: "/tbl-a2-2157/routing-table.toml", HOME: "/hh-a2-2157",
+    },
+    now: 97_604_000,
+    fail: {
+      fsReadErr: ["/hh-a2-2157/.claude/catalyst/routing-override.toml"],
+      fsWrite: (p) => p.indexOf("/failover/journal.jsonl") >= 0,
+    },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(lostN393("journal-admission-refused") >= 1).toBe(true)
+})
+
+test("#393-A2 B(2222) journal-store-sweep: отказ журнала уборки назван", async () => {
+  await drainFold393()
+  await clear393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-2222"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-2222", PWD: "/work-a2-2222", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_605_000,
+    stored: { "v:judge:stale-a2222": { kind: "BLOCK", rest: "no t" } },
+    answers: ["OK: a2-2222"],
+    fail: { fsWrite: (p) => p.indexOf("/judge/journal.jsonl") >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p-a2222", subagent_type: "scout" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(lostN393("journal-store-sweep") >= 1).toBe(true)
+})
+
+test("#393-A2 B(2351) judge-record-inflight: отказ предзаписи несёт inflightWriteErr", async () => {
+  await clear393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-2351"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-2351", PWD: "/work-a2-2351", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_606_000,
+    answers: ["OK: a2-2351"],
+    fail: { fsWrite: (p, t) => p.indexOf("/judge/records/") >= 0 && t.indexOf('"inflight":true') >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p-a2351", subagent_type: "scout", tool_use_id: "tu-a2351" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  // CONSTRAINT: журнал консультации пишется ПОСЛЕ предзаписи и забирает ключ
+  // полем lost -- снапшот к моменту возврата хука уже осушен (дизайн #393-A2).
+  const jline = shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.verdict !== undefined)
+  expect(jline.length).toBe(1)
+  expect(jline[0].lost && jline[0].lost["judge-record-inflight"] ? jline[0].lost["judge-record-inflight"].n : 0,
+    "отказ предзаписи уехал полем lost").toBeGreaterThanOrEqual(1)
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/judge/records/mod-tu-a2351.json") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  expect(recs.length, "финальная улика легла").toBe(1)
+  expect(String(recs[0].inflightWriteErr), "отказ предзаписи назван в финальной улике").toContain("scripted write refusal")
+})
+
+test("#393-A2 B(2519) judge-record: отказ финальной улики назван", async () => {
+  await clear393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-2519"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-2519", PWD: "/work-a2-2519", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_607_000,
+    answers: ["OK: a2-2519"],
+    fail: { fsWrite: (p, t) => p.indexOf("/judge/records/") >= 0 && t.indexOf('"inflight":true') < 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p-a2519", subagent_type: "scout" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  // CONSTRAINT: журнальная строка пишется ПОСЛЕ финальной улики и забирает ключ
+  // полем lost -- снапшот к моменту возврата хука уже осушен (дизайн #393-A2).
+  const jline = shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.verdict !== undefined)
+  expect(jline.length).toBe(1)
+  expect(jline[0].lost && jline[0].lost["judge-record"] ? jline[0].lost["judge-record"].n : 0,
+    "отказ финальной улики уехал полем lost").toBeGreaterThanOrEqual(1)
+})
+
+test("#393-A2 B(2536) judge-record-journalErr: отказ дублирующей записи назван", async () => {
+  await drainFold393()
+  await clear393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-2536"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-2536", PWD: "/work-a2-2536", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_608_000,
+    answers: ["OK: a2-2536"],
+    fail: { fsWrite: (p, t) => p.indexOf("/judge/journal.jsonl") >= 0 || (p.indexOf("/judge/records/") >= 0 && t.indexOf('"journalErr"') >= 0) },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p-a2536", subagent_type: "scout" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(lostN393("judge-record-journalErr") >= 1).toBe(true)
+})
+
+test("#393-A2 B(2650) journal-form-vocab-refused: отказ журнала словаря назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-a2-2650/probes.toml": FORM_CFG_335 },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-2650", PWD: "/work-a2-2650", CLAUDE_FORM: "1" },
+    now: 97_609_000,
+    fail: { fsWrite: (p) => p.indexOf("/form/journal.jsonl") >= 0 },
+  })
+  verdictVocabSeed([{ probe: "form", emits: "", folds: "" }])
+  try {
+    const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Write", file_path: "/work-a2-2650/report.md", content: "заголовок\n" }, async (e: any) => e)
+    expect(String(out.deny)).toContain("Form probe refused")
+    expect(lostN393("journal-form-vocab-refused") >= 1).toBe(true)
+  } finally {
+    verdictVocabReset()
+  }
+})
+
+test("#393-A2 B(2679) form-record: отказ записи улики формы назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-a2-2679/probes.toml": FORM_CFG_335 },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-2679", PWD: "/work-a2-2679", CLAUDE_FORM: "1" },
+    now: 97_610_000,
+    fail: { fsWrite: (p) => p.indexOf("/form/records/") >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Write", file_path: "/work-a2-2679/report.md", content: "строка с zzz-legalize внутри\n" }, async (e: any) => e)
+  expect(out.deny, "act=log_only: отказ записи не гасит вызов").toBe(undefined)
+  expect(lostN393("form-record") >= 1).toBe(true)
+})
+
+test("#393-A2 B(3006) journal-when-bad: отказ журнала мёртвого правила назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-a2-3006/probes.toml": '[probe.dead3006]\nkind = "consult"\n[probe.dead3006.when]\nfield = "tool"\nmatches = "Age(nt"\n' },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-3006", PWD: "/work-a2-3006" },
+    now: 97_611_000,
+    fail: { fsWrite: (p) => p.indexOf("/dead3006/journal.jsonl") >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(lostN393("journal-when-bad") >= 1).toBe(true)
+})
+
+test("#393-A2 B(3019) journal-skip-disabled: отказ журнала выключенного судьи назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-a2-3019/probes.toml": "[probe.judge]\nenabled = false\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-3019", PWD: "/work-a2-3019", CLAUDE_JUDGE: "1" },
+    now: 97_612_000,
+    fail: { fsWrite: (p) => p.indexOf("/judge/journal.jsonl") >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "x" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(lostN393("journal-skip-disabled") >= 1).toBe(true)
+})
+
+test("#393-A2 B(3075) journal-skip: отказ журнала пропуска назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-a2-3075/probes.toml": '[probe.judge]\n[probe.judge.filter]\nclasses_skip = ["skipme"]\n' },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-3075", PWD: "/work-a2-3075", CLAUDE_JUDGE: "1" },
+    now: 97_613_000,
+    fail: { fsWrite: (p) => p.indexOf("/judge/journal.jsonl") >= 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "[dispatch-class:skipme] x" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(lostN393("journal-skip") >= 1).toBe(true)
+})
+
+test("#393-A2 B(3134) judge-memo-record: отказ дублирующей записи мемо назван", async () => {
+  await drainFold393()
+  await clear393()
+  const prompt = "p-a23134"
+  const vkey = verdictKey("judge", "sid-units", "Agent", "scout", prompt)
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-3134"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-3134", PWD: "/work-a2-3134", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_614_000,
+    stored: { [vkey]: { kind: "BLOCK", rest: "cached-a23134", t: 97_614_000, dtMs: 3 } },
+    fail: { fsWrite: (p, t) => p.indexOf("/judge/journal.jsonl") >= 0 || (p.indexOf("/judge/records/") >= 0 && t.indexOf('"journalErr"') >= 0) },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt, subagent_type: "scout" }, async (e: any) => e)
+  expect(String(out.deny)).toContain("cached-a23134")
+  expect(lostN393("judge-memo-record") >= 1).toBe(true)
+})
+
+test("#393-A2 B(3222) journal-empty-ladder: отказ журнала пустой лестницы назван", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-a2-3222/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-3222", PWD: "/work-a2-3222" },
+    now: 97_615_000,
+    fail: { fsWrite: (p) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const out = await hook393(subs393(), "agent.spawn")(m.$, { subagentType: "any", prompt: "[dispatch-class:x] q", model: "m" }, async () => ({ agentId: "ag-a23222" }))
+  expect(out.agentId).toBe("ag-a23222")
+  expect(lostN393("journal-empty-ladder") >= 1).toBe(true)
+})
+
+test("#393-A2 B(3372) journal-rung-effort-refused: отказ журнала негодной ступени назван", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const m = mod$393({
+    files: { "/probes-a2-3372/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-3372" },
+    now: 97_616_000,
+    fail: { fsWrite: (p) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  failoverBindSet("ag-a23372", { ladder: ["bare-a23372"], rungEffort: {}, subagentType: "t", class: "", sticky: "busy-a23372" })
+  // CONSTRAINT: удачная попытка 0 возвращает управление ДО ступени -- исходная
+  // модель обязана отказать носителем, иначе отказ негодной ступени недостижим.
+  const refuse: any = () => (async function* () { return { usage: null, stopReason: null } })()
+  await drainStream(hook393(subs393(), "turn.step")(m.$, {
+    agentId: "ag-a23372", turnId: "t-a23372", index: 0, model: "busy-a23372", messageCount: 1,
+  }, refuse))
+  expect(lostN393("journal-rung-effort-refused") >= 1).toBe(true)
+  failoverBindReset()
+})
+
+test("#393-A2 B(3444) failover-fold-journal: отказ журнала попытки назван", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const m = mod$393({
+    files: { "/probes-a2-3444/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-3444" },
+    now: 97_617_000,
+    fail: { fsWrite: (p) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  failoverBindSet("ag-a23444", { ladder: ["r-a23444"], rungEffort: { "r-a23444": "max" }, subagentType: "t", class: "", sticky: "busy-a23444" })
+  const refuse: any = () => (async function* () { return { usage: null, stopReason: null } })()
+  const out = await drainStream(hook393(subs393(), "turn.step")(m.$, {
+    agentId: "ag-a23444", turnId: "t-a23444", index: 0, model: "busy-a23444", messageCount: 1,
+  }, refuse))
+  expect(isCarrierRefusal(out.value), "последний отказ носителя возвращён вызывающему").toBe(true)
+  expect(lostN393("failover-fold-journal") >= 1).toBe(true)
+  failoverBindReset()
+})
+
+test("#393-A2 appendJournal: lost едет следующей удачной записью и складывается", async () => {
+  await drainFold393()
+  await clear393()
+  const files = { "/probes-a2-lost/probes.toml": '[probe.judge]\n[probe.judge.filter]\nclasses_skip = ["skipme"]\n' }
+  const env = { CLAUDE_PROBES_DIR: "/probes-a2-lost", PWD: "/work-a2-lost", CLAUDE_JUDGE: "1" }
+  const skipCall = (m: ReturnType<typeof mod$393>, prompt: string) =>
+    hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "[dispatch-class:skipme] " + prompt }, async (e: any) => e)
+  let fail = true
+  const m = mod$393({ files, env, now: 97_618_000, fail: { fsWrite: (p) => fail && p.indexOf("/judge/journal.jsonl") >= 0 } })
+  // смыв остатка от предыдущих зубов: удачная запись забирает накопитель целиком
+  fail = false
+  await skipCall(m, "flush-a2-lost")
+  expect(lostN393("journal-skip")).toBe(0)
+  // отказ места: ключ в накопителе
+  fail = true
+  await skipCall(m, "one-a2-lost")
+  expect(lostN393("journal-skip")).toBe(1)
+  // следующая удачная запись несёт lost и очищает накопитель
+  fail = false
+  await skipCall(m, "two-a2-lost")
+  const carry = shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "skip")
+  expect(carry.length).toBe(2)
+  expect(carry[1].lost && carry[1].lost["journal-skip"] ? carry[1].lost["journal-skip"].n : 0).toBe(1)
+  expect(lostN393("journal-skip")).toBe(0)
+  // отказ самой записи возвращает ключ в накопитель со сложением
+  fail = true
+  await skipCall(m, "three-a2-lost")
+  await skipCall(m, "four-a2-lost")
+  expect(lostN393("journal-skip")).toBe(2)
+  fail = false
+  await skipCall(m, "five-a2-lost")
+  const carry2 = shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "skip")
+  expect(carry2.length).toBe(3)
+  expect(carry2[2].lost && carry2[2].lost["journal-skip"] ? carry2[2].lost["journal-skip"].n : 0).toBe(2)
+  expect(lostN393("journal-skip")).toBe(0)
+})
+
+test("#393-A2 appendJournal: несериализуемый объект бросает и метит journalWriteErr", async () => {
+  await drainFold393()
+  failoverBindReset()
+  let fail = true
+  const m = mod$393({
+    files: { "/probes-a2-circ/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-circ" },
+    now: 97_619_000,
+    fail: { fsWrite: (p) => fail && p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  failoverBindSet("ag-a2circ", { ladder: ["r-a2circ"], rungEffort: { "r-a2circ": "max" }, subagentType: "t", class: "", sticky: "busy-a2circ" })
+  const refuse: any = () => (async function* () { return { usage: null, stopReason: null } })()
+  const circ: any = {}
+  circ.self = circ
+  const step = hook393(subs393(), "turn.step")
+  await drainStream(step(m.$, { agentId: "ag-a2circ", turnId: circ, index: 0, model: "busy-a2circ", messageCount: 1 }, refuse))
+  expect(lostN393("failover-fold-journal") >= 1, "бросок сериализации дошёл до catch места").toBe(true)
+  fail = false
+  await drainStream(step(m.$, { agentId: "ag-a2circ", turnId: "t-clean-a2circ", index: 0, model: "busy-a2circ", messageCount: 1 }, refuse))
+  const lines = shards393(m.writes, "/failover/journal.jsonl.shard.")
+  expect(lines.length).toBe(2)
+  expect(String(lines[0].journalWriteErr || ""), "след отказавшей сериализации уехал следующей записью").toContain("/failover/journal.jsonl")
+  failoverBindReset()
+})
+
+test("#393-A2 journalWriteErr переживает /clear", async () => {
+  await clear393()
+  const files = { "/probes-a2-clear/probes.toml": '[probe.judge]\n[probe.judge.filter]\nclasses_skip = ["skipme"]\n' }
+  const env = { CLAUDE_PROBES_DIR: "/probes-a2-clear", PWD: "/work-a2-clear", CLAUDE_JUDGE: "1" }
+  let fail = true
+  const m = mod$393({ files, env, now: 97_620_000, fail: { fsWrite: (p) => fail && p.indexOf("/judge/journal.jsonl") >= 0 } })
+  const call = () => hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "[dispatch-class:skipme] p" }, async (e: any) => e)
+  await call()
+  await clear393()
+  fail = false
+  await call()
+  const lines = shards393(m.writes, "/judge/journal.jsonl.shard.")
+  expect(lines.length).toBe(1)
+  expect(String(lines[0].journalWriteErr || ""), "след не снят сменой сессии").toContain("/judge/journal.jsonl")
+})
+
+test("#393-A2 дедуп(2039): отказ записи снимает ключ -- второй отказ пишет строку", async () => {
+  let fail = true
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-d2039"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-d2039", PWD: "/work-a2-d2039", CLAUDE_JUDGE: "1", CLAUDE_JUDGE_CARRIER: "patch-a2-d2039" },
+    now: 97_621_000,
+    fail: { fsWrite: (p) => fail && p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  const out1 = await hook(m.$, { tool: "Agent", prompt: "a" }, async (e: any) => e)
+  expect(String(out1.deny)).toContain("patch-a2-d2039")
+  fail = false
+  const out2 = await hook(m.$, { tool: "Task", prompt: "b" }, async (e: any) => e)
+  expect(String(out2.deny)).toContain("patch-a2-d2039")
+  const recs = shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => r.rec === "carrier-foreign-refused")
+  expect(recs.length, "первая запись отказала -- вторая обязана лечь").toBe(1)
+})
+
+test("#393-A2 дедуп(2069): отказ записи снимает ключ -- второй отказ пишет строку", async () => {
+  let fail = true
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-d2069"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-d2069", PWD: "/work-a2-d2069", CLAUDE_JUDGE: "1", CLAUDE_JUDGE_CARRIER: "mod" },
+    envRefuses: ["CLAUDE_JUDGE"],
+    now: 97_622_000,
+    fail: { fsWrite: (p) => fail && p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  const out1 = await hook(m.$, { tool: "Agent", prompt: "a" }, async (e: any) => e)
+  expect(String(out1.deny)).toContain("CLAUDE_JUDGE")
+  fail = false
+  const out2 = await hook(m.$, { tool: "Task", prompt: "b" }, async (e: any) => e)
+  expect(String(out2.deny)).toContain("CLAUDE_JUDGE")
+  const recs = shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => r.rec === "carrier-env-unreadable-refused")
+  expect(recs.length).toBe(1)
+})
+
+test("#393-A2 дедуп(2157): отказ записи снимает ключ -- второй отказ пишет строку", async () => {
+  let fail = true
+  const m = mod$393({
+    files: {
+      "/probes-a2-d2157/probes.toml": "[probe.judge]\n",
+      "/tbl-a2-d2157/routing-table.toml": '[classes.x]\nallowed = ["m"]\n',
+    },
+    env: {
+      CLAUDE_PROBES_DIR: "/probes-a2-d2157", PWD: "/work-a2-d2157", CLAUDE_JUDGE: "0",
+      CATALYST_ROUTING_TABLE: "/tbl-a2-d2157/routing-table.toml", HOME: "/hh-a2-d2157",
+    },
+    now: 97_623_000,
+    fail: {
+      fsReadErr: ["/hh-a2-d2157/.claude/catalyst/routing-override.toml"],
+      fsWrite: (p) => fail && p.indexOf("/failover/journal.jsonl") >= 0,
+    },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  await hook(m.$, { tool: "Read" }, async (e: any) => e)
+  m.setNow(97_630_000)
+  fail = false
+  await hook(m.$, { tool: "Read" }, async (e: any) => e)
+  const recs = shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => r.rec === "routing-admission-refused")
+  expect(recs.length).toBe(1)
+})
+
+test("#393-A2-FIX1 уборка: store.keys бросает -- повтор не раньше SWEEP_RETRY_MS", async () => {
+  await clear393()
+  let keysFail = true
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-sw6"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-sw6", PWD: "/work-a2-sw6", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_631_000,
+    answers: ["OK: sw6-one", "OK: sw6-two", "OK: sw6-three"],
+    fail: { storeKeys: () => keysFail },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const out1 = await hook(m.$, { tool: "Agent", prompt: "p-sw6a", subagent_type: "scout" }, async (e: any) => e)
+  expect(out1.deny).toBe(undefined)
+  expect(sweeps()).toBe(0)
+  // CONSTRAINT: журнал консультации забирает ключ уборки полем lost (дизайн #393-A2).
+  const j1 = shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.verdict !== undefined)
+  expect(j1.length).toBe(1)
+  expect(j1[0].lost && j1[0].lost["judge-store-sweep"] ? j1[0].lost["judge-store-sweep"].n : 0,
+    "отказ обхода уборки уехал полем lost").toBeGreaterThanOrEqual(1)
+  keysFail = false
+  m.setNow(97_631_000 + 1_000)
+  const out2 = await hook(m.$, { tool: "Agent", prompt: "p-sw6b", subagent_type: "scout" }, async (e: any) => e)
+  expect(out2.deny).toBe(undefined)
+  expect(sweeps(), "через 1000 мс повтора нет").toBe(0)
+  m.setNow(97_631_000 + 600_001)
+  const out3 = await hook(m.$, { tool: "Agent", prompt: "p-sw6c", subagent_type: "scout" }, async (e: any) => e)
+  expect(out3.deny).toBe(undefined)
+  expect(sweeps(), "уборка, не прошедшая целиком, повторяется через SWEEP_RETRY_MS").toBe(1)
+})
+
+test("#393-A2-FIX2 B-F4b: окно повтора уборки считается от момента отказа, не от начала вызова", async () => {
+  await clear393()
+  const poison = "v:judge:poison-f2b4b"
+  const m = mod$393({
+    files: judgeFiles393("/probes-f2-b4b"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-b4b", PWD: "/work-f2-b4b", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 900_000 } },
+    answers: ["OK: f2b4b-a", "OK: f2b4b-b", "OK: f2b4b-c"],
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  // CONSTRAINT: часы двигаются ВНУТРИ уборки -- отказ фиксируется в 1 600 001,
+  // а не в момент начала вызова (1 000 000).
+  const origGet = m.$.store.get
+  m.$.store.get = async (k: string) => {
+    if (String(k) === poison) m.setNow(1_600_001)
+    return origGet(k)
+  }
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+
+  await consult("f2b4b one")
+  expect(sweeps(), "уборка состоялась, отказ зафиксирован в 1 600 001").toBe(1)
+
+  m.setNow(1_600_002)
+  await consult("f2b4b two")
+  expect(sweeps(), "миг после отказа -- уборки нет").toBe(1)
+
+  m.setNow(1_600_001 + 600_000)
+  await consult("f2b4b three")
+  expect(sweeps(), "через SWEEP_RETRY_MS от момента отказа уборка повторяется").toBe(2)
+})
+
+test("#393-A2-FIX2 B-F4c: откат часов за момент отказа разрешает повтор уборки", async () => {
+  await clear393()
+  const poison = "v:judge:poison-f2b4c"
+  const m = mod$393({
+    files: judgeFiles393("/probes-f2-b4c"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-b4c", PWD: "/work-f2-b4c", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1e15,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 1e15 - 1000 } },
+    answers: ["OK: f2b4c-a", "OK: f2b4c-b"],
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+
+  await consult("f2b4c one")
+  expect(sweeps(), "уборка при 1e15 состоялась").toBe(1)
+
+  m.setNow(1.7e12)
+  await consult("f2b4c two")
+  expect(sweeps(), "откат часов за момент отказа -- уборка повторяется").toBe(2)
+})
+
+test("#393-A2 уборка: store.delete бросает -- store_sweep несёт deleteFailed", async () => {
+  await clear393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-sw7"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-sw7", PWD: "/work-a2-sw7", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_632_000,
+    stored: { "v:judge:stale-sw7": { kind: "BLOCK", rest: "x" } },
+    answers: ["OK: sw7"],
+    fail: { storeDelete: (k) => k.indexOf("v:judge:") === 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p-sw7", subagent_type: "scout" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  const sweep = shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep")
+  expect(sweep.length).toBe(1)
+  expect(sweep[0].deleteFailed).toBe(1)
+  expect(String(sweep[0].deleteErr)).toContain("store.delete")
+  expect(sweep[0].lost && sweep[0].lost["judge-store-sweep-items"] ? sweep[0].lost["judge-store-sweep-items"].n : 0,
+    "отказ сноса уехал полем lost самой записи store_sweep").toBeGreaterThanOrEqual(1)
+})
+
+test("#393-A2 уборка: store.get бросает -- ключ не сносится, readFailed назван", async () => {
+  await clear393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-sw8"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-sw8", PWD: "/work-a2-sw8", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_633_000,
+    stored: { "v:judge:stale-sw8": { kind: "BLOCK", rest: "x" } },
+    answers: ["OK: sw8"],
+    fail: { storeGet: (k) => k === "v:judge:stale-sw8" },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p-sw8", subagent_type: "scout" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  expect(m.storeDeletes, "нечитаемая запись не сносится").toEqual([])
+  const sweep = shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep")
+  expect(sweep.length).toBe(1)
+  expect(sweep[0].readFailed).toBe(1)
+  expect(sweep[0].lost && sweep[0].lost["judge-store-sweep-items"] ? sweep[0].lost["judge-store-sweep-items"].n : 0,
+    "отказ чтения уехал полем lost самой записи store_sweep").toBeGreaterThanOrEqual(1)
+})
+
+test("#393-A2 флот неизвестен: idle-watch молчит, причина уходит в when_bad", async () => {
+  const m = mod$393({
+    files: {
+      "/probes-a2-live/probes.toml":
+        '[probe.idle-watch]\nact = "log_only"\n[probe.live393]\nkind = "consult"\n[probe.live393.when]\nfield = "live_works"\ncount_below = 1\n',
+    },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-live", PWD: "/work-a2-live", CLAUDE_IDLE: "1" },
+    now: 97_634_000,
+    fail: { agentList: () => true },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
+  expect(out.deny).toBe(undefined)
+  await settle393()
+  const bad = shards393(m.writes, "/journal.jsonl.shard.").filter(r => r.outcome === "when_bad")
+  expect(bad.length, "обе пробы отчитались о неизвестном поле").toBe(2)
+  for (const r of bad) expect(String(r.whenBad)).toContain("unknown=live_works")
+  expect(m.writes.filter(w => w.path.indexOf("/records/") >= 0), "консультаций не было").toEqual([])
+  expect(shards393(m.writes, "/journal.jsonl.shard.").filter(r => r.verdict !== undefined), "ни одного вердикта").toEqual([])
+  expect(bad.filter(r => r.lost && r.lost["agent-list"]).length,
+    "отказ agent.list уехал полем lost записи when_bad").toBeGreaterThanOrEqual(1)
+})
+
+test("#393-A2 кэш вердикта: отказ store.set несёт cacheErr в улике", async () => {
+  await clear393()
+  const m = mod$393({
+    files: judgeFiles393("/probes-a2-cache"),
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-cache", PWD: "/work-a2-cache", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_635_000,
+    answers: ["BLOCK: cache-a2"],
+    fail: { storeSet: (k) => k.indexOf("v:judge:") === 0 },
+  })
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p-cache", subagent_type: "scout", tool_use_id: "tu-cache" }, async (e: any) => e)
+  expect(String(out.deny)).toContain("cache-a2")
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/judge/records/mod-tu-cache.json") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  expect(recs.length).toBe(2)
+  expect(String(recs[1].cacheErr), "отказ кэширования назван в финальной улике").toContain("store.set")
+  const jline = shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.verdict !== undefined)
+  expect(jline.length).toBe(1)
+  expect(jline[0].lost && jline[0].lost["judge-verdict-cache"] ? jline[0].lost["judge-verdict-cache"].n : 0,
+    "отказ кэширования уехал полем lost").toBeGreaterThanOrEqual(1)
+})
+
+test("#393-A2 cwd: несостоявшаяся запись не подменяет каталог прошлой сессией", async () => {
+  await drainFold393()
+  let fail = true
+  const m = mod$393({
+    now: 97_636_000,
+    stored: { "catalyst-probes:cwd": "/dir-A-a2cwd" },
+    fail: { storeSet: (k) => fail && k === "catalyst-probes:cwd" },
+  })
+  const start = hook393(subs393(), "session.start")
+  await start(m.$, { cwd: "/dir-B-a2cwd" }, async (e: any) => "NEXT")
+  expect(lostN393("session-cwd") >= 1).toBe(true)
+  const w = await worldFor(m.$)
+  expect(w.world.cwd, "фолбэк на чужой каталог запрещён").toBe("")
+  expect(w.world.projectHome).toBe("")
+  fail = false
+  await start(m.$, { cwd: "/dir-C-a2cwd" }, async (e: any) => "NEXT")
+  const w2 = await worldFor(m.$)
+  expect(w2.world.cwd).toBe("/dir-C-a2cwd")
+})
+
+test("#393-A2 кэп: отказ записи стора не снимает кэп на девятом вызове", async () => {
+  await drainFold393()
+  await clear393()
+  const m = mod$393({
+    files: {
+      "/probes-a2-cap/probes.toml":
+        '[probe.c393cap]\nkind = "consult"\nact = "nudge"\n[probe.c393cap.when]\nfield = "tool_name"\nequals = "Read"\n',
+    },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-cap", PWD: "/work-a2-cap" },
+    now: 97_637_000,
+    sid: "sid-a2-cap",
+    answers: ["OK: cap", "OK: cap", "OK: cap", "OK: cap", "OK: cap", "OK: cap", "OK: cap", "OK: cap"],
+    fail: { storeSet: (k) => k.indexOf("catalyst-probes:sesscap") === 0 },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  for (let i = 0; i < 9; i++) {
+    await hook(m.$, { tool: "Read" }, async (e: any) => e)
+    await settle393()
+  }
+  const verdicts = shards393(m.writes, "/c393cap/journal.jsonl.shard.").filter(r => r.verdict !== undefined)
+  expect(verdicts.length, "ровно capMax консультаций, девятый вызов молчит").toBe(8)
+  const lostSum = verdicts.reduce((a: number, r: any) => a + (r.lost && r.lost["session-cap"] ? Number(r.lost["session-cap"].n) : 0), 0)
+  expect(lostSum + lostN393("session-cap"),
+    "каждый отказ записи кэпа учтён -- в поле lost или в остатке снапшота").toBeGreaterThanOrEqual(8)
+})
+
+test("#393-A2 кулдаун: отказ записи отметки не снимает кулдаун", async () => {
+  await clear393()
+  const m = mod$393({
+    files: { "/probes-a2-cd/probes.toml": '[probe.idle-watch]\nact = "nudge"\n' },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-cd", PWD: "/work-a2-cd", CLAUDE_IDLE: "1" },
+    now: 97_638_000,
+    sid: "sid-a2-cd",
+    answers: ["SILENT: cd"],
+    fail: { storeSet: (k) => k.indexOf("catalyst-probes:last:") === 0 },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  await hook(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  await hook(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  const verdicts = shards393(m.writes, "/idle-watch/journal.jsonl.shard.").filter(r => r.verdict !== undefined)
+  expect(verdicts.length, "вторая консультация внутри окна не состоялась").toBe(1)
+  expect(verdicts[0].lost && verdicts[0].lost["consult-last"] ? verdicts[0].lost["consult-last"].n : 0,
+    "отказ записи отметки уехал полем lost").toBeGreaterThanOrEqual(1)
+})
+
+test("#393-A2 таймер свёртки: cancel бросает -- старый колбэк инертен", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const m = mod$393({
+    files: { "/probes-a2-fold/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-a2-fold" },
+    now: 97_639_000,
+    fail: { everyCancel: true },
+  })
+  failoverBindSet("ag-a2fold", { ladder: ["m-a2fold"], rungEffort: { "m-a2fold": "max" }, subagentType: "t", class: "", sticky: "m-a2fold" })
+  const okNext: any = () => (async function* () {
+    return { usage: { out: 1 }, stopReason: "end_turn", text: "ok" }
+  })()
+  const step = hook393(subs393(), "turn.step")
+  await drainStream(step(m.$, { agentId: "ag-a2fold", turnId: "t-f1", index: 0, model: "m-a2fold", messageCount: 1 }, okNext))
+  expect(m.everyCbs.length).toBe(1)
+  failoverFoldReset()
+  await drainStream(step(m.$, { agentId: "ag-a2fold", turnId: "t-f2", index: 0, model: "m-a2fold", messageCount: 1 }, okNext))
+  expect(m.everyCbs.length).toBe(2)
+  expect(lostN393("failover-fold-timer-cancel") >= 1).toBe(true)
+  await m.everyCbs[0]()
+  expect(shards393(m.writes, "/failover/journal.jsonl.shard.").length,
+    "колбэк отменённого таймера ничего не пишет").toBe(0)
+  await m.everyCbs[1]()
+  const folds = shards393(m.writes, "/failover/journal.jsonl.shard.")
+  expect(folds.length).toBe(1)
+  expect(folds[0].fold).toBe(true)
+  expect(folds[0].n).toBe(1)
+  failoverBindReset()
+})
+
+// --- #393-A2-FIX1: фиксы по ревью A-2 ------------------------------------------
+//
+// CONSTRAINT: зубы U-F2* работают напрямую с экспортированной свёрткой; их
+// задвижки -- подмена $.fs.write промисом, который разрешает тест. Порядок
+// «запись на задвижке -> сброс -> открыть» держит каждый зуб сам: микрозадач
+// settle393 хватает, чтобы свёртка дошла до подвешенной записи.
+
+test("#393-A2-FIX1 U-F2a: отказ старой записи свёртки после сброса не портит новую сессию", async () => {
+  failoverBindReset()
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f1-f2a/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f1-f2a" },
+    now: 97_700_000,
+  })
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0 && !gateOpen) {
+      await gate
+      throw new Error("EIO: f1-f2a gated write refusal")
+    }
+    return origWrite(p, text)
+  }
+  failoverFoldNote(97_700_001, "sticky-f2a", "ag-f2a")
+  failoverFoldNote(97_700_002, "", "ag-f2a")
+  failoverFoldNote(97_700_003, "", "ag-f2a2")
+  const world = { globalHome: "/probes-f1-f2a" }
+  const flush1 = failoverFoldFlush(m.$, world)
+  const wrapped1 = flush1.then(() => ({ ok: true as boolean }), (e: unknown) => ({ ok: false as boolean, e }))
+  await settle393()
+  failoverFoldReset()
+  gateOpen = true
+  openGate()
+  const res1 = await wrapped1
+  expect(res1.ok, "запись, начатая до сброса, разрешается, а не бросает").toBe(true)
+  expect(failoverFoldCount(), "счётчики новой сессии не тронуты отказом старой записи").toBe(0)
+  expect(lostN393("failover-fold-stale"), "потеря старой записи названа").toBe(1)
+  failoverBindReset()
+})
+
+test("#393-A2-FIX1 U-F2b: удачная старая запись не стирает ошибку новой сессии", async () => {
+  failoverBindReset()
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f1-f2b/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f1-f2b" },
+    now: 97_710_000,
+  })
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  const origWrite = m.$.fs.write
+  let jn = 0
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      // CONSTRAINT: номер записи фиксируется НА ВХОДЕ -- возобновлённая после
+      // задвижки первая запись остаётся первой и не видит счётчик соседа.
+      const mine = ++jn
+      if (mine === 1 && !gateOpen) await gate
+      if (mine === 2) throw new Error("EIO: f1-f2b refusal-new")
+    }
+    return origWrite(p, text)
+  }
+  const world = { globalHome: "/probes-f1-f2b" }
+  failoverFoldNote(97_710_001, "sticky-f2b-old", "ag-f2b-old")
+  const flush1 = failoverFoldFlush(m.$, world)
+  const wrapped1 = flush1.then(() => ({ ok: true as boolean }), (e: unknown) => ({ ok: false as boolean, e }))
+  await settle393()
+  failoverFoldReset()
+  // запись НОВОЙ сессии отказывает -- ошибка обязана остаться названной
+  failoverFoldNote(97_710_101, "", "ag-f2b-new")
+  let flushed2 = true
+  try { await failoverFoldFlush(m.$, world) } catch (x) { flushed2 = false }
+  expect(flushed2, "отказ записи новой сессии бросает").toBe(false)
+  gateOpen = true
+  openGate()
+  const res1 = await wrapped1
+  expect(res1.ok, "старая удачная запись разрешается молча").toBe(true)
+  failoverFoldNote(97_710_201, "", "ag-f2b-new2")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => r.fold)
+  expect(folds.length).toBe(2)
+  expect(folds[1].n).toBe(2)
+  expect(String(folds[1].foldWriteErr || ""), "ошибка новой сессии пережила удачную старую запись").toContain("refusal-new")
+  failoverBindReset()
+})
+
+test("#393-A2-FIX1 U-F2c: ожидающий свёртки не виснет после сброса сессии", async () => {
+  failoverBindReset()
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f1-f2c/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f1-f2c" },
+    now: 97_720_000,
+  })
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0 && !gateOpen) await gate
+    return origWrite(p, text)
+  }
+  const world = { globalHome: "/probes-f1-f2c" }
+  failoverFoldNote(97_720_001, "", "ag-f2c")
+  const flush1 = failoverFoldFlush(m.$, world)
+  const wrapped1 = flush1.then(() => ({ ok: true as boolean }), (e: unknown) => ({ ok: false as boolean, e }))
+  await settle393()
+  const writesBefore = m.writes.length
+  let state2 = "pending"
+  const flush2 = failoverFoldFlush(m.$, world)
+  flush2.then(() => { state2 = "resolved" }, () => { state2 = "rejected" })
+  await settle393()
+  failoverFoldReset()
+  await settle393()
+  expect(state2, "ожидающий освобождается сбросом, а не виснет вечно").toBe("resolved")
+  expect(m.writes.length, "освобождённый ожидающий ничего не пишет").toBe(writesBefore)
+  gateOpen = true
+  openGate()
+  const res1 = await wrapped1
+  expect(res1.ok).toBe(true)
+  failoverBindReset()
+})
+
+test("#393-A2-FIX1 U-F3: отказ clock.every не ставит молчаливую пустышку", async () => {
+  await drainFold393()
+  let everyThrows = true
+  let everyN = 0
+  const m = mod$393({
+    files: { "/probes-f1-f3/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f1-f3" },
+    now: 97_730_000,
+  })
+  const world = { globalHome: "/probes-f1-f3" }
+  m.$.clock.every = (_ms: number, _cb: any) => {
+    everyN++
+    if (everyThrows) throw new Error("clock.every: scripted arm refusal")
+    return { cancel: () => {} }
+  }
+  // CONSTRAINT: доступ через namespace-импорт -- на коде ДО волны экспорта нет,
+  // именованный импорт ронял бы весь файл (тот же приём, что у lostWritesSnapshot).
+  const arm = (registerModule393 as any).armFailoverFoldTimer
+  expect(typeof arm, "armFailoverFoldTimer экспортирован для юнит-зуба").toBe("function")
+  const T = 97_730_000
+  arm(m.$, world, T)
+  expect(everyN).toBe(1)
+  expect(lostN393("failover-fold-timer-arm")).toBe(1)
+  arm(m.$, world, T + 1000)
+  expect(everyN, "внутри окна FOLD_ARM_RETRY_MS повтор взвода не бьёт в отказавший clock.every").toBe(1)
+  expect(lostN393("failover-fold-timer-arm")).toBe(1)
+  arm(m.$, world, T + FOLD_ARM_RETRY_MS)
+  expect(everyN, "за границей окна -- новая попытка").toBe(2)
+  expect(lostN393("failover-fold-timer-arm")).toBe(2)
+  // ручка без cancel -- своя названная потеря, не молчаливая пустышка
+  failoverFoldReset()
+  m.$.clock.every = (_ms: number, _cb: any) => { everyN++; return {} }
+  arm(m.$, world, T)
+  expect(everyN).toBe(3)
+  expect(lostN393("failover-fold-timer-handle")).toBe(1)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX2 U-F3b: откат часов снимает окно повтора взвода", async () => {
+  failoverFoldReset()
+  let everyN = 0
+  const m = mod$393({
+    files: { "/probes-f2-f3b/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-f3b" },
+    now: 97_840_000,
+  })
+  const world = { globalHome: "/probes-f2-f3b" }
+  m.$.clock.every = (_ms: number, _cb: any) => {
+    everyN++
+    throw new Error("clock.every: scripted arm refusal")
+  }
+  const arm = (registerModule393 as any).armFailoverFoldTimer
+  const T = 97_840_000
+  arm(m.$, world, T)
+  expect(everyN).toBe(1)
+  arm(m.$, world, T - 1000)
+  expect(everyN, "шаг часов назад за момент отказа разрешает повтор").toBe(2)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX1 U-F5sum: потерянное складывается при отказе записи журнала", async () => {
+  await clear393()
+  // CONSTRAINT: ключ = lastKey("f5sum", "/work-f1-sum5") из register.ts (не
+  // экспортирован -- собирается литералом по той же форме: safeId буквенен).
+  const lastK = "catalyst-probes:last:f5sum:/work-f1-sum5"
+  let refusals = 0
+  const m = mod$393({
+    files: {
+      "/probes-f1-sum5/probes.toml":
+        '[probe.f5sum]\nkind = "consult"\nact = "nudge"\n[probe.f5sum.when]\nfield = "tool_name"\nequals = "Read"\n',
+    },
+    env: { CLAUDE_PROBES_DIR: "/probes-f1-sum5", PWD: "/work-f1-sum5" },
+    now: 97_740_000,
+    sid: "sid-f1-sum5",
+    answers: ["OK: f5sum-one", "OK: f5sum-two"],
+  })
+  const origGet = m.$.store.get
+  m.$.store.get = async (k: string) => {
+    if (k === lastK) {
+      refusals++
+      throw new Error("store.get: scripted refusal " + (refusals === 1 ? "f5sum-a" : "f5sum-b"))
+    }
+    return origGet(k)
+  }
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  const origWrite = m.$.fs.write
+  let jn = 0
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/f5sum/journal.jsonl") >= 0) {
+      jn++
+      if (jn === 1 && !gateOpen) await gate
+      throw new Error("EIO: f5sum journal refusal")
+    }
+    return origWrite(p, text)
+  }
+  const hook = hook393(subs393(), "tool.call")
+  // вызов 1: потеря "a" уезжает в подвешенную запись журнала (lostSnap снят)
+  await hook(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  // вызов 2: потеря "b" копится, пока первая запись висит; его запись отказывает
+  await hook(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  gateOpen = true
+  openGate()
+  await settle393()
+  const snap = lostSnap393()["consult-last-read"]
+  expect(snap ? snap.n : 0, "обе потери сложились").toBe(2)
+  expect(snap ? snap.last : "", "названа последняя потеря").toBe("store.get: scripted refusal f5sum-b")
+})
+
+test("#393-A2-FIX2 U-F1t: catch таймера свёртки не пишет состояние чужой сессии", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f2-f1t/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-f1t" },
+    now: 97_850_000,
+    fail: { fsWrite: (p: string) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const world = { globalHome: "/probes-f2-f1t" }
+  const T = 97_850_000
+  const before = lostN393("failover-fold-timer-flush")
+  failoverFoldNote(T, "", "ag-f1t")
+  armFailoverFoldTimer(m.$, world, T)
+  expect(m.everyCbs.length, "таймер взведён").toBe(1)
+  const p = m.everyCbs[0]()
+  for (let i = 0; i < 50 && !failoverFoldWriteErr(); i++) await Promise.resolve()
+  expect(failoverFoldWriteErr(), "зуб не вакуумен: отказ записи виден в своём поколении").toContain("f1t")
+  failoverFoldReset()
+  await p
+  expect(lostN393("failover-fold-timer-flush") - before, "отказ таймера учтён по месту").toBe(1)
+  expect(failoverFoldWriteErr(), "ошибка старой сессии не записана в новую").toBe("")
+})
+
+test("#393-A2-FIX2 U-F2d: finally чужого поколения не пробуждает ждущих нового", async () => {
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f2-f2d/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-f2d" },
+    now: 97_860_000,
+  })
+  const world = { globalHome: "/probes-f2-f2d" }
+  const T = 97_860_000
+  const gates: Array<() => void> = []
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0 && gates.length < 2) {
+      let go: () => void = () => {}
+      const gate = new Promise<void>(r => { go = r })
+      gates.push(go)
+      await gate
+    }
+    return origWrite(p, text)
+  }
+  failoverFoldNote(T, "", "ag-n1")
+  const flush1 = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  expect(gates.length, "запись №1 стоит на задвижке").toBe(1)
+  failoverFoldReset()
+  failoverFoldNote(T + 1, "", "ag-gen2")
+  const flush2 = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  expect(gates.length, "запись №2 нового поколения стоит на задвижке").toBe(2)
+  // CONSTRAINT: задвижка №1 открывается после сброса, и только первые две
+  // записи стоят. finally чужого поколения не снимает foldBusy -- иначе №3
+  // пишет ag-n2, пока №2 ещё на своей задвижке.
+  gates[0]()
+  await flush1
+  await settle393()
+  failoverFoldNote(T + 2, "", "ag-n2")
+  const flush3 = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  const withN2 = () => shards393(m.writes, "/failover/journal.jsonl").filter(r => r.agents && r.agents["ag-n2"])
+  expect(withN2().length, "пока №2 стоит, агент ag-n2 не уезжает в записи").toBe(0)
+  gates[1]()
+  await flush2
+  await flush3
+  expect(withN2().length, "после отпуска №2 агент ag-n2 записан -- зуб не вакуумен").toBe(1)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX2 U-F2e: ожидающий чужого поколения уступает очередь новому", async () => {
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f2-f2e/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-f2e" },
+    now: 97_870_000,
+  })
+  const world = { globalHome: "/probes-f2-f2e" }
+  const T = 97_870_000
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  let held = 0
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      held++
+      if (held === 1 && !gateOpen) await gate
+    }
+    return origWrite(p, text)
+  }
+  failoverFoldNote(T, "", "ag-e1")
+  const flush1 = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  failoverFoldNote(T + 1, "", "ag-e2")
+  const flush2 = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  failoverFoldReset()
+  // CONSTRAINT: ожидающий старого поколения просыпается микрозадачей. Без
+  // уступки новая запись стартует раньше пробуждения, и return чужого
+  // поколения не стоит на её пути.
+  await settle393()
+  failoverFoldNote(T + 2, "", "ag-e3")
+  let state3 = "pending"
+  const flush3 = failoverFoldFlush(m.$, world).then(() => { state3 = "resolved" }, () => { state3 = "rejected" })
+  await settle393()
+  expect(state3, "№3 разрешается, не вися за ожидающим чужого поколения").toBe("resolved")
+  const recs = shards393(m.writes, "/failover/journal.jsonl")
+  const n1 = recs.filter(r => r.n === 1)
+  expect(n1.length, "новое поколение записало ровно своё окно n=1").toBe(1)
+  expect(n1[0].agents && n1[0].agents["ag-e3"], "запись принадлежит новой заметке").toBe(1)
+  gateOpen = true
+  openGate()
+  await flush1
+  await flush2
+  await flush3
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX2 U-F2f: смена липкости после сброса названа потерей", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f2-f2f/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-f2f" },
+    now: 97_880_000,
+    fail: { fsWrite: (p: string) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const world = { globalHome: "/probes-f2-f2f" }
+  const T = 97_880_000
+  const sid = "sid-f2f"
+  failoverFoldNote(T, "A", "ag-f2f")
+  const p = failoverFoldObserve(m.$, world, T + 1, "B", sid)
+  for (let i = 0; i < 50 && !failoverFoldWriteErr(); i++) await Promise.resolve()
+  expect(failoverFoldWriteErr(), "внутренний flush отказал -- зуб не вакуумен").not.toBe("")
+  failoverFoldReset()
+  let rejected = false
+  try { await p } catch (x) { rejected = true }
+  expect(rejected, "observe отклоняется").toBe(true)
+  expect(lostN393("failover-fold-stale-split"), "потеря смены липкости названа").toBe(1)
+  expect(failoverFoldCount(), "новое поколение пусто").toBe(0)
+})
+
+test("#393-A2-FIX2 U-F6a: хвост свёртки при сбросе пишется с resetTail", async () => {
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f2-f6a/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-f6a" },
+    now: 97_890_000,
+  })
+  const world = { globalHome: "/probes-f2-f6a" }
+  const T = 97_890_000
+  failoverFoldNote(T, "", "ag-a")
+  failoverFoldNote(T + 1, "", "ag-b")
+  armFailoverFoldTimer(m.$, world, T)
+  const tail = failoverFoldReset()
+  expect(tail, "хвост возвращён").not.toBeNull()
+  expect(tail!.rec.n).toBe(2)
+  expect(tail!.rec.resetTail).toBe(true)
+  expect(tail!.rec.agents["ag-a"]).toBe(1)
+  expect(tail!.rec.agents["ag-b"]).toBe(1)
+  expect(tail!.world).toBe(world)
+})
+
+test("#393-A2-FIX3 U-F6b: отказ записи хвоста /clear назван по месту, команда отвечает", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f2-f6b/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-f6b" },
+    now: 97_900_000,
+    fail: { fsWrite: (p: string) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const world = { globalHome: "/probes-f2-f6b" }
+  const T = 97_900_000
+  failoverFoldNote(T, "", "ag-b1")
+  armFailoverFoldTimer(m.$, world, T)
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  const before = lostN393("failover-fold-reset-tail")
+  const res = { text: "cleared-f6b" }
+  const out = await cl[0].fn(m.$, { command: "clear", args: "" }, async () => res)
+  expect(out, "команда отвечает своим результатом").toBe(res)
+  await settle393()
+  expect(lostN393("failover-fold-reset-tail") - before, "отказ записи хвоста учтён по месту").toBe(1)
+  expect(String(lostSnap393()["failover-fold-reset-tail"].last), "причина -- отказ журнала").toContain("EIO")
+  expect(failoverFoldCount(), "новое поколение пусто").toBe(0)
+})
+
+test("#393-A2-FIX2 U-J1: удачная запись не стирает чужую ошибку журнала", async () => {
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f2-j1/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f2-j1" },
+    now: 97_910_000,
+  })
+  const world = { globalHome: "/probes-f2-j1" }
+  const T = 97_910_000
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  let held = 0
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      const ord = ++held
+      // CONSTRAINT: номер вызова фиксируется до ожидания. Общий held к моменту
+      // возобновления A уже равен 2, и проверка после await бросила бы саму A.
+      if (ord === 1 && !gateOpen) await gate
+      if (ord === 2) throw new Error("EIO: j1-b")
+    }
+    return origWrite(p, text)
+  }
+  // CONSTRAINT: две свёртки сериализованы foldBusy и не встречаются внутри
+  // appendJournal. Хвост /clear пишется мимо foldBusy, поэтому отказ B
+  // случается, пока A ещё несёт свой carriedErr.
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  failoverFoldNote(T, "", "ag-j1a")
+  armFailoverFoldTimer(m.$, world, T)
+  await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+  expect(held, "запись A (хвост сброса) стоит на задвижке").toBe(1)
+  failoverFoldNote(T + 1, "", "ag-j1b")
+  const flushB = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await flushB
+  await settle393()
+  expect(held, "запись B отказала, пока A ещё внутри appendJournal").toBe(2)
+  gateOpen = true
+  openGate()
+  await settle393()
+  failoverFoldNote(T + 2, "", "ag-j1c")
+  await failoverFoldFlush(m.$, world)
+  const recs = shards393(m.writes, "/failover/journal.jsonl")
+  const c = recs.filter(r => r.agents && r.agents["ag-j1c"])
+  expect(c.length, "запись C состоялась").toBe(1)
+  expect(String(c[0].journalWriteErr || ""), "C несёт ошибку отказавшей B").toContain("j1-b")
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX3 U-J2: отказ соседней записи с ТЕМ ЖЕ текстом не стирается", async () => {
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f3-j2/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-j2" },
+    now: 97_920_000,
+  })
+  const world = { globalHome: "/probes-f3-j2" }
+  const T = 97_920_000
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  let held = 0
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      const ord = ++held
+      if (ord === 1) throw new Error("EIO: j2-same")
+      if (ord === 2 && !gateOpen) await gate
+      if (ord === 3) throw new Error("EIO: j2-same")
+    }
+    return origWrite(p, text)
+  }
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  armFailoverFoldTimer(m.$, world, T)
+  failoverFoldNote(T, "", "ag-j2a")
+  await failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  expect(held, "первая запись отказала текстом j2-same").toBe(1)
+  await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+  expect(held, "запись A (хвост сброса) несёт j2-same и стоит на задвижке").toBe(2)
+  armFailoverFoldTimer(m.$, world, T)
+  failoverFoldNote(T + 1, "", "ag-j2b")
+  await failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  expect(held, "запись B отказала тем же текстом, пока A внутри appendJournal").toBe(3)
+  gateOpen = true
+  openGate()
+  await settle393()
+  failoverFoldNote(T + 2, "", "ag-j2c")
+  await failoverFoldFlush(m.$, world)
+  const recs = shards393(m.writes, "/failover/journal.jsonl")
+  const c = recs.filter(r => r.agents && r.agents["ag-j2c"])
+  expect(c.length, "запись C состоялась").toBe(1)
+  expect(String(c[0].journalWriteErr || ""), "C несёт отказ B").toContain("j2-same")
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX3 U-F6c: хвост сброса несёт foldWriteErr и foldSplitLost", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f3-f6c/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-f6c" },
+    now: 97_930_000,
+    fail: { fsWrite: (p: string) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const world = { globalHome: "/probes-f3-f6c" }
+  const T = 97_930_000
+  failoverFoldNote(T, "A", "ag-f6c")
+  let rejected = false
+  try { await failoverFoldObserve(m.$, world, T + 1, "B", "sid-f6c") } catch (x) { rejected = true }
+  expect(rejected, "смена липкости при отказе записи отклоняется").toBe(true)
+  const tail = failoverFoldReset()
+  expect(tail, "хвост возвращён").not.toBeNull()
+  expect(tail!.rec.foldSplitLost, "хвост несёт потерю окна").toBe(1)
+  expect(String(tail!.rec.foldWriteErr || ""), "хвост несёт ошибку записи").toContain("EIO")
+})
+
+test("#393-A2-FIX3 U-F3z: отказ взвода в момент 0 держит окно", async () => {
+  failoverFoldReset()
+  let everyN = 0
+  const m = mod$393({
+    files: { "/probes-f3-f3z/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-f3z" },
+    now: 0,
+  })
+  const world = { globalHome: "/probes-f3-f3z" }
+  m.$.clock.every = (_ms: number, _cb: any) => {
+    everyN++
+    throw new Error("clock.every: scripted arm refusal")
+  }
+  const arm = (registerModule393 as any).armFailoverFoldTimer
+  arm(m.$, world, 0)
+  expect(everyN).toBe(1)
+  arm(m.$, world, 1)
+  expect(everyN, "миг после отказа в момент 0 -- повтора нет").toBe(1)
+  arm(m.$, world, FOLD_ARM_RETRY_MS)
+  expect(everyN, "через окно от момента 0 -- повтор").toBe(2)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX3 U-F3f: стоящие часы не держат окно взвода вечно", async () => {
+  failoverFoldReset()
+  let everyN = 0
+  const m = mod$393({
+    files: { "/probes-f3-f3f/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-f3f" },
+    now: 97_940_000,
+  })
+  const world = { globalHome: "/probes-f3-f3f" }
+  m.$.clock.every = (_ms: number, _cb: any) => {
+    everyN++
+    throw new Error("clock.every: scripted arm refusal")
+  }
+  const arm = (registerModule393 as any).armFailoverFoldTimer
+  const K = (registerModule393 as any).FOLD_ARM_RETRY_CALLS
+  expect(K).toBe(64)
+  const T = 97_940_000
+  arm(m.$, world, T)
+  expect(everyN).toBe(1)
+  for (let i = 0; i < K; i++) arm(m.$, world, T)
+  expect(everyN, "K пропусков при стоящих часах").toBe(1)
+  arm(m.$, world, T)
+  expect(everyN, "после K пропусков -- повтор").toBe(2)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX3 B-F4z: отказ уборки в момент 0 повторяется через окно", async () => {
+  await clear393()
+  const poison = "v:judge:poison-f3b4z"
+  const m = mod$393({
+    files: judgeFiles393("/probes-f3-b4z"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-b4z", PWD: "/work-f3-b4z", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 0 } },
+    answers: ["OK: f3b4z-a", "OK: f3b4z-b", "OK: f3b4z-c"],
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  let first = true
+  const origGet = m.$.store.get
+  m.$.store.get = async (k: string) => {
+    if (String(k) === poison && first) { first = false; m.setNow(0) }
+    return origGet(k)
+  }
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+
+  await consult("f3b4z one")
+  expect(sweeps(), "уборка состоялась, отказ зафиксирован в момент 0").toBe(1)
+  m.setNow(1)
+  await consult("f3b4z two")
+  expect(sweeps(), "миг после отказа -- уборки нет").toBe(1)
+  m.setNow(600_000)
+  await consult("f3b4z three")
+  expect(sweeps(), "через SWEEP_RETRY_MS от момента 0 уборка повторяется").toBe(2)
+})
+
+test("#393-A2-FIX3 B-F4f: стоящие часы не держат окно уборки вечно", async () => {
+  await clear393()
+  const poison = "v:judge:poison-f3b4f"
+  const K = (registerModule393 as any).SWEEP_RETRY_CALLS
+  expect(K).toBe(64)
+  const m = mod$393({
+    files: judgeFiles393("/probes-f3-b4f"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-b4f", PWD: "/work-f3-b4f", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 900_000 } },
+    answers: Array.from({ length: K + 4 }, (_, i) => "OK: f3b4f-" + i),
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+
+  await consult("f3b4f first")
+  expect(sweeps(), "первая уборка отказала").toBe(1)
+  for (let i = 0; i < K; i++) await consult("f3b4f skip " + i)
+  expect(sweeps(), "K пропусков при стоящих часах").toBe(1)
+  await consult("f3b4f after")
+  expect(sweeps(), "после K пропусков -- повтор").toBe(2)
+})
+
+test("#393-A2-FIX3 B-F4g: консультация, начатая до чужого отказа, не повторяет уборку немедленно", async () => {
+  await clear393()
+  const poison = "v:judge:poison-f3b4g"
+  const m = mod$393({
+    files: judgeFiles393("/probes-f3-b4g"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-b4g", PWD: "/work-f3-b4g", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 900_000 } },
+    answers: ["OK: f3b4g-a", "OK: f3b4g-b", "OK: f3b4g-c"],
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  let gated = 0
+  const origGet = m.$.store.get
+  m.$.store.get = async (k: string) => {
+    if (String(k).indexOf("catalyst-probes:last:judge") === 0 && gated++ === 0) await gate
+    return origGet(k)
+  }
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+
+  const x = consult("f3b4g early")
+  await settle393()
+  expect(gated, "ранняя консультация (t0 = 1 000 000) стоит на задвижке").toBe(1)
+  m.setNow(1_600_001)
+  await consult("f3b4g late")
+  expect(sweeps(), "поздняя консультация убрала, отказ в 1 600_001").toBe(1)
+  m.setNow(1_600_002)
+  openGate()
+  await x
+  expect(sweeps(), "ранний t0 не читается как откат часов").toBe(1)
+})
+
+test("#393-A2-FIX3 U-F6d: хвост без дома журнала назван по месту", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f3-f6d/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-f6d" },
+    now: 97_950_000,
+  })
+  const T = 97_950_000
+  failoverFoldNote(T, "", "ag-f6d")
+  armFailoverFoldTimer(m.$, {}, T)
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  const before = lostN393("failover-fold-reset-tail")
+  const res = { text: "cleared-f6d" }
+  const out = await cl[0].fn(m.$, { command: "clear", args: "" }, async () => res)
+  expect(out, "команда отвечает своим результатом").toBe(res)
+  await settle393()
+  expect(lostN393("failover-fold-reset-tail") - before, "хвост без дома учтён по месту").toBe(1)
+  expect(String(lostSnap393()["failover-fold-reset-tail"].last)).toContain("no journal home")
+})
+
+test("#393-A2-FIX3 U-G6a: время вне диапазона Date не уносит запись свёртки", async () => {
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f3-g6a/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f3-g6a" },
+    now: 97_960_000,
+  })
+  const world = { globalHome: "/probes-f3-g6a" }
+  failoverFoldNote(1e16, "", "ag-g6a")
+  await failoverFoldFlush(m.$, world)
+  const recs = shards393(m.writes, "/failover/journal.jsonl").filter(r => r.agents && r.agents["ag-g6a"])
+  expect(recs.length, "запись свёртки состоялась").toBe(1)
+  expect(recs[0].t).toBe("invalid-time:10000000000000000")
+  expect(recs[0].tFirst).toBe("invalid-time:10000000000000000")
+  expect(failoverFoldCount(), "снимок снят").toBe(0)
+})
+
+test("#393-A2-FIX3 U-G6b: время вне диапазона Date не срывает сброс", async () => {
+  failoverFoldReset()
+  failoverFoldNote(1e16, "", "ag-g6b")
+  const tail = failoverFoldReset()
+  expect(tail, "хвост возвращён").not.toBeNull()
+  expect(tail!.rec.t).toBe("invalid-time:10000000000000000")
+  expect(failoverFoldCount(), "новое поколение пусто").toBe(0)
+})
+
+// --- #393-A2-FIX4: хвост /clear без потерь, повтор уборки без гонки ----------
+//
+// CONSTRAINT: новые экспорты регистрово читаются ТОЛЬКО через namespace-импорт
+// (as any): на коде ДО волны их нет, и именованный импорт уронил бы весь файл.
+
+test("#393-A2-FIX4 U-T1: хвост /clear при отказе записи возвращает содержимое в состояние", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f4-t1/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f4-t1" },
+    now: 97_980_000,
+  })
+  const world = { globalHome: "/probes-f4-t1" }
+  const T = 97_980_000
+  let mode = "ok"
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      if (mode === "split") throw new Error("EIO: t1-split")
+      if (mode === "tail") throw new Error("EIO: t1-tail")
+    }
+    return origWrite(p, text)
+  }
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  armFailoverFoldTimer(m.$, world, T)
+  failoverFoldNote(T, "A", "ag-t1")
+  mode = "split"
+  await failoverFoldObserve(m.$, world, T + 1, "B", "sid-t1").then(() => {}, () => {})
+  mode = "tail"
+  await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+  const foldResetLost = (registerModule393 as any).failoverFoldResetLost
+  const foldSplitLost = (registerModule393 as any).failoverFoldSplitLost
+  expect(foldResetLost(), "шаги неписаного хвоста вернулись счётом foldResetLost").toBe(1)
+  expect(foldSplitLost(), "потеря окна вернулась счётом foldSplitLost").toBe(1)
+  expect(failoverFoldWriteErr(), "ошибка хвоста в состоянии").toContain("t1-tail")
+  expect(failoverFoldWriteErr(), "ошибка окна в состоянии").toContain("t1-split")
+  mode = "ok"
+  failoverFoldNote(T + 2, "", "ag-t1b")
+  await failoverFoldFlush(m.$, world)
+  const recs = shards393(m.writes, "/failover/journal.jsonl")
+  const c = recs.filter(r => r.agents && r.agents["ag-t1b"])
+  expect(c.length, "запись новой сессии состоялась").toBe(1)
+  expect(c[0].foldResetLost, "запись несёт вернувшийся foldResetLost").toBe(1)
+  expect(c[0].foldSplitLost, "запись несёт вернувшийся foldSplitLost").toBe(1)
+  expect(String(c[0].foldWriteErr || ""), "запись несёт ошибку хвоста").toContain("t1-tail")
+  expect(foldResetLost(), "после удачи состояние чисто").toBe(0)
+  expect(foldSplitLost(), "потеря окна доставлена").toBe(0)
+  expect(failoverFoldWriteErr(), "ошибка доставлена").toBe("")
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX4 U-T2: возврат хвоста во время удачной записи не стирается", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f4-t2/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f4-t2" },
+    now: 97_981_000,
+  })
+  const world = { globalHome: "/probes-f4-t2" }
+  const T = 97_981_000
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  let held = 0
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      held++
+      if (!gateOpen) await gate
+    }
+    return origWrite(p, text)
+  }
+  failoverFoldNote(T, "", "ag-t2")
+  const flushP = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  const foldResetLost = (registerModule393 as any).failoverFoldResetLost
+  const foldSplitLost = (registerModule393 as any).failoverFoldSplitLost
+  let cleanupLeft = -1
+  try {
+    expect(held, "запись стоит на задвижке").toBe(1)
+    tailLost({ n: 3, foldSplitLost: 2, foldWriteErr: "EIO: t2-carried" }, new Error("EIO: t2-tail"))
+    gateOpen = true
+    openGate()
+    await flushP
+    expect(foldResetLost(), "шаги хвоста, вернувшиеся во время записи, не стёрты").toBe(3)
+    expect(foldSplitLost(), "потеря окна, вернувшаяся во время записи, не стёрта").toBe(2)
+    expect(failoverFoldWriteErr(), "ошибка хвоста не стёрта").toContain("t2-tail")
+    expect(failoverFoldWriteErr(), "ошибка-пассажир не стёрта").toContain("t2-carried")
+  } finally {
+    // CONSTRAINT: зачистка состояния зуба: сценарий оставляет недоставленное,
+    // и без записи здесь следующий зуб начинался бы с чужой ошибки.
+    failoverFoldNote(T + 1, "", "ag-t2b")
+    await failoverFoldFlush(m.$, world)
+    cleanupLeft = foldResetLost()
+    failoverFoldReset()
+  }
+  expect(cleanupLeft, "зачистка зуба доставила недоставленное").toBe(0)
+})
+
+test("#393-A2-FIX4 U-T3: сброс без шагов не теряет недоставленное", async () => {
+  await drainFold393()
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  const foldResetLost = (registerModule393 as any).failoverFoldResetLost
+  tailLost({ n: 2 }, new Error("EIO: t3"))
+  expect(failoverFoldReset(), "без шагов хвоста нет").toBeNull()
+  expect(foldResetLost(), "недоставленные шаги остались в состоянии").toBe(2)
+  expect(failoverFoldWriteErr(), "недоставленная ошибка осталась в состоянии").toContain("t3")
+  failoverFoldNote(97_982_000, "", "ag-t3")
+  const tail = failoverFoldReset()
+  expect(tail, "хвост новой записи возвращён").not.toBeNull()
+  expect(tail!.rec.foldResetLost, "хвост несёт недоставленные шаги").toBe(2)
+  expect(String(tail!.rec.foldWriteErr || ""), "хвост несёт недоставленную ошибку").toContain("t3")
+  expect(foldResetLost(), "хвост забрал недоставленное из состояния").toBe(0)
+  expect(failoverFoldWriteErr()).toBe("")
+})
+
+test("#393-A2-FIX4 U-T4: отказ записи сохраняет прежнюю недоставленную ошибку", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f4-t4/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f4-t4" },
+    now: 97_983_000,
+  })
+  const world = { globalHome: "/probes-f4-t4" }
+  const T = 97_983_000
+  let writeN = 0
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      writeN++
+      throw new Error("EIO: t4-" + (writeN === 1 ? "first" : "second"))
+    }
+    return origWrite(p, text)
+  }
+  failoverFoldNote(T, "", "ag-t4")
+  await failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  const err = failoverFoldWriteErr()
+  expect(err, "новый отказ в состоянии").toContain("t4-second")
+  expect(err, "прежний отказ сохранён").toContain("t4-first")
+  expect(err.indexOf("t4-second") < err.indexOf("t4-first"), "новый отказ впереди прежнего").toBe(true)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX4 B-F4r1: две консультации одного окна повтора -- одна уборка", async () => {
+  await clear393()
+  const poison = "v:judge:poison-f4r1"
+  const m = mod$393({
+    files: judgeFiles393("/probes-f4-r1"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f4-r1", PWD: "/work-f4-r1", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 900_000 } },
+    answers: ["OK: f4r1-a", "OK: f4r1-b", "OK: f4r1-c"],
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+
+  await consult("f4r1 one")
+  expect(sweeps(), "первая уборка состоялась, отказ зафиксирован").toBe(1)
+  m.setNow(1_000_000 + 600_000)
+  await Promise.all([consult("f4r1 two"), consult("f4r1 three")])
+  expect(sweeps(), "две консультации одного окна запускают одну уборку").toBe(2)
+})
+
+test("#393-A2-FIX4 B-F4r2: уборка, начатая до /clear, не пишет отказ в новую сессию", async () => {
+  await clear393()
+  const poison = "v:judge:poison-f4r2"
+  let poisonOn = true
+  const m = mod$393({
+    files: judgeFiles393("/probes-f4-r2"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f4-r2", PWD: "/work-f4-r2", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 900_000 } },
+    answers: ["OK: f4r2-a", "OK: f4r2-b", "OK: f4r2-c"],
+    fail: { storeGet: (k: string) => poisonOn && k === poison },
+  })
+  let poisonReads = 0
+  let holdClock = false
+  let clockHeld = 0
+  let clockGateOpen = false
+  let openClockGate: () => void = () => {}
+  const clockGate = new Promise<void>(r => { openClockGate = r })
+  const origGet = m.$.store.get
+  m.$.store.get = async (k: string) => {
+    if (String(k) === poison) {
+      poisonReads++
+      if (poisonReads === 1) holdClock = true
+    }
+    return origGet(k)
+  }
+  const origNow = m.$.clock.now
+  m.$.clock.now = async () => {
+    if (holdClock) {
+      holdClock = false
+      clockHeld++
+      await clockGate
+    }
+    return origNow()
+  }
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+
+  const p1 = consult("f4r2 one")
+  await settle393()
+  expect(clockHeld, "отказ старой уборки встал на задвижке часов").toBe(1)
+  await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+  poisonOn = false
+  await consult("f4r2 two")
+  clockGateOpen = true
+  openClockGate()
+  await p1
+  const before = sweeps()
+  m.setNow(1_000_000 + 600_000)
+  await consult("f4r2 three")
+  expect(sweeps() - before, "отказ старой уборки не открыл повтор в новой сессии").toBe(0)
+})
+
+test("#393-A2-FIX4 U-N1: время вне диапазона Date -- отказ часов", async () => {
+  failoverFoldReset()
+  const nowMs = (registerModule393 as any).nowMs
+  const v1 = await nowMs({ clock: { now: async () => 1e308 } })
+  expect(Number.isFinite(v1) && Math.abs(v1) <= 8.64e15, "1e308 отвергнут: значение в диапазоне Date").toBe(true)
+  expect(v1, "1e308 не возвращён часами").not.toBe(1e308)
+  expect(await nowMs({ clock: { now: async () => 8.64e15 } }), "граница диапазона принимается").toBe(8.64e15)
+  const v3 = await nowMs({ clock: { now: async () => 8.64e15 + 1 } })
+  expect(v3, "за границей -- отказ часов, не сырое значение").not.toBe(8.64e15 + 1)
+  expect(Number.isFinite(v3) && Math.abs(v3) <= 8.64e15, "после отказа значение в диапазоне").toBe(true)
+})
+
+// CONSTRAINT: зуб держит правило экспорта; боевой вход конечен по nowMs (Р1 A2-FIX4)
+test("#393-A2-FIX4 U-F3n: нечисловое время взвода меряет окно счётом", async () => {
+  failoverFoldReset()
+  let everyN = 0
+  const m = mod$393({
+    files: { "/probes-f4-f3n/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f4-f3n" },
+    now: 97_970_000,
+  })
+  const world = { globalHome: "/probes-f4-f3n" }
+  m.$.clock.every = (_ms: number, _cb: any) => {
+    everyN++
+    throw new Error("clock.every: scripted arm refusal")
+  }
+  const arm = (registerModule393 as any).armFailoverFoldTimer
+  const K = (registerModule393 as any).FOLD_ARM_RETRY_CALLS
+  expect(K).toBe(64)
+  const T = 97_970_000
+  arm(m.$, world, T)
+  expect(everyN).toBe(1)
+  for (let i = 0; i < K; i++) arm(m.$, world, Infinity)
+  expect(everyN, "K пропусков при нечисловом времени").toBe(1)
+  arm(m.$, world, Infinity)
+  expect(everyN, "после K пропусков -- повтор").toBe(2)
+  failoverFoldReset()
+})
+
+// CONSTRAINT: зуб держит правило экспорта; боевой вход конечен по nowMs (Р1 A2-FIX4)
+test("#393-A2-FIX4 B-F4n: нечисловое время уборки меряет окно счётом", async () => {
+  await clear393()
+  const poison = "v:judge:poison-f4n"
+  const m = mod$393({
+    files: judgeFiles393("/probes-f4n"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f4n", PWD: "/work-f4n", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 900_000 } },
+    answers: ["OK: f4n-a"],
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  const sweeps = () => shards393(m.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep").length
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+  await consult("f4n one")
+  expect(sweeps(), "первая уборка с отказом состоялась").toBe(1)
+  const due = (registerModule393 as any).sweepRetryDue
+  for (let i = 0; i < 64; i++) expect(due(Infinity), "пропуск " + i).toBe(false)
+  expect(due(Infinity), "после SWEEP_RETRY_CALLS пропусков -- повтор").toBe(true)
+})
+
+test("#393-A2-FIX5 B-F5g1: поздний finally старой уборки не открывает третью уборку, пока новая внутри", async () => {
+  await clear393()
+  const poison = "v:judge:poison-d1"
+  const m = mod$393({
+    files: judgeFiles393("/probes-d1"),
+    env: { CLAUDE_PROBES_DIR: "/probes-d1", PWD: "/work-d1", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 900_000 } },
+    answers: ["OK: d1-a", "OK: d1-b", "OK: d1-c", "OK: d1-d"],
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  let poisonReads = 0
+  let holdClock = false
+  let clockHeld = 0
+  const clockGates: Array<() => void> = []
+  const origGet = m.$.store.get
+  m.$.store.get = async (k: string) => {
+    if (String(k) === poison) { poisonReads++; if (poisonReads <= 2) holdClock = true }
+    return origGet(k)
+  }
+  const origNow = m.$.clock.now
+  m.$.clock.now = async () => {
+    if (holdClock) {
+      holdClock = false
+      clockHeld++
+      let open: () => void = () => {}
+      const p = new Promise<void>(r => { open = r })
+      clockGates.push(open)
+      await p
+    }
+    return origNow()
+  }
+  let keysCalls = 0
+  const origKeys = m.$.store.keys
+  m.$.store.keys = async () => { keysCalls++; return origKeys() }
+  let sweepWrites = 0
+  let openSweepWrite: () => void = () => {}
+  const sweepWriteP = new Promise<void>(r => { openSweepWrite = r })
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/judge/journal.jsonl") >= 0 && String(text).indexOf("store_sweep") >= 0) {
+      sweepWrites++
+      if (sweepWrites === 2) await sweepWriteP
+    }
+    return origWrite(p, text)
+  }
+  const hook = hook393(subs393(), "tool.call")
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+
+  const pA = consult("d1 A")
+  await settle393()
+  expect(clockHeld, "A: отказ прочитан, публикация стоит на часах").toBe(1)
+  await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+  const pB = consult("d1 B")
+  await settle393()
+  expect(clockHeld, "B: та же задвижка в новой сессии").toBe(2)
+  clockGates[0]()
+  await pA
+  expect(sweepWrites, "A дописала свою запись уборки и вышла").toBe(1)
+  const keysAfterA = keysCalls
+  clockGates[1]()
+  await settle393()
+  expect(sweepWrites, "B стоит внутри себя, на записи уборки").toBe(2)
+  m.setNow(1_000_000 + 600_000)
+  const pC = consult("d1 C")
+  await settle393()
+  expect(keysCalls - keysAfterA, "пока B внутри, третья уборка не стартует (окно повтора истекло)").toBe(0)
+  openSweepWrite()
+  await Promise.all([pB, pC])
+  expect(sweeps393(m.writes), "две записи уборки: A и B").toBe(2)
+})
+
+test("#393-A2-FIX5 B-F5g2: консультация, прочитавшая часы до публикации отказа, не открывает вторую уборку, пока первая внутри", async () => {
+  await drainFold393()
+  await clear393()
+  const poison = "v:judge:poison-f5g2"
+  const m = mod$393({
+    files: judgeFiles393("/probes-f5g2"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f5g2", PWD: "/work-f5g2", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x", t: 900_000 } },
+    answers: ["OK: g2-one", "OK: g2-C", "OK: g2-B"],
+    fail: { storeGet: (k: string) => k === poison },
+  })
+  const hook = hook393(subs393(), "tool.call")
+  const consult = (p: string) => hook(m.$, { tool: "Agent", prompt: p, subagent_type: "scout" }, async (e: any) => e)
+  let keysCalls = 0
+  const origKeys = m.$.store.keys
+  m.$.store.keys = async () => { keysCalls++; return origKeys() }
+  let sweepWrites = 0
+  let openSweepWrite: () => void = () => {}
+  const sweepWriteP = new Promise<void>(r => { openSweepWrite = r })
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/judge/journal.jsonl") >= 0 && String(text).indexOf("store_sweep") >= 0) {
+      sweepWrites++
+      if (sweepWrites === 2) await sweepWriteP
+    }
+    return origWrite(p, text)
+  }
+  // CONSTRAINT (форма стенда): часы парковки различаются по флагу parkClock,
+  // а не по вызывающему: обе консультации обязаны стоять на часах проверки
+  // повтора (:3406) ДО старта уборки A -- иначе внешняя проверка (не брать
+  // уборку при идущей) закрыла бы консультации B ещё до часов.
+  let parkClock = false
+  let clockHeld = 0
+  const clockGates: Array<() => void> = []
+  const origNow = m.$.clock.now
+  m.$.clock.now = async () => {
+    if (!parkClock) return origNow()
+    clockHeld++
+    let open: () => void = () => {}
+    const p = new Promise<void>(r => { open = r })
+    clockGates.push(open)
+    await p
+    return origNow()
+  }
+
+  // --- предыстория как в B-F4r1: первая консультация, уборка отказала --------
+  await consult("g2 one")
+  expect(sweeps393(m.writes), "первая уборка состоялась и отказалась").toBe(1)
+  const lostBefore = lostN393("judge-store-sweep-items")
+  m.setNow(1_000_000 + 600_000)
+
+  // --- две конкурентные консультации: C и B, обе на часах проверки повтора ---
+  // Нумерация парковок (детерминирована порядком открытия ниже): у каждой
+  // консультации ТРИ чтения часов до проверки повтора -- worldFor:1386,
+  // loadAllowedByClass:298 (мемо мира на предыстории протухло на 600 000 мс,
+  // а мемо C ещё не записано, пока C стоит на своих часах) и t0:3211; затем
+  // часы проверки повтора :3406. B обязана пройти внешнюю проверку ДО старта
+  // уборки A -- иначе идущая уборка закрыла бы ей ветку раньше часов.
+  parkClock = true
+  const pC = consult("g2 C")
+  await settle393()
+  clockGates[0]()
+  await settle393()
+  const pB = consult("g2 B")
+  await settle393()
+  clockGates[2]()
+  await settle393()
+  clockGates[1]()
+  await settle393()
+  clockGates[3]()
+  await settle393()
+  clockGates[4]()
+  await settle393()
+  clockGates[5]()
+  await settle393()
+  expect(clockHeld, "обе консультации удержали часы: по три в преамбуле и по одному в проверке повтора").toBe(8)
+
+  // --- часы C отвечают первыми: C запускает уборку A --------------------------
+  clockGates[6]()
+  await settle393()
+  clockGates[8]()
+  await settle393()
+  // CONSTRAINT: контроль меряется до открытия часов публикации A: appendJournal
+  // записи уборки осушает lostWrites в летящую строку, и после задвижки записи
+  // снапшот модуля уже пуст -- но и здесь отказ A записан раньше часов B.
+  expect(lostN393("judge-store-sweep-items") - lostBefore, "отказ A записан до ответа часов B").toBe(1)
+  m.setNow(1_000_000 + 700_000)
+  clockGates[9]()
+  await settle393()
+  expect(sweepWrites, "A дошла до записи своей строки и стоит на задвижке").toBe(2)
+  const keysAfterA = keysCalls
+
+  // --- часы B отвечают значением меньше sweepFailedAt: «шаг часов назад» -----
+  parkClock = false
+  m.setNow(1_000_000 + 650_000)
+  clockGates[7]()
+  await pB
+  expect(keysCalls - keysAfterA, "пока A внутри, вторая уборка не стартует (шаг часов назад повтор разрешает, идущая уборка -- нет)").toBe(0)
+
+  openSweepWrite()
+  await pC
+  expect(sweeps393(m.writes), "после открытия задвижки -- ровно одна новая запись уборки").toBe(2)
+})
+
+test("#393-A2-FIX5 U-F5d: запись свёртки в полёте через /clear без шагов не доставляет перенос дважды", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f5d/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f5d" },
+    now: 98_710_000,
+  })
+  const world = { globalHome: "/probes-f5d" }
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  const foldResetLost = (registerModule393 as any).failoverFoldResetLost
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0 && !gateOpen) await gate
+    return origWrite(p, text)
+  }
+  tailLost({ n: 2 }, new Error("EIO: f5d-tail"))
+  failoverFoldNote(98_710_001, "", "ag-f5d")
+  const flushP = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  failoverFoldReset()
+  gateOpen = true
+  openGate()
+  await flushP
+  failoverFoldNote(98_710_101, "", "ag-f5d2")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  const sumReset = folds.reduce((acc: number, r: any) => acc + Number(r.foldResetLost || 0), 0)
+  expect(sumReset, "перенос 2 доставлен ровно один раз").toBe(2)
+  expect(foldResetLost(), "после всего состояние чисто").toBe(0)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX5 U-F5c1: отрезанный текст ошибок свёртки назван числом", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f5c1/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f5c1" },
+    now: 98_720_000,
+  })
+  const world = { globalHome: "/probes-f5c1" }
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  const msgs: string[] = []
+  for (let k = 1; k <= 4; k++) {
+    // CONSTRAINT: вход хвоста режется до 240 символов (failoverFoldTailLost),
+    // полная склейка считается по той же форме -- разрезанные сообщения.
+    const msg = ("EIO: M" + k + "-" + "x".repeat(400)).slice(0, 240)
+    msgs.unshift(msg)
+    tailLost({ n: 1 }, new Error(msg))
+  }
+  failoverFoldNote(98_720_001, "", "ag-f5c1")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds.length, "одна строка свёртки в журнале").toBe(1)
+  expect(String(folds[0].foldWriteErr || "").length, "текст ошибки держит голову длиной FOLD_ERR_CAP").toBe(720)
+  expect(Number(folds[0].foldWriteErrCut || 0) > 0, "отрезанное названо числом, не молчанием").toBe(true)
+  expect(String(folds[0].foldWriteErr).length + Number(folds[0].foldWriteErrCut || 0),
+    "голова плюс отрезанное равно полному склеенному тексту").toBe(msgs.join(" | ").length)
+  expect(String(folds[0].foldWriteErr), "выжила голова: новое впереди, отрезан хвост старого").toBe(msgs.join(" | ").slice(0, 720))
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX5 U-F5c2: доставленный текст ошибки не едет второй раз", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f5c2/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f5c2" },
+    now: 98_730_000,
+  })
+  const world = { globalHome: "/probes-f5c2" }
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  let writeN = 0
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      // CONSTRAINT: номер записи фиксируется НА ВХОДЕ -- возобновлённая после
+      // задвижки вторая запись остаётся второй и не видит счётчик соседа.
+      const mine = ++writeN
+      if (mine === 1) throw new Error("EIO: c2-first")
+      if (mine === 2 && !gateOpen) await gate
+    }
+    return origWrite(p, text)
+  }
+  failoverFoldNote(98_730_001, "", "ag-f5c2a")
+  await failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  failoverFoldNote(98_730_101, "", "ag-f5c2b")
+  const flushP = failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  await settle393()
+  tailLost({ n: 0 }, new Error("EIO: c2-during"))
+  gateOpen = true
+  openGate()
+  await flushP
+  failoverFoldNote(98_730_201, "", "ag-f5c2c")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds.length).toBe(2)
+  expect(String(folds[0].foldWriteErr || ""), "первая удачная строка несёт прежний отказ").toContain("c2-first")
+  expect(String(folds[0].foldWriteErr || ""), "ошибка, пришедшая за время записи, не въехала в летящую запись").not.toContain("c2-during")
+  expect(String(folds[1].foldWriteErr || ""), "вторая несёт отказ, накопленный за время первой записи").toContain("c2-during")
+  expect(String(folds[1].foldWriteErr || ""), "доставленный отказ не едет повторно").not.toContain("c2-first")
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX5 U-F5s: отказ записи, начатой до сброса, возвращает шаги счётом с происхождением", async () => {
+  failoverBindReset()
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f5s/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f5s" },
+    now: 98_700_000,
+  })
+  const world = { globalHome: "/probes-f5s" }
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  let staleSid = ""
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0 && !gateOpen) {
+      try { staleSid = String((JSON.parse(String(text)) || {}).sid || "") } catch (x) { staleSid = "" }
+      await gate
+      throw new Error("EIO: d2 gated write refusal")
+    }
+    return origWrite(p, text)
+  }
+  await failoverFoldObserve(m.$, world, 98_700_001, "sticky-d2", "sid-f5s-old", "ag-d2")
+  await failoverFoldObserve(m.$, world, 98_700_002, "", "sid-f5s-old", "ag-d2")
+  await failoverFoldObserve(m.$, world, 98_700_003, "", "sid-f5s-old", "ag-d2")
+  await failoverFoldObserve(m.$, world, 98_700_004, "", "sid-f5s-old", "ag-d2")
+  const flush1 = failoverFoldFlush(m.$, world)
+  const wrapped = flush1.then(() => ({ ok: true as boolean }), (e: unknown) => ({ ok: false as boolean, e }))
+  await settle393()
+  failoverFoldReset()
+  gateOpen = true
+  openGate()
+  await wrapped
+  const lostSteps = (registerModule393 as any).failoverFoldResetLost()
+  expect(lostSteps, "n=4 шага старой свёртки вернулись счётом (правило хвоста)").toBe(4)
+  expect(lostN393("failover-fold-stale"), "потеря старой записи названа").toBe(1)
+  await failoverFoldObserve(m.$, world, 98_700_010, "", "sid-f5s-new", "ag-f5s-new")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds.length, "одна строка свёртки в журнале").toBe(1)
+  expect(folds[0].foldResetLost, "запись новой сессии несёт вернувшиеся шаги счётом").toBe(4)
+  expect(String(folds[0].foldWriteErr || ""), "запись несёт текст отказа старой записи").toContain("d2 gated write refusal")
+  expect(Array.isArray(folds[0].lostFrom) && folds[0].lostFrom.indexOf(staleSid) >= 0,
+    "запись несёт происхождение -- sid отказавшей записи").toBe(true)
+  failoverBindReset()
+})
+
+test("#393-A2-FIX7 U-F7cut: отказ записи, начатой до сброса, с длинным текстом называет отрезанное числом", async () => {
+  failoverBindReset()
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f7c/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f7c" },
+    now: 98_731_000,
+  })
+  const world = { globalHome: "/probes-f7c" }
+  let gateOpen = false
+  let openGate: () => void = () => {}
+  const gate = new Promise<void>(r => { openGate = r })
+  let staleSid = ""
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0 && !gateOpen) {
+      try { staleSid = String((JSON.parse(String(text)) || {}).sid || "") } catch (x) { staleSid = "" }
+      await gate
+      throw new Error("EIO: f7 gated write refusal " + "x".repeat(372))
+    }
+    return origWrite(p, text)
+  }
+  await failoverFoldObserve(m.$, world, 98_731_001, "sticky-d2", "sid-f7c-old", "ag-d2")
+  await failoverFoldObserve(m.$, world, 98_731_002, "", "sid-f7c-old", "ag-d2")
+  await failoverFoldObserve(m.$, world, 98_731_003, "", "sid-f7c-old", "ag-d2")
+  await failoverFoldObserve(m.$, world, 98_731_004, "", "sid-f7c-old", "ag-d2")
+  const flush1 = failoverFoldFlush(m.$, world)
+  const wrapped = flush1.then(() => ({ ok: true as boolean }), (e: unknown) => ({ ok: false as boolean, e }))
+  await settle393()
+  failoverFoldReset()
+  gateOpen = true
+  openGate()
+  await wrapped
+  const lostSteps = (registerModule393 as any).failoverFoldResetLost()
+  expect(lostSteps, "n=4 шага старой свёртки вернулись счётом (правило хвоста)").toBe(4)
+  expect(lostN393("failover-fold-stale"), "потеря старой записи названа").toBe(1)
+  await failoverFoldObserve(m.$, world, 98_731_010, "", "sid-f7c-new", "ag-f7c-new")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds.length, "одна строка свёртки в журнале").toBe(1)
+  expect(folds[0].foldResetLost, "запись новой сессии несёт вернувшиеся шаги счётом").toBe(4)
+  expect(String(folds[0].foldWriteErr || ""), "запись несёт голову текста отказа старой записи").toContain("f7 gated write refusal")
+  expect(String(folds[0].foldWriteErr || "").length, "текст отказа отрезан до 240").toBe(240)
+  expect(folds[0].foldWriteErrCut, "160 отрезанных символов старой записи названы числом").toBe(160)
+  expect(Array.isArray(folds[0].lostFrom) && folds[0].lostFrom.indexOf(staleSid) >= 0,
+    "запись несёт происхождение -- sid отказавшей записи").toBe(true)
+  failoverBindReset()
+})
+
+test("#393-A2-FIX8 U-F8drain: помощник drainFold393 оставляет чистое состояние, когда перенос едет вместе с шагами (хвостом сброса)", async () => {
+  failoverBindReset()
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f8d/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f8d" },
+    now: 98_798_000,
+    fail: { fsWrite: (p) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const world = { globalHome: "/probes-f8d" }
+  armFailoverFoldTimer(m.$, world, 98_798_001)
+  await failoverFoldObserve(m.$, world, 98_798_001, "sticky-f8d", "sid-f8d", "ag-f8d")
+  expect(m.everyCbs.length, "таймер взведён").toBe(1)
+  await m.everyCbs[0]()
+  expect(failoverFoldWriteErr(), "перенос засеян").not.toBe("")
+  expect(Object.keys(registerModule393.lostWritesSnapshot()).length > 0, "lostWrites засеян").toBe(true)
+  expect(registerModule393.lostWritesSnapshot()["failover-fold-timer-flush"]?.n, "потеря таймерной записи названа").toBe(1)
+  await drainFold393()
+  expect(failoverFoldWriteErr(), "перенос слит: foldWriteErr пуст").toBe("")
+  expect(failoverFoldResetLost(), "перенос слит: foldResetLost нулевой").toBe(0)
+  expect(failoverFoldSplitLost(), "перенос слит: foldSplitLost нулевой").toBe(0)
+  expect(Object.keys(registerModule393.lostWritesSnapshot()).length, "lostWrites слит: снапшот пуст").toBe(0)
+})
+
+test("#393-A2-FIX9 U-F9write: перенос при пустых шагах уезжает ТОЛЬКО записью помощника", async () => {
+  await drainFold393()
+  failoverBindReset()
+  failoverFoldReset()
+  const m = mod$393({
+    files: { "/probes-f9w/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f9w" },
+    now: 98_797_000,
+    fail: { fsWrite: (p) => p.indexOf("/failover/journal.jsonl") >= 0 },
+  })
+  const world = { globalHome: "/probes-f9w" }
+  armFailoverFoldTimer(m.$, world, 98_797_001)
+  await failoverFoldObserve(m.$, world, 98_797_001, "sticky-f9w", "sid-f9w", "ag-f9w")
+  await m.everyCbs[0]()
+  expect(failoverFoldWriteErr(), "перенос засеян отказом таймерной записи").not.toBe("")
+  const tail = failoverFoldReset()
+  expect(tail !== null, "сброс при шагах вернул хвост").toBe(true)
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  tailLost(tail!.rec, new Error("scripted tail refusal f9w"))
+  expect(failoverFoldCount(), "засев при ПУСТЫХ шагах").toBe(0)
+  expect(failoverFoldResetLost() > 0, "шаги хвоста ушли в foldResetLost").toBe(true)
+  expect(failoverFoldWriteErr(), "ошибка хвоста в переносе").toContain("scripted tail refusal f9w")
+  expect(failoverFoldWriteErr(), "первичная ошибка таймерной записи пережила хвост").toContain("EIO: scripted write refusal")
+  const recs = await drainFold393()
+  expect(recs.length, "помощник записал ровно одну строку свёртки").toBe(1)
+  expect(String(recs[0].foldWriteErr), "запись несёт ошибку хвоста").toContain("scripted tail refusal f9w")
+  expect(String(recs[0].foldWriteErr), "запись несёт первичную ошибку").toContain("EIO: scripted write refusal")
+  expect(String(recs[0].foldWriteErr), "запись несёт путь отказавшего шарда").toContain("for /probes-f9w/failover/journal.jsonl.shard.")
+  expect(recs[0].foldResetLost, "запись несёт шаги хвоста").toBe(1)
+  expect(recs[0].lostFrom, "запись несёт происхождение и только его").toEqual(["sid-f9w"])
+  expect(recs[0].lost && recs[0].lost["failover-fold-timer-flush"] && recs[0].lost["failover-fold-timer-flush"].n, "запись несёт снимок потери таймерной записи").toBe(1)
+  expect(String(recs[0].journalWriteErr || ""), "запись несёт ошибку журнала").toContain("/probes-f9w/failover/journal.jsonl")
+  expect(String(recs[0].lost && recs[0].lost["failover-fold-timer-flush"] && recs[0].lost["failover-fold-timer-flush"].last), "снимок потери несёт текст отказа").toContain("EIO: scripted write refusal")
+  expect(Object.keys(recs[0].lost || {}), "снимок потери несёт только таймерную запись").toEqual(["failover-fold-timer-flush"])
+  expect(Object.keys(recs[0].lost["failover-fold-timer-flush"]).sort(), "запись потери несёт ровно счёт и текст").toEqual(["last", "n"])
+  expect(recs[0].sid, "запись принадлежит сессии помощника").toBe("sid-drain")
+  expect(recs[0].n, "запись несёт один шаг помощника").toBe(1)
+  expect(recs[0].agents, "запись несёт агента помощника").toEqual({ "ag-drain": 1 })
+  // CONSTRAINT: полный перечень ключей — лишнее поле потери в записи (например foldSplitLost без отказа) обязано краснеть.
+  const shard = "EIO: scripted write refusal for /probes-f9w/failover/journal\\.jsonl\\.shard\\.agg-\\d+-98797001-1"
+  expect(String(recs[0].lost["failover-fold-timer-flush"].last), "текст потери несёт путь отказавшего шарда целиком").toMatch(new RegExp("^" + shard + "$"))
+  expect(String(recs[0].foldWriteErr), "первичная ошибка склеена из хвоста и шарда").toMatch(new RegExp("^scripted tail refusal f9w \\| " + shard + "$"))
+  expect(String(recs[0].journalWriteErr), "ошибка журнала названа по дому журнала").toMatch(new RegExp("^/probes-f9w/failover/journal\\.jsonl: " + shard + "$"))
+  expect(String(recs[0].rec), "идентификатор записи — свёртка помощника").toMatch(/^agg-\d+-98799001-1$/)
+  expect(recs[0].t, "время записи — такт помощника").toBe("1970-01-02T03:26:39.001Z")
+  expect(recs[0].tFirst, "начало окна — такт помощника").toBe("1970-01-02T03:26:39.001Z")
+  expect(recs[0].tLast, "конец окна — такт помощника").toBe("1970-01-02T03:26:39.001Z")
+  expect(recs[0].dtMs, "длительность окна одного шага").toBe(0)
+  expect(recs[0].sticky, "липкость помощника").toBe("sticky-drain")
+  expect(recs[0].carrier, "носитель — мод").toBe("mod")
+  expect(recs[0].probe, "проба — failover").toBe("failover")
+  expect(recs[0].fold, "запись — свёртка").toBe(true)
+  expect(Object.keys(recs[0]).sort(), "запись несёт ровно ожидаемые поля").toEqual(["agents", "carrier", "dtMs", "fold", "foldResetLost", "foldWriteErr", "journalWriteErr", "lost", "lostFrom", "n", "probe", "rec", "sid", "sticky", "t", "tFirst", "tLast"])
+  expect(failoverFoldWriteErr(), "перенос слит записью: foldWriteErr пуст").toBe("")
+  expect(failoverFoldResetLost(), "перенос слит записью: foldResetLost нулевой").toBe(0)
+  expect(failoverFoldSplitLost(), "перенос слит записью: foldSplitLost нулевой").toBe(0)
+  expect(Object.keys(registerModule393.lostWritesSnapshot()).length, "lostWrites слит").toBe(0)
+  failoverBindReset()
+})
+
+test("#393-A2-FIX5 U-F5o: перенос через /clear несёт происхождение", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f5o/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f5o" },
+    now: 98_980_000,
+    sid: "sid-new-f5o",
+  })
+  const world = { globalHome: "/probes-f5o" }
+  const T = 98_980_000
+  let mode = "ok"
+  let tailSid = ""
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0 && mode !== "ok") {
+      try { tailSid = String((JSON.parse(String(text)) || {}).sid || "") } catch (x) { tailSid = "" }
+      throw new Error("EIO: d3-" + mode)
+    }
+    return origWrite(p, text)
+  }
+  const subs = subs393()
+  const cl = subs.filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  armFailoverFoldTimer(m.$, world, T)
+  await failoverFoldObserve(m.$, world, T, "A", "sid-f5o-old", "ag-d3-old")
+  mode = "tail"
+  await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+  mode = "ok"
+  await failoverFoldObserve(m.$, world, T + 2, "", "sid-f5o-new", "ag-d3-new")
+  await failoverFoldFlush(m.$, world)
+  let recs = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(recs.length, "одна строка свёртки в журнале").toBe(1)
+  expect(recs[0].lostFrom, "строка переноса несёт происхождение -- sid отказавшего хвоста").toEqual([tailSid])
+  expect(recs[0].lostFrom.indexOf(recs[0].sid) < 0, "происхождение -- не sid самой строки").toBe(true)
+  // --- второй сценарий: /clear без шагов при недоставленной потере -----------
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  await failoverFoldObserve(m.$, world, T + 10, "", "sid-f5o-old2", "ag-o2")
+  await failoverFoldFlush(m.$, world)
+  tailLost({ n: 2 }, new Error("EIO: f5o-undelivered"))
+  mode = "tail2"
+  await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+  mode = "ok"
+  await failoverFoldObserve(m.$, world, T + 12, "", "sid-f5o-new2", "ag-o2new")
+  await failoverFoldFlush(m.$, world)
+  recs = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  const last = recs[recs.length - 1]
+  expect(last.foldResetLost, "недоставленные шаги доехали записью новой сессии").toBe(2)
+  expect(Array.isArray(last.lostFrom) && last.lostFrom.indexOf("sid-f5o-old2") >= 0,
+    "запись новой сессии несёт происхождение прежней").toBe(true)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX5 B-F5del: удаление исчезнувшего ключа -- не отказ уборки", async () => {
+  await drainFold393()
+  await clear393()
+  const hook = hook393(subs393(), "tool.call")
+  const sweepsOf = (mm: any) => shards393(mm.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep")
+  // (а) ключ исчезает до броска: снесла соседняя уборка после /clear
+  // CONSTRAINT: яд без t -- каноническая протухлость (B(2222)): с t внутри
+  // ttl (120 000 мс) memoUsable истинен и уборка ключ не трогает вовсе.
+  const poisonA = "v:judge:poison-f5del-a"
+  const mA = mod$393({
+    files: judgeFiles393("/probes-f5del-a"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f5del-a", PWD: "/work-f5del-a", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poisonA]: { kind: "BLOCK", rest: "x" } },
+    answers: ["OK: f5del-a"],
+  })
+  const origDeleteA = mA.$.store.delete
+  mA.$.store.delete = async (k: string) => {
+    if (String(k) === poisonA) {
+      mA.store.delete(String(k))
+      throw new Error("store.delete: scripted refusal for " + k)
+    }
+    return origDeleteA(k)
+  }
+  const lostBeforeA = lostN393("judge-store-sweep-items")
+  await hook(mA.$, { tool: "Agent", prompt: "f5del-a", subagent_type: "scout" }, async (e: any) => e)
+  const sweepsA = sweepsOf(mA)
+  expect(sweepsA.length).toBe(1)
+  expect(sweepsA[0].deleteFailed, "ключа уже нет -- отказа уборки нет").toBe(0)
+  expect(sweepsA[0].goneMeanwhile, "исчезновение под нами названо").toBe(1)
+  expect(lostN393("judge-store-sweep-items") - lostBeforeA, "потеря не объявлена").toBe(0)
+  // (б) ключ остаётся: отказ уборки честный
+  await clear393()
+  const poisonB = "v:judge:poison-f5del-b"
+  const mB = mod$393({
+    files: judgeFiles393("/probes-f5del-b"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f5del-b", PWD: "/work-f5del-b", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poisonB]: { kind: "BLOCK", rest: "x" } },
+    answers: ["OK: f5del-b"],
+  })
+  const origDeleteB = mB.$.store.delete
+  mB.$.store.delete = async (k: string) => {
+    if (String(k) === poisonB) throw new Error("store.delete: scripted refusal for " + k)
+    return origDeleteB(k)
+  }
+  await hook(mB.$, { tool: "Agent", prompt: "f5del-b", subagent_type: "scout" }, async (e: any) => e)
+  const sweepsB = sweepsOf(mB)
+  expect(sweepsB.length).toBe(1)
+  expect(sweepsB[0].deleteFailed, "ключ остался -- отказ уборки назван").toBe(1)
+  expect(sweepsB[0].goneMeanwhile, "исчезновения не было").toBe(0)
+  // CONSTRAINT: журнал уборки записан удачно -- потеря уехала ВНУТРИ строки
+  // (appendJournal осушает lostWrites в летящую запись), снапшот модуля чист.
+  expect(sweepsB[0].lost && sweepsB[0].lost["judge-store-sweep-items"] ? sweepsB[0].lost["judge-store-sweep-items"].n : 0,
+    "отказ опубликован в самой строке").toBe(1)
+})
+
+test("#393-A2-FIX6 U-F6from: отказ записи возвращает происхождение переноса", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f6from/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f6from" },
+    now: 98_740_000,
+  })
+  const world = { globalHome: "/probes-f6from" }
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  tailLost({ n: 1, sid: "sid-f6-x", lostFrom: ["sid-f6-p"], lostFromMore: 3 }, new Error("EIO: f6from-tail"))
+  let writeN = 0
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      // CONSTRAINT: номер записи фиксируется НА ВХОДЕ -- возобновлённая после
+      // отказа вторая запись остаётся второй и не видит счётчик соседа.
+      const mine = ++writeN
+      if (mine === 1) throw new Error("EIO: f6from-first")
+    }
+    return origWrite(p, text)
+  }
+  failoverFoldNote(98_740_001, "", "ag-f6from-a")
+  await failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  failoverFoldNote(98_740_101, "", "ag-f6from-b")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds.length).toBe(1)
+  expect(folds[0].lostFrom, "происхождение пережило отказ записи").toEqual(["sid-f6-p", "sid-f6-x"])
+  expect(folds[0].lostFromMore, "безымянный счёт пережил отказ").toBe(3)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX6 U-F6cut1: отрезанное сообщение хвоста посчитано", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f6cut1/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f6cut1" },
+    now: 98_750_000,
+  })
+  const world = { globalHome: "/probes-f6cut1" }
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  const long = "EIO: " + "y".repeat(395)
+  expect(long.length).toBe(400)
+  tailLost({ n: 1 }, new Error(long))
+  failoverFoldNote(98_750_001, "", "ag-f6cut1")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds.length).toBe(1)
+  expect(String(folds[0].foldWriteErr)).toBe(long.slice(0, 240))
+  expect(folds[0].foldWriteErrCut, "160 отрезанных символов названы числом").toBe(160)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX6 U-F6cut2: отрезанное сообщение отказа записи посчитано", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f6cut2/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f6cut2" },
+    now: 98_760_000,
+  })
+  const world = { globalHome: "/probes-f6cut2" }
+  const long = "EIO: f6cut2 " + "z".repeat(388)
+  expect(long.length).toBe(400)
+  let writeN = 0
+  const origWrite = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (String(p).indexOf("/failover/journal.jsonl") >= 0) {
+      // CONSTRAINT: номер записи фиксируется НА ВХОДЕ -- возобновлённая после
+      // отказа вторая запись остаётся второй и не видит счётчик соседа.
+      const mine = ++writeN
+      if (mine === 1) throw new Error(long)
+    }
+    return origWrite(p, text)
+  }
+  failoverFoldNote(98_760_001, "", "ag-f6cut2a")
+  await failoverFoldFlush(m.$, world).then(() => {}, () => {})
+  failoverFoldNote(98_760_101, "", "ag-f6cut2b")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds.length).toBe(1)
+  expect(String(folds[0].foldWriteErr)).toBe(long.slice(0, 240))
+  expect(folds[0].foldWriteErrCut, "160 отрезанных символов названы числом").toBe(160)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX6 U-F6dedup: один sid дважды -- одно происхождение", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f6dedup/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f6dedup" },
+    now: 98_770_000,
+  })
+  const world = { globalHome: "/probes-f6dedup" }
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  tailLost({ n: 1, sid: "sid-f6-d" }, new Error("EIO: d1"))
+  tailLost({ n: 1, sid: "sid-f6-d" }, new Error("EIO: d2"))
+  failoverFoldNote(98_770_001, "", "ag-f6dedup")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds[0].lostFrom).toEqual(["sid-f6-d"])
+  expect(folds[0].lostFromMore === undefined, "дубликат -- не переполнение").toBe(true)
+  expect(folds[0].foldResetLost).toBe(2)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX6 U-F6cap: кап происхождения 16, остаток безымянным счётом", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f6cap/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f6cap" },
+    now: 98_780_000,
+  })
+  const world = { globalHome: "/probes-f6cap" }
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  for (let k = 0; k < 20; k++) tailLost({ n: 1, sid: "sid-f6-c" + k }, new Error("EIO: c" + k))
+  tailLost({ n: 1, sid: "sid-f6-c0" }, new Error("EIO: c0-again"))
+  failoverFoldNote(98_780_001, "", "ag-f6cap")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds[0].lostFrom).toEqual(Array.from({ length: 16 }, (_, k) => "sid-f6-c" + k))
+  expect(folds[0].lostFromMore).toBe(4)
+  expect(folds[0].foldResetLost).toBe(21)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX6 U-F6clear2: двойной /clear без наблюдения не метит перенос ложным sid", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: { "/probes-f6clear2/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-f6clear2" },
+    now: 98_790_000,
+  })
+  const world = { globalHome: "/probes-f6clear2" }
+  const tailLost = (registerModule393 as any).failoverFoldTailLost
+  tailLost({ n: 1, sid: "sid-f6-a" }, new Error("EIO: a"))
+  expect(failoverFoldReset(), "без шагов хвоста нет").toBeNull()
+  expect(failoverFoldReset(), "без шагов хвоста нет").toBeNull()
+  failoverFoldNote(98_790_001, "", "ag-f6clear2")
+  await failoverFoldFlush(m.$, world)
+  const folds = shards393(m.writes, "/failover/journal.jsonl").filter((r: any) => r.fold)
+  expect(folds[0].lostFrom).toEqual(["sid-f6-a"])
+  expect(folds[0].lostFromMore === undefined, "дубликат -- не переполнение").toBe(true)
+  failoverFoldReset()
+})
+
+test("#393-A2-FIX6 B-F6reread: отказ удаления с отказавшей перечиткой -- отказ уборки", async () => {
+  await clear393()
+  const hook = hook393(subs393(), "tool.call")
+  const sweepsOf = (mm: any) => shards393(mm.writes, "/judge/journal.jsonl.shard.").filter(r => r.outcome === "store_sweep")
+  const poison = "v:judge:poison-f6reread"
+  let deleteRefused = false
+  let rereadThrown = 0
+  const mC = mod$393({
+    files: judgeFiles393("/probes-f6reread"),
+    env: { CLAUDE_PROBES_DIR: "/probes-f6reread", PWD: "/work-f6reread", CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 1_000_000,
+    stored: { [poison]: { kind: "BLOCK", rest: "x" } },
+    answers: ["OK: f6reread"],
+  })
+  const origDelete = mC.$.store.delete
+  mC.$.store.delete = async (k: string) => {
+    if (String(k) === poison) {
+      deleteRefused = true
+      throw new Error("store.delete: scripted refusal for " + k)
+    }
+    return origDelete(k)
+  }
+  const origGet = mC.$.store.get
+  mC.$.store.get = async (k: string) => {
+    if (String(k) === poison && deleteRefused) {
+      rereadThrown++
+      throw new Error("store.get: scripted reread refusal")
+    }
+    return origGet(k)
+  }
+  await hook(mC.$, { tool: "Agent", prompt: "f6reread", subagent_type: "scout" }, async (e: any) => e)
+  const sweeps = sweepsOf(mC)
+  expect(sweeps.length).toBe(1)
+  expect(sweeps[0].deleteFailed, "перечитать нельзя -- отказ уборки назван").toBe(1)
+  expect(sweeps[0].goneMeanwhile, "исчезновения не было").toBe(0)
+  expect(rereadThrown, "перечитка после отказа состоялась").toBe(1)
 })

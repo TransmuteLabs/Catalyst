@@ -28,12 +28,26 @@ type StoreView = {
   deletes: string[]
 }
 
-function storeOf(on: On, entries: Record<string, unknown>): StoreView {
+function storeOf(on: On, entries: Record<string, unknown>, opts?: { getRefuses?: () => string[]; setRefuses?: (key: string) => boolean | string[] }): StoreView {
   const store = new Map<string, unknown>(Object.entries(entries))
   const view: StoreView = { keys: () => [...store.keys()], sets: [], deletes: [] }
 
-  on("store.get", (_$, e) => ({ value: store.get(e.key) }))
+  on("store.get", (_$, e) => {
+    if (opts && opts.getRefuses && opts.getRefuses().indexOf(e.key) >= 0) {
+      throw new Error("store.get: scripted refusal for " + e.key)
+    }
+    return { value: store.get(e.key) }
+  })
   on("store.set", (_$, e) => {
+    const setRefuses = opts && opts.setRefuses
+    let refused = false
+    if (typeof setRefuses === "function") {
+      const v = setRefuses(e.key)
+      refused = Array.isArray(v) ? v.indexOf(e.key) >= 0 : v === true
+    }
+    if (refused) {
+      throw new Error("store.set: scripted refusal for " + e.key)
+    }
     store.set(e.key, e.value)
     view.sets.push({ key: e.key, value: e.value })
     return { value: undefined }
@@ -100,6 +114,14 @@ type WiredOpts = {
   // переворачивает env на ручную подписку (по образцу clockBreak, забирающего
   // часы целиком): имена набора получают отказ чтения, остальные -- значение.
   envRefuses?: () => string[]
+  // CONSTRAINT (#393-FIX1): тот же класс ограничений у стора, сессии и флота --
+  // их моки тоже не бросают и не дают не-массив. Наборы ниже вводят отказ
+  // чтения/записи ключей стора, отказ списка сообщений и произвольную форму
+  // ответа agent.list; всё, что вне набора, отвечает штатно.
+  storeGetRefuses?: () => string[]
+  storeSetRefuses?: (key: string) => boolean | string[]
+  sessionMessagesRefuse?: () => boolean
+  agentListValue?: () => unknown
 }
 
 function wired(
@@ -136,7 +158,10 @@ function wired(
   } else {
     mock.env(on, { CLAUDE_PROBES_DIR: HOME, PWD: "/work", ...env })
   }
-  const store = storeOf(on, stored)
+  const store = storeOf(on, stored, {
+    getRefuses: opts.storeGetRefuses,
+    setRefuses: opts.storeSetRefuses,
+  })
 
   const kept: Kept = { writes: [], reads: [], completes: [], toasts: [], store, clock }
 
@@ -163,8 +188,13 @@ function wired(
   })
 
   on("session.id", () => ({ value: opts.sidOf ? opts.sidOf() : SID }))
-  on("session.messages", () => ({ value: [] }))
-  on("agent.list", () => ({ value: [] }))
+  on("session.messages", () => {
+    if (opts.sessionMessagesRefuse && opts.sessionMessagesRefuse()) {
+      throw new Error("session.messages: scripted refusal")
+    }
+    return { value: [] }
+  })
+  on("agent.list", () => ({ value: opts.agentListValue ? opts.agentListValue() : [] }))
   on("ui.toast", (_$, e) => {
     kept.toasts.push(e.text)
     return { value: undefined }
@@ -2732,5 +2762,315 @@ describe("#393: отказ чтения ручки отличим от «руч�
       w.text.includes('"outcome":"skip"') && w.text.includes('"probe":"judge"'),
     )
     expect(skip, "состояние пробы неизвестно -- журнал не приписывает ей решение по спискам и не подписывает носителя").toEqual([])
+  })
+})
+
+// CONSTRAINT (#393-FIX1): накопитель lostWrites недоступен из этого файла
+// (экземпляр модуля стенда -- тот же замер, что у #375 выше), поэтому каждая
+// потеря наблюдается полем `lost` записей журнала, которые собрал этот зуб.
+function judgeJournalLost(kept: Kept): Record<string, { n: number; last: string }> {
+  const lines = kept.writes
+    .filter(w => w.path.startsWith(HOME + "/judge/journal.jsonl.shard."))
+    .map(w => { try { return JSON.parse(String(w.text)) } catch (x) { return null } })
+    .filter(r => r && r.lost)
+  const merged: Record<string, { n: number; last: string }> = {}
+  for (const r of lines) {
+    for (const k of Object.keys(r.lost)) {
+      merged[k] = merged[k]
+        ? { n: merged[k].n + Number(r.lost[k].n), last: String(r.lost[k].last) }
+        : { n: Number(r.lost[k].n), last: String(r.lost[k].last) }
+    }
+  }
+  return merged
+}
+
+describe("#393-FIX1: подставные значения и зеркала -- отказ обязан быть виден", () => {
+  const JUDGE_TOML_F1 = '[probe.judge]\nmodels = ["m1"]\n'
+  const JUDGE_FILES_F1 = {
+    [HOME + "/probes.toml"]: JUDGE_TOML_F1,
+    [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+  }
+
+  test("B-F1cap: отказ чтения ключа кэпа не снимает исчерпанный кэп", async ($, on) => {
+    on("command.run", { command: "clear" }, () => ({ text: "cleared" }))
+    const capKey = "catalyst-probes:sesscap:" + SID
+    let capReadFails = false
+    const kept = wired(
+      on, 310_000_000,
+      {},
+      {
+        [HOME + "/probes.toml"]:
+          '[probe.f1cap]\nkind = "consult"\nact = "nudge"\n[probe.f1cap.when]\nfield = "tool_name"\nequals = "Agent"\n',
+      },
+      { [capKey]: 8 },
+      [],
+      { storeGetRefuses: () => (capReadFails ? [capKey] : []) },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+    await $.command.run({ command: "clear", args: "" })
+
+    // CONSTRAINT: наблюдаемое -- СИНХРОННЫЕ записи стора ветки нуджа (кэп и
+    // отметка пишутся до отложенной консультации): completes асинхронного
+    // нуджа к моменту возврата хука ещё пусты.
+    const capSets = () => kept.store.sets.filter(s => s.key === capKey)
+    const first = await $.tool.call({
+      tool: "Agent", description: "d",
+      prompt: "[dispatch-class:exec-0p] f1cap one", subagent_type: "scout",
+    })
+    expect(first).toEqual({ result: "ran" })
+    expect(capSets(), "кэп исчерпан из стора -- нудж не срабатывает").toEqual([])
+
+    capReadFails = true
+    const second = await $.tool.call({
+      tool: "Agent", description: "d",
+      prompt: "[dispatch-class:exec-0p] f1cap two", subagent_type: "scout",
+    })
+    expect(second).toEqual({ result: "ran" })
+    expect(capSets(), "отказ чтения не снимает кэп -- зеркало помнит").toEqual([])
+  })
+
+  test("B-F1last: отказ чтения отметки кулдауна не открывает окно", async ($, on) => {
+    on("command.run", { command: "clear" }, () => ({ text: "cleared" }))
+    const lastK = "catalyst-probes:last:idle-watch:/work"
+    let lastReadFails = false
+    const kept = wired(
+      on, 316_000_000,
+      { CLAUDE_IDLE: "1" },
+      { [HOME + "/probes.toml"]: "[probe.idle-watch]\nact = \"nudge\"\n" },
+      { [lastK]: 316_000_000 - 1000 },
+      [],
+      { storeGetRefuses: () => (lastReadFails ? [lastK] : []) },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+    await $.command.run({ command: "clear", args: "" })
+
+    // CONSTRAINT: та же синхронная наблюдаемая, что у B-F1cap: отметка окна
+    // пишется в стор ДО отложенной консультации нуджа.
+    const lastSets = () => kept.store.sets.filter(s => s.key === lastK)
+    const first = await $.tool.call({ tool: "Read", description: "d", prompt: "f1last one" })
+    expect(first).toEqual({ result: "ran" })
+    expect(lastSets(), "свежая отметка держит кулдаун -- нудж не срабатывает").toEqual([])
+
+    lastReadFails = true
+    const second = await $.tool.call({ tool: "Read", description: "d", prompt: "f1last two" })
+    expect(second).toEqual({ result: "ran" })
+    expect(lastSets(), "отказ чтения не снимает кулдаун -- зеркало помнит").toEqual([])
+  })
+
+  test("B-F4: частичный отказ уборки повторяется не раньше десяти минут от момента отказа", async ($, on) => {
+    on("command.run", { command: "clear" }, () => ({ text: "cleared" }))
+    const poison = "v:judge:poison-f1b4"
+    const kept = wired(
+      on, 322_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      JUDGE_FILES_F1,
+      { [poison]: { kind: "BLOCK", rest: "x", t: 320_000_000 } },
+      ["OK: f1b4-a", "OK: f1b4-b", "OK: f1b4-c"],
+      { storeGetRefuses: () => [poison] },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+    await $.command.run({ command: "clear", args: "" })
+    const sweeps = () => kept.writes.filter(w =>
+      w.path.startsWith(HOME + "/judge/journal.jsonl.shard.") &&
+      w.text.includes('"outcome":"store_sweep"')).length
+    const consult = (p: string) => $.tool.call({
+      tool: "Agent", description: "d",
+      prompt: "[dispatch-class:exec-0p] " + p, subagent_type: "scout",
+    })
+
+    await consult("f1b4 one")
+    expect(sweeps(), "первая консультация судьи несёт уборку").toBe(1)
+
+    await kept.clock!.settle()
+    await kept.clock!.advance(1000)
+    await consult("f1b4 two")
+    expect(sweeps(), "через 1000 мс от отказа частичный отказ уборки не повторяется").toBe(1)
+
+    await kept.clock!.settle()
+    await kept.clock!.advance(599_001)
+    await consult("f1b4 three")
+    expect(sweeps(), "через 600001 мс от момента отказа уборка повторяется").toBe(2)
+    expect(kept.completes, "все три консультации состоялись").toHaveLength(3)
+  })
+
+  test("B-F5(cwd-env-read): отказ чтения PWD назван, а не прочитан как пусто", async ($, on) => {
+    const kept = wired(
+      on, 328_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      JUDGE_FILES_F1,
+      {}, ["OK: f1b5-pwd"],
+      { envRefuses: () => ["PWD"] },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const res = await $.tool.call({
+      tool: "Agent", description: "d",
+      prompt: "[dispatch-class:exec-0p] f1b5 pwd", subagent_type: "scout",
+    })
+    expect(res).toEqual({ result: "ran" })
+    const lost = judgeJournalLost(kept)
+    expect(lost["cwd-env-read"] ? lost["cwd-env-read"].n : 0,
+      "отказ чтения PWD уехал полем lost").toBeGreaterThanOrEqual(1)
+  })
+
+  test("B-F5(cwd-store-read): отказ чтения cwd из стора назван", async ($, on) => {
+    const kept = wired(
+      on, 334_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce", PWD: "" },
+      JUDGE_FILES_F1,
+      {}, ["OK: f1b5-cwd"],
+      { storeGetRefuses: () => [CWD_KEY] },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const res = await $.tool.call({
+      tool: "Agent", description: "d",
+      prompt: "[dispatch-class:exec-0p] f1b5 cwd", subagent_type: "scout",
+    })
+    expect(res).toEqual({ result: "ran" })
+    const lost = judgeJournalLost(kept)
+    expect(lost["cwd-store-read"] ? lost["cwd-store-read"].n : 0,
+      "отказ чтения cwd из стора уехал полем lost").toBeGreaterThanOrEqual(1)
+  })
+
+  test("B-F5(session-messages): отказ списка сообщений назван и оставляет след в улике", async ($, on) => {
+    const kept = wired(
+      on, 340_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      JUDGE_FILES_F1,
+      {}, ["OK: f1b5-msgs"],
+      { sessionMessagesRefuse: () => true },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const res = await $.tool.call({
+      tool: "Agent", description: "d",
+      prompt: "[dispatch-class:exec-0p] f1b5 msgs", subagent_type: "scout",
+    })
+    expect(res).toEqual({ result: "ran" })
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(rec.messagesUnread, "улика несёт messagesUnread").toBe(true)
+    const lost = judgeJournalLost(kept)
+    expect(lost["session-messages"] ? lost["session-messages"].n : 0,
+      "отказ session.messages уехал полем lost").toBeGreaterThanOrEqual(1)
+  })
+
+  test("B-F5(verdict-cache-read): отказ чтения вердиктного ключа назван", async ($, on) => {
+    const prompt = "[dispatch-class:exec-0p] f1b5 vcache"
+    const vkey = verdictKey("judge", SID, "Agent", "scout", prompt)
+    const kept = wired(
+      on, 346_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      JUDGE_FILES_F1,
+      {}, ["OK: f1b5-vc"],
+      { storeGetRefuses: () => [vkey] },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const res = await $.tool.call({
+      tool: "Agent", description: "d", prompt, subagent_type: "scout",
+    })
+    expect(res).toEqual({ result: "ran" })
+    const lost = judgeJournalLost(kept)
+    expect(lost["verdict-cache-read"] ? lost["verdict-cache-read"].n : 0,
+      "отказ чтения вердиктного ключа уехал полем lost").toBeGreaterThanOrEqual(1)
+  })
+
+  test("B-F5(agent-list-shape): не-массив ответа флота -- live_works неизвестен", async ($, on) => {
+    const kept = wired(
+      on, 352_000_000,
+      {},
+      {
+        [HOME + "/probes.toml"]:
+          '[probe.f1live]\nkind = "consult"\nact = "log_only"\n[probe.f1live.when]\nfield = "live_works"\ncount_below = 1\n',
+      },
+      {}, [],
+      { agentListValue: () => ({}) },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const res = await $.tool.call({ tool: "Read", description: "d", prompt: "f1b5 fleet" })
+    expect(res).toEqual({ result: "ran" })
+    expect(kept.completes, "проба с when по live_works не стреляет -- значение неизвестно").toEqual([])
+    const bad = kept.writes.filter(w =>
+      w.text.includes('"outcome":"when_bad"') && w.text.includes('"probe":"f1live"'))
+    expect(bad.length, "причина неизвестности отчитана").toBeGreaterThanOrEqual(1)
+    expect(String(bad[0].text)).toContain("unknown=live_works")
+    const rec = JSON.parse(String(bad[0].text))
+    expect(rec.lost && rec.lost["agent-list-shape"] ? rec.lost["agent-list-shape"].n : 0,
+      "отказ формы agent.list уехал полем lost").toBeGreaterThanOrEqual(1)
+  })
+
+  test("B-cache2: отказ кэширования NONE-вердикта назван", async ($, on) => {
+    on("command.run", { command: "clear" }, () => ({ text: "cleared" }))
+    const prompt = "[dispatch-class:exec-0p] f1 cache2"
+    const vkey = verdictKey("judge", SID, "Agent", "scout", prompt)
+    const kept = wired(
+      on, 358_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      JUDGE_FILES_F1,
+      {}, ["мимо словаря суда"],
+      { storeSetRefuses: () => [vkey] },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+    await $.command.run({ command: "clear", args: "" })
+
+    const res = await $.tool.call({
+      tool: "Agent", description: "d", prompt, subagent_type: "scout",
+    })
+    expect(String(res.deny || ""), "NONE судьи без вердикта гасит диспатч").toContain("no verdict")
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(String(rec.cacheErr || ""), "отказ кэширования назван в улике").toContain("store.set")
+    const lost = judgeJournalLost(kept)
+    expect(lost["judge-verdict-cache"] ? lost["judge-verdict-cache"].n : 0,
+      "потеря кэша вердикта уехала полем lost").toBeGreaterThanOrEqual(1)
+  })
+
+  test("B-cache3: исключение суда до лестницы названо, кэш вердикта отказал", async ($, on) => {
+    on("command.run", { command: "clear" }, () => ({ text: "cleared" }))
+    const kept = wired(
+      on, 364_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      {
+        [HOME + "/probes.toml"]:
+          '[probe.judge]\nmodels = ["m1"]\nattach_files = { toString = 0 }\n',
+        [HOME + "/judge/prompt.md"]: "JUDGE PROMPT",
+      },
+      {}, ["OK: f2-cache3"],
+      { storeSetRefuses: (k: string) => k.indexOf("v:judge:") === 0 },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+    await $.command.run({ command: "clear", args: "" })
+
+    const res = await $.tool.call({
+      tool: "Agent", description: "d",
+      prompt: "[dispatch-class:exec-0p] f2 cache3", subagent_type: "scout",
+    })
+    expect(String(res.deny || ""), "исключение суда гасит диспатч").toContain("no verdict")
+    const rec = JSON.parse(String(lastRecord(kept)?.text))
+    expect(String(rec.threw || ""), "улика несёт threw").toContain("TypeError")
+    expect(rec.err_m1, "до лестницы дело не дошло -- err_m1 нет").toBeUndefined()
+    const lost = judgeJournalLost(kept)
+    expect(lost["judge-verdict-cache"] ? lost["judge-verdict-cache"].n : 0,
+      "потеря кэша вердикта уехала полем lost").toBeGreaterThanOrEqual(1)
+  })
+
+  test("B-F5msg: нечитаемые сообщения сессии видны модели судьи", async ($, on) => {
+    const kept = wired(
+      on, 370_000_000,
+      { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" },
+      JUDGE_FILES_F1,
+      {}, ["OK: f2-b5msg"],
+      { sessionMessagesRefuse: () => true },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    await $.tool.call({
+      tool: "Agent", description: "d",
+      prompt: "[dispatch-class:exec-0p] f2 b5msg", subagent_type: "scout",
+    })
+    expect(kept.completes.length, "судья консультировался").toBeGreaterThanOrEqual(1)
+    expect(String(kept.completes[0].prompt), "промпт называет недоступность сообщений").toContain(
+      "=== SESSION SO FAR ===\n[session messages unreadable]")
   })
 })
