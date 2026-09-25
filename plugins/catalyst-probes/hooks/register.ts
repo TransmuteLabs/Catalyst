@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.48"
+export const MOD_VERSION = "0.1.49"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -43,7 +43,7 @@ const FORM_REQ = [
   "witness_worker","open_door","negation","rule_line","path_line",
   "decision_head","decision_basis","decision_referent","legalize",
   "git_commit","git_commit_ok","git_msg","git_push","git_push_ok","git_force",
-  "trailer_a","trailer_b","write_redirect","heredoc",
+  "trailer_a","trailer_b","write_redirect",
 ]
 
 // CONSTRAINT: часы поверхности ЖДУТ и читаются ТОЛЬКО отсюда. Часы стали
@@ -98,7 +98,7 @@ async function raceDeadline($: any, work: Promise<any>, ms: number, label: strin
     () => { throw new Error("rung-deadline " + label + " " + ms + "ms") },
     (x: any) => {
       rec.deadlineBlind = true
-      rec.deadlineBlindErr = String((x && x.message) || x).slice(0, 160)
+      rec.deadlineBlindErr = safeText(x).slice(0, 160)
       return new Promise<never>(() => {})
     },
   )
@@ -304,7 +304,8 @@ export async function loadAllowedByClass($: any, env: any, cwdArg?: string): Pro
   const layers: string[] = []
   if (machine) layers.push(machine)
   if (project) layers.push(project)
-  const key = cand.envPath + "\0" + cand.market + "\0" + layers.join("\0")
+  const routingUnread = !!(env && Array.isArray(env.UNREADABLE) && env.UNREADABLE.indexOf("CATALYST_ROUTING_TABLE") >= 0)
+  const key = (routingUnread ? "u\0" : "p\0" + cand.envPath) + "\0" + cand.market + "\0" + layers.join("\0")
   if (allowedMemo && now - allowedMemo.t < WORLD_MEMO_MS && allowedMemo.key === key) {
     return allowedMemo.value
   }
@@ -313,7 +314,9 @@ export async function loadAllowedByClass($: any, env: any, cwdArg?: string): Pro
   let last = cand.market
   let parsed: any = null
   let baseSrc = ""
-  if (cand.envPath) {
+  if (routingUnread) {
+    chain.push("env:unreadable")
+  } else if (cand.envPath) {
     const t = await readText($, cand.envPath)
     if (t.text != null) {
       const got = allowedTableOf(parseToml(t.text))
@@ -323,6 +326,8 @@ export async function loadAllowedByClass($: any, env: any, cwdArg?: string): Pro
       } else {
         chain.push("env:" + got.reason)
       }
+    } else if (t.unreadable) {
+      chain.push("env:unreadable")
     } else {
       chain.push("env:absent")
     }
@@ -337,6 +342,8 @@ export async function loadAllowedByClass($: any, env: any, cwdArg?: string): Pro
       } else {
         chain.push("marketplace:" + got.reason)
       }
+    } else if (t2.unreadable) {
+      chain.push("marketplace:unreadable")
     }
   }
   if (parsed == null) {
@@ -801,12 +808,15 @@ export function readComplete(raw: any): ModelAnswer {
     const hasEnvelope = "stopReason" in raw || "blocks" in raw || "usage" in raw
     if (hasEnvelope) {
       const out: ModelAnswer = { text: "", stopReason: null, blocks: null, outTok: null, detailed: true }
-      if (typeof raw.text === "string") out.text = raw.text
-      if (typeof raw.stopReason === "string") out.stopReason = raw.stopReason
-      if (Array.isArray(raw.blocks)) {
+      const text = raw.text
+      if (typeof text === "string") out.text = text
+      const stopReason = raw.stopReason
+      if (typeof stopReason === "string") out.stopReason = stopReason
+      const blocks = raw.blocks
+      if (Array.isArray(blocks)) {
         const bs: { type: string; len: number }[] = []
-        for (let i = 0; i < raw.blocks.length; i++) {
-          const b = raw.blocks[i]
+        for (let i = 0; i < blocks.length; i++) {
+          const b = blocks[i]
           if (b && typeof b === "object") {
             bs.push({ type: String(b.type ?? "?"), len: num(b.len, 0, 0) })
           }
@@ -814,7 +824,10 @@ export function readComplete(raw: any): ModelAnswer {
         out.blocks = bs
       }
       const u = raw.usage
-      if (u && typeof u === "object" && typeof u.output_tokens === "number") out.outTok = u.output_tokens
+      if (u && typeof u === "object") {
+        const outputTokens = u.output_tokens
+        if (typeof outputTokens === "number") out.outTok = outputTokens
+      }
       return out
     }
     return flat
@@ -962,6 +975,11 @@ export function outcomeOf(kind: string, probe: string): string {
   return "skip"
 }
 
+function enforceOf(p: any, env: any, cfg: any): boolean {
+  if (p.id === "judge") return env.JUDGE === "enforce" || bl3(cfg.enforce, true)
+  return bl3(cfg.enforce, p.act === "cancel" || p.act === "nudge")
+}
+
 function fieldOf(ctx: any, name: string): any {
   if (!name) return undefined
   if (Object.prototype.hasOwnProperty.call(ctx, name)) return ctx[name]
@@ -1048,14 +1066,18 @@ async function readText($: any, path: string): Promise<{ text: string | null; un
     if (v === null || v === undefined) return { text: null, unreadable: "" }
     return { text: String(v), unreadable: "" }
   } catch (x) {
-    const m = String(x)
-    if (m.indexOf("ENOENT") >= 0) return { text: null, unreadable: "" }
+    // CONSTRAINT: отсутствие — code ENOENT (доступ к code внутри try) или текст с ENOENT; пустая строка и всё прочее — unreadable, и он непуст.
+    let codeEnoent = false
+    try { codeEnoent = !!(x && (x as any).code === "ENOENT") } catch (y) { codeEnoent = false }
+    const m = safeText(x)
+    if (codeEnoent || m.indexOf("ENOENT") >= 0) return { text: null, unreadable: "" }
     return { text: null, unreadable: m.slice(0, 160) }
   }
 }
 
-async function readTextNull($: any, path: string): Promise<string | null> {
+async function readTextNull($: any, path: string, site?: string): Promise<string | null> {
   const r = await readText($, path)
+  if (r.unreadable && site) noteLost(site, new Error(path + ": " + r.unreadable), $)
   return r.text
 }
 
@@ -1094,7 +1116,7 @@ async function appendJournal($: any, jpath: string, obj: any) {
     // к тому журналу. Сообщение носителя путь не гарантирует, поэтому он
     // приписывается здесь.
     journalErrSeq++
-    journalWriteErr = (jpath + ": " + String((x && (x as any).message) || x)).slice(0, 240)
+    journalWriteErr = (jpath + ": " + safeText(x)).slice(0, 240)
     if (lostSnap) {
       for (const k of Object.keys(lostSnap)) {
         lostWrites[k] = { n: lostSnap[k].n + (lostWrites[k] ? lostWrites[k].n : 0), last: lostWrites[k] ? lostWrites[k].last : lostSnap[k].last }
@@ -1112,8 +1134,51 @@ export function lostWritesSnapshot(): Record<string, { n: number; last: string }
   return JSON.parse(JSON.stringify(lostWrites))
 }
 
+// CONSTRAINT: носитель отказа не вправе бросать — иначе отказ, который он несёт, превращается в обрыв вызывающего (turn.step).
+// CONSTRAINT: message, name и String(x) читаются каждый своим try: бросок одного поля не стирает уже прочитанный текст другого. Имя не теряется, если String(x) — только ярлык [object …].
+function safeText(x: any): string {
+  let msg = ""
+  let name = ""
+  let full = ""
+  let anyThrew = false
+  try {
+    const v = x == null ? undefined : x.message
+    if (v != null) msg = String(v)
+  } catch (y) {
+    msg = ""
+    anyThrew = true
+  }
+  try {
+    const v = x == null ? undefined : x.name
+    if (v != null) name = String(v)
+  } catch (y) {
+    name = ""
+    anyThrew = true
+  }
+  try {
+    full = String(x)
+  } catch (y) {
+    full = ""
+    anyThrew = true
+  }
+  const tag = /^\[object [^\]]*\]$/.test(full)
+  let out = ""
+  if (name && name !== "Error") {
+    if (full && !tag && (msg === "" || full.indexOf(msg) >= 0)) out = full
+    else if (msg) out = name + ": " + msg
+    else out = name
+  } else {
+    if (msg) out = msg
+    else if (full && !tag) out = full
+    else if (name) out = name
+    else out = full
+  }
+  if (out) return out
+  return anyThrew ? "unprintable error" : "(empty error)"
+}
+
 function noteLost(site: string, x: any, $?: any): void {
-  const m = String((x && x.message) || x).slice(0, 200)
+  const m = safeText(x).slice(0, 200)
   const cur = lostWrites[site]
   lostWrites[site] = { n: (cur ? cur.n : 0) + 1, last: m }
   // CONSTRAINT: проверка «$ передан» не может быть if ($) — валидатор хоста
@@ -1122,6 +1187,23 @@ function noteLost(site: string, x: any, $?: any): void {
   try { $.ui.log("catalyst-probes: " + site + ": " + m, { to: "debug" }) } catch (y) {
     // CONSTRAINT: отказал и канал debug — отказ уже учтён в lostWrites и уедет следующей удачной записью журнала.
   }
+}
+
+// CONSTRAINT (#489-B1-FIX5 Z13): снимок события читает каждый ключ РОВНО ОДИН
+// раз; повторное чтение исходного объекта хостом не гарантировано стабильным
+// (геттер-улики Z13-a…f). Отказ ключа вычитается из снимка и учитывается по
+// сайту <событие>:<ключ>. Параметр назван не `e`: ценз Z13.6 нулит каждое
+// обращение к сырому событию по индексу, а снимку такое чтение необходимо.
+export function snapEvent($: any, raw: any, site: string): any {
+  if (raw === null || typeof raw !== "object") return {}
+  let ks: string[]
+  try { ks = Object.keys(raw) } catch (x) { noteLost(site + ":keys", x, $); return {} }
+  const out: any = {}
+  for (let i = 0; i < ks.length; i++) {
+    const k = ks[i]
+    try { out[k] = raw[k] } catch (x) { noteLost(site + ":" + k, x, $) }
+  }
+  return out
 }
 
 async function layerHit($: any, ch: string): Promise<boolean> {
@@ -1289,6 +1371,7 @@ function envSelected(name: string, env: any): boolean {
   // than read — a typo must not let the text through ungated.
   const n = String(name || "").trim().toUpperCase()
   if (!n) return true
+  if (Array.isArray(env.UNREADABLE) && env.UNREADABLE.indexOf(n) >= 0) return false
   if (n === "CLAUDE_JUDGE") return envOn(env.JUDGE)
   if (n === "CLAUDE_IDLE") return envOn(env.IDLE)
   if (n === "CLAUDE_FORM") return formOn(env.FORM)
@@ -1309,9 +1392,14 @@ async function ruleText($: any, world: any, r: any): Promise<string> {
   if (typeof f === "string" && f) {
     const path = String(f).charAt(0) === "/" ? String(f) : (world.globalHome + "/prompts/" + String(f))
     if (promptTextMemo[path] !== undefined) return promptTextMemo[path]
-    const t = await readTextNull($, path)
-    promptTextMemo[path] = t === null ? "" : String(t)
-    return promptTextMemo[path]
+    const got = await readText($, path)
+    if (got.unreadable) {
+      noteLost("prompt-rule-text", new Error(path + ": " + got.unreadable), $)
+      return ""
+    }
+    const t = got.text === null ? "" : String(got.text)
+    promptTextMemo[path] = t
+    return t
   }
   return String(r.text || "")
 }
@@ -1321,6 +1409,7 @@ async function applyPromptRules(
 ): Promise<{ text: string; applied: string[] }> {
   const applied: string[] = []
   if (!formOn(env.PROMPTS)) return { text, applied }
+  if (Array.isArray(env.UNREADABLE) && env.UNREADABLE.indexOf("CLAUDE_PROMPTS") >= 0) return { text, applied }
   const rules = (world && world.prompts) || []
   let out = String(text || "")
   for (let i = 0; i < rules.length; i++) {
@@ -1382,6 +1471,13 @@ const carrierForeignSaid = new Set<string>()
 // вызов, как и у чужого носителя.
 const carrierEnvUnreadableSaid = new Set<string>()
 
+// CONSTRAINT: отказ чтения даёт тот же путь, что пустое значение, и он виден через env-unreadable:<имя>; реакцию имеют выключатель CLAUDE_PROMPTS и allowedSrc для CATALYST_ROUTING_TABLE.
+const ENV_UNREADABLE_NINE = [
+  "CLAUDE_JUDGE_MODEL", "CLAUDE_JUDGE_PROMPT", "CLAUDE_JUDGE_TIMEOUT_MS",
+  "CLAUDE_PROMPTS", "CLAUDE_PROBES_DIR", "CLAUDE_CONFIG_DIR",
+  "HOME", "PWD", "CATALYST_ROUTING_TABLE",
+]
+
 export async function worldFor($: any): Promise<any> {
   const now = await nowMs($)
   // CONSTRAINT: каталог -- ключ мемо, поэтому вычисляется ДО кэша той же
@@ -1396,6 +1492,11 @@ export async function worldFor($: any): Promise<any> {
     return worldMemo
   }
   const env = await envBundle($)
+  for (let i = 0; i < ENV_UNREADABLE_NINE.length; i++) {
+    const name = ENV_UNREADABLE_NINE[i]
+    if (Array.isArray(env.UNREADABLE) && env.UNREADABLE.indexOf(name) >= 0)
+      noteLost("env-unreadable:" + name, new Error(name + " unreadable"), $)
+  }
   const world = await loadWorld($, env, cwd)
   const packed = { t: now, cwd, env, world }
   // CONSTRAINT: при неопределимом каталоге мемо не используется и не
@@ -1427,9 +1528,14 @@ let rxCache: any = {}
 // образец. Fail-closed выше по стеку верен и не меняется, но его текст
 // («hook threw») не называл причину: оператор не узнавал, что отказ вызван
 // опечаткой в ЕГО конфиге и в каком именно поле.
-function K(s: string, f: string, field?: string): RegExp {
+// CONSTRAINT: matchAll читает lastIndex исходника; K отдаёт его нулевым.
+export function K(s: string, f: string, field?: string): RegExp {
   const key = f + "|" + s
-  if (rxCache[key]) return rxCache[key]
+  if (rxCache[key]) {
+    const r = rxCache[key]
+    r.lastIndex = 0
+    return r
+  }
   let r: RegExp
   try {
     r = new RegExp(s, f)
@@ -1439,6 +1545,7 @@ function K(s: string, f: string, field?: string): RegExp {
       ": " + String(s).slice(0, 64))
   }
   rxCache[key] = r
+  r.lastIndex = 0
   return r
 }
 
@@ -1690,8 +1797,11 @@ export function sessionExecutorHas(model: string): boolean {
   return sessionExecutorModels.indexOf(String(model || "")) >= 0
 }
 
-export function failoverWouldSetSticky(didThrow: boolean, res: any, reviewer: boolean, model: string): boolean {
-  return !didThrow && !isCarrierRefusal(res) && !(reviewer && sessionExecutorHas(model))
+// CONSTRAINT (#489-B1-FIX5 Z13.4): второй аргумент -- Булево refusal, а не res:
+// isCarrierRefusal читает поля ответа, и на попытку он вычисляется ОДИН раз
+// вызывающим; предикат обязан оставаться чистым от чтений хостового объекта.
+export function failoverWouldSetSticky(didThrow: boolean, refusal: boolean, reviewer: boolean, model: string): boolean {
+  return !didThrow && !refusal && !(reviewer && sessionExecutorHas(model))
 }
 
 // CONSTRAINT: период свёртки 1000 мс. Таймер не переживает смерть процесса,
@@ -1806,7 +1916,7 @@ function returnFoldCarry(c: FoldCarry, msg: string, steps: number, stepsSid: str
 
 // CONSTRAINT: неписаный хвост сброса не теряет содержимое: его шаги уезжают счётом foldResetLost (в boringN не вливаются -- чужой sid) с происхождением lostFrom, потери, ошибка хвоста и отрезанное возвращаются в состояние; доставка -- следующей записью свёртки или хвостом следующего сброса.
 export function failoverFoldTailLost(rec: any, x: any): void {
-  const full = String((x && (x as any).message) || x)
+  const full = safeText(x)
   returnFoldCarry(
     {
       split: num(rec && rec.foldSplitLost, 0, 0),
@@ -2021,7 +2131,7 @@ export async function failoverFoldFlush($: any, world: any): Promise<void> {
     try {
       await appendJournal($, jpath, rec)
     } catch (x) {
-      const full = String((x && (x as any).message) || x)
+      const full = safeText(x)
       const msg = full.slice(0, 240)
       if (gen !== foldGen) {
         // CONSTRAINT: отказ записи, начатой до сброса: шаги старой свёртки уезжают счётом foldResetLost (чужой sid, в boringN не вливаются) с происхождением, забранное возвращается -- правило хвоста сброса.
@@ -2153,27 +2263,204 @@ function formEval(ev: any, c: any): { refuse: any[]; warn: any[] } {
       F("B", h + 1, ls[h])
   }
   if (ev.kind === "command") {
-    if (K(c.git_commit, "u", "git_commit").test(t)) {
-      if (!K(c.git_commit_ok, "u", "git_commit_ok").test(t))
-        F("F", 1, "git commit: нет " + c.git_commit_ok)
-      const ms = [...t.matchAll(K(c.git_msg, "gu", "git_msg"))].map((m) => m[1] ?? m[2] ?? m[3] ?? "")
-      const hd = K(c.heredoc, "u", "heredoc").exec(t)
-      const ct = hd ? hd[2] : ms.join("\n\n")
-      if (ct) {
-        const cm = ct.split("\n")
-        let ia = -1, ib = -1
-        for (let i = 0; i < cm.length; i++) {
-          if (ia < 0 && K(c.trailer_a, "mu", "trailer_a").test(cm[i])) ia = i
-          if (ib < 0 && K(c.trailer_b, "mu", "trailer_b").test(cm[i])) ib = i
-        }
-        if (ia >= 0 && ib >= 0 && Math.abs(ia - ib) !== 1)
-          F("F", ia + 1, "трейлеры Session: и Co-Authored-By: не соседние")
+    // CONSTRAINT (#489-B1-FIX6 F2): сообщение и --only судятся по ПРОСТОЙ КОМАНДЕ
+    // своего git commit; `-m "$(cat <<'X' … X)"` даёт тело heredoc; без `-m`
+    // сообщением служит последний heredoc команды (stdin для `-F -`; bash берёт последний `<<`).
+    // CONSTRAINT (#489-B1-FIX7 F-4/F-7): `git commit` судится как команда, если он
+    // не в комментарии, не в данных (DATA_CMDS) и не в тексте сообщения живого
+    // git commit того же отрезка; тело heredoc не-данных судится рекурсивно как
+    // свой текст команды. У живого commit `--only` и `-m` берутся только из кода:
+    // кавычки, комментарии и тела heredoc вычеркнуты — кавычный "--only" даёт
+    // ложный отказ, это безопасное направление.
+    // CONSTRAINT (#494 FIX10): вложенный текст (тело исполняемого heredoc, строка
+    // в кавычках вне данных и вне сообщения живого commit) судится рекурсивно как
+    // своя команда: `bash -c "echo --only ; git commit"` — две команды, а не одна.
+    // Глубже трёх уровней суд не идёт, и это отказ, не пропуск.
+    const judge = (tx: string, lvl: number): void => {
+      const gc = [...tx.matchAll(K(c.git_commit, "gu", "git_commit"))].map((m) => m.index as number)
+      const scan = shellScan(tx)
+      const tokAll = gitSubWords(tx, scan, "commit")
+      // CONSTRAINT (#494 FIX10c): слова не заходят в инертный текст, а регулярка не
+      // видит `"git" commit`, `g\it commit`, `git -C . commit` — кавычка или тело
+      // heredoc, чей текст как команда несёт коммит, даёт попадание внутри себя,
+      // и дальше идёт путь попаданий регулярки (данные, сообщение, вложение).
+      const hidden: number[] = []
+      const inRegion = (rs: number, re: number): boolean =>
+        gc.some((g) => g >= rs && g < re) || tokAll.some((w) => w >= rs && w < re)
+      for (let qi = 0; qi < scan.quotes.length; qi++) {
+        const q = scan.quotes[qi]
+        if (inRegion(q.s, q.e) || !gitSubDeep(q.text, "commit", 0)) continue
+        let p = q.s + 1
+        while (p < q.e && !(scan.inert(p) && scan.quoteAt(p) === q)) p++
+        if (p < q.e) hidden.push(p)
       }
+      for (let hi = 0; hi < scan.heredocs.length; hi++) {
+        const h = scan.heredocs[hi]
+        if (h.bodyStart >= h.bodyEnd || inRegion(h.bodyStart, h.bodyEnd)) continue
+        if (gitSubDeep(h.body, "commit", 0)) hidden.push(h.bodyStart)
+      }
+      gc.push(...hidden)
+      const pushAt: number[] = []
+      const addPush = (p: number): void => { if (pushAt.indexOf(p) < 0) pushAt.push(p) }
+      for (const m of tx.matchAll(K(c.git_push, "gu", "git_push"))) addPush(m.index as number)
+      const pushTok = gitSubWords(tx, scan, "push")
+      for (let k = 0; k < pushTok.length; k++) addPush(pushTok[k])
+      const inPush = (rs: number, re: number): boolean => pushAt.some((g) => g >= rs && g < re)
+      for (let qi = 0; qi < scan.quotes.length; qi++) {
+        const q = scan.quotes[qi]
+        if (inPush(q.s, q.e) || !gitSubDeep(q.text, "push", 0)) continue
+        let p = q.s + 1
+        while (p < q.e && !(scan.inert(p) && scan.quoteAt(p) === q)) p++
+        if (p < q.e) addPush(p)
+      }
+      for (let hi = 0; hi < scan.heredocs.length; hi++) {
+        const h = scan.heredocs[hi]
+        if (h.bodyStart >= h.bodyEnd || inPush(h.bodyStart, h.bodyEnd)) continue
+        if (gitSubDeep(h.body, "push", 0)) addPush(h.bodyStart)
+      }
+      if (!gc.length && !tokAll.length && !pushAt.length) return
+      const allMs = [...tx.matchAll(K(c.git_msg, "gu", "git_msg"))]
+      const bodyOf = (at: number): Heredoc | undefined =>
+        scan.heredocs.find((h) => h.bodyStart <= at && at < h.bodyEnd)
+      const masked = (s: number, e: number): string => {
+        let r = ""
+        for (let q = s; q < e; q++) r += scan.inert(q) ? " " : tx[q]
+        return r
+      }
+      const writesOut = (s: number, e: number, fid: number): boolean => {
+        for (let p = s; p < e; p++) {
+          if (tx[p] !== ">" || scan.inert(p) || scan.frameOf(p) !== fid) continue
+          let q = p + 1
+          if (tx[q] === ">" || tx[q] === "|") q++
+          if (tx[q] === "&") {
+            if (/[0-9-]/.test(tx[q + 1] ?? "")) continue
+            q++
+          }
+          while (tx[q] === " " || tx[q] === "\t") q++
+          const w = (/^[^\s<>|;&()]*/.exec(tx.slice(q, e)) as RegExpExecArray)[0]
+          if (SAFE_SINKS.indexOf(w) < 0) return true
+        }
+        return false
+      }
+      const dataCmd = (s: number, e: number, fid: number, parent: boolean): boolean => {
+        const seg = tx.slice(s, e)
+        const w = cmdWord(seg)
+        if (DATA_CMDS.indexOf(w) < 0 && !(parent && SUBST_PARENTS.indexOf(w) >= 0)) return false
+        if (funcDef(seg)) return false
+        const m = masked(s, e)
+        if (w === "printf" && /(?<!\S)-v/.test(m)) return false
+        if (w === "rg" && /(?<!\S)--pre(?:=|\s|$)/.test(m)) return false
+        return !writesOut(s, e, fid)
+      }
+      // CONSTRAINT (#494 FIX10 F3): вывод команды в рамке подстановки — данные,
+      // только если рамка стоит аргументом (не первым словом и не значением
+      // присваивания) команды, которая сама данные по той же цепочке.
+      const argPos = (open: number): boolean => {
+        const [ps] = scan.cmdOf(open)
+        return /^[^\s<>|;&()]+\s/.test(cmdHead(tx.slice(ps, open)))
+      }
+      const dataChain = (at: number, parent: boolean): boolean => {
+        const [s, e] = scan.cmdOf(at)
+        const fid = scan.frameOf(at)
+        if (!dataCmd(s, e, fid, parent)) return false
+        if (tx[e] === "|" && tx[e + 1] !== "|" && !dataChain(tx[e + 1] === "&" ? e + 2 : e + 1, false)) return false
+        if (fid === 0) return true
+        const open = scan.frames[fid].open
+        return argPos(open) && dataChain(open, true)
+      }
+      const isData = (at: number): boolean => dataChain(at, false)
+      const tok = tokAll.filter((w) => {
+        const [ts] = scan.cmdOf(w)
+        return !gc.some((g) => !scan.inert(g) && !scan.comment(g) && scan.cmdOf(g)[0] === ts)
+      })
+      const live = gc.filter((g) => !scan.inert(g) && !scan.comment(g) && !bodyOf(g) && !isData(g))
+        .concat(tok.filter((w) => !isData(w)))
+      const liveIn = (s: number, e: number): boolean => live.some((g) => g >= s && g < e)
+      const nested: Heredoc[] = []
+      const nestedQ: ShellQuote[] = []
+      const entries = gc.map((g) => ({ g, tk: false })).concat(tok.map((g) => ({ g, tk: true })))
+      for (let gi = 0; gi < entries.length; gi++) {
+        const { g, tk } = entries[gi]
+        if (!tk && scan.comment(g)) continue
+        const hb = tk ? undefined : bodyOf(g)
+        if (hb) {
+          const [hs, he] = scan.cmdOf(hb.op)
+          if (!liveIn(hs, he) && !isData(hb.op) && nested.indexOf(hb) < 0) nested.push(hb)
+          continue
+        }
+        if (isData(g)) continue
+        const [s, e] = scan.cmdOf(g)
+        const isLive = tk || !scan.inert(g)
+        if (!isLive && liveIn(s, e)) continue
+        if (!isLive) {
+          const qa = scan.quoteAt(g)
+          if (qa) {
+            if (nestedQ.indexOf(qa) < 0) nestedQ.push(qa)
+            continue
+          }
+        }
+        const seg = isLive ? masked(s, e) : tx.slice(s, e)
+        if (!K(c.git_commit_ok, "u", "git_commit_ok").test(seg))
+          F("F", 1, "git commit: нет " + c.git_commit_ok)
+        const own = scan.heredocs.filter((h) => h.op >= s && h.op < e)
+        const parts: string[] = []
+        for (let mi = 0; mi < allMs.length; mi++) {
+          const m = allMs[mi]
+          const at = m.index as number
+          if (at < s || at >= e) continue
+          if (isLive) {
+            if (scan.inert(at)) continue
+            const [ms, me] = scan.cmdOf(at)
+            if (ms !== s || me !== e) continue
+          }
+          const inner = own.filter((h) => h.op >= at && h.op < at + m[0].length)
+          parts.push(inner.length ? inner.map((h) => h.body).join("\n") : (m[1] ?? m[2] ?? m[3] ?? ""))
+        }
+        const ct = parts.length ? parts.join("\n\n") : (own.length ? own[own.length - 1].body : "")
+        if (ct) {
+          const cm = ct.split("\n")
+          let ia = -1, ib = -1
+          for (let i = 0; i < cm.length; i++) {
+            if (ia < 0 && K(c.trailer_a, "mu", "trailer_a").test(cm[i])) ia = i
+            if (ib < 0 && K(c.trailer_b, "mu", "trailer_b").test(cm[i])) ib = i
+          }
+          if (ia >= 0 && ib >= 0 && Math.abs(ia - ib) !== 1)
+            F("F", ia + 1, "трейлеры Session: и Co-Authored-By: не соседние")
+        }
+      }
+      // CONSTRAINT (#494 FIX10c): push судится по сегменту своей команды на каждом уровне, как commit; сырой текст всей команды давал ложный отказ на кавычке и чужом -f.
+      const pushSeen: number[] = []
+      for (let pi = 0; pi < pushAt.length; pi++) {
+        const g = pushAt[pi]
+        const tk = pushTok.indexOf(g) >= 0
+        if (!tk && scan.comment(g)) continue
+        const hb = tk ? undefined : bodyOf(g)
+        if (hb) {
+          const [hs, he] = scan.cmdOf(hb.op)
+          if (!liveIn(hs, he) && !isData(hb.op) && nested.indexOf(hb) < 0) nested.push(hb)
+          continue
+        }
+        if (isData(g)) continue
+        const [s, e] = scan.cmdOf(g)
+        if (!tk && scan.inert(g)) {
+          if (liveIn(s, e)) continue
+          const qa = scan.quoteAt(g)
+          if (qa) {
+            if (nestedQ.indexOf(qa) < 0) nestedQ.push(qa)
+            continue
+          }
+        }
+        if (pushSeen.indexOf(s) >= 0) continue
+        pushSeen.push(s)
+        const seg = masked(s, e)
+        if (!K(c.git_push_ok, "u", "git_push_ok").test(seg)) F("F", 1, "git push: нет " + c.git_push_ok)
+        if (K(c.git_force, "u", "git_force").test(seg)) F("F", 1, tx.slice(s, e))
+      }
+      const inner = nested.map((h) => h.body).concat(nestedQ.map((q) => q.text))
+      if (lvl < 3) for (let k = 0; k < inner.length; k++) judge(inner[k], lvl + 1)
+      else if (inner.length) F("F", 1, "git: вложение глубже 3 уровней не судится")
     }
-    if (K(c.git_push, "u", "git_push").test(t)) {
-      if (!K(c.git_push_ok, "u", "git_push_ok").test(t)) F("F", 1, "git push: нет " + c.git_push_ok)
-      if (K(c.git_force, "u", "git_force").test(t)) F("F", 1, t)
-    }
+    judge(t, 0)
   }
   return { refuse: Rf, warn: Wr }
 }
@@ -2387,9 +2674,11 @@ export function verdictKey(id: string, sid: string, tool: string, agent: string,
 // `claude plugin validate` отбивает ВЕСЬ модуль («declared more than once»),
 // а зубы, bun build и набор стендов при этом остаются зелёными (измерено 15.09).
 export function memoUsable(stored: any, atMs: number, ttlMs: number, probe = "*"): boolean {
-  if (!stored || typeof stored !== "object" || !stored.kind) return false
-  if (passKind(probe, stored.kind)) return false
-  return Number.isFinite(stored.t) && (atMs - stored.t) <= ttlMs
+  if (!stored || typeof stored !== "object") return false
+  const kind = stored.kind
+  if (!kind || passKind(probe, kind)) return false
+  const t = stored.t
+  return Number.isFinite(t) && (atMs - t) <= ttlMs
 }
 
 export async function loadWorld($: any, env: any, cwdArg: string): Promise<any> {
@@ -2399,6 +2688,7 @@ export async function loadWorld($: any, env: any, cwdArg: string): Promise<any> 
   else globalHome = env.HOME + "/.claude/probes"
   const cwd = cwdArg
   const gToml = await readText($, globalHome + "/probes.toml")
+  if (gToml.unreadable) noteLost("global-probes-toml", new Error(globalHome + "/probes.toml: " + gToml.unreadable), $)
   const gParsed = parseToml(gToml.text || "")
   let projectHome = ""
   let pParsed: any = {}
@@ -2406,6 +2696,7 @@ export async function loadWorld($: any, env: any, cwdArg: string): Promise<any> 
     projectHome = await findProjectHome($, cwd, globalHome)
     if (projectHome) {
       const pt = await readText($, projectHome + "/probes.toml")
+      if (pt.unreadable) noteLost("project-probes-toml", new Error(projectHome + "/probes.toml: " + pt.unreadable), $)
       if (pt.text) pParsed = parseToml(pt.text)
     }
   }
@@ -2511,8 +2802,8 @@ async function sweepVerdictStore($: any, world: any, sid: string, env: any): Pro
       try { await $.store.delete(k); removed++ } catch (x) {
         // CONSTRAINT: удаление, отказавшее на ключе, которого уже нет (снесла соседняя уборка после /clear), -- не отказ уборки; отказ -- только если ключ остался или перечитать нельзя.
         let still = true
-        try { still = (await $.store.get(k)) !== undefined } catch (y) { still = true }
-        if (still) { deleteFailed++; deleteErr = String((x && (x as any).message) || x).slice(0, 240) }
+        try { still = (await $.store.get(k)) !== undefined } catch (y) { still = true; noteLost("judge-store-sweep-reread", y, $) }
+        if (still) { deleteFailed++; deleteErr = safeText(x).slice(0, 240) }
         else goneMeanwhile++
       }
     }
@@ -2539,37 +2830,47 @@ async function sweepVerdictStore($: any, world: any, sid: string, env: any): Pro
 
 // CONSTRAINT: имя и путь улики одним домом -- улика консульта и улика
 // попадания в кэш обязаны строиться побайтно одной формой.
-function modRecName(e: any): string {
-  return "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
+function modRecName(ev: any): string {
+  return "mod-" + String((ev && ev.tool_use_id) || "noid") + ".json"
 }
 
-function modRecPath(world: any, id: string, e: any): string {
-  return world.globalHome + "/" + id + "/records/" + modRecName(e)
+function modRecPath(world: any, id: string, ev: any): string {
+  return world.globalHome + "/" + id + "/records/" + modRecName(ev)
 }
 
-async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any, key: string, epCall: number): Promise<any> {
+async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any, key: string, epCall: number): Promise<any> {
   const id = p.id
   const cfg = p.cfg
-  const tool = String((e && e.tool) || "")
-  const agent = String((e && e.subagent_type) || "")
-  const prompt = String((e && e.prompt) || "")
+  const tool = String((ev && ev.tool) || "")
+  const agent = String((ev && ev.subagent_type) || "")
+  const prompt = String((ev && ev.prompt) || "")
   const t0 = ctx.now
-  const recName = modRecName(e)
-  const recPath = modRecPath(world, id, e)
+  const recName = modRecName(ev)
+  const recPath = modRecPath(world, id, ev)
   const jpath = world.globalHome + "/" + id + "/journal.jsonl"
-  const rec: any = { id: e && e.tool_use_id, probe: id, tool, agent, t0, carrier: carrierOfJournal(p, env), mod: MOD_VERSION, sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
+  const rec: any = { id: ev && ev.tool_use_id, probe: id, tool, agent, t0, carrier: carrierOfJournal(p, env), mod: MOD_VERSION, sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
+  const enforce = enforceOf(p, env, cfg)
+  let toastGot: string | undefined
+  let nudgeDelivered = false
   try {
     let sys = ""
     if (id === "judge" && env.JUDGE_PROMPT) {
       const pr = await readText($, env.JUDGE_PROMPT)
+      if (pr.unreadable) noteLost("probe-prompt-read", new Error(env.JUDGE_PROMPT + ": " + pr.unreadable), $)
       if (pr.text) sys = pr.text
     } else {
-      const gPrompt = await readText($, world.globalHome + "/" + id + "/prompt.md")
+      const gPath = world.globalHome + "/" + id + "/prompt.md"
+      const gPrompt = await readText($, gPath)
+      if (gPrompt.unreadable) noteLost("probe-prompt-read", new Error(gPath + ": " + gPrompt.unreadable), $)
       if (gPrompt.text) sys = gPrompt.text
       if (world.projectHome) {
-        const pPrompt = await readText($, world.projectHome + "/" + id + "/prompt.md")
+        const pPath = world.projectHome + "/" + id + "/prompt.md"
+        const pPrompt = await readText($, pPath)
+        if (pPrompt.unreadable) noteLost("probe-prompt-read", new Error(pPath + ": " + pPrompt.unreadable), $)
         if (pPrompt.text) sys = pPrompt.text
-        const extra = await readText($, world.projectHome + "/" + id + "/prompt.extra.md")
+        const ePath = world.projectHome + "/" + id + "/prompt.extra.md"
+        const extra = await readText($, ePath)
+        if (extra.unreadable) noteLost("probe-prompt-read", new Error(ePath + ": " + extra.unreadable), $)
         if (extra.text) sys = sys + "\n\nПРАВИЛА ЭТОГО ПРОЕКТА\n" + extra.text
       }
     }
@@ -2590,6 +2891,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         if (seen[f]) continue
         seen[f] = 1
         const body = await readText($, f)
+        if (body.unreadable) {
+          noteLost("probe-attach-read", new Error(f + ": " + body.unreadable), $)
+          continue
+        }
         if (body.text == null) continue
         let chunk = body.text
         if (chunk.length > atc) chunk = chunk.slice(0, atc)
@@ -2630,7 +2935,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       parts.push("=== SESSION SO FAR ===\n" + context)
       if (p.id === "judge" || (Array.isArray(cfg.show) && cfg.show.indexOf("dispatch") >= 0) || p.act === "cancel") {
         parts.push("=== DISPATCH ===\n" + JSON.stringify({
-          tool, subagent_type: agent, model: e && e.model, prompt: prompt.slice(0, dchars),
+          tool, subagent_type: agent, model: ev && ev.model, prompt: prompt.slice(0, dchars),
         }))
       }
       if (p.id === "idle-watch" || (Array.isArray(cfg.show) && cfg.show.indexOf("fleet") >= 0)) {
@@ -2665,7 +2970,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     // своего окна, и диагностировать вис по уликам было нечем.
     if (cfg.record !== false) {
       try { await $.fs.write(recPath, JSON.stringify(Object.assign({}, rec, { inflight: true }))) } catch (x) {
-        rec.inflightWriteErr = String((x && (x as any).message) || x).slice(0, 240)
+        rec.inflightWriteErr = safeText(x).slice(0, 240)
         noteLost("judge-record-inflight", x, $)
       }
     }
@@ -2768,7 +3073,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
         // бюджету и отказ после ожидания провайдера -- разные явления.
         rec["ms_" + used] = await nowMs($) - rungT0
         rec["ctxN_" + used] = rungCtxN
-        const es = String(x)
+        const es = safeText(x)
         rec["err_" + used] = es.slice(0, 240)
         // CONSTRAINT: отказ ПО ВРЕМЕНИ считается отдельно от отказа провайдера.
         // Смешать их значит потерять различие между «ступень отказала» и
@@ -2795,12 +3100,19 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       // чего и молча гасил суд для всех будущих сессий.
       if ((p.pending || p.act === "cancel") && !passKind(p.id, verdict.kind)) {
         try { await $.store.set(key, { kind: verdict.kind, rest: verdict.rest, used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {
-          rec.cacheErr = String((x && (x as any).message) || x).slice(0, 240)
+          rec.cacheErr = safeText(x).slice(0, 240)
           noteLost("judge-verdict-cache", x, $)
         }
       }
-      if (foldedKind(p.id, verdict.kind) && p.act === "nudge") {
-        try { await $.ui.toast((id) + ": " + verdict.rest.slice(0, 200)) } catch (x) { rec.toastErr = String(x).slice(0, 160) }
+      if (foldedKind(p.id, verdict.kind) && p.act === "nudge" && enforce) {
+        try {
+          await $.ui.toast((id) + ": " + verdict.rest.slice(0, 200))
+          nudgeDelivered = true
+        } catch (x) {
+          // CONSTRAINT: флаг — присутствие отказа, не текст носителя. String(носителя) сам бросает и обрывает вызывающего; текст несёт toastErr.
+          toastGot = ""
+          rec.toastErr = safeText(x).slice(0, 160)
+        }
       }
     } else {
       // CONSTRAINT: исход зависит от ПРИЧИНЫ молчания. Ступени, не ответившие
@@ -2815,18 +3127,18 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
       // гасили бы будущие суды по причине, которой уже нет.
       if (!timedOut && !truncated && (p.pending || p.act === "cancel")) {
         try { await $.store.set(key, { kind: "NONE", used, t: await nowMs($), dtMs: rec.dtMs }) } catch (x) {
-          rec.cacheErr = String((x && (x as any).message) || x).slice(0, 240)
+          rec.cacheErr = safeText(x).slice(0, 240)
           noteLost("judge-verdict-cache", x, $)
         }
       }
     }
   } catch (x) {
-    rec.threw = String(x).slice(0, 400)
+    rec.threw = safeText(x).slice(0, 400)
     rec.dtMs = await nowMs($) - t0
     rec.kind = "NONE"
     if (p.pending || p.act === "cancel") {
       try { await $.store.set(key, { kind: "NONE", threw: rec.threw, t: await nowMs($), dtMs: rec.dtMs }) } catch (y) {
-        rec.cacheErr = String((y && (y as any).message) || y).slice(0, 240)
+        rec.cacheErr = safeText(y).slice(0, 240)
         noteLost("judge-verdict-cache", y, $)
       }
     }
@@ -2834,9 +3146,10 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
   if (clockBad) rec.clockBad = true
   const kind = String(rec.kind || "NONE")
   const rest = String(rec.rest || "")
-  const enforce = p.id === "judge" ? (env.JUDGE === "enforce" || bl3(cfg.enforce, true)) : bl3(cfg.enforce, p.act === "cancel")
   let oc = outcomeOf(kind, p.id)
   if (foldedKind(p.id, kind) && !enforce) oc = "block_not_enforced"
+  if (toastGot !== undefined && foldedKind(p.id, kind) && enforce) oc = "nudge_undelivered"
+  else if (nudgeDelivered) oc = "nudge_delivered"
   // CONSTRAINT (#374): класс свёртки считается ЗДЕСЬ ОДИН раз, едет в улику
   // полем outcome, и журнальная строка переиспользует ЭТО ЖЕ значение. Второй
   // потребитель (прибор judge/compact.py) обязан читать готовое поле, а не
@@ -2859,7 +3172,7 @@ async function consultBg($: any, p: any, env: any, world: any, e: any, ctx: any,
     // строки обнаруживалась только сличением двух домов, и ровно это скрывало
     // поломку часов поверхности от её начала до разбора #184.
     try {
-      rec.journalErr = String((x && (x as any).message) || x).slice(0, 240)
+      rec.journalErr = safeText(x).slice(0, 240)
       if (cfg.record !== false) await $.fs.write(recPath, JSON.stringify(rec))
     } catch (y) { noteLost("judge-record-journalErr", y, $) }
   }
@@ -2873,9 +3186,589 @@ function formActsOnTool(tool: string): boolean {
          tool === "Write" || tool === "Edit" || tool === "Bash"
 }
 
-async function runForm($: any, p: any, env: any, world: any, e: any): Promise<string | null> {
+// CONSTRAINT (#489-B1-FIX5 Z12): регулярка cfg.heredoc не выражала продолжение
+// backslash+newline, несколько тел одной логической строки, кавычки в
+// слове-разделителе и `$(` внутри двойных кавычек. Единственный посимвольный
+// автомат держит все четыре; образец правила `$(` в `"…"` --
+// Catalyst-CC-Patch/tools/heredoc-anchor.py:52-66. Ключ cfg.heredoc снят с
+// чтения: ни один потребитель больше его не трогает (снятие из канона -- #497).
+export type Heredoc = {
+  op: number; delim: string; strip: boolean
+  lineStart: number; lineEnd: number
+  bodyStart: number; bodyEnd: number; body: string; terminated: boolean
+}
+export type ShellQuote = { s: number; e: number; kind: string; raw: string; text: string }
+export type ShellFrame = { lo: number; hi: number; open: number; sub: string }
+export type ShellScan = {
+  heredocs: Heredoc[]
+  inert: (i: number) => boolean
+  lineOf: (i: number) => [number, number]
+  cmdOf: (i: number) => [number, number]
+  comment: (i: number) => boolean
+  frames: ShellFrame[]
+  frameOf: (i: number) => number
+  segments: () => Array<[number, number]>
+  quoteAt: (i: number) => ShellQuote | undefined
+  quotes: ShellQuote[]
+  quoteFrom: (i: number) => ShellQuote | undefined
+  frameFrom: (i: number) => ShellFrame | undefined
+}
+
+type ScanCtx = {
+  kind: string; depth: number; sub: string; paren: number
+  id: number; open: number; cs: string[]; pp: number; patClose: number; dbl: boolean
+  ps: boolean[]
+}
+
+export function shellScan(cmd: string): ShellScan {
+  const n = cmd.length
+  const heredocs: Heredoc[] = []
+  const inertFlags = new Uint8Array(n)
+  const commentFlags = new Uint8Array(n)
+  const cuts: number[] = []
+  const pend: Heredoc[] = []
+  // CONSTRAINT (#489-B1-FIX7 F-2): у каждой кодовой рамки (корень, `$(`, обратные
+  // кавычки) свой отрезок [lo, hi) и свои разделители; cmdOf режет по самой
+  // внутренней рамке, иначе две команды внутри `$(…)` делят одно сообщение.
+  const spans: ShellFrame[] = [{ lo: 0, hi: n, open: -1, sub: "root" }]
+  const seps: number[][] = [[]]
+  const quotes: ShellQuote[] = []
+  const quoteEnd = (q: ScanCtx, e: number): void => {
+    const raw = cmd.slice(q.open + (q.kind === "ansi" ? 2 : 1), e)
+    const text = q.kind === "sq" ? raw
+      : q.kind === "dq" ? raw.replace(/\\([$`"\\\n])/g, (_m, ch) => ch === "\n" ? "" : ch)
+      : raw.replace(/\\(.)/gs, (m, ch) => ch === "n" ? "\n" : ch === "t" ? "\t" : ch === "\\" || ch === "'" || ch === '"' ? ch : m)
+    quotes.push({ s: q.open, e, kind: q.kind, raw, text })
+  }
+  // CONSTRAINT (#489-B1-FIX8): `)` закрытия `$(`/`$((` и закрывающая обратная
+  // кавычка продолжают слово (`$(a)#b` — одно слово `a#b`); начинают слово
+  // только открывающая обратная кавычка и прочие `;&|()`.
+  const substClose = new Uint8Array(n)
+  const mk = (kind: string, depth: number, sub: string, paren: number): ScanCtx =>
+    ({ kind, depth, sub, paren, id: -1, open: -1, cs: [], pp: 0, patClose: -1, dbl: false, ps: [] })
+  const codeFrame = (depth: number, sub: string, open: number, lo: number): ScanCtx => {
+    const f = mk("code", depth, sub, 0)
+    f.id = spans.length
+    f.open = open
+    spans.push({ lo, hi: n, open, sub })
+    seps.push([])
+    return f
+  }
+  const quoteCtx = (kind: string, depth: number, open: number): ScanCtx => {
+    const q = mk(kind, depth, "", 0)
+    q.open = open
+    return q
+  }
+  const root = mk("code", 0, "root", 0)
+  root.id = 0
+  const stack: ScanCtx[] = [root]
+  let d0Start = 0
+  let i = 0
+  const wordStart = (p: number): boolean => {
+    if (p === 0) return true
+    const b = cmd[p - 1]
+    if (b === " " || b === "\t" || b === "\n") return true
+    return ";&|()`".indexOf(b) >= 0 && !substClose[p - 1]
+  }
+  const wordEnd = (c: string): boolean =>
+    c === " " || c === "\t" || c === "\n" || ";>|<()&".indexOf(c) >= 0
+  const kwAt = (p: number, w: string): boolean =>
+    wordStart(p) && cmd.startsWith(w, p) && (p + w.length >= n || wordEnd(cmd[p + w.length]))
+  // CONSTRAINT (#489-B1-FIX6 F1): bash распознаёт case/esac как ключевые слова
+  // только в командной позиции; аргумент (`echo case`) состояние не трогает.
+  // CONSTRAINT (#489-B1-FIX7 F-1): `)` даёт командную позицию, только если это
+  // закрытие шаблона case этой рамки; обратная кавычка — только открывающая свою
+  // рамку. После `>|`, `>&`, `<&` стоит имя файла, не команда.
+  const cmdPos = (p: number): boolean => {
+    const top = stack[stack.length - 1]
+    let q = p - 1
+    while (q >= 0 && (cmd[q] === " " || cmd[q] === "\t")) q--
+    if (q < 0) return true
+    const b = cmd[q]
+    if (b === "\n" || b === ";" || b === "(") return true
+    if (b === "&" || b === "|") return q === 0 || (cmd[q - 1] !== ">" && cmd[q - 1] !== "<")
+    if (b === ")") return top.patClose === q
+    if (b === "`") return top.sub === "bt" && top.open === q
+    let s = q
+    while (s - 1 >= 0 && cmd[s - 1] !== " " && cmd[s - 1] !== "\t" && ";&|()\n".indexOf(cmd[s - 1]) < 0) s--
+    const w = cmd.slice(s, q + 1)
+    return w === "then" || w === "do" || w === "else" || w === "elif" || w === "if" ||
+      w === "while" || w === "until" || w === "{" || w === "!" || w === "time"
+  }
+  // `esac` закрывает case в фазе шаблонов только в голове шаблона: после `;;`,
+  // `;&`, `;;&` или сразу после `in`.
+  const patHead = (p: number): boolean => {
+    let q = p - 1
+    while (q >= 0 && (cmd[q] === " " || cmd[q] === "\t" || cmd[q] === "\n")) q--
+    if (q < 0) return false
+    if (cmd[q] === ";" || cmd[q] === "&") return true
+    return q >= 1 && cmd[q] === "n" && cmd[q - 1] === "i" && wordStart(q - 1)
+  }
+  const delimWord = (q: number): { delim: string; next: number } => {
+    let w = q
+    let out = ""
+    while (w < n) {
+      const c = cmd[w]
+      if (wordEnd(c)) break
+      if (c === "'") {
+        const cl = cmd.indexOf("'", w + 1)
+        out += cmd.slice(w + 1, cl < 0 ? n : cl)
+        w = cl < 0 ? n : cl + 1
+        continue
+      }
+      if (c === '"') {
+        let k = w + 1
+        while (k < n && cmd[k] !== '"') {
+          if (cmd[k] === "\\") { out += k + 1 < n ? cmd[k + 1] : ""; k += 2; continue }
+          out += cmd[k]
+          k++
+        }
+        w = k < n ? k + 1 : n
+        continue
+      }
+      if (c === "$" && cmd[w + 1] === "'") {
+        const cl = cmd.indexOf("'", w + 2)
+        out += cmd.slice(w + 2, cl < 0 ? n : cl)
+        w = cl < 0 ? n : cl + 1
+        continue
+      }
+      if (c === "\\") { out += w + 1 < n ? cmd[w + 1] : ""; w += 2; continue }
+      out += c
+      w++
+    }
+    return { delim: out, next: w }
+  }
+  const readBodies = (trig: number, trigDepth: number, fid: number): number => {
+    let p = trig + 1
+    // CONSTRAINT: кодовый `\n` изымает ВСЮ очередь -- прочитанное тело не
+    // должно доставаться повторно следующим `\n` того же разбора (F1/F16b).
+    const queue = pend.slice()
+    pend.length = 0
+    for (let pi = 0; pi < queue.length; pi++) {
+      const h = queue[pi]
+      h.bodyStart = p
+      const lines: string[] = []
+      let terminated = false
+      let rawEnd = n
+      while (p < n) {
+        let eol = cmd.indexOf("\n", p)
+        const last = eol < 0
+        if (last) eol = n
+        const probe = h.strip ? cmd.slice(p, eol).replace(/^\t+/, "") : cmd.slice(p, eol)
+        if (probe === h.delim) {
+          terminated = true
+          rawEnd = p
+          if (!last) {
+            if (trigDepth === 0) { cuts.push(eol); d0Start = eol + 1 }
+            seps[fid].push(eol)
+          }
+          p = last ? n : eol + 1
+          break
+        }
+        lines.push(probe)
+        p = last ? n : eol + 1
+      }
+      if (!terminated) rawEnd = n
+      h.bodyEnd = rawEnd
+      h.terminated = terminated
+      h.body = lines.join("\n")
+      for (let q = h.bodyStart; q < rawEnd; q++) inertFlags[q] = 1
+      if (!terminated) p = n
+    }
+    return p
+  }
+  while (i < n) {
+    const top = stack[stack.length - 1]
+    const c = cmd[i]
+    if (top.kind === "sq") {
+      inertFlags[i] = 1
+      if (c === "'") { quoteEnd(top, i); stack.pop() }
+      i++
+      continue
+    }
+    if (top.kind === "ansi") {
+      inertFlags[i] = 1
+      if (c === "\\") { if (i + 1 < n) inertFlags[i + 1] = 1; i += 2; continue }
+      if (c === "'") { quoteEnd(top, i); stack.pop() }
+      i++
+      continue
+    }
+    if (top.kind === "comment") {
+      // CONSTRAINT (#489-B1-FIX8): тело обратных кавычек bash выделяет ДО разбора,
+      // поэтому комментарий внутри них кончается на закрывающей кавычке, а не на
+      // переводе строки; иначе команды за ней становятся инертными.
+      const encBt = stack.length >= 2 && stack[stack.length - 2].sub === "bt"
+      if (encBt && c === "`") { stack.pop(); continue }
+      if (encBt && c === "\\" && cmd[i + 1] === "`") {
+        inertFlags[i] = 1; inertFlags[i + 1] = 1; commentFlags[i] = 1; commentFlags[i + 1] = 1
+        i += 2
+        continue
+      }
+      inertFlags[i] = 1
+      if (c === "\n") {
+        stack.pop()
+        const enc = stack[stack.length - 1]
+        const d = enc.kind === "code" ? enc.depth : 0
+        const fid = enc.kind === "code" ? enc.id : 0
+        if (d === 0) { cuts.push(i); d0Start = i + 1 }
+        if (!enc.dbl) seps[fid].push(i)
+        i++
+        if (pend.length) i = readBodies(i - 1, d, fid)
+        continue
+      }
+      commentFlags[i] = 1
+      i++
+      continue
+    }
+    if (top.kind === "arith") {
+      inertFlags[i] = 1
+      if (c === "(") top.paren++
+      else if (c === ")") { top.paren--; if (top.paren <= 0) { if (top.sub === "darith") substClose[i] = 1; stack.pop() } }
+      i++
+      continue
+    }
+    if (top.kind === "dq") {
+      inertFlags[i] = 1
+      if (c === "\\") { if (i + 1 < n) inertFlags[i + 1] = 1; i += 2; continue }
+      if (c === '"') { quoteEnd(top, i); stack.pop(); i++; continue }
+      if (c === "$" && cmd[i + 1] === "(") {
+        inertFlags[i] = 1; inertFlags[i + 1] = 1
+        stack.push(codeFrame(top.depth + 1, "dollar", i, i + 2))
+        i += 2
+        continue
+      }
+      if (c === "`") {
+        stack.push(codeFrame(top.depth + 1, "bt", i, i + 1))
+        i++
+        continue
+      }
+      i++
+      continue
+    }
+    // code (любая глубина)
+    const ph = top.cs.length ? top.cs[top.cs.length - 1] : ""
+    if (c === "\\") { i += 2; continue }
+    if (c === "\n") {
+      if (top.depth === 0) { cuts.push(i); d0Start = i + 1 }
+      if (!top.dbl) seps[top.id].push(i)
+      const trig = i
+      i++
+      if (pend.length) i = readBodies(trig, top.depth, top.id)
+      continue
+    }
+    // CONSTRAINT (#489-B1-FIX7 F-1): фазы case на рамку: "w" — слово до `in`,
+    // "p" — шаблоны (`(` в начале, `|`, `)` закрывает шаблон), "b" — тело до
+    // `;;`/`;&`/`;;&`. `?(` `*(` `+(` `@(` `!(` — скобки extglob внутри шаблона.
+    if (ph === "w" && kwAt(i, "in")) { top.cs[top.cs.length - 1] = "p"; i += 2; continue }
+    if (ph === "p") {
+      if (c === "(") {
+        // CONSTRAINT (#494 FIX10 AR-3, bash 5.2 на usbox): внутри открытого
+        // extglob bash считает КАЖДУЮ скобку (`case "(b)" in @(a|(b)))` совпадает);
+        // вне его без префикса — только необязательная ведущая `(` шаблона.
+        if (top.pp > 0 || (i > 0 && "?*+@!".indexOf(cmd[i - 1]) >= 0)) top.pp++
+        i++
+        continue
+      }
+      if (c === ")") {
+        if (top.pp > 0) { top.pp--; i++; continue }
+        top.patClose = i
+        seps[top.id].push(i)
+        top.cs[top.cs.length - 1] = "b"
+        i++
+        continue
+      }
+      if (c === "|") { i++; continue }
+      if (kwAt(i, "esac") && patHead(i)) { top.cs.pop(); i += 4; continue }
+    }
+    if (ph === "b" && c === ";" && (cmd[i + 1] === ";" || cmd[i + 1] === "&")) {
+      seps[top.id].push(i)
+      top.cs[top.cs.length - 1] = "p"
+      i += 2
+      continue
+    }
+    // CONSTRAINT (#489-B1-FIX6 F2): `>&`, `<&`, `&>` и `>|` — перенаправления, не разделители.
+    // CONSTRAINT (#489-B1-FIX7 F-2): внутри `[[ … ]]` `&&` и `||` — операторы выражения.
+    if (!top.dbl && (c === ";" ||
+        (c === "|" && cmd[i - 1] !== ">") ||
+        (c === "&" && cmd[i - 1] !== ">" && cmd[i - 1] !== "<" && cmd[i + 1] !== ">"))) {
+      seps[top.id].push(i); i++; continue
+    }
+    if (c === "'") { inertFlags[i] = 1; stack.push(quoteCtx("sq", top.depth, i)); i++; continue }
+    if (c === '"') { inertFlags[i] = 1; stack.push(quoteCtx("dq", top.depth, i)); i++; continue }
+    if (c === "$" && cmd[i + 1] === "'") {
+      inertFlags[i] = 1; inertFlags[i + 1] = 1
+      stack.push(quoteCtx("ansi", top.depth, i))
+      i += 2
+      continue
+    }
+    if (c === "$" && cmd[i + 1] === "(" && cmd[i + 2] === "(") {
+      inertFlags[i] = 1; inertFlags[i + 1] = 1; inertFlags[i + 2] = 1
+      stack.push(mk("arith", top.depth, "darith", 2))
+      i += 3
+      continue
+    }
+    if (c === "$" && cmd[i + 1] === "(") {
+      stack.push(codeFrame(top.depth + 1, "dollar", i, i + 2))
+      i += 2
+      continue
+    }
+    // CONSTRAINT (#494 FIX10 F2): `<(…)` и `>(…)` — подстановка процесса, своя
+    // кодовая рамка: команды внутри не принадлежат внешней простой команде.
+    if ((c === "<" || c === ">") && cmd[i + 1] === "(") {
+      stack.push(codeFrame(top.depth + 1, c === "<" ? "pin" : "pout", i, i + 2))
+      i += 2
+      continue
+    }
+    if (c === "(" && cmd[i + 1] === "(" && wordStart(i)) {
+      inertFlags[i] = 1; inertFlags[i + 1] = 1
+      stack.push(mk("arith", top.depth, "", 2))
+      i += 2
+      continue
+    }
+    // CONSTRAINT (#489-B1-FIX9): `(` в командной позиции вне `[[ … ]]` открывает
+    // подоболочку, и её скобки — границы команды: `if (echo --only ) then git commit`
+    // — разные команды. Прочие `(` (массив, `f()`) только считаются.
+    if (c === "(") {
+      const sub = !top.dbl && cmdPos(i)
+      top.ps.push(sub)
+      if (sub) seps[top.id].push(i)
+      i++
+      continue
+    }
+    if (ph !== "w" && ph !== "p" && kwAt(i, "case") && cmdPos(i)) { top.cs.push("w"); i += 4; continue }
+    if (ph === "b" && kwAt(i, "esac") && cmdPos(i)) { top.cs.pop(); i += 4; continue }
+    if (ph !== "w" && ph !== "p" && !top.dbl && kwAt(i, "[[") && cmdPos(i)) { top.dbl = true; i += 2; continue }
+    if (top.dbl && kwAt(i, "]]")) { top.dbl = false; i += 2; continue }
+    if (c === "#" && wordStart(i)) {
+      inertFlags[i] = 1
+      commentFlags[i] = 1
+      stack.push(mk("comment", top.depth, "", 0))
+      i++
+      continue
+    }
+    if (c === "`") {
+      if (top.sub === "bt") { spans[top.id].hi = i; substClose[i] = 1; stack.pop(); i++; continue }
+      stack.push(codeFrame(top.depth + 1, "bt", i, i + 1))
+      i++
+      continue
+    }
+    // CONSTRAINT (#489-B1-FIX5b Z17): закрывает подстановку `$(` только `)` вне
+    // открытых скобок рамки и вне шаблона `case` — иначе `$( (a) )` и `a)` режут её раньше срока.
+    if (c === ")" && top.ps.length) {
+      if (top.ps.pop()) seps[top.id].push(i)
+      i++
+      continue
+    }
+    if (c === ")" && (top.sub === "dollar" || top.sub === "pin" || top.sub === "pout") && top.depth > 0) {
+      spans[top.id].hi = i
+      substClose[i] = 1
+      stack.pop()
+      const parent = stack[stack.length - 1]
+      if (parent.kind === "dq") inertFlags[i] = 1
+      i++
+      continue
+    }
+    if (c === "<" && cmd[i + 1] === "<" && cmd[i + 2] !== "<" && (i === 0 || cmd[i - 1] !== "<")) {
+      let q = i + 2
+      let strip = false
+      if (cmd[q] === "-") { strip = true; q++ }
+      while (cmd[q] === " " || cmd[q] === "\t") q++
+      const w = delimWord(q)
+      if (w.delim !== "") {
+        const h: Heredoc = {
+          op: i, delim: w.delim, strip,
+          lineStart: d0Start, lineEnd: n,
+          bodyStart: n, bodyEnd: n, body: "", terminated: false,
+        }
+        heredocs.push(h)
+        pend.push(h)
+        i = w.next
+        continue
+      }
+      i++
+      continue
+    }
+    i++
+  }
+  for (let k = 0; k < stack.length; k++) {
+    const q = stack[k]
+    if (q.kind === "sq" || q.kind === "dq" || q.kind === "ansi") quoteEnd(q, n)
+  }
+  for (let hi = 0; hi < heredocs.length; hi++) {
+    const h = heredocs[hi]
+    for (let ci = 0; ci < cuts.length; ci++) {
+      if (cuts[ci] >= h.lineStart) { h.lineEnd = cuts[ci]; break }
+    }
+  }
+  const lineOf = (idx: number): [number, number] => {
+    let lo = 0
+    for (let ci = 0; ci < cuts.length; ci++) {
+      if (cuts[ci] >= idx) return [lo, cuts[ci]]
+      lo = cuts[ci] + 1
+    }
+    return [lo, n]
+  }
+  const frameOf = (idx: number): number => {
+    let fid = 0
+    for (let k = 1; k < spans.length; k++) {
+      if (spans[k].lo <= idx && idx < spans[k].hi && spans[k].lo >= spans[fid].lo) fid = k
+    }
+    return fid
+  }
+  const cmdOf = (idx: number): [number, number] => {
+    const fid = frameOf(idx)
+    let lo = spans[fid].lo
+    const bs = seps[fid]
+    for (let k = 0; k < bs.length; k++) {
+      if (bs[k] >= idx) return [lo, bs[k]]
+      lo = bs[k] + 1
+    }
+    return [lo, spans[fid].hi]
+  }
+  const inert = (idx: number): boolean => {
+    if (idx < 0 || idx >= n) return false
+    return inertFlags[idx] === 1
+  }
+  const comment = (idx: number): boolean => idx >= 0 && idx < n && commentFlags[idx] === 1
+  const segments = (): Array<[number, number]> => {
+    const out: Array<[number, number]> = []
+    for (let fid = 0; fid < spans.length; fid++) {
+      let lo = spans[fid].lo
+      const bs = seps[fid]
+      for (let k = 0; k < bs.length; k++) { out.push([lo, bs[k]]); lo = bs[k] + 1 }
+      out.push([lo, spans[fid].hi])
+    }
+    return out
+  }
+  const quoteAt = (idx: number): ShellQuote | undefined => {
+    let best: ShellQuote | undefined
+    for (let k = 0; k < quotes.length; k++) {
+      const q = quotes[k]
+      if (q.s < idx && idx < q.e && (!best || q.s > best.s)) best = q
+    }
+    return best
+  }
+  const quoteFrom = (idx: number): ShellQuote | undefined => quotes.find((q) => q.s === idx)
+  const frameFrom = (idx: number): ShellFrame | undefined => spans.find((f, k) => k > 0 && f.open === idx)
+  return { heredocs, inert, comment, lineOf, cmdOf, frames: spans, frameOf, segments, quoteAt, quotes, quoteFrom, frameFrom }
+}
+
+// CONSTRAINT (#489-B1-FIX7 F-7): аргументы и stdin этих команд — данные, не
+// исполняемый текст; выход в `|` к не-данным снимает статус (приёмник может исполнить).
+// CONSTRAINT (#494 FIX10 F3/AR-1): вывод, который может стать исполняемым, статус
+// снимает: запись в файл или процесс, подстановка в командной позиции или в
+// присваивании, аргумент команды вне DATA_CMDS/SUBST_PARENTS. `tee` пишет файлы —
+// не данные. Судимый лишний раз коммит — безопасное направление, пропущенный — нет.
+const DATA_CMDS = ["echo", "printf", "cat", "grep", "egrep", "fgrep", "rg"]
+const SUBST_PARENTS = ["git", "gh"]
+const SAFE_SINKS = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/1", "/dev/fd/2"]
+// CONSTRAINT (#494 FIX10 AR-5): опции git, забирающие СЛЕДУЮЩЕЕ слово как значение.
+const GIT_OPT_ARG = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"]
+
+function cmdHead(seg: string): string {
+  let r = seg
+  for (;;) {
+    const m = /^(?:[\s({!]+|(?:then|do|else|elif|if|while|until|time)(?=\s)|[A-Za-z_][A-Za-z0-9_]*=\S*(?=\s))/.exec(r)
+    if (!m) break
+    r = r.slice(m[0].length)
+  }
+  return r
+}
+
+function cmdWord(seg: string): string {
+  const w = (/^[^\s<>|;&()]*/.exec(cmdHead(seg)) as RegExpExecArray)[0]
+  return w.slice(w.lastIndexOf("/") + 1)
+}
+
+// CONSTRAINT (#494 FIX10 qwen F-2): `name() { … }` — определение функции; её
+// тело исполнится вызовом имени, поэтому имя data-команды статуса не даёт.
+function funcDef(seg: string): boolean {
+  return /^[^\s<>|;&()]+\s*\(\s*\)/.test(cmdHead(seg))
+}
+
+type ShWord = { at: number; text: string; dyn: boolean }
+
+// CONSTRAINT (#494 FIX10 AR-5): слова кода отрезка так, как их склеит bash:
+// кавычки и `\` снимаются, `$…` и подстановки делают слово неизвестным (dyn).
+function shellWords(tx: string, lo: number, hi: number, scan: ShellScan): ShWord[] {
+  const out: ShWord[] = []
+  const brk = (ch: string): boolean => ch === " " || ch === "\t" || ch === "\n" || ";&|<>()".indexOf(ch) >= 0
+  const skip = (q: number): boolean =>
+    scan.comment(q) || scan.heredocs.some((h) => h.bodyStart <= q && q < h.bodyEnd)
+  let p = lo
+  while (p < hi) {
+    if (brk(tx[p]) || skip(p)) { p++; continue }
+    const at = p
+    let text = ""
+    let dyn = false
+    while (p < hi && !brk(tx[p]) && !skip(p)) {
+      const ch = tx[p]
+      if (ch === "\\") { if (tx[p + 1] !== "\n") text += tx[p + 1] ?? ""; p += 2; continue }
+      const q = (ch === "'" || ch === '"' || (ch === "$" && tx[p + 1] === "'")) ? scan.quoteFrom(p) : undefined
+      if (q) {
+        text += q.text
+        if (q.kind === "dq" && /[$`]/.test(q.raw)) dyn = true
+        p = q.e + 1
+        continue
+      }
+      if (ch === "$" || ch === "`") {
+        dyn = true
+        const f = scan.frameFrom(p)
+        p = f ? f.hi + 1 : p + 1
+        continue
+      }
+      text += ch
+      p++
+    }
+    out.push({ at, text, dyn })
+  }
+  return out
+}
+
+// CONSTRAINT (#494 FIX10 AR-5): неизвестное слово (`$G`, `$(which git)`) на месте
+// `git` или его опции считается возможным — судится лишний раз, не пропускается.
+function gitSubWords(tx: string, scan: ShellScan, sub: string): number[] {
+  const out: number[] = []
+  const segs = scan.segments()
+  for (let si = 0; si < segs.length; si++) {
+    const ws = shellWords(tx, segs[si][0], segs[si][1], scan)
+    for (let k = 0; k < ws.length; k++) {
+      const w = ws[k]
+      if (!w.dyn && w.text.slice(w.text.lastIndexOf("/") + 1) !== "git") continue
+      let j = k + 1
+      while (j < ws.length && (ws[j].dyn || ws[j].text.startsWith("-")))
+        j += !ws[j].dyn && GIT_OPT_ARG.indexOf(ws[j].text) >= 0 ? 2 : 1
+      if (j < ws.length && !ws[j].dyn && ws[j].text === sub && out.indexOf(w.at) < 0) out.push(w.at)
+    }
+  }
+  return out
+}
+
+// CONSTRAINT (#494 FIX10c): один дом детекции вложенного `git <sub>` для входа в суд
+// и для попаданий внутри кавычек и тел heredoc: слова не заходят в инертный текст,
+// поэтому каждая кавычка и тело разбираются как своя команда. Глубина 8 — предел
+// разбора, не предел суда (суд глубже 3 уровней отказывает сам).
+function gitSubDeep(tx: string, sub: string, lvl: number): boolean {
+  const scan = shellScan(tx)
+  if (gitSubWords(tx, scan, sub).length) return true
+  if (lvl >= 8) return false
+  for (let qi = 0; qi < scan.quotes.length; qi++) if (gitSubDeep(scan.quotes[qi].text, sub, lvl + 1)) return true
+  for (let hi = 0; hi < scan.heredocs.length; hi++) if (gitSubDeep(scan.heredocs[hi].body, sub, lvl + 1)) return true
+  return false
+}
+
+// CONSTRAINT (#489-B1-FIX6 F4): `>` и `tee` без `-a`/`--append` усекают цель,
+// суд идёт по одному телу. Форма с опциями готовит R к расширению канона (#502).
+function isAppend(op: string): boolean {
+  if (/^>>/.test(op)) return true
+  const m = /^tee((?:\s+-[-\w]+)*)/.exec(op)
+  if (!m) return false
+  return /\s(?:-[A-Za-z]*a[A-Za-z]*|--append)(?=\s|$)/.test(m[1])
+}
+
+async function runForm($: any, p: any, env: any, world: any, ev: any): Promise<string | null> {
   const cfg = p.cfg
-  const tool = String((e && e.tool) || "")
+  const tool = String((ev && ev.tool) || "")
   if (!formActsOnTool(tool)) return null
   for (let i = 0; i < FORM_REQ.length; i++) {
     if (typeof cfg[FORM_REQ[i]] !== "string" || !cfg[FORM_REQ[i]]) {
@@ -2887,63 +3780,99 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   }
   const evs: any[] = []
   const sk: string[] = []
+  const unreadWarns: any[] = []
+  const noteUnread = (fp: string, label: string, why: string) => {
+    noteLost("form-path-read", new Error(fp + ": " + why), $)
+    unreadWarns.push({ c: "target-unreadable", n: 0, q: clip(why, 160), src: label })
+  }
   const byPath = async (fp: string) => {
-    const t = await readTextNull($, fp)
+    const got = await readText($, fp)
+    if (got.unreadable) { noteUnread(fp, tool + ":" + fp, got.unreadable); return }
+    const t = got.text
     if (t === null) return
     const k = formKind(fp, t, cfg)
     if (k) evs.push({ kind: k, text: t, label: tool + ":" + fp })
     else sk.push(fp)
   }
   if (tool === "Agent" || tool === "Task" || tool === "SendMessage") {
-    const tx = String((e && (e.prompt || e.message || e.text)) || "")
+    const tx = String((ev && (ev.prompt || ev.message || ev.text)) || "")
     const pu: string[] = []
-    const re = K(cfg.brief_ref, "gu", "brief_ref")
-    let m: RegExpExecArray | null
-    while ((m = re.exec(tx)) && pu.length < 4) {
+    for (const m of tx.matchAll(K(cfg.brief_ref, "gu", "brief_ref"))) {
+      if (m[0].length === 0) continue
       const rp = resolvePath(m[0], env.HOME, world.cwd)
       if (pu.indexOf(rp) < 0) pu.push(rp)
+      if (pu.length >= 4) break
     }
     for (let i = 0; i < pu.length; i++) await byPath(pu[i])
     if (tool === "SendMessage") evs.push({ kind: "message", text: tx, label: "SendMessage:message" })
   } else if (tool === "Write") {
-    const fp = String((e && e.file_path) || "")
-    const ct = String((e && e.content) || "")
+    const fp = String((ev && ev.file_path) || "")
+    const ct = String((ev && ev.content) || "")
     const k = formKind(fp, ct, cfg)
     if (k) evs.push({ kind: k, text: ct, label: "Write:" + fp })
     else sk.push(fp)
   } else if (tool === "Edit") {
-    const fp = String((e && e.file_path) || "")
-    const cur = await readTextNull($, fp)
+    const fp = String((ev && ev.file_path) || "")
+    const gotE = await readText($, fp)
+    if (gotE.unreadable) noteUnread(fp, "Edit:" + fp, gotE.unreadable)
+    const cur = gotE.unreadable ? null : gotE.text
     if (cur !== null) {
-      const oldS = String((e && e.old_string) || "")
-      const newS = String((e && e.new_string) || "")
-      const post = e && e.replace_all ? cur.split(oldS).join(newS) : cur.replace(oldS, newS)
+      const oldS = String((ev && ev.old_string) || "")
+      const newS = String((ev && ev.new_string) || "")
+      const post = ev && ev.replace_all ? cur.split(oldS).join(newS) : cur.replace(oldS, newS)
       const k = formKind(fp, post, cfg)
       if (k) evs.push({ kind: k, text: post, label: "Edit:" + fp })
       else sk.push(fp)
     }
   } else {
-    const cmd = String((e && e.command) || "")
-    const wr = K(cfg.write_redirect, "u", "write_redirect").exec(cmd)
-    if (wr) {
-      const fp = resolvePath(wr[1], env.HOME, world.cwd)
-      const hd = K(cfg.heredoc, "u", "heredoc").exec(cmd)
-      let body = hd ? hd[2] : ""
-      let post = body
-      if (/>>|tee/.test(wr[0])) {
-        const cur = await readTextNull($, fp)
-        post = (cur === null ? "" : cur) + ((cur && cur.length && !cur.endsWith("\n")) ? "\n" : "") + body
+    const cmd = String((ev && ev.command) || "")
+    // CONSTRAINT: тело принадлежит цели своей строки оператора глубины 0
+    // (закон Z5, ADJUDICATION: B1-FIX3); несколько тел одной строки судятся
+    // для каждой цели строки -- консервативно, пинит L11. Цель внутри тела,
+    // кавычки, комментарий, арифметика и `$'…'` инертны: текст, не запись.
+    const scan = shellScan(cmd)
+    const hits = [...cmd.matchAll(K(cfg.write_redirect, "gu", "write_redirect"))]
+      .filter((m) => m[0].length > 0 && !!m[1] && !scan.inert(m.index as number))
+    for (let hi = 0; hi < hits.length; hi++) {
+      const wr = hits[hi]
+      const index = wr.index as number
+      const bodies = scan.heredocs
+        .filter((h) => h.lineStart === scan.lineOf(index)[0]).map((h) => h.body)
+      const bodyList = bodies.length ? bodies : [""]
+      const fp = resolvePath(String(wr[1]), env.HOME, world.cwd)
+      let cur: string | null = null
+      let append = false
+      if (isAppend(wr[0])) {
+        const curR = await readText($, fp)
+        if (curR.unreadable) {
+          noteUnread(fp, "Bash:" + fp, curR.unreadable)
+          continue
+        }
+        cur = curR.text
+        append = true
       }
-      const k = formKind(fp, post, cfg)
-      if (k) evs.push({ kind: k, text: post, label: "Bash:" + fp })
-      else sk.push(fp)
+      let anyKind = false
+      for (let bi = 0; bi < bodyList.length; bi++) {
+        const body = bodyList[bi]
+        const post = append
+          ? (cur === null ? "" : cur) + ((cur && cur.length && !cur.endsWith("\n")) ? "\n" : "") + body
+          : body
+        const k = formKind(fp, post, cfg)
+        if (k) {
+          evs.push({ kind: k, text: post, label: "Bash:" + fp })
+          anyKind = true
+        }
+      }
+      if (!anyKind) sk.push(fp)
     }
-    if (/git\s+(?:commit|push)\b/.test(cmd))
+    // CONSTRAINT (#494 FIX10 AR-5): вход в суд команды — и по разбору слов, иначе
+    // `"git" commit` и `git -C . push` не доходят до formEval вовсе.
+    if (/git\s+(?:commit|push)\b/.test(cmd) || gitSubDeep(cmd, "commit", 0) || gitSubDeep(cmd, "push", 0))
       evs.push({ kind: "command", text: cmd, label: "Bash:command" })
   }
-  if (!evs.length) return null
+  if (!evs.length && !unreadWarns.length) return null
   const rf: any[] = []
-  const wn: any[] = []
+  const wn: any[] = unreadWarns.slice()
   const cls: string[] = []
   for (let i = 0; i < evs.length; i++) {
     const r2 = formEval(evs[i], cfg)
@@ -2982,7 +3911,7 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   const vd = upper + ": " +
     (vk === "pass" ? lbl : cnts + " — " + lbl + " — " + (src3 ? src3.c : "") + " :" + (src3 ? src3.n : "") + " " + (src3 ? src3.q : ""))
   const t0 = await nowMs($)
-  const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
+  const recName = "mod-" + String((ev && ev.tool_use_id) || "noid") + ".json"
   const jpath = world.globalHome + "/form/journal.jsonl"
   const recPath = world.globalHome + "/form/records/" + recName
   let formJournalErr = ""
@@ -2991,9 +3920,12 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
       t: isoOf(t0), tool, outcome: vk, verdict: clip(vd, 400),
       cls, jm: "rules", tries: 0, rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), probe: "form",
       skipped: sk.slice(0, 8),
+      // CONSTRAINT (#489-B1-FIX5 Z16): срез восьми молча терял остаток; полное
+      // число пропусков несёт отдельное поле, срез остаётся прежним домом.
+      skippedN: sk.length,
     })
   } catch (x) {
-    formJournalErr = String((x && (x as any).message) || x).slice(0, 240)
+    formJournalErr = safeText(x).slice(0, 240)
   }
   if (vk !== "pass") {
     // CONSTRAINT (#374): улика формы несёт вид ОТДЕЛЬНЫМ полем kind, как и
@@ -3019,8 +3951,8 @@ async function runForm($: any, p: any, env: any, world: any, e: any): Promise<st
   return null
 }
 
-function builtinTrigger(p: any, e: any, ctx: any): boolean {
-  const tool = String((e && e.tool) || "")
+function builtinTrigger(p: any, ev: any, ctx: any): boolean {
+  const tool = String((ev && ev.tool) || "")
   if (p.id === "judge") return tool === "Agent" || tool === "Task"
   if (p.id === "idle-watch") {
     if (tool === "Agent" || tool === "Task") return false
@@ -3056,7 +3988,7 @@ function builtinTrigger(p: any, e: any, ctx: any): boolean {
 export function chunkCarriesContent(c: any): boolean {
   if (c == null || typeof c !== "object") return true
   let ks: string[]
-  try { ks = Object.keys(c) } catch (x) { return true }
+  try { ks = Object.keys(c) } catch (x) { noteLost("turn-step-chunk-keys", x); return true }
   for (let i = 0; i < ks.length; i++) {
     if (ks[i] !== "kind" && ks[i] !== "ref") return true
   }
@@ -3070,30 +4002,43 @@ function countEmitted(
   return {
     [Symbol.asyncIterator]: () => {
       const it: any = src[Symbol.asyncIterator]()
+      // CONSTRAINT (#489-B1-FIX5 Z13.4): СВОЙСТВО next читается один раз на
+      // итератор; шаг зовёт сохранённое значение -- повторное обращение было бы
+      // новым чтением геттера хоста.
+      const itNext = it.next
       const wrap: any = {
         next: async () => {
-          const r = await it.next()
-          if (!r.done) {
+          const r = await itNext.call(it)
+          const done = r.done
+          const value = r.value
+          if (!done) {
             emitted.n++
-            if (chunkCarriesContent(r.value)) emitted.content++
+            if (chunkCarriesContent(value)) emitted.content++
             // CONSTRAINT (обязательная вторая половина адъюдикации #242b):
             // алфавит kind обязан расти ЗАМЕРОМ, а не догадкой -- каждый вид,
             // впервые встреченный на этой дороге, уезжает в улику попытки.
             // Потолок 16 держит размер улики: алфавит шире шестнадцати сам по
             // себе есть находка, и её видно по достижению потолка.
-            const k =
-              r.value != null && typeof r.value === "object"
-                ? String((r.value as any).kind)
-                : "?"
+            let k = "?"
+            if (value != null && typeof value === "object") {
+              try {
+                k = String((value as any).kind)
+              } catch (x) {
+                noteLost("turn-step-chunk-kind", x)
+                k = "?unprintable"
+              }
+            }
             if (emitted.kinds.length < 16 && emitted.kinds.indexOf(k) < 0) {
               emitted.kinds.push(k)
             }
           }
-          return r
+          return { done, value }
         },
       }
-      if (typeof it.return === "function") wrap.return = (v: any) => it.return(v)
-      if (typeof it.throw === "function") wrap.throw = (x: any) => it.throw(x)
+      const returnMethod = it.return
+      const throwMethod = it.throw
+      if (typeof returnMethod === "function") wrap.return = (v: any) => returnMethod.call(it, v)
+      if (typeof throwMethod === "function") wrap.throw = (x: any) => throwMethod.call(it, x)
       return wrap
     },
   }
@@ -3105,9 +4050,11 @@ async function* driveNext(
   n: any,
   emitted?: { n: number; content: number; kinds: string[] },
 ): AsyncGenerator<any, any, any> {
-  if (n != null && typeof n[Symbol.asyncIterator] === "function") {
-    if (emitted == null) return yield* n
-    return yield* countEmitted(n, emitted)
+  const iteratorMethod = n == null ? undefined : n[Symbol.asyncIterator]
+  if (typeof iteratorMethod === "function") {
+    const src = { [Symbol.asyncIterator]: () => iteratorMethod.call(n) }
+    if (emitted == null) return yield* src
+    return yield* countEmitted(src, emitted)
   }
   return n
 }
@@ -3128,11 +4075,39 @@ async function* driveNext(
 function decisiveFailClosed($: any, event: string, e: any, next: any): any {
   if (next && next.called) return next(e)
   const err: any = next && next.error
-  const timedOut = !!(err && err.kind === "timeout")
+  // CONSTRAINT: текст броска хост не передаёт; скобка — только из поля message контракта либо из самого значения вне контракта.
+  let kind: any
+  let kindRead = false
+  if (err != null && typeof err === "object") {
+    try {
+      kind = err.kind
+      kindRead = true
+    } catch (y) {
+      kindRead = false
+    }
+  }
+  const timedOut = !!(kindRead && kind === "timeout")
+  const contract = err != null && typeof err === "object" && kindRead && typeof kind === "string" && kind !== ""
   const why = timedOut ? "timed out without answering" : "threw"
   // CONSTRAINT (#391): текст броска доезжает до оператора -- отказ обязан
   // называть СВОЮ причину, а не только факт. Fail-closed не ослабляется.
-  const msg = !timedOut && err && err.message ? " (" + String(err.message).slice(0, 200) + ")" : ""
+  let msg = ""
+  if (err == null) {
+    msg = ""
+  } else if (contract) {
+    let raw: any
+    let hasMsg = false
+    try {
+      const v = err.message
+      raw = v
+      hasMsg = v != null
+    } catch (y) {
+      hasMsg = false
+    }
+    if (hasMsg) msg = " (" + safeText(raw).slice(0, 200) + ")"
+  } else {
+    msg = " (" + safeText(err).slice(0, 200) + ")"
+  }
   return {
     deny:
       "Subagent dispatch cancelled: the catalyst-probes " + event + " hook " + why + msg +
@@ -3161,7 +4136,11 @@ async function* observerFailThroughStream($: any, e: any, next: any): AsyncGener
 
 export function register(on: any) {
   on("session.start", async ($: any, e: any, next: any) => {
-    try { if (e && e.cwd) { await $.store.set(CWD_KEY, String(e.cwd)); cwdStoreStale = false } } catch (x) { cwdStoreStale = true; noteLost("session-cwd", x, $) }
+    const ev = snapEvent($, e, "session.start")
+    try {
+      const cwd = ev && ev.cwd
+      if (cwd) { await $.store.set(CWD_KEY, String(cwd)); cwdStoreStale = false }
+    } catch (x) { cwdStoreStale = true; noteLost("session-cwd", x, $) }
     // CONSTRAINT: регистрация -- ДО next(e) и под отдельным глухим try: отказ
     // двери не имеет права уронить старт сессии. Повторная регистрация --
     // тихая замена (волна 2 #178), поэтому каждый session.start регистрирует
@@ -3180,6 +4159,7 @@ export function register(on: any) {
     .catch(observerFailThrough)
 
   on("command.run", { command: ["clear", "resume"] }, async ($: any, e: any, next: any) => {
+    const ev = snapEvent($, e, "command.run")
     const result = await next(e)
     // CONSTRAINT: сброс строго ПОСЛЕ next(e) (образ -- официальный мод diff):
     // команда обязана отработать и при отказе сброса, поэтому newSession
@@ -3212,18 +4192,20 @@ export function register(on: any) {
   // массивная форма: строковая не измерена, массивная дошла до живого хоста
   // (волна 2 #178, r2/r3).
   on("command.run", { command: [LADDER_COMMAND] }, async ($: any, e: any, next: any) => {
-    return { text: ladderCommandText(await nowMs($), String((e && e.args) || "")) }
+    const ev = snapEvent($, e, "command.run")
+    return { text: ladderCommandText(await nowMs($), String((ev && ev.args) || "")) }
   })
     .catch(observerFailThrough)
 
   on("prompt.section", async ($: any, e: any, next: any) => {
-    const name = String((e && e.name) || "")
+    const ev = snapEvent($, e, "prompt.section")
+    const name = String((ev && ev.name) || "")
     let w: any = null
-    try { w = await worldFor($) } catch (x) { w = null }
+    try { w = await worldFor($) } catch (x) { w = null; noteLost("prompt-section-world", x, $) }
     if (!w) return next(e)
-    const r = await applyPromptRules($, w.world, w.env, "section", name, String((e && e.text) || ""))
+    const r = await applyPromptRules($, w.world, w.env, "section", name, String((ev && ev.text) || ""))
     if (!r.applied.length) return next(e)
-    return next(Object.assign({}, e, { text: r.text }))
+    return next(Object.assign({}, ev, { text: r.text }))
   })
     .catch(observerFailThrough)
 
@@ -3231,38 +4213,45 @@ export function register(on: any) {
   // `tool,description,provider`; command.describe carries
   // `command,description,argumentHint,isHidden,immediate,provider`.
   on("tool.describe", async ($: any, e: any, next: any) => {
-    const name = String((e && e.tool) || "")
+    const ev = snapEvent($, e, "tool.describe")
+    const name = String((ev && ev.tool) || "")
     if (!name) return next(e)
     let w: any = null
-    try { w = await worldFor($) } catch (x) { w = null }
+    try { w = await worldFor($) } catch (x) { w = null; noteLost("tool-describe-world", x, $) }
     if (!w) return next(e)
-    const r = await applyPromptRules($, w.world, w.env, "tool", name, String((e && e.description) || ""))
+    const r = await applyPromptRules($, w.world, w.env, "tool", name, String((ev && ev.description) || ""))
     if (!r.applied.length) return next(e)
-    return next(Object.assign({}, e, { description: r.text }))
+    return next(Object.assign({}, ev, { description: r.text }))
   })
     .catch(observerFailThrough)
 
   on("command.describe", async ($: any, e: any, next: any) => {
-    const raw = String((e && e.command) || "")
+    const ev = snapEvent($, e, "command.describe")
+    const raw = String((ev && ev.command) || "")
     if (!raw) return next(e)
     // A table may name the command with or without the leading slash.
     const bare = raw.charAt(0) === "/" ? raw.slice(1) : raw
     let w: any = null
-    try { w = await worldFor($) } catch (x) { w = null }
+    try { w = await worldFor($) } catch (x) { w = null; noteLost("command-describe-world", x, $) }
     if (!w) return next(e)
-    const text = String((e && e.description) || "")
+    const text = String((ev && ev.description) || "")
     let r = await applyPromptRules($, w.world, w.env, "command", raw, text)
     if (!r.applied.length && bare !== raw) {
       r = await applyPromptRules($, w.world, w.env, "command", bare, text)
     }
     if (!r.applied.length) return next(e)
-    return next(Object.assign({}, e, { description: r.text }))
+    return next(Object.assign({}, ev, { description: r.text }))
   })
     .catch(observerFailThrough)
 
   on("tool.call", async ($: any, e: any, next: any) => {
-    if ("agentId" in e) return next(e)
-    const tool = String((e && e.tool) || "")
+    // CONSTRAINT (#489-B1-FIX5 Z13.5): ловушка has прокси срабатывает на
+    // КАЖДОЙ проверке `"agentId" in`; вычисляется один раз здесь и берётся
+    // ниже из isAgent.
+    const isAgent = "agentId" in e
+    if (isAgent) return next(e)
+    const ev = snapEvent($, e, "tool.call")
+    const tool = String((ev && ev.tool) || "")
     // CONSTRAINT: tool.call главного лупа (нет agentId) -- горячий путь.
     // Замер 2026-09-18, транскрипт worktree claudeapp session 9632494b,
     // 493 часа с tool_use: медиана 41/час, пик 251/час (2026-09-15T20).
@@ -3272,8 +4261,8 @@ export function register(on: any) {
     const packed = await worldFor($)
     const env = packed.env
     const world = packed.world
-    const prompt = String((e && e.prompt) || "")
-    const agent = String((e && e.subagent_type) || "")
+    const prompt = String((ev && ev.prompt) || "")
+    const agent = String((ev && ev.subagent_type) || "")
     const t0 = await nowMs($)
     const sid = await sidFor($)
     // CONSTRAINT: метка мира снимается ОДИН раз на консультацию, рядом с sid, и
@@ -3310,23 +4299,23 @@ export function register(on: any) {
       const p = world.probes[i]
       const arm = armStateOf(p, env)
       if (arm.state === "off") continue
-      if (p.mainLoopOnly && ("agentId" in e)) continue
+      if (p.mainLoopOnly && isAgent) continue
       if (p.kind === "form") {
         if (p.cfg && p.cfg.enabled === false) continue
         // CONSTRAINT (#335): отказ -- в точке действия формы (её список
         // инструментов); вне списка форма не действовала бы -- и не гасит.
         // CONSTRAINT (#393): нечитаемая ручка -- та же точка действия.
-        if (arm.state === "env-unreadable" && formActsOnTool(String((e && e.tool) || ""))) {
+        if (arm.state === "env-unreadable" && formActsOnTool(String((ev && ev.tool) || ""))) {
           const d = await refuseEnvUnreadable($, world, arm, t0, sid)
           if (d && !hardDeny) hardDeny = d
           continue
         }
-        if (arm.state === "foreign-carrier" && formActsOnTool(String((e && e.tool) || ""))) {
+        if (arm.state === "foreign-carrier" && formActsOnTool(String((ev && ev.tool) || ""))) {
           const d = await refuseForeignCarrier($, world, arm, t0, sid)
           if (d && !hardDeny) hardDeny = d
           continue
         }
-        const d = await runForm($, p, env, world, e)
+        const d = await runForm($, p, env, world, ev)
         if (d && !hardDeny) hardDeny = d
         continue
       }
@@ -3356,7 +4345,7 @@ export function register(on: any) {
       }
 
       let fire = false
-      if (p.builtin) fire = builtinTrigger(p, e, ctx)
+      if (p.builtin) fire = builtinTrigger(p, ev, ctx)
       else if (p.cfg && p.cfg.when) { const u = whenFields(p.cfg.when).filter((f) => ctx.unknown.indexOf(f) >= 0); if (u.length) { for (const f of u) addWhenBad(ctx, "unknown=" + f); fire = false } else fire = pred(p.cfg.when, ctx) }
       else continue
       if (!fire) {
@@ -3369,7 +4358,7 @@ export function register(on: any) {
           try {
             await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", {
               t: isoOf(t0), tool, agent, outcome: "when_bad",
-              rec: modRecName(e), carrier: carrierOfJournal(p, env), sid: await sidFor($),
+              rec: modRecName(ev), carrier: carrierOfJournal(p, env), sid: await sidFor($),
               whenBad: ctx.whenBad, ms: 0, probe: p.id,
             })
           } catch (x) { noteLost("journal-when-bad", x, $) }
@@ -3379,7 +4368,7 @@ export function register(on: any) {
 
       if (p.cfg && p.cfg.enabled === false) {
         if (p.id === "judge") {
-          const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
+          const recName = "mod-" + String((ev && ev.tool_use_id) || "noid") + ".json"
           try {
             await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
               t: isoOf(t0), tool, agent, outcome: "skip_disabled",
@@ -3433,7 +4422,7 @@ export function register(on: any) {
           // состояние пробы неизвестно, журнал не называет ложную причину
           // пропуска и не подписывает неизвестного носителя.
           if (arm.state !== "foreign-carrier" && arm.state !== "env-unreadable") {
-            const recName = "mod-" + String((e && e.tool_use_id) || "noid") + ".json"
+            const recName = "mod-" + String((ev && ev.tool_use_id) || "noid") + ".json"
             try {
               const jskip: any = {
                 t: isoOf(t0), tool, agent, outcome: "skip",
@@ -3478,21 +4467,24 @@ export function register(on: any) {
         const ttlMs = num(p.cfg && p.cfg.verdict_cache_ms, VERDICT_TTL_MS_DEFAULT, 1)
         let stored: any
         try { stored = await $.store.get(key) } catch (x) { stored = undefined; noteLost("verdict-cache-read", x, $) }
-        const enforce = p.id === "judge" ? (env.JUDGE === "enforce" || bl3(p.cfg.enforce, true)) : bl3(p.cfg.enforce, true)
+        const enforce = enforceOf(p, env, p.cfg)
         const failClosed = bl3(p.cfg.fail_closed, p.id === "judge")
-        if (memoUsable(stored, t0, ttlMs, p.id)) {
+        const storedKind = stored && typeof stored === "object" ? stored.kind : undefined
+        const storedT = storedKind && !passKind(p.id, storedKind) ? stored.t : undefined
+        if (memoUsable({ kind: storedKind, t: storedT }, t0, ttlMs, p.id)) {
+          stored = { kind: storedKind, t: storedT, used: stored.used, dtMs: stored.dtMs, threw: stored.threw, rest: stored.rest }
           // CONSTRAINT: попадание в кэш обязано оставлять тот же след, что и
           // консульт, -- без улики и строки журнала оно отменяло суд молча.
-          const recName = modRecName(e)
+          const recName = modRecName(ev)
           const ageMs = t0 - stored.t
           let recErr = ""
           try {
-            await $.fs.write(modRecPath(world, p.id, e), JSON.stringify({
-              id: e && e.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
+            await $.fs.write(modRecPath(world, p.id, ev), JSON.stringify({
+              id: ev && ev.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
               mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
-              used: stored.used, dtMs: stored.dtMs,
+              used: stored.used, dtMs: stored.dtMs, ...(stored.threw !== undefined ? { threw: stored.threw } : {}),
             }))
-          } catch (x) { recErr = String(x).slice(0, 240) }
+          } catch (x) { recErr = safeText(x).slice(0, 240) }
           try {
             const jline: any = {
               t: isoOf(t0), tool, agent, outcome: "memo", rec: recName,
@@ -3502,11 +4494,11 @@ export function register(on: any) {
             await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", jline)
           } catch (x) {
             try {
-              recErr = recErr || String((x && (x as any).message) || x).slice(0, 240)
-              await $.fs.write(modRecPath(world, p.id, e), JSON.stringify({
-                id: e && e.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
+              recErr = recErr || safeText(x).slice(0, 240)
+              await $.fs.write(modRecPath(world, p.id, ev), JSON.stringify({
+                id: ev && ev.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
                 mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
-                used: stored.used, dtMs: stored.dtMs, journalErr: recErr,
+                used: stored.used, dtMs: stored.dtMs, ...(stored.threw !== undefined ? { threw: stored.threw } : {}), journalErr: recErr,
               }))
             } catch (y) { noteLost("judge-memo-record", y, $) }
           }
@@ -3522,7 +4514,7 @@ export function register(on: any) {
           }
         }
         let rec: any = null
-        try { rec = await consultBg($, p, env, world, e, ctx, key, epCall) } catch (x) { rec = null }
+        try { rec = await consultBg($, p, env, world, ev, ctx, key, epCall) } catch (x) { rec = null; noteLost("judge-consult", x, $) }
         const kind = rec && rec.kind ? String(rec.kind) : ""
         if (passKind(p.id, kind)) continue
         if (foldedKind(p.id, kind)) {
@@ -3546,7 +4538,7 @@ export function register(on: any) {
         try { await $.store.set(CAP_KEY + ":" + sid, cap) } catch (x) { noteLost("session-cap", x, $) }
         lastMirror.set(lastKey(p.id, world.cwd), t0)
         try { await $.store.set(lastKey(p.id, world.cwd), t0) } catch (x) { noteLost("consult-last", x, $) }
-        ;(async () => { await consultBg($, p, env, world, e, ctx, "", epCall) })()
+        ;(async () => { try { await consultBg($, p, env, world, ev, ctx, "", epCall) } catch (x) { noteLost("observer-consult", x, $) } })()
       }
     }
 
@@ -3556,24 +4548,29 @@ export function register(on: any) {
     .catch(($: any, e: any, next: any) => decisiveFailClosed($, "tool.call", e, next))
 
   on("agent.spawn", async ($: any, e: any, next: any) => {
-    const subagentType = String((e && e.subagentType) || "")
-    const cls = classesOf(String((e && e.prompt) || ""))
+    const ev = snapEvent($, e, "agent.spawn")
+    const subagentType = String((ev && ev.subagentType) || "")
+    const cls = classesOf(String((ev && ev.prompt) || ""))
     const classId = cls.length ? cls[0] : ""
-    const spawnModel = String((e && e.model) || "")
+    const spawnModel = String((ev && ev.model) || "")
     let world: any = null
     try {
       const w = await worldFor($)
       world = w && w.world
-    } catch (x) { world = null }
+    } catch (x) { world = null; noteLost("failover-spawn-world", x, $) }
     const result = await next(e)
-    if (!result || result.deny || !result.agentId) return result
+    // CONSTRAINT (#489-B1-FIX5 Z13.4): deny и agentId ответа хоста читаются по
+    // ОДНОМУ разу в локальные сразу после await; все дальнейшие места -- локальные.
+    const resDeny = result && result.deny
+    const resAgentId = result && result.agentId
+    if (!result || resDeny || !resAgentId) return result
     if (classHasPrefix(classId, EXECUTOR_CLASS_PREFIXES)) sessionExecutorModelAdd(spawnModel)
     if (!world || !world.failover || !bl3(world.failover.enabled, true)) return result
     const info = failoverLadderBind(world.failover, subagentType, classId, world.allowedByClass, spawnModel)
     // CONSTRAINT: пустая лестница неотличима от забытой, если source/allowedSrc
     // не записаны. Привязка кладётся на всех ветках, включая ladder.length===0
     // (клетка 1d, пустой allowed, оба адреса таблицы недоступны).
-    failoverBindSet(String(result.agentId), {
+    failoverBindSet(String(resAgentId), {
       ladder: info.ladder, subagentType, class: classId, sticky: null,
       rungEffort: info.rungEffort, effortBad: info.effortBad, rungsDropped: info.rungsDropped,
       source: info.source, allowedSrc: world.allowedSrc,
@@ -3591,8 +4588,8 @@ export function register(on: any) {
         if (jpath) await appendJournal($, jpath, {
           t: isoOf(t1),
           sid,
-          rec: "empty-ladder-" + String(result.agentId),
-          agentId: String(result.agentId),
+          rec: "empty-ladder-" + String(resAgentId),
+          agentId: String(resAgentId),
           subagentType,
           class: classId,
           source: info.source,
@@ -3605,7 +4602,8 @@ export function register(on: any) {
     .catch(($: any, e: any, next: any) => decisiveFailClosed($, "agent.spawn", e, next))
 
   on("turn.step", async function* ($: any, e: any, next: any) {
-    const aid = e && e.agentId
+    const ev = snapEvent($, e, "turn.step")
+    const aid = ev && ev.agentId
     if (aid == null || aid === "") {
       return yield* driveNext(next(e))
     }
@@ -3617,11 +4615,11 @@ export function register(on: any) {
     try {
       const w = await worldFor($)
       world = w && w.world
-    } catch (x) { world = null }
+    } catch (x) { world = null; noteLost("failover-step-world", x, $) }
     if (world && world.failover && !bl3(world.failover.enabled, true)) {
       return yield* driveNext(next(e))
     }
-    const original = String(e.model || "")
+    const original = String(ev.model || "")
     // CONSTRAINT (#226): проверяющего (crit-/audit-) нельзя переводить на модель,
     // которой в этой сессии работал исполнитель, -- проверка вырождается в
     // самопроверку. Модель СТАРТА при этом мод не переписывает: назначение вне
@@ -3705,7 +4703,7 @@ export function register(on: any) {
         // (rungEffortRequested), не применённым: x(E, model) тихо клампит
         // max→high / xhigh→high у моделей без соответствующего флага, без
         // отказа, и кламп с этой поверхности ненаблюдаем.
-        req = Object.assign({}, e, { model, effort: declared })
+        req = Object.assign({}, ev, { model, effort: declared })
       } else {
         // CONSTRAINT (#266): «ступень без эффорта» невозможна -- поле effort
         // отсутствующим не бывает, движок восполняет его пином frontmatter
@@ -3720,18 +4718,18 @@ export function register(on: any) {
           const tR = await nowMs($)
           try {
             let sidR = ""
-            try { sidR = await sidFor($) } catch (x) { sidR = "" }
+            try { sidR = await sidFor($) } catch (x) { sidR = SID_UNAVAILABLE }
             const jpathR = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
             if (jpathR) {
               const recR: any = {
                 t: isoOf(tR),
                 sid: sidR,
-                rec: String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt) + "-rung-effort-refused",
+                rec: String(aid) + "-" + String(ev.turnId || "") + "-" + String(ev.index) + "-" + String(attempt) + "-rung-effort-refused",
                 agentId: String(aid),
                 subagentType: bind.subagentType,
                 class: bind.class,
-                turnId: e.turnId,
-                index: e.index,
+                turnId: ev.turnId,
+                index: ev.index,
                 attempt,
                 modelRequested: model,
                 outcome: "rung-effort-refused",
@@ -3751,7 +4749,7 @@ export function register(on: any) {
           } catch (x) { noteLost("journal-rung-effort-refused", x, $) }
           continue
         }
-        req = Object.assign({}, e, { model, effort: pin })
+        req = Object.assign({}, ev, { model, effort: pin })
       }
       let res: any = null
       let threw: any = null
@@ -3771,6 +4769,9 @@ export function register(on: any) {
       try {
         res = yield* driveNext(next(req), emitted)
       } catch (x) { threw = x; didThrow = true }
+      // CONSTRAINT (#489-B1-FIX5 Z13.4): refusal -- ЕДИНСТВЕННОЕ чтение полей
+      // ответа на попытку; outcome, sticky и метка остывания берут его.
+      const refusal = isCarrierRefusal(res)
       const t1 = await nowMs($)
       // CONSTRAINT: решает СОДЕРЖИМОЕ, не счёт кусков -- см. countEmitted.
       // Поле emitted в улике остаётся СЫРЫМ счётом: по нему сравниваются все
@@ -3778,13 +4779,13 @@ export function register(on: any) {
       const afterEmit = emitted.content > 0
       const outcome = didThrow
         ? (afterEmit ? "threw_after_emit" : "threw")
-        : (isCarrierRefusal(res) ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
-      const recKey = String(aid) + "-" + String(e.turnId || "") + "-" + String(e.index) + "-" + String(attempt)
+        : (refusal ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
+      const recKey = String(aid) + "-" + String(ev.turnId || "") + "-" + String(ev.index) + "-" + String(attempt)
       // CONSTRAINT: предсказание смены липкости -- тот же предикат, что установка
       // ниже (failoverWouldSetSticky). Улика пишется ДО bind.sticky = model;
       // расхождение двух вызовов посчитает скучность по устаревшему правилу и
       // пропустит разрез окна.
-      const willSetSticky = failoverWouldSetSticky(didThrow, res, reviewer, model)
+      const willSetSticky = failoverWouldSetSticky(didThrow, refusal, reviewer, model)
       const stickyChanged = !!(willSetSticky && bind.sticky !== model)
       try {
         let sid = ""
@@ -3798,8 +4799,8 @@ export function register(on: any) {
             agentId: String(aid),
             subagentType: bind.subagentType,
             class: bind.class,
-            turnId: e.turnId,
-            index: e.index,
+            turnId: ev.turnId,
+            index: ev.index,
             attempt,
             modelRequested: model,
             outcome,
@@ -3834,14 +4835,13 @@ export function register(on: any) {
       lastRes = res
       lastThrow = null
       sawThrow = false
-      const refusal = isCarrierRefusal(res)
       // CONSTRAINT (#226): липкость не ставится на ступень-совпадение --
       // failoverAttemptModels кладёт липкую ступень в plan[0], и совпадение
       // зацепило бы проверяющего за модель исполнителя навсегда. У удачной
       // ступени исполнителя модель запоминается как факт сессии.
       if (!refusal) {
         if (executor) sessionExecutorModelAdd(model)
-        if (failoverWouldSetSticky(false, res, reviewer, model)) bind.sticky = model
+        if (failoverWouldSetSticky(false, refusal, reviewer, model)) bind.sticky = model
       }
       // CONSTRAINT (#313): метка недоступности — ТОЛЬКО на отказ носителя ДО
       // первого содержимого (ровно предикат перехода на следующую ступень):

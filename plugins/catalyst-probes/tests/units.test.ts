@@ -871,7 +871,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.48")
+  expect(MOD_VERSION).toBe("0.1.49")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -2450,13 +2450,15 @@ test("failoverWouldSetSticky: бросок, отказ носителя, сов�
   rungCooldownReset()
   const ok = { stopReason: "end_turn", usage: { input_tokens: 1, output_tokens: 1, model: "m" } }
   const empty = { stopReason: null, usage: null }
-  expect(failoverWouldSetSticky(true, ok, false, "m")).toBe(false)
-  expect(failoverWouldSetSticky(false, empty, false, "m")).toBe(false)
-  expect(failoverWouldSetSticky(false, ok, false, "m")).toBe(true)
+  // CONSTRAINT (#489-B1-FIX5 Z13.4): второй аргумент — Булево refusal, а не res:
+  // на попытку isCarrierRefusal вычисляется один раз вызывающим.
+  expect(failoverWouldSetSticky(true, isCarrierRefusal(ok), false, "m")).toBe(false)
+  expect(failoverWouldSetSticky(false, isCarrierRefusal(empty), false, "m")).toBe(false)
+  expect(failoverWouldSetSticky(false, isCarrierRefusal(ok), false, "m")).toBe(true)
   sessionExecutorModelAdd("glm-5.3")
   expect(sessionExecutorHas("glm-5.3")).toBe(true)
-  expect(failoverWouldSetSticky(false, ok, true, "glm-5.3")).toBe(false)
-  expect(failoverWouldSetSticky(false, ok, true, "grok-4.6")).toBe(true)
+  expect(failoverWouldSetSticky(false, isCarrierRefusal(ok), true, "glm-5.3")).toBe(false)
+  expect(failoverWouldSetSticky(false, isCarrierRefusal(ok), true, "grok-4.6")).toBe(true)
   sessionExecutorsReset()
   rungCooldownReset()
 })
@@ -3024,6 +3026,9 @@ function lostN393(site: string): number {
 type Fail393 = {
   fsWrite?: (path: string, text: string) => boolean
   fsReadErr?: string[]
+  fsReadPoison?: string[]
+  envPoison?: string[]
+  toast?: boolean
   storeGet?: (key: string) => boolean
   storeSet?: (key: string) => boolean
   storeDelete?: (key: string) => boolean
@@ -3048,6 +3053,7 @@ function mod$393(o: {
   const storeSets: { key: string; value: any }[] = []
   const storeDeletes: string[] = []
   const everyCbs: any[] = []
+  const toasts: string[] = []
   const store = new Map<string, any>(Object.entries(o.stored || {}))
   const $: any = {
     clock: {
@@ -3061,12 +3067,18 @@ function mod$393(o: {
     },
     env: {
       get: async (k: string) => {
+        if (o.fail && (o.fail.envPoison || []).indexOf(k) >= 0) {
+          return { toString() { throw new Error("poison") } }
+        }
         if ((o.envRefuses || []).indexOf(k) >= 0) throw new Error("env.get: scripted read refusal for " + k)
         return (o.env || {})[k] ?? ""
       },
     },
     fs: {
       read: async (p: string) => {
+        if (o.fail && (o.fail.fsReadPoison || []).indexOf(p) >= 0) {
+          throw { toString() { throw new Error("poison") } }
+        }
         if (o.fail && (o.fail.fsReadErr || []).indexOf(p) >= 0) throw new Error("EIO: scripted read refusal for " + p)
         const t = (o.files || {})[p]
         if (t === undefined) throw new Error("ENOENT " + p)
@@ -3114,9 +3126,14 @@ function mod$393(o: {
       },
     },
     command: { register: async () => {} },
-    ui: { toast: async () => {} },
+    ui: {
+      toast: async (text: string) => {
+        if (o.fail && o.fail.toast) throw new Error("scripted toast refusal")
+        toasts.push(String(text))
+      },
+    },
   }
-  return { $, writes, storeSets, storeDeletes, store, everyCbs, setNow: (n: number) => { now = n } }
+  return { $, writes, storeSets, storeDeletes, store, everyCbs, toasts, setNow: (n: number) => { now = n } }
 }
 
 function subs393(): Array<{ ev: string; matcher: any; fn: any }> {
@@ -5677,4 +5694,2384 @@ test("#393-A2-FIX6 B-F6reread: отказ удаления с отказавше
   expect(sweeps[0].deleteFailed, "перечитать нельзя -- отказ уборки назван").toBe(1)
   expect(sweeps[0].goneMeanwhile, "исчезновения не было").toBe(0)
   expect(rereadThrown, "перечитка после отказа состоялась").toBe(1)
+  expect(sweeps[0].lost && sweeps[0].lost["judge-store-sweep-reread"] ? sweeps[0].lost["judge-store-sweep-reread"].n : 0,
+    "повторный отказ чтения назван judge-store-sweep-reread").toBeGreaterThanOrEqual(1)
+  const rereadLast = String(sweeps[0].lost["judge-store-sweep-reread"].last || "")
+  expect(rereadLast, "last несёт текст перечитки y").toContain("scripted reread refusal")
+  expect(rereadLast.indexOf("store.delete") < 0, "last не несёт текст удаления x").toBe(true)
 })
+
+test("#489-B1 Z1 loadWorld: яд toString глобального probes.toml не бросает, сайт global-probes-toml", async () => {
+  await drainFold393()
+  const home = "/z1-b1"
+  const m = mod$393({
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z1-b1" },
+    now: 200_000_000,
+    fail: { fsReadPoison: [home + "/probes.toml"] },
+  })
+  let thrown = ""
+  try {
+    await loadWorld(m.$, { PROBES_DIR: home, ROUTING_TABLE: "", CONFIG_DIR: "", HOME: home, PWD: "/work-z1-b1" }, "/work-z1-b1")
+  } catch (x) { thrown = String(x) }
+  expect(thrown, "непечатный отказ чтения не выходит из loadWorld").toBe("")
+  expect(lostN393("global-probes-toml"), "отказ назван сайтом").toBeGreaterThanOrEqual(1)
+})
+
+test("#489-B1 Z2 loadWorld: нечитаемый проектный probes.toml назван project-probes-toml", async () => {
+  await drainFold393()
+  const proj = "/work-z2-b1/.claude/probes/probes.toml"
+  const m = mod$393({
+    env: { HOME: "/hh-z2-b1", PWD: "/work-z2-b1" },
+    now: 200_010_000,
+    fail: { fsReadErr: [proj] },
+  })
+  let thrown = ""
+  try {
+    await loadWorld(m.$, {
+      PROBES_DIR: "", ROUTING_TABLE: "", CONFIG_DIR: "", HOME: "/hh-z2-b1", PWD: "/work-z2-b1",
+    }, "/work-z2-b1")
+  } catch (x) { thrown = String(x) }
+  expect(thrown, "нечитаемый проектный слой не бросает loadWorld").toBe("")
+  expect(lostN393("project-probes-toml"), "слой найден layerHit и отказ назван").toBeGreaterThanOrEqual(1)
+})
+
+test("#489-B1 Z3 allowedSrc: нечитаемая env-таблица — env:unreadable, отсутствие — env:absent", async () => {
+  await drainFold393()
+  const bad = "/tbl-z3-b1/routing-table.toml"
+  const gone = "/tbl-z3-gone-b1/routing-table.toml"
+  const m = mod$393({
+    env: { CLAUDE_PROBES_DIR: "/probes-z3-b1", PWD: "/work-z3-b1" },
+    now: 200_020_000,
+    fail: { fsReadErr: [bad] },
+  })
+  const envBase = { PROBES_DIR: "/probes-z3-b1", CONFIG_DIR: "/cfg-z3-b1", HOME: "", PWD: "/work-z3-b1" }
+  const badWorld = await loadWorld(m.$, Object.assign({ ROUTING_TABLE: bad }, envBase), "/work-z3-b1")
+  expect(String(badWorld.allowedSrc), "нечитаемая таблица не пишется как absent").toContain("env:unreadable")
+  const goneWorld = await loadWorld(m.$, Object.assign({ ROUTING_TABLE: gone }, envBase), "/work-z3-b1")
+  expect(String(goneWorld.allowedSrc), "отсутствующий путь остаётся env:absent").toContain("env:absent")
+  expect(String(goneWorld.allowedSrc).indexOf("env:unreadable") < 0, "отсутствие не метится unreadable").toBe(true)
+})
+
+test("#489-B1 Z4 allowedSrc: нечитаемая marketplace-таблица — marketplace:unreadable", async () => {
+  await drainFold393()
+  const market = "/cfg-z4-b1/plugins/marketplaces/catalyst/hooks/routing-table.toml"
+  const m = mod$393({
+    env: { CLAUDE_PROBES_DIR: "/probes-z4-b1", CLAUDE_CONFIG_DIR: "/cfg-z4-b1", PWD: "/work-z4-b1" },
+    now: 200_030_000,
+    fail: { fsReadErr: [market] },
+  })
+  const world = await loadWorld(m.$, {
+    PROBES_DIR: "/probes-z4-b1", ROUTING_TABLE: "", CONFIG_DIR: "/cfg-z4-b1", HOME: "", PWD: "/work-z4-b1",
+  }, "/work-z4-b1")
+  expect(String(world.allowedSrc)).toContain("marketplace:unreadable")
+})
+
+test("#489-B1 Z5 consult: нечитаемый prompt.md пробы назван probe-prompt-read", async () => {
+  await drainFold393()
+  const home = "/probes-z5-b1"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z5-b1", CLAUDE_IDLE: "1" },
+    now: 200_040_000,
+    answers: ["SILENT: z5"],
+    fail: { fsReadErr: [home + "/idle-watch/prompt.md"] },
+  })
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.lost && r.lost["probe-prompt-read"]), "отказ чтения промпта уехал в журнал").toBe(true)
+})
+
+test("#489-B1 Z6 consult: нечитаемое вложение названо probe-attach-read", async () => {
+  await drainFold393()
+  const home = "/probes-z6-b1"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nattach_files = 1\n' },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z6-b1", CLAUDE_IDLE: "1" },
+    now: 200_050_000,
+    answers: ["SILENT: z6"],
+    fail: { fsReadErr: ["/z6-b1/note.md"] },
+  })
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Read", prompt: "see /z6-b1/note.md" }, async (e: any) => e)
+  await settle393()
+  const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.lost && r.lost["probe-attach-read"]), "пропущенный файл вложения назван").toBe(true)
+})
+
+test("#489-B1 Z7 ruleText: нечитаемый text_file не мемоизируется пустым", async () => {
+  await drainFold393()
+  const home = "/probes-z7-b1"
+  const rule = "/z7-b1/rule.txt"
+  const files: Record<string, string> = {
+    [home + "/probes.toml"]: '[prompt.z7]\ntool = "Read"\ntext_file = "' + rule + '"\n',
+  }
+  const bad = [rule]
+  const m = mod$393({
+    files,
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z7-b1", CLAUDE_PROMPTS: "1" },
+    now: 200_060_000,
+    fail: { fsReadErr: bad },
+  })
+  const hook = hook393(subs393(), "tool.describe")
+  const first = await hook(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+  expect(String(first.description), "нечитаемый файл правила не применяется").toBe("Base")
+  expect(lostN393("prompt-rule-text")).toBeGreaterThanOrEqual(1)
+  bad.splice(0, bad.length)
+  files[rule] = "RULE-Z7"
+  const second = await hook(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+  expect(String(second.description), "повторное чтение не заморожено пустой строкой").toContain("RULE-Z7")
+})
+
+test("#489-B1 Z8 form: нечитаемый путь Edit и >> не даёт события, отсутствующий >> судит тело", async () => {
+  await drainFold393()
+  const formZ8 = FORM_CFG_335
+    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
+  const homeE = "/probes-z8e-b1"
+  const editPath = "/z8e-b1/report.md"
+  const mE = mod$393({
+    files: { [homeE + "/probes.toml"]: formZ8 },
+    env: { CLAUDE_PROBES_DIR: homeE, PWD: "/work-z8e-b1", CLAUDE_FORM: "1" },
+    now: 200_070_000,
+    fail: { fsReadErr: [editPath] },
+  })
+  await hook393(subs393(), "tool.call")(mE.$, {
+    tool: "Edit", file_path: editPath, old_string: "a", new_string: "b",
+  }, async (e: any) => e)
+  const linesE = shards393(mE.writes, "/form/journal.jsonl.shard.")
+  expect(linesE.some((r: any) => r.outcome === "refuse"), "Edit нечитаемого файла не судит тело").toBe(false)
+  expect(lostN393("form-path-read") + linesE.filter((r: any) => r.lost && r.lost["form-path-read"]).length,
+    "Edit нечитаемого файла назван").toBeGreaterThanOrEqual(1)
+
+  await drainFold393()
+  const homeB = "/probes-z8b-b1"
+  const bashPath = "/z8b-b1/report.md"
+  const cmdU = "cat >> " + bashPath + " <<'EOF'\nzzz-legalize\nEOF"
+  const mB = mod$393({
+    files: { [homeB + "/probes.toml"]: formZ8 },
+    env: { CLAUDE_PROBES_DIR: homeB, PWD: "/work-z8b-b1", CLAUDE_FORM: "1" },
+    now: 200_080_000,
+    fail: { fsReadErr: [bashPath] },
+  })
+  await hook393(subs393(), "tool.call")(mB.$, { tool: "Bash", command: cmdU }, async (e: any) => e)
+  const linesB = shards393(mB.writes, "/form/journal.jsonl.shard.")
+  expect(linesB.some((r: any) => r.outcome === "refuse"), ">> нечитаемого файла не судит тело").toBe(false)
+  expect(lostN393("form-path-read") + linesB.filter((r: any) => r.lost && r.lost["form-path-read"]).length,
+    ">> нечитаемого файла назван").toBeGreaterThanOrEqual(1)
+
+  await drainFold393()
+  const homeC = "/probes-z8c-b1"
+  const gonePath = "/z8c-b1/report.md"
+  const cmdC = "cat >> " + gonePath + " <<'EOF'\nzzz-legalize\nEOF"
+  const mC = mod$393({
+    files: { [homeC + "/probes.toml"]: formZ8 },
+    env: { CLAUDE_PROBES_DIR: homeC, PWD: "/work-z8c-b1", CLAUDE_FORM: "1" },
+    now: 200_090_000,
+  })
+  await hook393(subs393(), "tool.call")(mC.$, { tool: "Bash", command: cmdC }, async (e: any) => e)
+  const lines = shards393(mC.writes, "/form/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "refuse"), ">> отсутствующего файла судит тело").toBe(true)
+})
+
+test("#489-B1 Z9 world: отказ worldFor на пяти хуках назван своим сайтом и хук отдаёт next", async () => {
+  await drainFold393()
+  const rows: Array<{ ev: string; e: any; site: string; pwd: string }> = [
+    { ev: "prompt.section", e: { name: "communication:L", text: "T" }, site: "prompt-section-world", pwd: "/work-z9-ps-b1" },
+    { ev: "tool.describe", e: { tool: "Read", description: "D" }, site: "tool-describe-world", pwd: "/work-z9-td-b1" },
+    { ev: "command.describe", e: { command: "help", description: "D" }, site: "command-describe-world", pwd: "/work-z9-cd-b1" },
+  ]
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+    const marker = { via: "next-z9", ev: row.ev }
+    const m = mod$393({
+      env: { PWD: row.pwd, HOME: "/hh-z9-b1" },
+      now: 200_100_000 + i * 10_000,
+      fail: { envPoison: ["HOME"] },
+    })
+    const out = await hook393(subs393(), row.ev)(m.$, row.e, async () => marker)
+    expect(out, row.ev + " отдаёт результат next").toEqual(marker)
+    expect(lostN393(row.site), row.site).toBeGreaterThanOrEqual(1)
+  }
+  const mS = mod$393({
+    env: { PWD: "/work-z9-sp-b1", HOME: "/hh-z9-b1" },
+    now: 200_140_000,
+    fail: { envPoison: ["HOME"] },
+  })
+  const spawned = { agentId: "ag-z9-b1" }
+  const outS = await hook393(subs393(), "agent.spawn")(
+    mS.$, { subagentType: "any", prompt: "q", model: "m" }, async () => spawned,
+  )
+  expect(outS, "agent.spawn отдаёт результат next").toEqual(spawned)
+  expect(lostN393("failover-spawn-world")).toBeGreaterThanOrEqual(1)
+
+  failoverBindSet("ag-z9s-b1", { ladder: ["m-z9"], subagentType: "t", class: "1a", sticky: null })
+  const mT = mod$393({
+    env: { PWD: "/work-z9-ts-b1", HOME: "/hh-z9-b1" },
+    now: 200_150_000,
+    fail: { envPoison: ["HOME"] },
+  })
+  const stepped = { via: "next-z9s" }
+  const outT = await drainStream(hook393(subs393(), "turn.step")(
+    mT.$,
+    { agentId: "ag-z9s-b1", turnId: "t-z9", index: 0, model: "m-z9" },
+    () => (async function* () { return stepped })(),
+  ))
+  expect(outT.value, "turn.step отдаёт результат next").toEqual(stepped)
+  expect(lostN393("failover-step-world")).toBeGreaterThanOrEqual(1)
+  failoverBindReset()
+})
+
+test("#489-B1 Z10 chunkCarriesContent: отказ Object.keys — выдача и сайт turn-step-chunk-keys", () => {
+  const before = lostN393("turn-step-chunk-keys")
+  const got = chunkCarriesContent(new Proxy({}, { ownKeys() { throw new Error("keys") } }))
+  expect(got).toBe(true)
+  expect(lostN393("turn-step-chunk-keys") - before).toBeGreaterThanOrEqual(1)
+})
+
+test("#448-B1 Z11 worldFor: нечитаемая ручка из девяти названа env-unreadable:<имя>", async () => {
+  await drainFold393()
+  const nine = [
+    "CLAUDE_JUDGE_MODEL", "CLAUDE_JUDGE_PROMPT", "CLAUDE_JUDGE_TIMEOUT_MS",
+    "CLAUDE_PROMPTS", "CLAUDE_PROBES_DIR", "CLAUDE_CONFIG_DIR",
+    "HOME", "PWD", "CATALYST_ROUTING_TABLE",
+  ]
+  const m = mod$393({
+    env: { PWD: "/work-z11-b1" },
+    now: 200_160_000,
+    envRefuses: nine.slice(),
+  })
+  await worldFor(m.$)
+  for (let i = 0; i < nine.length; i++) {
+    expect(lostN393("env-unreadable:" + nine[i]), nine[i]).toBeGreaterThanOrEqual(1)
+  }
+})
+
+test("#448-B1 Z12 applyPromptRules: нечитаемый CLAUDE_PROMPTS не применяет правило", async () => {
+  await drainFold393()
+  const toml = '[prompt.z12]\ntool = "Read"\ntext = "RULE-Z12"\n'
+  const refused = mod$393({
+    files: { "/probes-z12a-b1/probes.toml": toml },
+    env: { CLAUDE_PROBES_DIR: "/probes-z12a-b1", PWD: "/work-z12a-b1", CLAUDE_PROMPTS: "1" },
+    now: 200_170_000,
+    envRefuses: ["CLAUDE_PROMPTS"],
+  })
+  const hidden = await hook393(subs393(), "tool.describe")(
+    refused.$, { tool: "Read", description: "Base" }, async (e: any) => e,
+  )
+  expect(String(hidden.description), "нечитаемый выключатель не включает правила").toBe("Base")
+  const open = mod$393({
+    files: { "/probes-z12b-b1/probes.toml": toml },
+    env: { CLAUDE_PROBES_DIR: "/probes-z12b-b1", PWD: "/work-z12b-b1", CLAUDE_PROMPTS: "1" },
+    now: 200_180_000,
+  })
+  const shown = await hook393(subs393(), "tool.describe")(
+    open.$, { tool: "Read", description: "Base" }, async (e: any) => e,
+  )
+  expect(String(shown.description), "без отказа правило применяется").toContain("RULE-Z12")
+})
+
+test("#448-B1 Z13 envSelected: нечитаемый when_env не выбирает правило", async () => {
+  await drainFold393()
+  const m = mod$393({
+    files: {
+      "/probes-z13-b1/probes.toml":
+        '[prompt.z13]\ntool = "Read"\ntext = "RULE-Z13"\nwhen_env = "CLAUDE_FORM"\n',
+    },
+    env: { CLAUDE_PROBES_DIR: "/probes-z13-b1", PWD: "/work-z13-b1", CLAUDE_FORM: "1", CLAUDE_PROMPTS: "1" },
+    now: 200_190_000,
+    envRefuses: ["CLAUDE_FORM"],
+  })
+  const out = await hook393(subs393(), "tool.describe")(
+    m.$, { tool: "Read", description: "Base" }, async (e: any) => e,
+  )
+  expect(String(out.description), "нечитаемое имя when_env не выбирает правило").toBe("Base")
+})
+
+test("#455-B1 Z14 idle-watch: enforce=false не тостит и пишет block_not_enforced", async () => {
+  await drainFold393()
+  const home = "/probes-z14-b1"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nenforce = false\n' },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z14-b1", CLAUDE_IDLE: "1" },
+    now: 200_200_000,
+    answers: ["NUDGE: x"],
+  })
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  expect(m.toasts.length, "ручка enforce выключена — тоста нет").toBe(0)
+  const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "block_not_enforced")).toBe(true)
+})
+
+test("#455-B1 Z15 idle-watch: без enforce тост один и исход не block_not_enforced", async () => {
+  await drainFold393()
+  const home = "/probes-z15-b1"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z15-b1", CLAUDE_IDLE: "1" },
+    now: 200_210_000,
+    answers: ["NUDGE: x"],
+  })
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  expect(m.toasts.length, "дефолт nudge доставляет ровно один тост").toBe(1)
+  expect(String(m.toasts[0])).toContain("x")
+  const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
+  expect(lines.length).toBeGreaterThan(0)
+  expect(lines.some((r: any) => r.outcome === "nudge_delivered"), "доставленный nudge — nudge_delivered").toBe(true)
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/idle-watch/records/") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  expect(recs.some((r: any) => r.outcome === "nudge_delivered"), "исход улики — nudge_delivered").toBe(true)
+})
+
+test("#455-B1 Z16 idle-watch: отказ тоста при enforce — nudge_undelivered и toastErr", async () => {
+  await drainFold393()
+  const home = "/probes-z16-b1"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z16-b1", CLAUDE_IDLE: "1" },
+    now: 200_220_000,
+    answers: ["NUDGE: x"],
+    fail: { toast: true },
+  })
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "nudge_undelivered")).toBe(true)
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/idle-watch/records/") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  expect(recs.some((r: any) => String(r.toastErr || "").indexOf("scripted toast refusal") >= 0)).toBe(true)
+})
+
+test("#455-B1 Z17 generic cancel: enforce=false не отменяет диспатч, без ручки — отменяет", async () => {
+  await drainFold393()
+  const off = mod$393({
+    files: {
+      "/probes-z17a-b1/probes.toml":
+        '[probe.z17a]\nkind = "consult"\nact = "cancel"\nenforce = false\n[probe.z17a.when]\nfield = "tool_name"\nequals = "Read"\n',
+    },
+    env: { CLAUDE_PROBES_DIR: "/probes-z17a-b1", PWD: "/work-z17a-b1", CLAUDE_PROBES: "1" },
+    now: 200_230_000,
+    answers: ["BLOCK: z17a"],
+  })
+  const outOff = await hook393(subs393(), "tool.call")(
+    off.$, { tool: "Read", prompt: "z17a" }, async () => ({ ran: true }),
+  )
+  expect(outOff.deny, "enforce=false свёрнутый вердикт не отменяет").toBe(undefined)
+  expect(outOff.ran).toBe(true)
+
+  const on = mod$393({
+    files: {
+      "/probes-z17b-b1/probes.toml":
+        '[probe.z17b]\nkind = "consult"\nact = "cancel"\n[probe.z17b.when]\nfield = "tool_name"\nequals = "Read"\n',
+    },
+    env: { CLAUDE_PROBES_DIR: "/probes-z17b-b1", PWD: "/work-z17b-b1", CLAUDE_PROBES: "1" },
+    now: 200_240_000,
+    answers: ["BLOCK: z17b"],
+  })
+  const outOn = await hook393(subs393(), "tool.call")(
+    on.$, { tool: "Read", prompt: "z17b" }, async () => ({ ran: true }),
+  )
+  expect(String(outOn.deny || ""), "без ручки свёрнутый вердикт отменяет диспатч").toContain("cancelled")
+})
+
+function poisonSelf393(): any {
+  const p: any = { toString() { throw p } }
+  return p
+}
+
+test("#489-B1-FIX1 W1 chunkCarriesContent: яд toString не обрывает, сайт записан", async () => {
+  await drainFold393()
+  const before = lostN393("turn-step-chunk-keys")
+  let thrown = ""
+  let got = false
+  try {
+    got = chunkCarriesContent(new Proxy({}, { ownKeys() { throw poisonSelf393() } }))
+  } catch (x) { thrown = String(x) }
+  expect(thrown, "носитель отказа не обрывает вызывающего").toBe("")
+  expect(got).toBe(true)
+  expect(lostN393("turn-step-chunk-keys") - before).toBeGreaterThanOrEqual(1)
+  expect(registerModule393.lostWritesSnapshot()["turn-step-chunk-keys"].last).toBe("unprintable error")
+})
+
+test("#489-B1-FIX1 W2 tool.describe: тот же яд через worldFor не обрывает хук", async () => {
+  await drainFold393()
+  const m = mod$393({
+    env: { PWD: "/work-w2-b1", HOME: "/hh-w2-b1" },
+    now: 210_010_000,
+  })
+  const orig = m.$.env.get
+  m.$.env.get = async (k: string) => {
+    if (k === "HOME") return poisonSelf393()
+    return orig(k)
+  }
+  let thrown = ""
+  let out: any = null
+  try {
+    out = await hook393(subs393(), "tool.describe")(
+      m.$, { tool: "Read", description: "D" }, async () => ({ via: "next-w2" }),
+    )
+  } catch (x) { thrown = String(x) }
+  expect(thrown, "хук не бросает").toBe("")
+  expect(out).toEqual({ via: "next-w2" })
+  expect(lostN393("tool-describe-world")).toBeGreaterThanOrEqual(1)
+  expect(registerModule393.lostWritesSnapshot()["tool-describe-world"].last).toBe("unprintable error")
+})
+
+test("#489-B1-FIX1 W3 ruleText: отказ чтения пустой строкой — unreadable и без мемо", async () => {
+  await drainFold393()
+  const home = "/probes-w3-b1"
+  const rule = "/w3-b1/rule.txt"
+  const files: Record<string, string> = {
+    [home + "/probes.toml"]: '[prompt.w3]\ntool = "Read"\ntext_file = "' + rule + '"\n',
+  }
+  let empty = true
+  const m = mod$393({
+    files,
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w3-b1", CLAUDE_PROMPTS: "1" },
+    now: 210_020_000,
+  })
+  const orig = m.$.fs.read
+  m.$.fs.read = async (p: string) => {
+    if (empty && p === rule) throw ""
+    return orig(p)
+  }
+  const hook = hook393(subs393(), "tool.describe")
+  const before = lostN393("prompt-rule-text")
+  const first = await hook(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+  expect(String(first.description)).toBe("Base")
+  expect(lostN393("prompt-rule-text") - before, "пустой отказ — не отсутствие файла").toBeGreaterThanOrEqual(1)
+  expect(registerModule393.lostWritesSnapshot()["prompt-rule-text"].last).toBe(rule + ": (empty error)")
+  empty = false
+  files[rule] = "RULE-W3"
+  const second = await hook(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+  expect(String(second.description), "пустой отказ не заморожен").toContain("RULE-W3")
+})
+
+test("#489-B1-FIX1 W4 read: code ENOENT без текста — файл отсутствует", async () => {
+  await drainFold393()
+  const home = "/probes-w4-b1"
+  const rule = "/w4-b1/rule.txt"
+  const files: Record<string, string> = {
+    [home + "/probes.toml"]: '[prompt.w4]\ntool = "Read"\ntext_file = "' + rule + '"\n',
+  }
+  let armed = true
+  const m = mod$393({
+    files,
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w4-b1", CLAUDE_PROMPTS: "1" },
+    now: 210_030_000,
+  })
+  const orig = m.$.fs.read
+  m.$.fs.read = async (p: string) => {
+    if (armed && p === rule) throw { code: "ENOENT" }
+    return orig(p)
+  }
+  const hook = hook393(subs393(), "tool.describe")
+  const before = lostN393("prompt-rule-text")
+  const first = await hook(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+  expect(String(first.description)).toBe("Base")
+  expect(lostN393("prompt-rule-text") - before, "ENOENT по code — не unreadable").toBe(0)
+  armed = false
+  files[rule] = "RULE-W4"
+  const second = await hook(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+  expect(String(second.description), "отсутствие заморожено пустой строкой").toBe("Base")
+})
+
+test("#448-B1-FIX1 W5 allowedSrc: нечитаемый CATALYST_ROUTING_TABLE как env — env:unreadable", async () => {
+  await drainFold393()
+  const m = mod$393({ now: 210_040_000 })
+  const unread = await loadAllowedByClass(m.$, {
+    ROUTING_TABLE: "", CONFIG_DIR: "/cfg-w5-b1", HOME: "", PWD: "/work-w5-b1",
+    UNREADABLE: ["CATALYST_ROUTING_TABLE"],
+  }, "/work-w5-b1")
+  expect(String(unread.allowedSrc)).toContain("env:unreadable")
+  const empty = await loadAllowedByClass(m.$, {
+    ROUTING_TABLE: "", CONFIG_DIR: "/cfg-w5-b1", HOME: "", PWD: "/work-w5-b1",
+    UNREADABLE: [],
+  }, "/work-w5-b1")
+  expect(String(empty.allowedSrc).indexOf("env:unreadable") < 0, "пустое и нечитаемое не делят мемо").toBe(true)
+  expect(String(empty.allowedSrc)).toContain("absent:")
+})
+
+test("#455-B1-FIX1 W6 nudge: тост отвергнут пустой строкой — nudge_undelivered", async () => {
+  await drainFold393()
+  const home = "/probes-w6-b1"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w6-b1", CLAUDE_IDLE: "1" },
+    now: 210_050_000,
+    answers: ["NUDGE: x"],
+  })
+  m.$.ui.toast = async () => { throw "" }
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "nudge_undelivered")).toBe(true)
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/idle-watch/records/") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  expect(recs.some((r: any) => r.toastErr === "(empty error)")).toBe(true)
+  expect(recs.some((r: any) => r.outcome === "nudge_undelivered"), "исход улики — nudge_undelivered").toBe(true)
+})
+
+test("#455-B1-FIX1 W7 memo: threw пустой строкой присутствует в улике", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-w7-b1"
+  const sid = "sid-w7-b1"
+  const prompt = "w7-prompt"
+  const key = verdictKey("w7p", sid, "Read", "", prompt)
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]:
+        '[probe.w7p]\nkind = "consult"\nact = "cancel"\n[probe.w7p.when]\nfield = "tool_name"\nequals = "Read"\n',
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w7-b1", CLAUDE_PROBES: "1" },
+    now: 210_060_000,
+    sid,
+    stored: { [key]: { kind: "BLOCK", rest: "w7", t: 210_060_000, threw: "" } },
+  })
+  await hook393(subs393(), "tool.call")(
+    m.$, { tool: "Read", prompt }, async () => ({ ran: true }),
+  )
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/w7p/records/") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  expect(recs.length).toBeGreaterThan(0)
+  expect(Object.prototype.hasOwnProperty.call(recs[0], "threw"), "пустое threw присутствует").toBe(true)
+  expect(recs[0].threw).toBe("")
+})
+
+test("#489-B1-FIX1 W9 form: >> нечитаемого файла — warn target-unreadable", async () => {
+  await drainFold393()
+  const formZ8 = FORM_CFG_335
+    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
+  const home = "/probes-w9-b1"
+  const fp = "/w9-b1/report.md"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: formZ8 },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w9-b1", CLAUDE_FORM: "1" },
+    now: 210_070_000,
+    fail: { fsReadErr: [fp] },
+  })
+  const cmd = "cat >> " + fp + " <<'EOF'\nzzz-legalize\nEOF"
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "warn" && Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0)).toBe(true)
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/form/records/") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  const warn = recs.length ? (recs[0].warn || []).filter((w: any) => w.c === "target-unreadable") : []
+  expect(warn.length).toBeGreaterThan(0)
+  expect(warn[0].n).toBe(0)
+  expect(typeof warn[0].q).toBe("string")
+  expect(String(warn[0].q).length > 0 && String(warn[0].q).indexOf("EIO") >= 0, "q несёт причину нечитаемости").toBe(true)
+  expect(String(warn[0].src)).toContain(fp)
+})
+
+function formRedirect393(): string {
+  return FORM_CFG_335
+    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
+}
+
+function formCombat393(): string {
+  const hd = String.raw`<<-?\s*["']?(\w+)["']?[^\n]*\n([\s\S]*?)\n\1(?:\n|$)`
+  return formRedirect393().replace(/heredoc = "[\s\S]*"/, 'heredoc = "' + hd + '"')
+}
+
+test("#489-B1-FIX2 V1 memo key: путь env-unreadable не делит мемо с нечитаемой ручкой", async () => {
+  await clear393()
+  const cfg = "/cfg-v1-fix2"
+  const market = cfg + "/plugins/marketplaces/catalyst/hooks/routing-table.toml"
+  const filePath = "env-unreadable"
+  const m = mod$393({
+    now: 220_000_000,
+    files: {
+      [market]: '[classes.m-market]\nallowed = ["from-market"]\n',
+      [filePath]: '[classes.m-file]\nallowed = ["from-file"]\n',
+    },
+  })
+  const envBase = { CONFIG_DIR: cfg, HOME: "", PWD: "/work-v1-fix2" }
+  const first = await loadAllowedByClass(m.$, {
+    ...envBase, ROUTING_TABLE: "", UNREADABLE: ["CATALYST_ROUTING_TABLE"],
+  }, "/work-v1-fix2")
+  expect(first.allowedByClass["m-market"]).toStrictEqual(["from-market"])
+  const second = await loadAllowedByClass(m.$, {
+    ...envBase, ROUTING_TABLE: filePath, UNREADABLE: [],
+  }, "/work-v1-fix2")
+  expect(second.allowedByClass["m-file"], "второй вызов читает файл, а не мемо нечитаемой ручки").toStrictEqual(["from-file"])
+  let tableReads = 0
+  const origRead = m.$.fs.read
+  m.$.fs.read = async (p: string) => {
+    if (p === filePath) tableReads++
+    return origRead(p)
+  }
+  const third = await loadAllowedByClass(m.$, {
+    ...envBase, ROUTING_TABLE: filePath, UNREADABLE: [],
+  }, "/work-v1-fix2")
+  expect(third.allowedByClass["m-file"]).toStrictEqual(["from-file"])
+  expect(tableReads, "третий вызов внутри окна мемо не читает таблицу").toBe(0)
+})
+
+test("#489-B1-FIX2 V2a form: два >> — нечитаемый, затем читаемый с zzz-legalize", async () => {
+  await drainFold393()
+  const home = "/probes-v2a-fix2"
+  const a = "/v2a-fix2/a/report.md"
+  const b = "/v2a-fix2/b/report.md"
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]: formRedirect393(),
+      [b]: "kept\n",
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-v2a-fix2", CLAUDE_FORM: "1" },
+    now: 220_010_000,
+    fail: { fsReadErr: [a] },
+  })
+  const cmd = "cat >> " + a + "\ncat >> " + b + " <<'EOF'\nzzz-legalize\nEOF"
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "refuse"), "читаемая цель судится").toBe(true)
+  expect(lines.some((r: any) => Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0), "нечитаемая цель — warn").toBe(true)
+})
+
+test("#489-B1-FIX2 V2b form: два >> — читаемый с zzz-legalize, затем нечитаемый", async () => {
+  await drainFold393()
+  const home = "/probes-v2b-fix2"
+  const a = "/v2b-fix2/a/report.md"
+  const b = "/v2b-fix2/b/report.md"
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]: formRedirect393(),
+      [b]: "kept\n",
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-v2b-fix2", CLAUDE_FORM: "1" },
+    now: 220_020_000,
+    fail: { fsReadErr: [a] },
+  })
+  const cmd = "cat >> " + b + " <<'EOF'\nzzz-legalize\nEOF\ncat >> " + a
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "refuse")).toBe(true)
+  expect(lines.some((r: any) => Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0)).toBe(true)
+})
+
+test("#489-B1-FIX2 V2c form: одна цель, heredoc до redirect — тело судится", async () => {
+  await drainFold393()
+  const home = "/probes-v2c-fix2"
+  const f = "/v2c-fix2/r/report.md"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: formCombat393() },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-v2c-fix2", CLAUDE_FORM: "1" },
+    now: 220_030_000,
+  })
+  const cmd = "cat <<'EOF' >> " + f + "\nzzz-legalize\nEOF"
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "refuse"), "буквальная форма <<'EOF' >> file держит тело").toBe(true)
+})
+
+test("#489-B1-FIX2 V3 safeText: точные тексты через last noteLost", () => {
+  const lastOf = (x: any): string => {
+    chunkCarriesContent(new Proxy({}, { ownKeys() { throw x } }))
+    return String(registerModule393.lostWritesSnapshot()["turn-step-chunk-keys"].last)
+  }
+  expect(lastOf(new Error("m")), "вход 1 Error").toBe("m")
+  expect(lastOf(new TypeError("m")), "вход 2 TypeError").toBe("TypeError: m")
+  expect(lastOf({ name: "TypeError", message: "m" }), "вход 3 имя без String").toBe("TypeError: m")
+  expect(lastOf({ message: "hello", get name() { throw 1 } }), "вход 4 бросок name").toBe("hello")
+  expect(lastOf({ name: "Error", message: "m", toString() { throw 0 } }), "вход 5 бросок toString").toBe("m")
+  const boom: any = { toString() { throw 1 } }
+  Object.defineProperty(boom, "message", { get() { throw 1 } })
+  Object.defineProperty(boom, "name", { get() { throw 1 } })
+  expect(lastOf(boom), "вход 6 всё бросает").toBe("unprintable error")
+  expect(lastOf(""), "вход 7 пустая строка").toBe("(empty error)")
+  expect(lastOf(null), "вход 8 null").toBe("null")
+  expect(lastOf({ name: "Foo" }), "вход Foo").toBe("Foo")
+  expect(lastOf({ name: "Foo", message: "", toString() { return "" } }), "вход Foo пустой").toBe("Foo")
+  expect(lastOf({ name: "X", message: "m", toString() { return "m extra" } }), "вход full содержит msg").toBe("m extra")
+  expect(lastOf({ name: "Foo", message: "", toString() { return "[object Foo]" } }), "F7 ярлык Foo").toBe("Foo")
+  expect(lastOf({ name: "Error", message: "", toString() { return "[object Object]" } }), "F7 Error без текста").toBe("Error")
+})
+
+test("#455-B1-FIX2 V4 fail-closed: бросок строки boom назван в deny", async () => {
+  const h = failClosedHandler391()
+  expect(typeof h).toBe("function")
+  const out = await h({}, { tool: "Write" }, { called: false, error: "boom" })
+  expect(String(out && out.deny), "причина строки в deny").toContain("(boom)")
+})
+
+test("#489-B1-FIX2 V5 turn.step: бросающий kind не обрывает поток", async () => {
+  await drainFold393()
+  failoverBindReset()
+  failoverBindSet("ag-v5-fix2", { ladder: ["m-v5"], rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const m = mod$393({
+    files: { "/probes-v5-fix2/probes.toml": "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: "/probes-v5-fix2", PWD: "/work-v5-fix2" },
+    now: 220_040_000,
+  })
+  const chunk: any = {}
+  Object.defineProperty(chunk, "kind", { get() { throw new Error("kind-poison") }, enumerable: true })
+  const before = lostN393("turn-step-chunk-kind")
+  let thrown = ""
+  let out: any = null
+  try {
+    out = await drainStream(hook393(subs393(), "turn.step")(
+      m.$,
+      { agentId: "ag-v5-fix2", turnId: "t-v5", index: 0, model: "m-v5" },
+      () => (async function* () { yield chunk; return "V5-OK" })(),
+    ))
+  } catch (x) { thrown = String(x) }
+  expect(thrown, "поток не оборван").toBe("")
+  expect(out && out.value).toBe("V5-OK")
+  expect(out && out.chunks.length).toBe(1)
+  const carried = shards393(m.writes, "/failover/journal.jsonl.shard.")
+    .reduce((n: number, r: any) => n + (r.lost && r.lost["turn-step-chunk-kind"] ? r.lost["turn-step-chunk-kind"].n : 0), 0)
+  expect(lostN393("turn-step-chunk-kind") - before + carried, "сайт turn-step-chunk-kind").toBeGreaterThanOrEqual(1)
+  const kindRows = shards393(m.writes, "/failover/journal.jsonl.shard.")
+    .filter((r: any) => r.lost && r.lost["turn-step-chunk-kind"])
+  expect(kindRows.some((r: any) => r.lost["turn-step-chunk-kind"].n === 1), "n ровно 1").toBe(true)
+  expect(kindRows.some((r: any) => Array.isArray(r.emittedKinds) && r.emittedKinds.indexOf("?unprintable") >= 0), "вид ?unprintable").toBe(true)
+  failoverBindReset()
+})
+
+test("#455-B1-FIX2 Y6a memo: отказ журнала — вторая улика несёт threw", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-y6a-fix2"
+  const sid = "sid-y6a-fix2"
+  const prompt = "y6a-prompt"
+  const key = verdictKey("y6a", sid, "Read", "", prompt)
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]:
+        '[probe.y6a]\nkind = "consult"\nact = "cancel"\n[probe.y6a.when]\nfield = "tool_name"\nequals = "Read"\n',
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6a-fix2", CLAUDE_PROBES: "1" },
+    now: 220_050_000,
+    sid,
+    stored: { [key]: { kind: "BLOCK", rest: "y6a", t: 220_050_000, threw: "y6a-threw" } },
+    fail: { fsWrite: (p: string) => p.indexOf("/journal.jsonl") >= 0 },
+  })
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Read", prompt }, async () => ({ ran: true }))
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/y6a/records/") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  const second = recs.filter((r: any) => Object.prototype.hasOwnProperty.call(r, "journalErr"))
+  expect(second.length, "вторая запись после отказа журнала").toBeGreaterThan(0)
+  expect(second[0].threw).toBe("y6a-threw")
+})
+
+test("#489-B1-FIX2 Y6b Edit: нечитаемая цель — warn target-unreadable", async () => {
+  await drainFold393()
+  const home = "/probes-y6be-fix2"
+  const fp = "/y6be-fix2/report.md"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: formRedirect393() },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6be-fix2", CLAUDE_FORM: "1" },
+    now: 220_060_000,
+    fail: { fsReadErr: [fp] },
+  })
+  await hook393(subs393(), "tool.call")(m.$, {
+    tool: "Edit", file_path: fp, old_string: "a", new_string: "b",
+  }, async (e: any) => e)
+  const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "warn" && Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0)).toBe(true)
+  const named = lostN393("form-path-read") + lines.filter((r: any) => r.lost && r.lost["form-path-read"]).length
+  expect(named, "Edit: сайт form-path-read посчитан").toBeGreaterThanOrEqual(1)
+})
+
+test("#489-B1-FIX2 Y6b Agent: нечитаемый brief_ref — warn target-unreadable", async () => {
+  await drainFold393()
+  const home = "/probes-y6ba-fix2"
+  const fp = "/y6ba-fix2/report.md"
+  const cfg = formRedirect393().replace('brief_ref = "zzz-brief-ref"', 'brief_ref = "/y6ba-fix2/report[.]md"')
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: cfg },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6ba-fix2", CLAUDE_FORM: "1" },
+    now: 220_070_000,
+    fail: { fsReadErr: [fp] },
+  })
+  await hook393(subs393(), "tool.call")(m.$, {
+    tool: "Agent", prompt: "see " + fp, subagent_type: "scout",
+  }, async (e: any) => e)
+  const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "warn" && Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0)).toBe(true)
+  const named = lostN393("form-path-read") + lines.filter((r: any) => r.lost && r.lost["form-path-read"]).length
+  expect(named, "Agent: сайт form-path-read посчитан").toBeGreaterThanOrEqual(1)
+})
+
+test("#455-B1-FIX2 Y6c memo: BLOCK при enforce=false не отменяет диспатч", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-y6c-fix2"
+  const sid = "sid-y6c-fix2"
+  const prompt = "y6c-prompt"
+  const key = verdictKey("y6c", sid, "Read", "", prompt)
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]:
+        '[probe.y6c]\nkind = "consult"\nact = "cancel"\nenforce = false\n[probe.y6c.when]\nfield = "tool_name"\nequals = "Read"\n',
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6c-fix2", CLAUDE_PROBES: "1" },
+    now: 220_080_000,
+    sid,
+    stored: { [key]: { kind: "BLOCK", rest: "y6c", t: 220_080_000 } },
+    answers: ["BLOCK: y6c-live"],
+  })
+  let judgeCalls = 0
+  const origComplete = m.$.model.complete
+  m.$.model.complete = async (arg: any) => { judgeCalls++; return origComplete(arg) }
+  const out = await hook393(subs393(), "tool.call")(
+    m.$, { tool: "Read", prompt }, async () => ({ ran: true }),
+  )
+  expect(out.deny, "мемо BLOCK при enforce=false не отменяет").toBe(undefined)
+  expect(out.ran).toBe(true)
+  expect(judgeCalls, "мемо-ветка: судья не вызван").toBe(0)
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/y6c/records/") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  expect(recs.some((r: any) => r.memo === true), "улика мемо").toBe(true)
+})
+
+test("#455-B1-FIX2 Y6d nudge: тост бросает undefined — nudge_undelivered, toastErr undefined", async () => {
+  await drainFold393()
+  const home = "/probes-y6d-fix2"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6d-fix2", CLAUDE_IDLE: "1" },
+    now: 220_090_000,
+    answers: ["NUDGE: x"],
+  })
+  m.$.ui.toast = async () => { throw undefined }
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
+  await settle393()
+  const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
+  expect(lines.some((r: any) => r.outcome === "nudge_undelivered")).toBe(true)
+  const recs = m.writes
+    .filter(w => w.path.indexOf("/idle-watch/records/") >= 0)
+    .map(w => JSON.parse(String(w.text)))
+  expect(recs.some((r: any) => r.toastErr === "undefined")).toBe(true)
+  expect(recs.some((r: any) => r.outcome === "nudge_undelivered"), "исход улики — nudge_undelivered").toBe(true)
+})
+
+test("#489-B1-FIX2 Y6e read: бросающий code не рвёт чтение, unreadable EIO", async () => {
+  await drainFold393()
+  const home = "/probes-y6e-fix2"
+  const rule = "/y6e-fix2/rule.txt"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: '[prompt.y6e]\ntool = "Read"\ntext_file = "' + rule + '"\n' },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6e-fix2", CLAUDE_PROMPTS: "1" },
+    now: 220_100_000,
+  })
+  const orig = m.$.fs.read
+  m.$.fs.read = async (p: string) => {
+    if (p === rule) {
+      const err: any = { message: "EIO" }
+      Object.defineProperty(err, "code", { get() { throw 1 } })
+      throw err
+    }
+    return orig(p)
+  }
+  let thrown = ""
+  try {
+    await hook393(subs393(), "tool.describe")(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+  } catch (x) { thrown = String(x) }
+  expect(thrown, "чтение не рвётся").toBe("")
+  expect(registerModule393.lostWritesSnapshot()["prompt-rule-text"].last).toBe(rule + ": EIO")
+})
+
+function formLines393(writes: { path: string; text: string }[]): any[] {
+  return shards393(writes, "/form/journal.jsonl.shard.")
+}
+
+test("#489-B1-FIX3 F1 form: второе тело не прячется за первым", async () => {
+  await drainFold393()
+  const home = "/probes-f1-fix3"
+  const a = "/f1-fix3/a/log.txt"
+  const b = "/f1-fix3/b/report.md"
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]: formRedirect393(),
+      [a]: "log\n",
+      [b]: "kept\n",
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-f1-fix3", CLAUDE_FORM: "1" },
+    now: 230_000_000,
+  })
+  const cmd = "cat >> " + a + " <<'EOF'\nordinary\nEOF\ncat >> " + b + " <<'EOF'\nzzz-legalize\nEOF"
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const recs = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
+  expect(formLines393(m.writes).some((r: any) => r.outcome === "refuse")).toBe(true)
+  expect(recs.some((r: any) => (r.refuse || []).some((x: any) => x.c === "C1" && String(x.src).indexOf(b) >= 0)), "C1 по b/report.md").toBe(true)
+})
+
+test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути", async () => {
+  await drainFold393()
+  const home = "/probes-f2a-fix3"
+  const c = "/f2a-fix3/c/report.md"
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]: formRedirect393(),
+      ["/f2a-fix3/a/log.txt"]: "a\n",
+      ["/f2a-fix3/b/log.txt"]: "b\n",
+      [c]: "c\n",
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-f2a-fix3", CLAUDE_FORM: "1" },
+    now: 230_010_000,
+  })
+  const cmd = "cat >> /f2a-fix3/a/log.txt <<'EOF'\nA\nEOF\ncat >> /f2a-fix3/b/log.txt <<'EOF'\nB\nEOF\ncat >> " + c + " <<'EOF'\nzzz-legalize\nEOF"
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  expect(formLines393(m.writes).some((r: any) => r.outcome === "refuse"), "тело C судится").toBe(true)
+
+  await drainFold393()
+  const homeT = "/probes-f2t-fix3"
+  const rep = "/f2t-fix3/r/report.md"
+  const teeCfg = formCombat393().replace(
+    'write_redirect = ">>\\s+(\\S+)"',
+    'write_redirect = "(?:>>\\s+|tee\\s+-a\\s+)(\\S+)"',
+  )
+  const mt = mod$393({
+    files: { [homeT + "/probes.toml"]: teeCfg, [rep]: "old\n", ["/f2t-fix3/x.log"]: "x\n" },
+    env: { CLAUDE_PROBES_DIR: homeT, PWD: "/work-f2t-fix3", CLAUDE_FORM: "1" },
+    now: 230_020_000,
+  })
+  const tee = "cat <<'EOF' | tee -a /f2t-fix3/x.log | tee -a " + rep + "\nzzz-legalize\nEOF"
+  await hook393(subs393(), "tool.call")(mt.$, { tool: "Bash", command: tee }, async (e: any) => e)
+  expect(formLines393(mt.writes).some((r: any) => r.outcome === "refuse"), "tee -a судит report").toBe(true)
+
+  await drainFold393()
+  const homeD = "/probes-f2d-fix3"
+  const same = "/f2d-fix3/report.md"
+  const md = mod$393({
+    files: { [homeD + "/probes.toml"]: formRedirect393(), [same]: "old\n" },
+    env: { CLAUDE_PROBES_DIR: homeD, PWD: "/work-f2d-fix3", CLAUDE_FORM: "1" },
+    now: 230_030_000,
+  })
+  const twice = "cat >> " + same + " <<'EOF'\nzzz-legalize\nEOF\ncat >> " + same + " <<'EOF'\nzzz-legalize\nEOF"
+  await hook393(subs393(), "tool.call")(md.$, { tool: "Bash", command: twice }, async (e: any) => e)
+  const recs = md.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
+  const c1 = recs.reduce((n: number, r: any) => n + (r.refuse || []).filter((x: any) => x.c === "C1").length, 0)
+  expect(c1, "один путь дважды — два события").toBe(2)
+})
+
+test("#489-B1-FIX3 F5 brief_ref: второй вызов не наследует lastIndex", async () => {
+  await drainFold393()
+  const home = "/probes-f5-fix3"
+  const paths = [0, 1, 2, 3, 4].map(i => "/f5-fix3/r" + i + "/report.md")
+  const one = "/f5-fix3/only/report.md"
+  const files: Record<string, string> = { [home + "/probes.toml"]: formRedirect393().replace('brief_ref = "zzz-brief-ref"', 'brief_ref = "/f5-fix3/\\S+/report\\.md"') }
+  for (const p of paths) files[p] = "zzz-legalize\n"
+  files[one] = "zzz-legalize\n"
+  const m = mod$393({
+    files,
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-f5-fix3", CLAUDE_FORM: "1" },
+    now: 230_050_000,
+  })
+  const hook = hook393(subs393(), "tool.call")
+  await hook(m.$, { tool: "Agent", prompt: paths.join(" "), subagent_type: "scout" }, async (e: any) => e)
+  const judged = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).flatMap(w => JSON.parse(String(w.text)).refuse || []).filter((r: any) => r.c === "C1").map((r: any) => r.src)
+  expect(judged, "F5 первые четыре пути").toEqual(paths.slice(0, 4).map(p => "Agent:" + p))
+  const before = formLines393(m.writes).length
+  await hook(m.$, { tool: "Agent", prompt: one, subagent_type: "scout" }, async (e: any) => e)
+  const added = formLines393(m.writes).slice(before)
+  expect(added.some((r: any) => r.outcome === "refuse"), "ref в позиции 0 судится").toBe(true)
+})
+
+test("#455-B1-FIX3 F6 fail-closed: скобка только по контракту", async () => {
+  const h = failClosedHandler391()
+  const plain = await h({}, { tool: "Write" }, { called: false, error: Object.freeze({ kind: "throw", budget: 1000 }) })
+  expect(String(plain.deny), "контракт без message — без скобки").not.toContain("([object Object])")
+  expect(String(plain.deny)).toContain("threw")
+  const withMsg = await h({}, { tool: "Write" }, { called: false, error: Object.freeze({ kind: "throw", budget: 1000, message: "m" }) })
+  expect(String(withMsg.deny)).toContain("(m)")
+  const empty = await h({}, { tool: "Write" }, { called: false, error: new Error("(empty error)") })
+  expect(String(empty.deny)).toContain("((empty error))")
+  const boom = await h({}, { tool: "Write" }, { called: false, error: "boom" })
+  expect(String(boom.deny)).toContain("(boom)")
+  const bad: any = { message: "k-boom" }
+  Object.defineProperty(bad, "kind", { get() { throw 1 } })
+  let thrown = ""
+  let out: any = null
+  try { out = await h({}, { tool: "Write" }, { called: false, error: bad }) } catch (x) { thrown = String(x) }
+  expect(thrown, "геттер kind не обрывает").toBe("")
+  expect(String(out && out.deny)).toContain("(k-boom)")
+  for (const [error, text] of [[0, "0"], [false, "false"], ["", "(empty error)"], [{ kind: null }, "[object Object]"], [{ kind: "" }, "[object Object]"], [{ kind: undefined }, "[object Object]"], [{ kind: 1 }, "[object Object]"]] as any[]) {
+    const out = await h({}, { tool: "Write" }, { called: false, error })
+    expect(out.deny, "F6 точный deny " + String(error)).toBe("Subagent dispatch cancelled: the catalyst-probes tool.call hook threw (" + text + ") [throw]. Fail-closed: the dispatch never runs unreviewed. This is NOT the routing-table.toml gate. Tell the human and do the work without a subagent, or retry later.")
+  }
+})
+
+test("#489-B1-FIX3 F13 read: code ENOENT — отсутствие, не unreadable", async () => {
+  for (const code of ["ENOENT", "EIO"]) {
+    await clear393()
+    await drainFold393()
+    const home = "/probes-f13-fix4-" + code
+    const rule = "/f13-fix4-" + code + "/rule.txt"
+    const m = mod$393({
+      files: { [home + "/probes.toml"]: '[prompt.f13]\ntool = "Read"\ntext_file = "' + rule + '"\n' },
+      env: { CLAUDE_PROBES_DIR: home, PWD: "/work-f13-fix4-" + code, CLAUDE_PROMPTS: "1" },
+      now: 230_060_000,
+    })
+    let reads = 0
+    const orig = m.$.fs.read
+    m.$.fs.read = async (p: string) => {
+      if (p === rule) { reads++; throw { code } }
+      return orig(p)
+    }
+    const before = lostN393("prompt-rule-text")
+    const out = await hook393(subs393(), "tool.describe")(m.$, { tool: "Read", description: "Base" }, async (e: any) => e)
+    expect(String(out.description)).toBe("Base")
+    expect(reads, "F13 read witness " + code).toBeGreaterThanOrEqual(1)
+    expect(lostN393("prompt-rule-text") - before, "F13 classification " + code).toBe(code === "ENOENT" ? 0 : 1)
+  }
+})
+
+test("#489-B1-FIX3 F4 form: пустые совпадения и суррогат не зависают", async () => {
+  await drainFold393()
+  const home = "/probes-f4-fix3"
+  const clef = String.fromCodePoint(0x1D11E)
+  const cfg = formRedirect393()
+    .replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = "()"')
+    .replace(/heredoc = "[\s\S]*"/, 'heredoc = "()"')
+    .replace('brief_ref = "zzz-brief-ref"', 'brief_ref = "x*"')
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: cfg },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-f4-fix3", CLAUDE_FORM: "1" },
+    now: 230_040_000,
+  })
+  let thrown = ""
+  try {
+    await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: "echo " + clef }, async (e: any) => e)
+    await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: clef, subagent_type: "scout" }, async (e: any) => e)
+  } catch (x) { thrown = String(x) }
+  expect(thrown, "вызов завершается").toBe("")
+  expect(formLines393(m.writes).length, "событий нет").toBe(0)
+})
+
+async function formFix4(id: string, command: string, cfg = formCombat393(), files: Record<string, string> = {}) {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-fix4-" + id
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: cfg, ...files },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/fix4", CLAUDE_FORM: "1" },
+    now: 240_000_000,
+  })
+  const reads: string[] = []
+  const orig = m.$.fs.read
+  m.$.fs.read = async (p: string) => { reads.push(p); return orig(p) }
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command }, async () => ({ ran: true }))
+  const records = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
+  return { m, reads, out, records, rows: formLines393(m.writes) }
+}
+
+test("#489-B1-FIX4 F15 bodies belong to their operator line", async () => {
+  const r = await formFix4("f15", "cat <<'EOF' >> a/log.txt\nzzz-legalize\nEOF\ncat <<'EOF' >> r/report.md\nordinary\nEOF")
+  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F15 no cross-body refusal").toBe(false)
+  expect(r.records.flatMap(r => r.refuse || []).some((r: any) => r.c === "C1"), "F15 no C1").toBe(false)
+})
+
+test("#489-B1-FIX4 F16a redirect inside body is not a write", async () => {
+  const r = await formFix4("f16a", "cat <<'EOF' >> a.log\necho x >> r/report.md\nEOF")
+  expect(r.reads.includes("/fix4/r/report.md"), "F16a no body-target read").toBe(false)
+  expect(r.records.flatMap(r => [...(r.refuse || []), ...(r.warn || [])]).some((r: any) => String(r.src).includes("r/report.md")), "F16a no body-target event").toBe(false)
+})
+
+test("#489-B1-FIX4 F16b first body remains attached", async () => {
+  const r = await formFix4("f16b", "cat >> r/report.md <<'EOF'\nzzz-legalize\nEOF\ncat >> a.log <<'EOF'\nordinary\nEOF")
+  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F16b first body judged").toBe(true)
+})
+
+test("#489-B1-FIX4 F16c continued operator line", async () => {
+  const r = await formFix4("f16c", "cat >> r/report.md \\\n  <<'EOF'\nzzz-legalize\nEOF")
+  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F16c continuation binds target").toBe(true)
+})
+
+// #489-B1-FIX4 F16d удалён в волне B1-FIX5: он мерил снятие индексов у
+// регулярки cfg.heredoc; регулярка снята с чтения (лекссер shellScan), её
+// место занимает L18.
+
+test("#489-B1-FIX4 F4b empty matches preserve a later target", async () => {
+  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = ">>\\s*(\\S+\\.md)|(?:)"')
+  const r = await formFix4("f4b", "echo " + String.fromCodePoint(0x1D11E) + " >> r/report.md <<'EOF'\nzzz-legalize\nEOF", cfg)
+  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F4b later target judged").toBe(true)
+})
+
+test("#489-B1-FIX4 F17 safeText reads each accessor once", () => {
+  for (const field of ["message", "name"]) {
+    let n = 0
+    const x: any = { toString() { return "[object Object]" } }
+    Object.defineProperty(x, field, { get() { if (n++) throw 1; return field === "message" ? "m" : "Foo" } })
+    chunkCarriesContent(new Proxy({}, { ownKeys() { throw x } }))
+    expect(registerModule393.lostWritesSnapshot()["turn-step-chunk-keys"].last, "F17 safeText " + field).toBe(field === "message" ? "m" : "Foo")
+    expect(n, "F17 one read " + field).toBe(1)
+  }
+})
+
+test("#455-B1-FIX4 F17 contract message read once", async () => {
+  let n = 0
+  const error = Object.freeze({ kind: "throw", budget: 1000, get message() { if (n++) throw 1; return "m" } })
+  const out = await failClosedHandler391()({}, { tool: "Write" }, { called: false, error })
+  expect(out.deny, "F17 contract keeps first message").toContain("(m)")
+  expect(n, "F17 contract one read").toBe(1)
+})
+
+test("#489-B1-FIX4 F17 model envelope fields read once", () => {
+  const counts: Record<string, number> = {}
+  const once = (k: string, value: any) => ({ get() { counts[k] = (counts[k] || 0) + 1; if (counts[k] > 1) throw k; return value } })
+  const raw: any = {}
+  const usage: any = {}
+  Object.defineProperty(usage, "output_tokens", once("output_tokens", 7))
+  for (const [k, v] of Object.entries({ text: "m", stopReason: "end_turn", blocks: [{ type: "text", len: 1 }], usage })) Object.defineProperty(raw, k, once(k, v))
+  expect(registerModule393.readComplete(raw), "F17 host envelope").toEqual({ text: "m", stopReason: "end_turn", blocks: [{ type: "text", len: 1 }], outTok: 7, detailed: true })
+  expect(counts).toEqual({ text: 1, stopReason: 1, blocks: 1, usage: 1, output_tokens: 1 })
+})
+
+test("#489-B1-FIX4 F18 empty target capture is skipped", async () => {
+  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = ">>\\s*(\\S+\\.md)|noise"')
+  const r = await formFix4("f18", "echo noise >> r/report.md <<'EOF'\nzzz-legalize\nEOF", cfg)
+  expect(r.reads.filter(p => p === "/fix4/r/report.md").length, "F18 one target read").toBe(1)
+  expect(r.reads.some(p => p.endsWith("/undefined")), "F18 no undefined read").toBe(false)
+  expect(JSON.stringify(r.records).includes("/undefined"), "F18 no undefined skip").toBe(false)
+  expect(r.rows.length, "F18 journal row present").toBeGreaterThan(0)
+  expect(r.rows.some((x: any) => (x.skipped || []).some((p: string) => String(p).endsWith("/undefined"))), "F18 journal skipped has no undefined target").toBe(false)
+})
+
+test("#489-B1-FIX4 F19 tee includes existing target", async () => {
+  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = "tee\\s+-a\\s+(\\S+)"')
+  const r = await formFix4("f19", "cat <<'EOF' | tee -a r/report.md\nordinary\nEOF", cfg, { "/fix4/r/report.md": "zzz-legalize\n" })
+  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F19 tee reads cur").toBe(true)
+})
+
+test("#489-B1-FIX4 F20 cached regexp starts at zero", () => {
+  const r = (registerModule393 as any).K("a", "gu", "f20")
+  r.exec("aa")
+  expect(r.lastIndex, "F20 positive input").toBe(1)
+  expect([..."a".matchAll((registerModule393 as any).K("a", "gu", "f20"))].length, "F20 cache reset").toBe(1)
+})
+
+test("#489-B1-FIX4 F17 stream accessors read once", async () => {
+  for (const exit of ["next", "return", "throw"]) {
+    await clear393()
+    await drainFold393()
+    failoverBindSet("f17-stream", { ladder: ["f17-model"], rungEffort: {}, subagentType: "t", class: "", sticky: null })
+    const m = mod$393({ files: { "/f17-stream/probes.toml": "[failover]\nenabled = true\n" }, env: { CLAUDE_PROBES_DIR: "/f17-stream", PWD: "/f17-stream" }, now: 250_000_000 })
+    const counts: Record<string, number> = {}
+    const once = (key: string, value: any) => ({ get() { counts[key] = (counts[key] || 0) + 1; if (counts[key] > 1) throw new Error("second read " + key); return value } })
+    const chunk = { kind: "text", text: "first" }
+    const result: any = {}
+    Object.defineProperty(result, "done", once("done", false))
+    Object.defineProperty(result, "value", once("value", chunk))
+    let n = 0
+    const it: any = { next: async () => n++ ? { done: true, value: "END" } : result }
+    Object.defineProperty(it, "return", once("return", async function(this: any, v: any) { expect(this).toBe(it); return { done: true, value: v } }))
+    Object.defineProperty(it, "throw", once("throw", async function(this: any, v: any) { expect(this).toBe(it); return { done: true, value: v } }))
+    const src: any = {}
+    Object.defineProperty(src, Symbol.asyncIterator, once("iterator", function(this: any) { expect(this).toBe(src); return it }))
+    const g = hook393(subs393(), "turn.step")(m.$, { agentId: "f17-stream", turnId: "f17", index: 0, model: "f17-model" }, () => src)
+    expect((await g.next()).value, "F17 first chunk").toBe(chunk)
+    await g[exit]("STOP")
+    for (const key of ["iterator", "done", "value", "return", "throw"]) expect(counts[key], "F17 stream one read " + key + " / " + exit).toBe(1)
+    failoverBindReset()
+  }
+})
+
+test("#489-B1-FIX4 F17 session cwd read once", async () => {
+  const m = mod$393({})
+  let n = 0
+  const e = { get cwd() { if (n++) throw new Error("second cwd read"); return "/f17-cwd" } }
+  await hook393(subs393(), "session.start")(m.$, e, async () => ({}))
+  expect(n, "F17 cwd one read").toBe(1)
+  expect(m.storeSets.some(r => r.value === "/f17-cwd"), "F17 cwd persisted").toBe(true)
+})
+
+test("#489-B1-FIX4 F17 memo predicate accessors read once", () => {
+  let kind = 0, t = 0
+  const stored = { get kind() { if (kind++) throw new Error("kind twice"); return "BLOCK" }, get t() { if (t++) throw new Error("t twice"); return 100 } }
+  expect(registerModule393.memoUsable(stored, 101, 50), "F17 memo predicate").toBe(true)
+  expect([kind, t]).toEqual([1, 1])
+})
+
+test("#489-B1-FIX4 F17 memo consumer reads host fields once", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/f17-memo"
+  const sid = "f17-memo"
+  const prompt = "f17"
+  const key = verdictKey("f17", sid, "Read", "", prompt)
+  const m = mod$393({ files: { [home + "/probes.toml"]: '[probe.f17]\nkind = "consult"\nact = "cancel"\nenforce = false\n[probe.f17.when]\nfield = "tool_name"\nequals = "Read"\n' }, env: { CLAUDE_PROBES_DIR: home, PWD: home, CLAUDE_PROBES: "1" }, now: 260_000_000, sid })
+  const reads: Record<string, number> = {}
+  const values: any = { kind: "BLOCK", t: 260_000_000, rest: "f17", used: "model", dtMs: 1, threw: "first" }
+  const stored: any = {}
+  for (const k of Object.keys(values)) Object.defineProperty(stored, k, { get() { reads[k] = (reads[k] || 0) + 1; if (reads[k] > 1) throw new Error("twice " + k); return values[k] } })
+  const get = m.$.store.get
+  m.$.store.get = async (k: string) => k === key ? stored : get(k)
+  let called = 0
+  m.$.model.complete = async () => { called++; return "BLOCK: live" }
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Read", prompt }, async () => ({ ran: true }))
+  expect(out.ran, "F17 memo consumer proceeds").toBe(true)
+  expect(called, "F17 memo consumer no consult").toBe(0)
+  for (const k of Object.keys(reads)) expect(reads[k], "F17 host memo one read " + k).toBe(1)
+})
+
+// --- #489-B1-FIX5: лексер heredoc (Z12), снимок события (Z13), skippedN (Z16) ---
+// CONSTRAINT: shellScan/snapEvent читаются через namespace-импорт, как
+// lostWritesSnapshot выше: на R ДО волны их экспорта нет, а именованный импорт
+// несуществующего символа ронял бы весь файл зубов, и красная фаза не показала
+// бы отказ каждого зуба отдельной строкой.
+
+const TRIG5 = "zzz-legalize"
+
+function scan5(cmd: string): any {
+  const fn: any = (registerModule393 as any).shellScan
+  if (typeof fn !== "function") throw new Error("shellScan: нет экспорта на этом R")
+  return fn(cmd)
+}
+
+function snap5($: any, e: any, site: string): any {
+  const fn: any = (registerModule393 as any).snapEvent
+  if (typeof fn !== "function") throw new Error("snapEvent: нет экспорта на этом R")
+  return fn($, e, site)
+}
+
+async function formFix5(id: string, command: string, cfg = formCombat393(), files: Record<string, string> = {}) {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-fix5-" + id
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: cfg, ...files },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/fix5", CLAUDE_FORM: "1" },
+    now: 270_000_000,
+  })
+  const reads: string[] = []
+  const orig = m.$.fs.read
+  m.$.fs.read = async (p: string) => { reads.push(p); return orig(p) }
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command }, async () => ({ ran: true }))
+  const records = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
+  return { m, reads, out, records, rows: formLines393(m.writes) }
+}
+
+// Hunt-требование волны: refuse обязан прийти ОТ НУЖНОЙ цели, а не от соседней.
+function refusedOn5(r: any, target: string): boolean {
+  return r.rows.some((x: any) => x.outcome === "refuse") &&
+    r.records.flatMap((x: any) => x.refuse || []).some((x: any) => String(x.src) === target)
+}
+
+// CONSTRAINT (#489-B1-FIX6 F2): значения полей — дословно канон
+// ~/.claude/probes/probes.toml:164–171 (только чтение); проверка заглушек
+// держит фикстуру от молчаливого «замена не сработала».
+function formGit6(): string {
+  const out = formCombat393()
+    .replace('git_commit = "zzz-git-commit"', String.raw`git_commit = '(?<![\w.-])git\s+commit(?![\w-])'`)
+    .replace('git_commit_ok = "zzz-git-commit-ok"', String.raw`git_commit_ok = '(?<!\S)--only(?!\S)'`)
+    .replace('git_msg = "zzz-git-msg"', String.raw`git_msg = '''(?<!\S)-m\s*(?:"([^"]*)"|'([^']*)'|(\S+))'''`)
+    .replace('trailer_a = "zzz-trailer-a"', "trailer_a = '^Session:'")
+    .replace('trailer_b = "zzz-trailer-b"', "trailer_b = '^Co-Authored-By:'")
+  for (const stub of ["zzz-git-commit", "zzz-git-msg", "zzz-trailer-a", "zzz-trailer-b"]) {
+    if (out.indexOf(stub) >= 0) throw new Error("formGit6: заглушка не заменена: " + stub)
+  }
+  return out
+}
+
+function gitF6(r: any): string[] {
+  return r.records.flatMap((x: any) => [...(x.refuse || []), ...(x.warn || [])])
+    .filter((x: any) => x.c === "F").map((x: any) => String(x.q))
+}
+
+// CONSTRAINT (#489-B1-FIX6 F4): write_redirect — дословно канон :172.
+function formTee6(): string {
+  const out = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"',
+    String.raw`write_redirect = '''(?:>>?|tee(?:\s+-a)?)\s*["']?([^\s"'<>|;&]+\.md)'''`)
+  if (out.indexOf("tee(?:") < 0) throw new Error("formTee6: заглушка write_redirect не заменена")
+  return out
+}
+
+test("#489-B1-FIX5 L1: продолжение backslash-newline держит цель на строке оператора", async () => {
+  const cmd = "cat <<'EOF' \\\n>> r/report.md\n" + TRIG5 + "\nEOF"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].body).toBe(TRIG5)
+  expect(s.heredocs[0].terminated).toBe(true)
+  expect(s.inert(cmd.indexOf(">>"))).toBe(false)
+  const r = await formFix5("l1", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L1 refuse от цели продолженной строки").toBe(true)
+})
+
+test("#489-B1-FIX5 L2: два heredoc одной строки читаются телами по порядку очереди", async () => {
+  const cmd = "cat <<A <<B >> r/report.md\nok\nA\n" + TRIG5 + "\nB"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(2)
+  expect(s.heredocs[0].delim).toBe("A")
+  expect(s.heredocs[0].body).toBe("ok")
+  expect(s.heredocs[1].delim).toBe("B")
+  expect(s.heredocs[1].body).toBe(TRIG5)
+  expect(s.heredocs[0].op < s.heredocs[1].op, "op в порядке появления").toBe(true)
+  const r = await formFix5("l2", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L2 второе тело судится").toBe(true)
+})
+
+test("#489-B1-FIX5 L3: чётность косой -- две косые подряд это пара, newline после них режет строку", async () => {
+  const cmd = "echo ok >> r/report.md \\\\\ncat <<'EOF' > a/notes.md\n" + TRIG5 + "\nEOF"
+  const s = scan5(cmd)
+  const line2 = "echo ok >> r/report.md \\\\\n".length
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].lineStart).toBe(line2)
+  expect(s.lineOf(cmd.indexOf(">>"))[0]).toBe(0)
+  expect(s.lineOf(cmd.indexOf("cat <<"))[0]).toBe(line2)
+  expect(s.lineOf(cmd.indexOf(">>"))[0] === s.heredocs[0].lineStart, "строка цели ≠ строке heredoc").toBe(false)
+  const r = await formFix5("l3", cmd)
+  expect(r.rows.some((x: any) => x.outcome === "refuse"), "L3 НЕ refuse: тело чужой строки").toBe(false)
+})
+
+test("#489-B1-FIX5 L4: `<<\\EOF` -- снятие backslash в слове-разделителе", async () => {
+  const cmd = "cat <<\\EOF >> r/report.md\n" + TRIG5 + "\nEOF"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].delim).toBe("EOF")
+  expect(s.heredocs[0].body).toBe(TRIG5)
+  const r = await formFix5("l4", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L4 refuse").toBe(true)
+})
+
+test("#489-B1-FIX5 L5: `<<-` снимает ведущие табы и с тела, и с терминатора", async () => {
+  const cmd = "cat <<-EOF >> r/report.md\n\t" + TRIG5 + "\n\tEOF"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].strip).toBe(true)
+  expect(s.heredocs[0].body).toBe(TRIG5)
+  expect(s.heredocs[0].terminated).toBe(true)
+  const r = await formFix5("l5", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L5 refuse").toBe(true)
+})
+
+test("#489-B1-FIX5 L6: `$(` внутри двойных кавычек возвращает код (git commit -m)", async () => {
+  const cmd = "git commit -m \"$(cat <<'EOF'\nmsg\n\nSession: x\nCo-Authored-By: y\nEOF\n)\""
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].body).toBe("msg\n\nSession: x\nCo-Authored-By: y")
+})
+
+test("#489-B1-FIX5 L7: цель в `\"…\"` инертна: ни тела, ни чтения цели", async () => {
+  const cmd = "echo \"cat <<EOF >> r/report.md\""
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(0)
+  expect(s.inert(cmd.indexOf(">>"))).toBe(true)
+  const r = await formFix5("l7", cmd)
+  expect(r.reads.indexOf("/fix5/r/report.md") < 0, "L7 $.fs.read цели не звался").toBe(true)
+  expect(r.rows.length, "L7 событий нет").toBe(0)
+})
+
+test("#489-B1-FIX5 L8: цель в комментарии инертна", async () => {
+  const cmd = "true # >> r/report.md"
+  const s = scan5(cmd)
+  expect(s.inert(cmd.indexOf(">>"))).toBe(true)
+  const r = await formFix5("l8", cmd)
+  expect(r.rows.length, "L8 событий по цели нет").toBe(0)
+})
+
+test("#489-B1-FIX5 L9: `<<<` -- here-string, не heredoc", async () => {
+  const cmd = "cat <<< \"x\" >> r/report.md"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(0)
+})
+
+test("#489-B1-FIX5 L10: `<<` внутри арифметики -- сдвиг, не оператор", async () => {
+  const cmd = "echo $((1<<2)) >> r/report.md"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(0)
+})
+
+test("#489-B1-FIX5 L11: закон Z5 -- все тела строки судятся для каждой цели строки", async () => {
+  const cmd = "cat <<A >> r/report.md ; cat <<B > a/notes.md\nok\nA\n" + TRIG5 + "\nB"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(2)
+  const r = await formFix5("l11", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L11: тело второго heredoc судится и для первой цели").toBe(true)
+})
+
+test("#489-B1-FIX5 L12: `2>&1` между оператором и целью не режет логическую строку", async () => {
+  const cmd = "cat <<'EOF' 2>&1 >> r/report.md\n" + TRIG5 + "\nEOF"
+  const r = await formFix5("l12", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L12 refuse").toBe(true)
+})
+
+test("#489-B1-FIX5 L13: тело без терминатора доходит до конца команды", async () => {
+  const cmd = "cat <<EOF >> r/report.md\n" + TRIG5
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].terminated).toBe(false)
+  expect(s.heredocs[0].body).toBe(TRIG5)
+  const r = await formFix5("l13", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L13 refuse незавершённым телом").toBe(true)
+})
+
+test("#489-B1-FIX5 L14: цель в `$'…'` инертна, `\\'` строку не закрывает", async () => {
+  const cmd = "echo $'it\\'s >> r/report.md'"
+  const s = scan5(cmd)
+  expect(s.inert(cmd.indexOf(">>"))).toBe(true)
+  const r = await formFix5("l14", cmd)
+  expect(r.rows.length, "L14 событий нет").toBe(0)
+})
+
+test("#489-B1-FIX5 L15: `E\"O\"F` -- кавычки в слове-разделителе снимаются", async () => {
+  const cmd = "cat <<E\"O\"F >> r/report.md\n" + TRIG5 + "\nEOF"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].delim).toBe("EOF")
+  const r = await formFix5("l15", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L15 refuse").toBe(true)
+})
+
+test("#489-B1-FIX5 L16: обратная кавычка открывает код, оператор внутри неё живой", async () => {
+  const cmd = "echo `cat <<EOF\n" + TRIG5 + "\nEOF\n` >> r/report.md"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(1)
+  const r = await formFix5("l16", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L16 refuse").toBe(true)
+})
+
+test("#489-B1-FIX5 L17: heredoc внутри `$(…)` растянут в одну строку глубины 0", async () => {
+  const cmd = "echo \"$(cat <<'EOF'\n" + TRIG5 + "\nEOF\n)\" >> r/report.md"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].lineStart).toBe(0)
+  expect(s.heredocs[0].lineEnd).toBe(cmd.length)
+  expect(s.lineOf(cmd.length - 1)).toStrictEqual([0, cmd.length])
+  const r = await formFix5("l17", cmd)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L17 refuse").toBe(true)
+})
+
+test("#489-B1-FIX5 L18: форма без ключа `heredoc` в конфиге судит (ключ снят из FORM_REQ)", async () => {
+  const cmd = "cat <<'EOF' \\\n>> r/report.md\n" + TRIG5 + "\nEOF"
+  const cfg = formCombat393().replace(/^heredoc = ".*"\n/m, "")
+  expect(cfg.indexOf("heredoc") < 0, "L18 фикстура без ключа heredoc").toBe(true)
+  const r = await formFix5("l18", cmd, cfg)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L18 проба судит без ключа").toBe(true)
+})
+
+test("#489-B1-FIX5b L19: подоболочка внутри `$(…)` не закрывает подстановку", async () => {
+  const cmd = "x=$( (true)\ntrue ) > r/report.md"
+  const s = scan5(cmd)
+  expect(s.lineOf(cmd.indexOf(">"))[0]).toBe(0)
+})
+
+test("#489-B1-FIX5b L20: шаблон case внутри `$(…)` не закрывает подстановку, `esac)` закрывает", async () => {
+  const cmd = "x=$(case y in a) true;;\nesac) > r/report.md\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.lineOf(cmd.indexOf(") > r"))[0]).toBe(0)
+  expect(s.heredocs.length).toBe(1)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+})
+
+test("#489-B1-FIX6 L21: `echo case` не открывает шаблон", async () => {
+  // Отклонение от буквальной таблицы брифа (доказательство — REPORT, concerns C1):
+  // фикстурный report_path = "report[.]md$" (FORM_CFG_335) не матчит "report1.md"/
+  // "report2.md" -> вердикт report2 был недостижим ни на каком R. Имена 1report.md/
+  // 2report.md матчат фильтр, порядок и смысл утверждений те же.
+  const cmd = "x=$(echo case); cat >> r/1report.md <<EOF\nok\nEOF\ncat >> r/2report.md <<EOF\n" + TRIG5 + "\nEOF"
+  const s = scan5(cmd)
+  expect(s.heredocs.length).toBe(2)
+  expect(s.heredocs[0].lineStart).not.toBe(s.heredocs[1].lineStart)
+  const r = await formFix5("l21", cmd)
+  const srcs = r.records.flatMap((x: any) => x.refuse || []).map((x: any) => String(x.src))
+  expect(srcs).toContain("Bash:/fix5/r/2report.md")
+  expect(srcs).not.toContain("Bash:/fix5/r/1report.md")
+})
+
+test("#489-B1-FIX6 L22: `grep -c case` не открывает шаблон", async () => {
+  const cmd = "n=$(grep -c case f)\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+})
+
+test("#489-B1-FIX6 L23: `then case` — командная позиция", async () => {
+  const cmd = "x=$(if true; then case y in a) true;;\nesac; fi) > r/report.md\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.lineOf(cmd.indexOf(") > r"))[0]).toBe(0)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+})
+
+test("#489-B1-FIX6 L24: `in esac` — пустой case", async () => {
+  const cmd = "x=$(case y in esac)\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+})
+
+test("#489-B1-FIX6 L25: `case` после шаблона `a)` — командная позиция", async () => {
+  const cmd = "x=$(case a in x) case b in y) true;; esac;; z) true;;\nesac)\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.lineOf(cmd.indexOf("esac)"))[0]).toBe(0)
+})
+
+test("#489-B1-FIX6 L26: `echo esac` внутри case не закрывает шаблон", async () => {
+  const cmd = "x=$(case y in a) echo esac;; b) true;;\nesac)\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.lineOf(cmd.indexOf("esac)"))[0]).toBe(0)
+})
+
+test("#489-B1-FIX6 C1: чужой heredoc в цепочке не подменяет `-m`", async () => {
+  const cmd = "git commit --only -m \"Session: a\nnoise\nCo-Authored-By: b\" && cat <<\\EOF >> notes.md\nSession: x\nCo-Authored-By: y\nEOF"
+  const r = await formFix5("c1", cmd, formGit6())
+  expect(gitF6(r)).toContain("трейлеры Session: и Co-Authored-By: не соседние")
+})
+
+test("#489-B1-FIX6 C2: `-F -` берёт heredoc своей команды", async () => {
+  const cmd = "git commit --only -F - <<'EOF'\nSession: x\nnoise\nCo-Authored-By: y\nEOF"
+  const r = await formFix5("c2", cmd, formGit6())
+  expect(gitF6(r)).toContain("трейлеры Session: и Co-Authored-By: не соседние")
+})
+
+test("#489-B1-FIX6 C3: `-m` и heredoc вместе — судится полное сообщение", async () => {
+  const cmd = "git commit --only -m \"Session: z\" -m \"$(cat <<'EOF'\nCo-Authored-By: y\nEOF\n)\""
+  const r = await formFix5("c3", cmd, formGit6())
+  expect(gitF6(r)).toContain("трейлеры Session: и Co-Authored-By: не соседние")
+})
+
+test("#489-B1-FIX6 C4: тело heredoc внутри `-m \"$(…)\"` заменяет сырой захват", async () => {
+  const cmd = "git commit --only -m \"$(cat <<-'EOF'\n\tSession: x\n\tnoise\n\tCo-Authored-By: y\nEOF\n)\""
+  const r = await formFix5("c4", cmd, formGit6())
+  expect(gitF6(r)).toContain("трейлеры Session: и Co-Authored-By: не соседние")
+})
+
+test("#489-B1-FIX6 C5: `--only` соседней команды не засчитывается", async () => {
+  const cmd = "git commit -m \"x\"; echo --only"
+  const r = await formFix5("c5", cmd, formGit6())
+  expect(gitF6(r).some((q) => q.indexOf("git commit: нет") === 0)).toBe(true)
+})
+
+test("#489-B1-FIX6 C6: перенаправления не режут команду", async () => {
+  const cmd = "git commit &>/dev/null >|x.log 2>&1 --only -m \"ok\""
+  const r = await formFix5("c6", cmd, formGit6())
+  expect(gitF6(r).some((q) => q.indexOf("git commit: нет") === 0)).toBe(false)
+  expect(scan5(cmd).cmdOf(0)[1]).toBe(cmd.length)
+})
+
+test("#489-B1-FIX6 C7: heredoc соседней команды на той же строке не берётся", async () => {
+  const cmd = "git commit --only -F - <<'EOF' && cat <<'A' > n.md\nSession: x\nnoise\nCo-Authored-By: y\nEOF\nSession: x\nCo-Authored-By: y\nA"
+  const r = await formFix5("c7", cmd, formGit6())
+  expect(gitF6(r)).toContain("трейлеры Session: и Co-Authored-By: не соседние")
+})
+
+test("#489-B1-FIX6 C8: `-m` соседней команды не входит в сообщение", async () => {
+  const cmd = "git commit --only -m \"Co-Authored-By: b\"; git notes add -m \"Session: a\""
+  const r = await formFix5("c8", cmd, formGit6())
+  expect(gitF6(r)).not.toContain("трейлеры Session: и Co-Authored-By: не соседние")
+})
+
+// --- #489-B1-FIX7: фазы case, разделители по рамкам, [[ ]], суд коммита ------
+
+test("#489-B1-FIX7 L27: `)` вложенной подстановки не даёт командной позиции", async () => {
+  const cmd = "x=$(case y in a) echo $(p) case z;; esac)\necho hi >> r/1report.md\ncat <<E >> r/2report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+  const r = await formFix5("l27", cmd)
+  const srcs = r.records.flatMap((x: any) => x.refuse || []).map((x: any) => String(x.src))
+  expect(srcs).toContain("Bash:/fix5/r/2report.md")
+  expect(srcs).not.toContain("Bash:/fix5/r/1report.md")
+})
+
+test("#489-B1-FIX7 L28: закрывающая обратная кавычка не даёт командной позиции", async () => {
+  const cmd = "x=$(case y in a) echo `p` case z;; esac)\necho hi >> r/1report.md\ncat <<E >> r/2report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+  const r = await formFix5("l28", cmd)
+  const srcs = r.records.flatMap((x: any) => x.refuse || []).map((x: any) => String(x.src))
+  expect(srcs).toContain("Bash:/fix5/r/2report.md")
+  expect(srcs).not.toContain("Bash:/fix5/r/1report.md")
+})
+
+test("#489-B1-FIX7 L29-do: `case` после `do` — командная позиция", async () => {
+  const cmd = "x=$(for v in 1; do case y in a|b) true;; esac; done)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-else: `case` после `else` — командная позиция", async () => {
+  const cmd = "x=$(if false; then :; else case y in a|b) true;; esac; fi)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-elif: `case` после `elif` — командная позиция", async () => {
+  const cmd = "x=$(if false; then :; elif case y in a|b) true;; esac; then :; fi)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-if: `case` после `if` — командная позиция", async () => {
+  const cmd = "x=$(if case y in a|b) true;; esac; then :; fi)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-while: `case` после `while` — командная позиция", async () => {
+  const cmd = "x=$(while case y in a|b) false;; esac; do :; done)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-until: `case` после `until` — командная позиция", async () => {
+  const cmd = "x=$(until case y in a|b) true;; esac; do :; done)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-brace: `case` после `{` — командная позиция", async () => {
+  const cmd = "x=$({ case y in a|b) true;; esac; })"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-bang: `case` после `!` — командная позиция", async () => {
+  const cmd = "x=$(! case y in a|b) true;; esac)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-time: `case` после `time` — командная позиция", async () => {
+  const cmd = "x=$(time case y in a|b) true;; esac)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-semi: `case` после `;` — командная позиция", async () => {
+  const cmd = "x=$(true; case y in a|b) true;; esac)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-pipe: `case` после `|` — командная позиция", async () => {
+  const cmd = "x=$(echo | case y in a|b) true;; esac)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-amp: `case` после `&` — командная позиция", async () => {
+  const cmd = "x=$(true & case y in a|b) true;; esac)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-andand: `case` после `&&` — командная позиция", async () => {
+  const cmd = "x=$(true && case y in a|b) true;; esac)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-bt-open: открывающая обратная кавычка держит командную позицию", async () => {
+  const cmd = "x=`case y in a|b) true;; esac`"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L29-subshell: `case` в подоболочке внутри `$(…)`", async () => {
+  const cmd = "x=$( (case y in a|b) true;; esac) )"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("b)"))[0]).toBeLessThanOrEqual(cmd.indexOf("case y"))
+})
+
+test("#489-B1-FIX7 L30-noclobber: `>|` перед case — имя файла", async () => {
+  const cmd = "x=$(echo hi >| case; for v in a b; do :; done)\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+})
+
+test("#489-B1-FIX7 L30-dupout: `>&`", async () => {
+  const cmd = "x=$(echo hi >& case; for v in a b; do :; done)\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+})
+
+test("#489-B1-FIX7 L30-dupin: `<&`", async () => {
+  const cmd = "x=$(cat <& case; for v in a b; do :; done)\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+})
+
+test("#489-B1-FIX7 L31: extglob-скобки в шаблоне", async () => {
+  const cmd = "shopt -s extglob\nx=$(case y in @(a|b)) true;;\nesac) > r/report.md\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.lineOf(cmd.indexOf(") > r"))[0]).toBe(cmd.indexOf("x=$("))
+})
+
+test("#489-B1-FIX7 L32: ведущая `(` шаблона", async () => {
+  const cmd = "x=$(case y in (a) true;;\nesac)\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.heredocs[0].lineStart).toBe(cmd.indexOf("cat <<"))
+})
+
+test("#489-B1-FIX7 L33: терминаторы `;&` и `;;&`", async () => {
+  const cmd = "x=$(case y in a) true;& b) true;;& c) true;;\nesac) > r/report.md\ncat <<E >> r/report.md\n" + TRIG5 + "\nE"
+  const s = scan5(cmd)
+  expect(s.lineOf(cmd.indexOf(") > r"))[0]).toBe(0)
+})
+
+test("#489-B1-FIX7 L34a: `&&` внутри `[[ ]]` не режет", async () => {
+  const cmd = "[[ -n a && -n b ]]"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("-n b"))[0]).toBe(0)
+})
+
+test("#489-B1-FIX7 L34b: `]]` закрывает выражение", async () => {
+  const cmd = "[[ -n a ]] && echo b"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("echo b"))[0]).toBeGreaterThan(cmd.indexOf("]]"))
+})
+
+test("#489-B1-FIX7 L34c: `[[` в шаблоне case — не выражение", async () => {
+  const cmd = "case y in a) true;; [[:alpha:]]) true;; esac; echo p && echo q"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("echo q"))[0]).toBeGreaterThan(cmd.indexOf("echo p"))
+})
+
+test("#489-B1-FIX7 L35: терминатор heredoc — разделитель своей рамки", async () => {
+  const cmd = "x=$(cat <<E\nt\nE\necho b)"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("echo b"))[0]).toBe(cmd.indexOf("echo b"))
+})
+
+test("#489-B1-FIX7 C9: две команды в `$(…)` через `;`", async () => {
+  const cmd = "x=$(git commit -m \"Session: a\nnoise\nCo-Authored-By: b\"; git commit --only -m \"ok\")"
+  const r = await formFix5("c9", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+  expect(gitF6(r).filter((q) => q === "трейлеры Session: и Co-Authored-By: не соседние").length).toBe(1)
+})
+
+test("#489-B1-FIX7 C10: две команды в обратных кавычках", async () => {
+  const cmd = "x=`git commit -m \"a\"; git commit --only -m \"b\"`"
+  const r = await formFix5("c10", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C11: перевод строки внутри `$(…)`", async () => {
+  const cmd = "x=$(git commit -m \"a\"\ngit commit --only -m \"b\")"
+  const r = await formFix5("c11", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C12: `-m` вложенной подстановки не входит в сообщение", async () => {
+  const cmd = "git commit --only -m \"Co-Authored-By: b\" $(printf %s -m 'Session: a')"
+  const r = await formFix5("c12", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q === "трейлеры Session: и Co-Authored-By: не соседние").length).toBe(0)
+})
+
+test("#489-B1-FIX7 C13: обёртка `bash -c` судится", async () => {
+  const cmd = "bash -c 'git commit -m \"x\"'"
+  const r = await formFix5("c13", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C14: `git commit` в тексте сообщения не судится второй раз", async () => {
+  const cmd = "git commit -m \"see git commit x\""
+  const r = await formFix5("c14", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C15: `--only` в тексте сообщения не засчитывается", async () => {
+  const cmd = "git commit -m \"use --only please\""
+  const r = await formFix5("c15", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C16: `--only` в комментарии не засчитывается", async () => {
+  const cmd = "git commit -m \"x\" # --only"
+  const r = await formFix5("c16", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C17: `git commit` в комментарии не судится", async () => {
+  const cmd = "true # git commit -m x"
+  const r = await formFix5("c17", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C18: `echo` — данные", async () => {
+  const cmd = "echo \"git commit -m x\""
+  const r = await formFix5("c18", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C19: `echo … | bash` судится", async () => {
+  const cmd = "echo \"git commit -m x\" | bash"
+  const r = await formFix5("c19", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C20: тело `cat`-heredoc — данные", async () => {
+  const cmd = "cat <<'EOF'\ngit commit -m \"Session: a\nnoise\nCo-Authored-By: b\"\nEOF"
+  const r = await formFix5("c20", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C21: тело `bash`-heredoc судится рекурсивно", async () => {
+  const cmd = "bash <<'EOF'\ngit commit -m \"Session: a\nnoise\nCo-Authored-By: b\"\nEOF"
+  const r = await formFix5("c21", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+  expect(gitF6(r).filter((q) => q === "трейлеры Session: и Co-Authored-By: не соседние").length).toBe(1)
+})
+
+test("#489-B1-FIX7 C22: `cat`-heredoc в `| bash` судится", async () => {
+  const cmd = "cat <<'EOF' | bash\ngit commit -m x\nEOF"
+  const r = await formFix5("c22", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C23: тело heredoc своего commit — сообщение", async () => {
+  const cmd = "git commit --only -F - <<'EOF'\nfix: git commit hook\nEOF"
+  const r = await formFix5("c23", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C24: `cat` внутри `-m \"$(…)\"` — данные", async () => {
+  const cmd = "git commit --only -m \"$(cat <<'EOF'\nfix git commit hook\nEOF\n)\""
+  const r = await formFix5("c24", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C25: присваивание перед `cat`", async () => {
+  const cmd = "X=1 cat <<'EOF'\ngit commit -m x\nEOF"
+  const r = await formFix5("c25", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C26: `cat` по пути", async () => {
+  const cmd = "/bin/cat <<'EOF'\ngit commit -m x\nEOF"
+  const r = await formFix5("c26", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C27: `||` — не труба", async () => {
+  const cmd = "echo \"git commit -m x\" || true"
+  const r = await formFix5("c27", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C28: рекурсия на второй уровень", async () => {
+  const cmd = "bash <<'A'\nbash <<'B'\ngit commit -m x\nB\nA"
+  const r = await formFix5("c28", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C29: закрытая `$(…)` не держит следующую команду", async () => {
+  const cmd = "x=$(echo --only); git commit -m \"a\""
+  const r = await formFix5("c29", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C30: закрытые обратные кавычки не держат следующую команду", async () => {
+  const cmd = "x=`echo --only`; git commit -m \"a\""
+  const r = await formFix5("c30", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C31: перевод строки комментария — разделитель рамки", async () => {
+  const cmd = "x=$(git commit -m \"a\" # c\ngit commit --only -m \"b\")"
+  const r = await formFix5("c31", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7 C32: `-m` в кавычках не входит в сообщение", async () => {
+  const cmd = "git commit --only -m 'Session: a' \"x -m Co-Authored-By:b\""
+  const r = await formFix5("c32", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q === "трейлеры Session: и Co-Authored-By: не соседние").length).toBe(0)
+})
+
+test("#489-B1-FIX7 C33: ключевое слово перед данными", async () => {
+  const cmd = "if true; then echo \"git commit -m x\"; fi"
+  const r = await formFix5("c33", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C34: подоболочка вокруг данных", async () => {
+  const cmd = "( echo \"git commit -m x\" )"
+  const r = await formFix5("c34", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7 C35: `cat | tee` — tee пишет в файл, тело судится (FIX10)", async () => {
+  const cmd = "cat <<'EOF' | tee r.txt\ngit commit -m x\nEOF"
+  const r = await formFix5("c35", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7b L36: комментарий сразу за открывающей кавычкой bt, следующий кадр — код", async () => {
+  const cmd = "x=`#c`\ngit commit -m \"a\""
+  const s = scan5(cmd)
+  expect(s.comment(cmd.indexOf("#c"))).toBe(true)
+  expect(s.comment(cmd.indexOf("git"))).toBe(false)
+  expect(s.inert(cmd.indexOf("git"))).toBe(false)
+})
+
+test("#489-B1-FIX7b L37: хвостовой `#`-комментарий внутри bt-рамки не держит следующую команду", async () => {
+  const cmd = "x=`true #c`; git commit -m \"a\""
+  const s = scan5(cmd)
+  expect(s.comment(cmd.indexOf("#c"))).toBe(true)
+  expect(s.inert(cmd.indexOf("git"))).toBe(false)
+})
+
+test("#489-B1-FIX7b L38: `#` после закрытия `$(…)` не комментарий", async () => {
+  const cmd = "echo $(true)#x; git commit -m \"a\""
+  const s = scan5(cmd)
+  expect(s.comment(cmd.indexOf("#x"))).toBe(false)
+  expect(s.inert(cmd.indexOf("git"))).toBe(false)
+})
+
+test("#489-B1-FIX7b L39: `#` после закрытия обратной кавычки не комментарий", async () => {
+  const cmd = "echo `true`#x; git commit -m \"a\""
+  const s = scan5(cmd)
+  expect(s.comment(cmd.indexOf("#x"))).toBe(false)
+  expect(s.inert(cmd.indexOf("git"))).toBe(false)
+})
+
+test("#489-B1-FIX7b L40: `#` после закрытия арифметики не комментарий", async () => {
+  const cmd = "echo $((1))#x; git commit -m \"a\""
+  const s = scan5(cmd)
+  expect(s.comment(cmd.indexOf("#x"))).toBe(false)
+  expect(s.inert(cmd.indexOf("git"))).toBe(false)
+})
+
+test("#489-B1-FIX7b L41: `#` после `)` подоболочки — комментарий", async () => {
+  const cmd = "(true)#x\ngit commit -m \"a\""
+  const s = scan5(cmd)
+  expect(s.comment(cmd.indexOf("#x"))).toBe(true)
+  expect(s.comment(cmd.indexOf("git"))).toBe(false)
+})
+
+test("#489-B1-FIX7b L42: экранированная кавычка в комментарии bt не закрывает рамку", async () => {
+  const cmd = "x=`true #a \\` b`; git commit -m \"a\""
+  const s = scan5(cmd)
+  expect(s.comment(cmd.indexOf(" b`") + 1)).toBe(true)
+  expect(s.inert(cmd.indexOf("git"))).toBe(false)
+})
+
+test("#489-B1-FIX7b C36: коммит после bt-рамки с хвостовым комментарием судится", async () => {
+  const cmd = "x=`true #c`; git commit -m \"a\""
+  const r = await formFix5("c36", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7b C37: коммит после `$(…)#x` судится", async () => {
+  const cmd = "echo $(true)#x; git commit -m \"a\""
+  const r = await formFix5("c37", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7c L43: `#` после закрытия голой `((1))` — комментарий", async () => {
+  const cmd = "((1))#x\ngit commit -m \"a\""
+  const s = scan5(cmd)
+  expect(s.comment(cmd.indexOf("#x"))).toBe(true)
+  expect(s.comment(cmd.indexOf("git"))).toBe(false)
+})
+
+test("#489-B1-FIX7c L44: `(` командной позиции после if начинает отрезок команды", async () => {
+  const cmd = "if (git commit -m \"a\") then :; fi"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("git"))[0]).toBe(cmd.indexOf("(") + 1)
+})
+
+test("#489-B1-FIX7c L45: `(` присваивания массива не начинает отрезок", async () => {
+  const cmd = "x=(a b); echo q"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf(" b") + 1)[0]).toBe(0)
+})
+
+test("#489-B1-FIX7c L46: `(` внутри `[[` не начинает отрезок", async () => {
+  const cmd = "[[ a && (b) ]] && echo q"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("(b)") + 1)[0]).toBe(0)
+})
+
+test("#489-B1-FIX7c L34d: `[[` в шаблоне case не открывает выражение — `&&` после esac режет отрезок", async () => {
+  const cmd = "case x in a) true;; [[) true;; esac; echo p && echo q"
+  const s = scan5(cmd)
+  expect(s.cmdOf(cmd.indexOf("echo q"))[0]).toBeGreaterThan(cmd.indexOf("echo p"))
+})
+
+test("#489-B1-FIX7c C38: коммит судится после `$(true)` с идущим следом case", async () => {
+  const cmd = "echo $(true) case in; echo --only | git commit -m \"a\""
+  const r = await formFix5("c38", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7c C39: коммит судится после закрытия обратной кавычки с идущим следом case", async () => {
+  const cmd = "echo `true` case in; echo --only | git commit -m \"a\""
+  const r = await formFix5("c39", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7c C40: `--only` из скобок if не покрывает коммит внутри них", async () => {
+  const cmd = "if (echo --only ) then git commit -m \"a\"; fi"
+  const r = await formFix5("c40", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7c C41: `--only` из скобок while не покрывает коммит внутри них", async () => {
+  const cmd = "while (echo --only ) do git commit -m \"a\"; done"
+  const r = await formFix5("c41", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("git commit: нет") === 0).length).toBe(1)
+})
+
+test("#489-B1-FIX7c C42: инертный `-m` из чужого отрезка не даёт трейлерного предупреждения", async () => {
+  const cmd = "x \"git commit --only -m a\"; echo -m \"Session: s\n\nCo-Authored-By: c\""
+  const r = await formFix5("c42", cmd, formGit6())
+  expect(gitF6(r).filter((q) => q.indexOf("трейлеры Session: и Co-Authored-By: не соседние") >= 0).length).toBe(0)
+})
+
+// CONSTRAINT: после FIX9 `(` командной позиции — разделитель, и C34 держится им; снятие `{`/`!` в cmdWord пинят эти два зуба.
+test("#489-B1-FIX7c C43: группа `{ … }` вокруг данных", async () => {
+  const cmd = "{ echo \"git commit -m x\"; }"
+  const r = await formFix5("c43", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX7c C44: отрицание `!` перед данными", async () => {
+  const cmd = "! echo \"git commit -m x\""
+  const r = await formFix5("c44", cmd, formGit6())
+  expect(gitF6(r).length).toBe(0)
+})
+
+test("#489-B1-FIX6 W1: голый `tee` усекает цель", async () => {
+  const cmd = "cat <<'EOF' | tee r/report.md\nclean\nEOF"
+  const r = await formFix5("w1", cmd, formTee6(), { "/fix5/r/report.md": TRIG5 + "\n" })
+  expect(r.reads).not.toContain("/fix5/r/report.md")
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md")).toBe(false)
+})
+
+test("#489-B1-FIX6 W2: `tee -a` дописывает (положительный контроль W1)", async () => {
+  const cmd = "cat <<'EOF' | tee -a r/report.md\nclean\nEOF"
+  const r = await formFix5("w2", cmd, formTee6(), { "/fix5/r/report.md": TRIG5 + "\n" })
+  expect(r.reads).toContain("/fix5/r/report.md")
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md")).toBe(true)
+})
+
+test("#489-B1-FIX5 Z13-a: tool.call читает tool_use_id ровно один раз", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-z13a"
+  const cmd = "cat <<'EOF' >> r/report.md\n" + TRIG5 + "\nEOF"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: formCombat393() },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/z13a", CLAUDE_FORM: "1" },
+    now: 270_000_100,
+  })
+  let n = 0
+  const ev: any = { tool: "Bash", command: cmd }
+  Object.defineProperty(ev, "tool_use_id", { enumerable: true, get() { n++; return n === 1 ? "id1" : "id2" } })
+  await hook393(subs393(), "tool.call")(m.$, ev, async (e: any) => e)
+  expect(n, "tool_use_id ровно одно чтение хоста").toBe(1)
+  expect(m.writes.some(w => String(w.path).endsWith("/form/records/mod-id1.json")), "имя улики из первого чтения").toBe(true)
+})
+
+test("#489-B1-FIX5 Z13-b: prompt.section читает text ровно один раз", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-z13b"
+  const rule = "/z13b/rule.txt"
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]: '[prompt.z13b]\nsection = "sec-z13b"\ntext_file = "' + rule + '"\n',
+      [rule]: "RULE-B",
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/z13b", CLAUDE_PROMPTS: "1" },
+    now: 270_000_200,
+  })
+  let n = 0
+  const ev: any = { name: "sec-z13b" }
+  Object.defineProperty(ev, "text", { enumerable: true, get() { n++; return n === 1 ? "BASE" : "SECOND" } })
+  const out = await hook393(subs393(), "prompt.section")(m.$, ev, async (e: any) => e)
+  expect(n, "text ровно одно чтение хоста").toBe(1)
+  expect(String(out.text), "next получил текст правила от первого чтения").toBe("BASE\n\nRULE-B")
+})
+
+test("#489-B1-FIX5 Z13-c: tool.describe читает description ровно один раз", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-z13c"
+  const rule = "/z13c/rule.txt"
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]: '[prompt.z13c]\ntool = "Read"\ntext_file = "' + rule + '"\n',
+      [rule]: "RULE-C",
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/z13c", CLAUDE_PROMPTS: "1" },
+    now: 270_000_300,
+  })
+  let n = 0
+  const ev: any = { tool: "Read" }
+  Object.defineProperty(ev, "description", { enumerable: true, get() { n++; return n === 1 ? "D1" : "D2" } })
+  const out = await hook393(subs393(), "tool.describe")(m.$, ev, async (e: any) => e)
+  expect(n, "description ровно одно чтение хоста").toBe(1)
+  expect(String(out.description)).toBe("D1\n\nRULE-C")
+})
+
+test("#489-B1-FIX5 Z13-d: command.describe читает description ровно один раз", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-z13d"
+  const rule = "/z13d/rule.txt"
+  const m = mod$393({
+    files: {
+      [home + "/probes.toml"]: '[prompt.z13d]\ncommand = "cmd-z13d"\ntext_file = "' + rule + '"\n',
+      [rule]: "RULE-D",
+    },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/z13d", CLAUDE_PROMPTS: "1" },
+    now: 270_000_400,
+  })
+  let n = 0
+  const ev: any = { command: "/cmd-z13d" }
+  Object.defineProperty(ev, "description", { enumerable: true, get() { n++; return n === 1 ? "C1D" : "C2D" } })
+  const out = await hook393(subs393(), "command.describe")(m.$, ev, async (e: any) => e)
+  expect(n, "description ровно одно чтение хоста").toBe(1)
+  expect(String(out.description)).toBe("C1D\n\nRULE-D")
+})
+
+test("#489-B1-FIX5 Z13-e: agent.spawn читает result.agentId ровно один раз", async () => {
+  await clear393()
+  await drainFold393()
+  failoverBindReset()
+  const home = "/probes-z13e"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: "[failover]\nenabled = true\n" },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/z13e" },
+    now: 270_000_500,
+  })
+  const result: any = { deny: undefined }
+  let n = 0
+  Object.defineProperty(result, "agentId", { enumerable: true, get() { n++; return "ag-z13e" } })
+  const out = await hook393(subs393(), "agent.spawn")(m.$, { subagentType: "z13e", prompt: "p", model: "mm" }, async () => result)
+  expect(n, "agentId результата ровно одно чтение").toBe(1)
+  expect(out, "возвращён сам result").toBe(result)
+  expect(!!failoverBindGet("ag-z13e"), "привязка построена по первому чтению").toBe(true)
+  failoverBindReset()
+})
+
+test("#489-B1-FIX5 Z13-f: turn.step читает turnId и index ровно по одному разу", async () => {
+  await clear393()
+  await drainFold393()
+  failoverBindReset()
+  const aid = "ag-z13f"
+  failoverBindSet(aid, { ladder: ["z13f-rung"], rungEffort: { "z13f-rung": "max" }, subagentType: "t", class: "", sticky: null })
+  const ev: any = { agentId: aid, model: "z13f-orig" }
+  let tN = 0
+  let iN = 0
+  Object.defineProperty(ev, "turnId", { enumerable: true, get() { tN++; return "z13f" } })
+  Object.defineProperty(ev, "index", { enumerable: true, get() { iN++; return 7 } })
+  const next = fan313Stream({ "z13f-orig": () => fan313Ok("z13f") })
+  const out = await drainStream(fan313Step()(fan313$(), ev, next))
+  expect(tN, "turnId ровно одно чтение хоста").toBe(1)
+  expect(iN, "index ровно одно чтение хоста").toBe(1)
+  expect(out.value && out.value.text, "ступень отработала").toBe("OK-z13f")
+  failoverBindReset()
+})
+
+test("#489-B1-FIX5 Z13-g: turn.step вычисляет refusal один раз на попытку", async () => {
+  await clear393()
+  await drainFold393()
+  failoverBindReset()
+  const aid = "ag-z13g"
+  const mk = (refusal: boolean) => {
+    const o: any = {}
+    const c = { u: 0, s: 0 }
+    Object.defineProperty(o, "usage", { enumerable: true, get() { c.u++; return refusal ? null : { out: 1 } } })
+    Object.defineProperty(o, "stopReason", { enumerable: true, get() { c.s++; return refusal ? null : "end_turn" } })
+    return { o, c }
+  }
+  // CONSTRAINT: обе попытки — отказные: isCarrierRefusal (R:427) читает поля
+  // через `&&` и на неуказывающем ответе до stopReason не доходит, а зуб
+  // пинит «каждый счётчик = 1 НА попытку» для обоих геттеров.
+  const r1 = mk(true)
+  const r2 = mk(true)
+  failoverBindSet(aid, { ladder: ["z13g-two"], rungEffort: { "z13g-two": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = fan313Stream({
+    "z13g-one": () => (async function* () { return r1.o })(),
+    "z13g-two": () => (async function* () { return r2.o })(),
+  })
+  const out = await drainStream(fan313Step()(fan313$(), { agentId: aid, turnId: "z13g", index: 0, model: "z13g-one" }, next))
+  expect([r1.c.u, r1.c.s], "первая попытка: usage/stopReason по одному чтению").toEqual([1, 1])
+  expect([r2.c.u, r2.c.s], "вторая попытка: usage/stopReason по одному чтению").toEqual([1, 1])
+  expect(out.value, "последний ответ возвращён как есть").toBe(r2.o)
+  failoverBindReset()
+})
+
+test("#489-B1-FIX5 Z13-h: поток читает свойство next итератора один раз", async () => {
+  await clear393()
+  await drainFold393()
+  failoverBindReset()
+  const aid = "ag-z13h"
+  failoverBindSet(aid, { ladder: ["z13h-back"], rungEffort: { "z13h-back": "max" }, subagentType: "t", class: "", sticky: null })
+  let nextReads = 0
+  let steps = 0
+  const iter: any = {}
+  Object.defineProperty(iter, "next", {
+    enumerable: true,
+    get() {
+      nextReads++
+      return async () => {
+        steps++
+        if (steps <= 3) return { done: false, value: { kind: "text", text: "c" + steps } }
+        return { done: true, value: { usage: { out: 1 }, stopReason: "end_turn" } }
+      }
+    },
+  })
+  iter[Symbol.asyncIterator] = () => iter
+  const out = await drainStream(fan313Step()(fan313$(), { agentId: aid, turnId: "z13h", index: 0, model: "z13h-orig" }, () => iter))
+  expect(out.chunks.length, "три куска прошли наружу").toBe(3)
+  expect(nextReads, "свойство next прочитано один раз за три шага").toBe(1)
+  failoverBindReset()
+})
+
+test("#489-B1-FIX5 Z13-i: snapEvent теряет бросивший ключ и учитывает его по сайту", async () => {
+  const raw: any = { keep: 1 }
+  let boomN = 0
+  Object.defineProperty(raw, "boom", { enumerable: true, get() { boomN++; throw new Error("boom-getter") } })
+  const snap = snap5({}, raw, "z13i-site")
+  expect(boomN, "отказавший геттер прочитан ровно раз").toBe(1)
+  expect(Object.prototype.hasOwnProperty.call(snap, "boom"), "ключа нет в снимке").toBe(false)
+  expect(snap.keep, "прочитанные ключи в снимке").toBe(1)
+  const lost = registerModule393.lostWritesSnapshot()["z13i-site:boom"]
+  expect(!!lost, "noteLost с сайтом <событие>:<ключ>").toBe(true)
+  expect(lost.n).toBe(1)
+  expect(String(lost.last)).toContain("boom-getter")
+  expect(snap5({}, null, "z13i-null")).toStrictEqual({})
+  expect(snap5({}, "str", "z13i-str")).toStrictEqual({})
+  await drainFold393()
+})
+
+test("#489-B1-FIX5 Z13-j: `\"agentId\" in e` вычисляется один раз на обработчик", async () => {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-z13j"
+  const m = mod$393({
+    files: { [home + "/probes.toml"]: formCombat393() },
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/z13j", CLAUDE_FORM: "1" },
+    now: 270_000_900,
+  })
+  let hasN = 0
+  const prox = new Proxy({ tool: "Bash", command: "true", tool_use_id: "z13j" }, {
+    has(t: any, k: any) { if (k === "agentId") hasN++; return Reflect.has(t, k) },
+  })
+  await hook393(subs393(), "tool.call")(m.$, prox, async (e: any) => e)
+  expect(hasN, "ловушка has по agentId сработала один раз").toBe(1)
+})
+
+test("#489-B1-FIX5 Z16: журнал формы несёт полное число пропусков рядом со срезом", async () => {
+  const targets: string[] = []
+  for (let i = 0; i < 10; i++) targets.push("echo x >> r/n" + i + ".md")
+  const cmd = "cat <<'EOF' >> r/report.md\n" + TRIG5 + "\nEOF\n" + targets.join("\n")
+  const r = await formFix5("z16", cmd)
+  expect(r.rows.length, "журнальная строка одна").toBe(1)
+  const row = r.rows[0]
+  expect(row.outcome, "цель report отсуждена").toBe("refuse")
+  expect(row.skippedN, "skippedN -- полное число пропусков").toBe(10)
+  expect(row.skipped.length, "срез остаётся восьми").toBe(8)
+})
+const PROBE10: Array<[string, string, boolean]> = [
+  ["R1", "case b in a) true;; --only |b) git commit -m a;; esac", true],
+  ["R2", "case $m in\necho) git commit -m a;;\nesac", true],
+  ["R3", "cat <(git commit -m a)", true],
+  ["R4", "tee >(git commit -m a) < /dev/null", true],
+  ["R5", "echo git commit -m a > >(sh)", true],
+  ["R6", "echo git commit -m a | tee >(sh)", true],
+  ["R7", "$(echo git commit -m a)", true],
+  ["R8", "`echo git commit -m a`", true],
+  ["R9", "eval $(echo git commit -m a)", true],
+  ["R10", "eval \"$(echo git commit -m a)\"", true],
+  ["R11", "eval `printf 'git commit -m a'`", true],
+  ["R12", "sh -c \"$(echo git commit -m a)\"", true],
+  ["R13", "x=$(echo git commit -m a); $x", true],
+  ["R14", "bash <<D1\nbash <<D2\nbash <<D3\nbash <<D4\ngit commit -m a\nD4\nD3\nD2\nD1", true],
+  ["R15", "cat <<X > s.sh\ngit commit -m a\nX\nbash s.sh", true],
+  ["R16", "bash -c \"echo --only ; git commit -m a\"", true],
+  ["R17", "\"git\" commit -m a", true],
+  ["R18", "g''it commit -m a", true],
+  ["R19", "git -C . commit -m a", true],
+  ["R20", "echo() { git commit -m x; }", true],
+  ["R21", "diff <(echo --only ) <(git commit -m a)", true],
+  ["R22", "printf -v x 'git commit -m a'; $x", true],
+  ["R23", "rg --pre 'git commit -m a' x", true],
+  ["R24", "bash <(echo git commit -m a)", true],
+  ["R25", "echo \"git commit -m a\" > s.sh", true],
+  ["R26", "git --git-dir .git commit -m a", true],
+  ["R27", "\\git commit -m a", true],
+  ["P1", "git commit --only a -m \"$(cat <<'EOF'\nfix: guard git commit form\nEOF\n)\"", false],
+  ["P2", "echo \"git commit -m a\"", false],
+  ["P3", "cat <(echo git commit -m a)", false],
+  ["P4", "echo \"git commit -m a\" > /dev/null", false],
+  ["P5", "echo \"$(echo git commit -m a)\"", false],
+  ["P6", "gh pr create --body \"$(cat <<'EOF'\nrun git commit -m x\nEOF\n)\"", false],
+  ["P7", "\"git\" commit --only a -m x", false],
+  ["P8", "git -C . commit --only a -m x", false],
+  ["P9", "bash -c \"git commit --only a -m x\"", false],
+  ["P10", "echo git commit -m a 2>&1", false],
+  ["P11", "case x in a) echo \"git commit -m a\";; esac", false],
+  ["P12", "git commit --only x -m 'use git commit wisely'", false],
+  ["P13", "cat <<'EOF'\ngit commit -m x\nEOF", false],
+  ["P14", "git commit --only a -m x && echo \"done git commit\"", false],
+  ["P15", "git -c user.name=x commit --only a -m y", false],
+  ["R28", "git -C . push origin main", true],
+  ["R29", "\"git\" push --force origin a:b", true],
+  ["P16", "git -C . push origin main:main", false],
+  ["P17", "cat <<'EOF' > notes.txt\nplain text\nEOF", false],
+  ["R30", "git com''mit -m a", true],
+  ["R31", "\"$G\" commit -m a", true],
+  ["R32", "$G commit -m a", true],
+  ["R33", "$(which git) commit -m a", true],
+  ["R34", "g\\it commit -m a", true],
+  ["R35", "bash -c \"echo --only ; git commit -m a", true],
+  ["R36", "sh -c 'echo --only ; git commit -m a'", true],
+  ["R37", "bash -c $'echo --only ; git commit -m a'", true],
+  ["R38", "git $opt commit -m a", true],
+  ["P18", "cat <<'X'\n\"git\" commit -m a\nX", false],
+  ["P19", "true # \"git\" commit -m a", false],
+  ["P20", "bash <(true) ; echo \"git commit -m a\"", false],
+  ["P21", "echo \"git commit -m a\" >> /dev/null", false],
+  ["P22", "echo $G commit", false],
+  ["R39", 'echo "$(case b in @(a|(b))) :;; esac; git commit -m a)"', true],
+  ["R40", 'x=$(case b in @(a|(b))) :;; esac; git commit -m a)', true],
+  ["R41", 'case b in @(a|(b))) git commit -m a;; esac', true],
+  ["P23", 'case b in @(a|(b))) echo "git commit -m a";; esac', false],
+  ["P24", "bash -c $'x ; git commit --only a -m y'", false],
+  ["P25", "bash -c \"x ; git commit --only a -m y", false],
+  ["P26", "bash -c \"x ; git commit --only a -m y\"", false],
+  ["P27", "sh -c 'x ; git commit --only a -m y'", false],
+  ["R42", "echo --only >(git commit -m a)", true],
+  ["R43", "bash <<'X'\n\"git\" commit -m a\nX", true],
+  ["R44", "bash -c '\"git\" commit -m a'", true],
+  ["R45", "bash -c 'g\\it commit -m a'", true],
+  ["R46", "eval '\"git\" commit -m a'", true],
+  ["R47", "bash <<'X'\ngit -C . commit -m a\nX", true],
+  ["R48", "bash -c \"\\\\git commit -m a\"", true],
+  ["R49", "bash -c \"bash -c '\\\"git\\\" commit -m a'\"", true],
+  ["R50", "bash -c '\"git\" push -f origin a:a'", true],
+  ["R51", "cat <<'X' > f.sh\n\"git\" commit -m a\nX", true],
+  ["P28", "echo \"git commit -m a\" | grep x", false],
+  ["P29", "true # git commit -m a", false],
+  ["P30", "echo '\"git\" commit -m a'", false],
+  ["P31", "git commit --only a -m 'run \"git\" commit'", false],
+  ["P32", "sh -c '\"git\" commit --only a -m y'", false],
+  ["P33", "cat <<'X' > /dev/null\n\"git\" commit -m a\nX", false],
+  ["P34", "bash -c 'git -C . push origin a:a'", false],
+  ["P35", "bash -c 'git push origin a:a'", false],
+  ["P36", "git push origin a:a && rm -f x", false],
+  ["P37", "true # git push -f origin a:a", false],
+]
+
+const formGit10 = (): string => {
+  const cfg = formGit6()
+    .replace('git_push = "zzz-git-push"', String.raw`git_push = '(?<![\w.-])git\s+push(?![\w-])'`)
+    .replace('git_push_ok = "zzz-git-push-ok"', String.raw`git_push_ok = '(?<!\S)origin\s+[\w./-]+:[\w./-]+(?!\S)'`)
+    .replace('git_force = "zzz-git-force"', String.raw`git_force = '(?<!\S)(?:--force(?:-with-lease)?|-f)(?!\S)'`)
+  if (cfg.indexOf("zzz-git-push") >= 0 || cfg.indexOf("zzz-git-force") >= 0) throw new Error("push stub not replaced")
+  return cfg
+}
+for (const [id, cmd, refuse] of PROBE10) {
+  test("#494-B1-FIX10 " + id + (refuse ? ": отказ" : ": пропуск"), async () => {
+    const r = await formFix5("p10" + id.toLowerCase(), cmd, formGit10())
+    const f = gitF6(r)
+    expect({ id, refused: f.length > 0, f }).toEqual({ id, refused: refuse, f: refuse ? f : [] })
+  })
+}
