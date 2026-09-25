@@ -1,7 +1,7 @@
 {
   "name": "catalyst-statusline",
-  "version": "0.4.0",
-  "description": "Status line under the prompt with hover details and /statusline-mod picker (segments, order, scheme). Based on konsta95/ClaudeCodeMods statusline 0.3.2 (MIT, c49ad4a).",
+  "version": "0.5.0",
+  "description": "Multi-line status HUD above the prompt over data families (hooks/data/*.ts pure collectors, one core subscription per event), with the /statusline-mod pill panel: live preview, six tabs (layout, elements, per-element settings, view axes, themes, number formats). Based on konsta95/ClaudeCodeMods statusline 0.3.2 (MIT, c49ad4a).",
   "author": {
     "name": "Marat Karimov"
   },
@@ -9,7 +9,7 @@
     "template": {
       "type": "string",
       "title": "Статус-строка: раскладка",
-      "description": "Строки разделяются « ;; », сегменты — «||». Сегмент: id=текст с переменными {ns.field}, например ctx={ctx.text}||model={model.text}. Пусто — раскладка по умолчанию. Пустая строка раскладки отбрасывается с диагностикой.",
+      "description": "Строки разделяются « ;; », сегменты — «||». Сегмент: id=текст с переменными {ns.field}, например ctx={ctx.text}||model={model.text}. Пусто — раскладка HUD по умолчанию. Пустая строка раскладки отбрасывается с диагностикой.",
       "default": ""
     },
     "separator": {
@@ -24,11 +24,17 @@
       "description": "Ключи сегментов через запятую, первый уходит первым при нехватке ширины; вытеснение построчное. Неназванные вытесняются после названных. Пусто — порядок по умолчанию.",
       "default": ""
     },
+    "elements": {
+      "type": "string",
+      "title": "Статус-строка: настройки элементов",
+      "description": "id:key=value,key=value;… — вариант (v), цвет (c), иконка (ic), подпись (lb, lt), вид бара (bp, bw, bs) и опции элемента (o:<имя>). Круговой разбор: сериализация и разбор взаимно обратны. Негодная запись отбрасывается по одной с диагностикой.",
+      "default": ""
+    },
     "theme": {
       "type": "string",
       "title": "Статус-строка: тема",
-      "description": "Именованный набор значений осей вида: default, plain, powerline, pill, claude-code, codex, mono, либо имя сохранённой темы. Неизвестное имя — диагностика и последняя удачная конфигурация.",
-      "default": "default"
+      "description": "Именованный набор значений осей вида и палитра: hud, powerline, pill, catppuccin-mocha, nord, gruvbox-dark, tokyo-night, dracula, solarized-dark, solarized-light, mono, minimal, classic, claude-code, codex, либо имя сохранённой темы. Неизвестное имя — диагностика и последняя удачная конфигурация.",
+      "default": "hud"
     },
     "placement": {
       "type": "string",
@@ -107,7 +113,7 @@
     "bar": {
       "type": "string",
       "title": "Статус-строка: полоса заполнения",
-      "description": "Пара глифов заполнения: blocks █░, parallelogram ▰▱, ascii #-, shade ▓░, baseline █▁, low-blocks ▇▁, pie ○◔◑◕●, либо пара-литерал из двух графем.",
+      "description": "Пара глифов заполнения: blocks █░, parallelogram ▰▱, ascii #-, shade ▓░, baseline █▁, low-blocks ▇▁, pie ○◔, либо пара-литерал из двух графем.",
       "options": [
         "theme",
         "blocks",
@@ -133,13 +139,21 @@
     "palette": {
       "type": "string",
       "title": "Статус-строка: палитра",
-      "description": "semantic — только пороговые цвета; mono — без цвета, приглушение; codex и claude-code — таблицы слотов ClaudeCodeStatusline (DATA §2).",
+      "description": "semantic — только пороговые цвета; mono — без цвета, приглушение; codex и claude-code — таблицы слотов ClaudeCodeStatusline; hud — палитра claude-hud; плюс дословные палитры каталога: catppuccin-mocha, nord, gruvbox-dark, tokyo-night, dracula, solarized-dark, solarized-light.",
       "options": [
         "theme",
         "semantic",
         "mono",
         "codex",
-        "claude-code"
+        "claude-code",
+        "hud",
+        "catppuccin-mocha",
+        "nord",
+        "gruvbox-dark",
+        "tokyo-night",
+        "dracula",
+        "solarized-dark",
+        "solarized-light"
       ],
       "default": "theme"
     },
@@ -168,6 +182,19 @@
       ],
       "default": "theme"
     },
+    "align": {
+      "type": "string",
+      "title": "Статус-строка: выравнивание",
+      "description": "left — строки прижаты влево; split — последний сегмент строки уходит вправо; right — всё вправо; center — по центру.",
+      "options": [
+        "theme",
+        "left",
+        "split",
+        "right",
+        "center"
+      ],
+      "default": "theme"
+    },
     "overflow": {
       "type": "string",
       "title": "Статус-строка: узкое окно",
@@ -179,31 +206,71 @@
       ],
       "default": "theme"
     },
-    "numbers": {
+    "numTokens": {
       "type": "string",
-      "title": "Статус-строка: формат чисел",
-      "description": "raw — дословно из источника; compact — короткая запись (k/M), ненулевое никогда не становится нулём.",
+      "title": "Статус-строка: формат чисел — токены",
+      "description": "compact — 231K; raw — 231045; compact1 — 231.0K; grouped — 231 045.",
       "options": [
+        "compact",
         "raw",
-        "compact"
+        "compact1",
+        "grouped"
       ],
-      "default": "raw"
+      "default": "compact"
     },
-    "model_label": {
+    "numPercent": {
       "type": "string",
-      "title": "Статус-строка: имя модели",
-      "description": "raw — $.session.model() дословно, с тегом [1m]; display — отображаемое имя без тега.",
+      "title": "Статус-строка: формат чисел — проценты",
+      "description": "int — 48%; dec1 — 48.2%; ratio — 0.48.",
       "options": [
-        "raw",
-        "display"
+        "int",
+        "dec1",
+        "ratio"
       ],
-      "default": "raw"
+      "default": "int"
     },
-    "segmentColors": {
+    "numUsd": {
       "type": "string",
-      "title": "Статус-строка: цвет по сегменту",
-      "description": "id=цвет;id=цвет, цвет — имя или #RRGGBB. Негодная запись отбрасывается по одной с диагностикой. Сегментам с пороговой шкалой цвет не предлагается.",
-      "default": ""
+      "title": "Статус-строка: формат чисел — деньги",
+      "description": "exact — $6434.27 (ненулевое никогда не читается как $0.00); short — $6.4K; whole — $6434.",
+      "options": [
+        "exact",
+        "short",
+        "whole"
+      ],
+      "default": "exact"
+    },
+    "numDuration": {
+      "type": "string",
+      "title": "Статус-строка: формат чисел — время",
+      "description": "hm — 1655h 47m; dh — 69d 23h; clock — 1655:47.",
+      "options": [
+        "hm",
+        "dh",
+        "clock"
+      ],
+      "default": "hm"
+    },
+    "numBytes": {
+      "type": "string",
+      "title": "Статус-строка: формат чисел — байты",
+      "description": "gb — 11 GB; gib — 11.2 GiB; mb — 11234 MB.",
+      "options": [
+        "gb",
+        "gib",
+        "mb"
+      ],
+      "default": "gb"
+    },
+    "numRate": {
+      "type": "string",
+      "title": "Статус-строка: формат чисел — скорость",
+      "description": "tok — 25 tok/s; plain — 25/s.",
+      "options": [
+        "tok",
+        "plain"
+      ],
+      "default": "tok"
     }
   }
 }

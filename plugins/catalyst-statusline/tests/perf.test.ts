@@ -13,14 +13,15 @@ function median(xs: number[]): number {
   return s[Math.floor(s.length / 2)] ?? 0
 }
 
-test('perf: first mount (gather via nouns + render) and 200 cached renders', async ($, on) => {
+// CONSTRAINT: 201 mounts — up to 3.4 s of wall time on the mac (S1-FIX5 logs); the 5 s default sits too close
+test('perf: first mount (gather via nouns + render) and 200 cached renders', { timeoutMs: 30000 }, async ($, on) => {
   const w = world(on)
   await start($)
   const t0 = performance.now()
   const first = await $.ui.mount(BAND_MOUNT)
   const firstMs = performance.now() - t0
   const firstText = walk(await first.drawn()).filter((n) => n.type === 'Text').map((n) => (n.children ?? []).join('')).join('')
-  expect(firstText).toContain('ctx 83000/1000000')
+  expect(firstText).toContain('83K/1M')
 
   const times: number[] = []
   for (let i = 1; i <= 200; i++) {

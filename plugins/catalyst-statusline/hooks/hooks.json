@@ -1,4 +1,4 @@
 {
-  "description": "Draws the status line above or under the prompt from the session's own nouns, reveals each segment's details on hover, serves /statusline-mod and its pill picker in a pane.",
+  "description": "Draws the multi-line status HUD above the prompt from pure data families (one core subscription per event, cmd/file sources run only while their element is placed), reveals each segment's details on hover, serves /statusline-mod with the six-tab pill panel and a live preview.",
   "modules": ["./statusline.ts"]
 }
