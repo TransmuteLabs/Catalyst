@@ -1,0 +1,19 @@
+# id	tooth	find (literal, must occur exactly once in test-warden.py)	replace
+M1-P1-off	Z1	if pid in live and procs[pid].rss_mb > cfg.proc_mb:	if pid in live and False:
+M2-P2-off	Z4	while live and total() > cfg.total_mb:	while live and False:
+M3-P3-off	Z8	and fm < cfg.free_mb and live:	and fm < 0 and live:
+M4-P4-off	Z5	p.age_s > cfg.age_s:	p.age_s > cfg.age_s * 1000:
+M5-inherit-off	Z3	up = procs.get(cur.ppid)	up = None
+M6-P4-hits-runners	Z6	p.form[0] == "test" and p.age_s	p.form[0] in ("test", "runner") and p.age_s
+M7-dry-run-kills	Z7	if self.cfg.dry_run:	if False:
+M8-any-node-is-test	Z2	if a0.startswith("node") and "--test" in words[1:]:	if a0.startswith("node"):
+M9-recheck-off	Z9	if cur != (p.uid, p.command):	if False:
+M10a-ps-error-swallowed	Z10	self.error("snapshot", e)	pass
+M10b-no-repeat-limit	Z10	if now - self.last_error.get(key, 0.0) >= ERROR_REPEAT_S:	if True:
+M11-kill-error-uncaught	Z11	except OSError as kill_err:	except ZeroDivisionError as kill_err:
+M12-kill-error-uncaught	Z12	except OSError as kill_err:	except ZeroDivisionError as kill_err:
+M13-rotation-off	Z13	if os.path.getsize(self.path) > self.rotate_bytes:	if False:
+M14a-heartbeat-only-first	Z14	if now - self.last_heartbeat >= cfg.heartbeat_s:	if now - self.last_heartbeat >= 1e9:
+M14b-heartbeat-every-tick	Z14	if now - self.last_heartbeat >= cfg.heartbeat_s:	if now - self.last_heartbeat >= 0:
+M15a-knobs-honoured-in-combat	Z15	        if self.test_mode:	        if True:
+M15b-P2-default-old	Z15	env.get("TW_TOTAL_MB", "16384")	env.get("TW_TOTAL_MB", "10240")
