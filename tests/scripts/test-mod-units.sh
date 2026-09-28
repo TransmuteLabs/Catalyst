@@ -15,6 +15,74 @@
 #     (ПУСТО != НОЛЬ).
 set -u
 
+# --- самопроверка стенда (#509-FIX3 L10) --------------------------------------
+# Зубы на ОБЕ ветки ступени splice-parity: копия этого файла гоняется на
+# временном дереве с поддельным бинарником (validate/test) и поддельным
+# check-splice-parity.sh. Предмет -- решение этого файла, а не харнес.
+if [ "${1:-}" = "--self-check" ]; then
+  SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  SRC_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/mod-units-self.XXXXXX")"
+  trap 'rm -rf "$WORK"' EXIT
+  T="$WORK/tree"
+  mkdir -p "$T/tests/scripts" "$T/tests/fixtures" "$T/plugins/catalyst-probes/hooks" \
+    "$T/plugins/catalyst-probes/.claude-plugin" "$T/plugins/catalyst-probes/tests/scripts" "$WORK/bin"
+  cp "$SELF" "$T/tests/scripts/test-mod-units.sh"
+  cp "$SRC_ROOT/tests/fixtures/mod-surface.txt" "$T/tests/fixtures/mod-surface.txt"
+  cp "$SRC_ROOT/plugins/catalyst-probes/hooks/register.ts" "$T/plugins/catalyst-probes/hooks/register.ts"
+  cp "$SRC_ROOT/plugins/catalyst-probes/.claude-plugin/plugin.json" "$T/plugins/catalyst-probes/.claude-plugin/plugin.json"
+  mkdir -p "$T/.claude/types"
+  cp "$SRC_ROOT/.claude/types/claude-code.d.ts" "$T/.claude/types/claude-code.d.ts"
+  grep -m 1 'expect(MOD_VERSION)\.toBe(' "$SRC_ROOT/plugins/catalyst-probes/tests/units.test.ts" \
+    >"$T/plugins/catalyst-probes/tests/units.test.ts"
+  printf 'x\n' >"$T/plugins/catalyst-probes/tests/behavior.test.ts"
+  printf '#!/usr/bin/env bash\nprintf "splice-parity: 1 passed (поддельная ступень самопроверки)\\n"\nexit 0\n' \
+    >"$T/plugins/catalyst-probes/tests/scripts/check-splice-parity.sh"
+  N_PIN="$(sed -n 's/^EXPECTED_TESTS=\([0-9][0-9]*\)$/\1/p' "$SELF" | head -n 1)"
+  cat >"$WORK/bin/claude" <<'FAKE'
+#!/usr/bin/env bash
+if [ "$1 $2" = "plugin validate" ]; then
+  python3 -c 'import json,sys; notes=open(sys.argv[1]).read().split("\n"); notes=notes[:-1] if notes and notes[-1]=="" else notes; print(json.dumps({"success": True, "contents": [{"type": "hooks", "notes": notes}]}))' "$FAKE_SURFACE"
+  exit 0
+fi
+if [ "$1 $2" = "plugin test" ]; then
+  printf ' %s pass\n 0 fail\nRan %s tests across 2 files.\n' "$FAKE_N" "$FAKE_N"
+  exit 0
+fi
+exit 9
+FAKE
+  chmod +x "$WORK/bin/claude"
+  RED=0
+  N=0
+  run_case() {
+    N=$((N + 1))
+    local name="$1" want_rc="$2" needle="$3" kit="$4" out rc
+    if [ -n "$kit" ]; then
+      out="$(CLAUDE_BIN="$WORK/bin/claude" FAKE_N="$N_PIN" FAKE_SURFACE="$T/tests/fixtures/mod-surface.txt" \
+        CATALYST_PATCH_KIT="$kit" bash "$T/tests/scripts/test-mod-units.sh" 2>&1 </dev/null)"
+      rc=$?
+    else
+      out="$(env -u CATALYST_PATCH_KIT CLAUDE_BIN="$WORK/bin/claude" FAKE_N="$N_PIN" \
+        FAKE_SURFACE="$T/tests/fixtures/mod-surface.txt" bash "$T/tests/scripts/test-mod-units.sh" 2>&1 </dev/null)"
+      rc=$?
+    fi
+    if [ "$rc" = "$want_rc" ] && printf '%s' "$out" | LC_ALL=C grep -qF "$needle"; then
+      printf 'зуб стенда %s %s: зелёный\n' "$N" "$name"
+    else
+      RED=$((RED + 1))
+      printf 'зуб стенда %s %s: КРАСЕН — код %s (ожидался %s), вывод:\n%s\n' "$N" "$name" "$rc" "$want_rc" "$out"
+    fi
+  }
+  run_case "CATALYST_PATCH_KIT не задана -- splice-parity не исполнена, итог 3" 3 "splice-parity: НЕ ИЗМЕРЕНО" ""
+  run_case "CATALYST_PATCH_KIT задана -- ступень исполнена, итог 0" 0 "splice-parity: 1 passed (поддельная ступень самопроверки)" "$WORK/kit"
+  if [ "$RED" -ne 0 ]; then
+    printf 'зубов стенда %s, красных %s\n' "$N" "$RED"
+    exit 1
+  fi
+  printf 'зубов стенда %s, все зелёны\n' "$N"
+  exit 0
+fi
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 PLUGIN_DIR="$ROOT/plugins/catalyst-probes"
@@ -25,7 +93,7 @@ UNITS="$TESTS_DIR/units.test.ts"
 
 # Пин числа зубов: молча выпавший тест обязан быть виден. Поднимается ВМЕСТЕ с
 # добавлением тестов, в этой же строке -- другого дома у числа нет.
-EXPECTED_TESTS=646
+EXPECTED_TESTS=951
 
 # --- прибор ------------------------------------------------------------------
 
@@ -101,10 +169,56 @@ if [ "$WIRING_RC" -ne 0 ]; then
   exit "$WIRING_RC"
 fi
 
+# --- ступень classic-events (#531 Р2): словарь `on` против контракта ----------
+# CONSTRAINT: константа CLASSIC_EVENTS -- пересчёт, не копия: имена
+# hook_event_name берутся из d.ts контракта, подписки classic.* -- из литералов
+# on() в register.ts; харнес d.ts не читает (node:fs запрещён), поэтому здесь.
+CONTRACT_DTS="$ROOT/.claude/types/claude-code.d.ts"
+if [ ! -s "$CONTRACT_DTS" ]; then
+  printf 'ПРИБОР НЕДОСТУПЕН: контракта для пересчёта classic-имён нет (%s)\n' "$CONTRACT_DTS" >&2
+  exit 2
+fi
+python3 - "$REGISTER" "$CONTRACT_DTS" <<'PY'
+import pathlib
+import re
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+contract = pathlib.Path(sys.argv[2]).read_text()
+names = re.findall(r"hook_event_name: '([A-Za-z]+)';", contract)
+try:
+    if not names:
+        raise AssertionError("в контракте нет ни одного hook_event_name (ПУСТО != НОЛЬ)")
+    assert len(names) == len(set(names)), "в контракте повторяется hook_event_name"
+    m = re.search(r"export const CLASSIC_EVENTS: readonly string\[\] = \[([^\]]*)\]", source)
+    assert m, "константа CLASSIC_EVENTS не найдена"
+    const = re.findall(r'"([A-Za-z]+)"', m.group(1))
+    assert len(const) == len(set(const)), "в CLASSIC_EVENTS повтор"
+    missing = sorted(set(names) - set(const))
+    extra = sorted(set(const) - set(names))
+    assert not missing and not extra, "CLASSIC_EVENTS против контракта: нет %s, лишние %s" % (missing, extra)
+    subs = re.findall(r'^  on\("classic\.([A-Za-z]+)"', source, re.M)
+    assert len(subs) == len(set(subs)), "подписка classic.* повторяется"
+    want = sorted(set(const) - {"PreToolUse", "PostToolUse", "MessageDisplay"})
+    assert sorted(subs) == want, "подписки classic.* против константы: нет %s, лишние %s" % (
+        sorted(set(want) - set(subs)), sorted(set(subs) - set(want)))
+except AssertionError as error:
+    print("classic-events: FAIL: " + str(error), file=sys.stderr)
+    sys.exit(1)
+print("classic-events: контракт %d имён = CLASSIC_EVENTS, подписок classic.* %d" % (len(names), len(subs)))
+PY
+CLASSIC_RC=$?
+if [ "$CLASSIC_RC" -ne 0 ]; then
+  exit "$CLASSIC_RC"
+fi
+
 # --- ступень 2: кросс-репозиторный паритет правила (волна #116) ----------------
 # Ступень 1 живёт в юнитах (sha-пин; раннер файлов кита не читает). Эта ступень
 # сверяет пин с САМИМ китом, когда путь задан. Коды скрипта согласованы здесь:
 # при заданной CATALYST_PATCH_KIT любой его ненулевой код проваливает прогон.
+# CONSTRAINT (#509-FIX3 L10): неисполненная ступень -- итог 3 (НЕ ИЗМЕРЕНО),
+# не 0; прочие ступени всё равно гоняются, и их красный (1/2) решает первым.
+SPLICE_UNMEASURED=0
 if [ -n "${CATALYST_PATCH_KIT:-}" ]; then
   bash "$PLUGIN_DIR/tests/scripts/check-splice-parity.sh"
   SPLICE_RC=$?
@@ -113,6 +227,7 @@ if [ -n "${CATALYST_PATCH_KIT:-}" ]; then
   fi
 else
   printf 'splice-parity: НЕ ИЗМЕРЕНО (CATALYST_PATCH_KIT не задана; ступень 2 не исполнена)\n'
+  SPLICE_UNMEASURED=1
 fi
 
 # --- ступень 3: поверхность мода по официальному статическому разбору --------
@@ -145,6 +260,7 @@ fi
 python3 - "$VAL_OUT" "$MOD_SURFACE" "$VAL_RC" <<'PY'
 import json
 import pathlib
+import re
 import sys
 
 raw_path, snapshot_path, bin_rc = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -220,14 +336,23 @@ def counted(prefix):
             return len(items)
     return None
 
+# CONSTRAINT: строка calls несёт списки помощников "(via a, b)" с тем же
+# разделителем ", ": деление по нему считало бы помощников вызовами. Единица
+# счёта -- различная операция $.<noun>.<verb>.
+def counted_ops(prefix):
+    for line in notes:
+        if line.startswith(prefix):
+            return len(set(re.findall(r"\$\.[A-Za-z_]+\.[A-Za-z_]+", line[len(prefix):])))
+    return None
+
 hooks_n = counted("./register.ts hooks: ")
-calls_n = counted("./register.ts calls: ")
+calls_n = counted_ops("./register.ts calls: ")
 env_n = counted("./register.ts env reads: ")
 if hooks_n is None or calls_n is None or env_n is None:
     refuse(3, "НЕ ИЗМЕРЕНО: формат заметок хоста сменился -- префикса нет "
               "(подписки=%s вызовы=%s чтения=%s)" % (hooks_n, calls_n, env_n))
 
-print("mod-surface: %d проекции сверены (подписок %d, вызовов %d, чтений env %d)"
+print("mod-surface: %d проекции сверены (подписок %d, операций $ %d, чтений env %d)"
       % (len(notes), hooks_n, calls_n, env_n))
 PY
 MOD_SURFACE_RC=$?
@@ -309,4 +434,9 @@ fi
 
 printf 'mod-units: %s passed (%s файлов, официальный харнес %s)\n' "$PASS_N" "$RAN_F" "$V_CODE"
 printf 'rung-cooldown-wiring: 1 passed\n'
+printf 'classic-events: 1 passed\n'
+if [ "$SPLICE_UNMEASURED" -ne 0 ]; then
+  printf 'НЕ ИЗМЕРЕНО: ступень splice-parity не исполнена -- итог 3, не зелёный\n' >&2
+  exit 3
+fi
 exit 0

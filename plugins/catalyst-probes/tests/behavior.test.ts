@@ -13,7 +13,19 @@ import type { Args, On } from "claude-code"
 
 // CONSTRAINT: версия берётся импортом, а не литералом: дом версии — register.ts
 // и .claude-plugin/plugin.json, их сверяет tests/scripts/test-mod-units.sh.
-import { MOD_VERSION, FAILOVER_FOLD_PERIOD_MS, failoverBindSet, failoverFoldReset, register, sessionExecutorsReset, rungCooldownReset, verdictKey } from "../hooks/register.ts"
+import { MOD_VERSION, FAILOVER_FOLD_PERIOD_MS, failoverBindSet, failoverFoldReset, register as registerRaw514b, sessionExecutorsReset, rungCooldownReset, verdictKey } from "../hooks/register.ts"
+import { STAND_MODEL_CAP_TEXT, standModelOver, cappedRegister, modelCapped } from "./stand-cap-514.ts"
+
+const register = cappedRegister(registerRaw514b)
+// CONSTRAINT (#509-FIX1 G): дверь сброса однократных записей читается через
+// namespace-импорт -- на дереве до волны её нет, и именованный импорт ронял бы
+// весь файл вместо одного зуба.
+import * as registerBehavior509 from "../hooks/register.ts"
+
+function saidReset509(): void {
+  const f = (registerBehavior509 as any).failoverSaidReset
+  if (typeof f === "function") f()
+}
 
 const HOME = "/probes-home"
 const SID = "sid-behavior-1"
@@ -165,9 +177,26 @@ function wired(
 
   const kept: Kept = { writes: [], reads: [], completes: [], toasts: [], store, clock }
 
+  // CONSTRAINT (#509-FIX1 A2/A3): ступени лестницы идут только через СЛИТЫЙ
+  // допуск клетки; без таблицы допуск непригоден и проход сводится к
+  // объявленной модели и терминалу. Стенд кладёт таблицу по адресу
+  // marketplace (env стенда не несёт HOME/CLAUDE_CONFIG_DIR -- корень пуст), если
+  // зуб не положил свою: модели ступеней зубов этого файла допущены во всех
+  // трёх клетках, которые файл диспатчит.
+  const market = String(env.CLAUDE_CONFIG_DIR || ((env.HOME || "") + "/.claude")) + "/plugins/marketplaces/catalyst/hooks/routing-table.toml"
+  if (files[market] === undefined && !env.CATALYST_ROUTING_TABLE) {
+    const admitted = '["busy-model", "glm-5.3", "grok-4.6", "qwen3.8-flash"]'
+    files[market] = ["exec-0p", "crit-mech", "scout-enum"].map(c => "[classes." + c + "]\nallowed = " + admitted + "\n").join("")
+  }
+
   on("fs.read", (_$, e) => {
     kept.reads.push(e.path)
     const text = files[e.path]
+    // CONSTRAINT: бросок хука fs.read харнес пропускает и отвечает «no
+    // implementation» -- мод читает это как НЕЧИТАЕМЫЙ слой, и слой допуска
+    // отказал бы громко. Отсутствующий слой допуска стенд отвечает null
+    // (отсутствие), прочие пути -- прежним броском.
+    if (text === undefined && String(e.path).slice(-39) === "/.claude/catalyst/routing-override.toml") return { value: null }
     if (text === undefined) throw new Error("ENOENT: no such file " + e.path)
     return { value: text }
   })
@@ -177,7 +206,9 @@ function wired(
     return { value: undefined }
   })
 
+  const modelKey = {}
   on("model.complete", async (_$, e) => {
+    if (standModelOver(modelKey)) throw new Error(STAND_MODEL_CAP_TEXT)
     kept.completes.push(e)
     if (opts.onComplete) await opts.onComplete()
     const answer = answers.shift()
@@ -340,6 +371,41 @@ describe("dispatch judge: a rung that never answers", () => {
       rec.rungTimeouts,
       "the silent rung is counted as a timeout, not as a provider refusal",
     ).toBe(1)
+  })
+
+  test("#509-FIX8 Р12: a rung that lost the deadline and failed afterwards is named in lost (probe-rung-late)", async ($, on) => {
+    let call = 0
+    let rejectM1: (x: any) => void = () => {}
+    let openM2: () => void = () => {}
+    const m2Gate = new Promise<void>((r) => { openM2 = r })
+    const kept = wired(
+      on, 1_012_000, { CLAUDE_JUDGE_CARRIER: "mod", CLAUDE_JUDGE: "enforce" }, FILES, {},
+      ["OK: closed brief"],
+      {
+        onComplete: async () => {
+          call++
+          if (call === 1) await new Promise<void>((_r, rej) => { rejectM1 = rej })
+          else await m2Gate
+        },
+      },
+    )
+    on("tool.call", () => ({ result: "ran" }))
+
+    const running = callIt($)
+    await kept.clock!.settle()
+    await kept.clock!.advance(RUNG_TMO)
+    await kept.clock!.settle()
+    expect(call, "the second rung started after the first lost the deadline").toBe(2)
+    rejectM1(new Error("m1 late boom f8r12"))
+    await kept.clock!.settle()
+    openM2()
+    const res = await running
+
+    expect(res).toEqual({ result: "ran" })
+    // CONSTRAINT: the kit answers a throwing test hook as «no implementation»,
+    // so the mod sees the host's text of the failed model.complete, not ours.
+    const lost = judgeJournalLost(kept)["probe-rung-late"]
+    expect(lost && { n: lost.n, call: String(lost.last).indexOf("model.complete") >= 0 }, "the late failure of the losing rung is named once").toEqual({ n: 1, call: true })
   })
 
   test("no rung answers in time: the dispatch is LET THROUGH, not cancelled", async ($, on) => {
@@ -945,7 +1011,7 @@ describe("failover: agent.spawn + turn.step", () => {
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-fail-1",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       if (e.model === "busy-model") {
         return {
@@ -958,7 +1024,7 @@ describe("failover: agent.spawn + turn.step", () => {
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn({
       tool_use_id: "tu-spawn-1",
@@ -991,6 +1057,7 @@ describe("failover: agent.spawn + turn.step", () => {
     const lines = kept.writes
       .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
       .map(w => JSON.parse(String(w.text)))
+      .filter(r => String(r.rec).indexOf("terminal-absent-") !== 0)
     expect(lines, "protocol has two records").toHaveLength(2)
     expect(lines[0].modelRequested).toBe("busy-model")
     expect(lines[1].modelRequested).toBe("glm-5.3")
@@ -1005,7 +1072,10 @@ describe("failover: agent.spawn + turn.step", () => {
   // подменяется МЕЖДУ spawn и step (fs.read берёт files на каждый вызов), а
   // часы уводятся за окно мемо мира (5000 мс, register.ts:909-916): иначе шаг
   // прочёл бы мир, который загрузил spawn, и лестница поехала бы по-честному.
+  // CONSTRAINT (#509-FIX1 G): terminal-absent -- ОДНА запись на процесс: три
+  // spawn на каноне без ключа дают ровно одну, и фильтр её больше не прячет.
   test("enabled=false mid-flight: one next, the original model, zero journal lines", async ($, on) => {
+    saidReset509()
     const onToml = failoverToml()
     const offToml = failoverToml().replace("enabled = true", "enabled = false")
     const files: Record<string, string> = {}
@@ -1016,14 +1086,14 @@ describe("failover: agent.spawn + turn.step", () => {
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-fail-off",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       return {
         turnId: e.turnId, index: e.index, answer: "from-original", toolUses: [],
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn({
       tool_use_id: "tu-spawn-off",
@@ -1038,6 +1108,20 @@ describe("failover: agent.spawn + turn.step", () => {
       model: "busy-model",
     })
     expect(spawned.agentId).toBe("ag-fail-off")
+    for (const tu of ["tu-spawn-off-2", "tu-spawn-off-3"]) {
+      await $.agent.spawn({
+        tool_use_id: tu,
+        prompt: "[dispatch-class:exec-0p] switch watch",
+        description: "switch watch",
+        subagentType: "glm-executor",
+        provider: { plugin: "engine", tier: "core" },
+        parentModel: "claude-sonnet-5",
+        permissionMode: "default",
+        background: false,
+        fork: false,
+        model: "busy-model",
+      })
+    }
 
     files[HOME + "/probes.toml"] = offToml
     await kept.clock!.advance(6000)
@@ -1055,7 +1139,40 @@ describe("failover: agent.spawn + turn.step", () => {
     const lines = kept.writes
       .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
       .map(w => JSON.parse(String(w.text)))
-    expect(lines, "ноль записей журнала: именно ноль, а не «нет второй»").toHaveLength(0)
+    const absent = lines.filter(r => String(r.rec).indexOf("terminal-absent-") === 0)
+    expect(absent.length, "три spawn без ключа -- ровно одна terminal-absent на процесс").toBe(1)
+    const empties = lines.filter(r => String(r.rec).indexOf("empty-ladder-") === 0)
+    expect(empties.length, "лестница exec-0p непуста -- записей пустой лестницы нет").toBe(0)
+    expect(lines.length - absent.length, "ноль записей шага: именно ноль, а не «нет второй»").toBe(0)
+  })
+
+  test("канон с ключом terminal: ноль записей terminal-absent при нескольких spawn (#509-FIX1 G)", async ($, on) => {
+    saidReset509()
+    const files: Record<string, string> = {}
+    files[HOME + "/probes.toml"] = failoverToml().replace("enabled = true", 'enabled = true\nterminal = "claude-opus-5-5"')
+    const kept = wired(on, 81_000_000, {}, files)
+    on("agent.spawn", (_$, e) => ({
+      model: String((e && e.model) || "busy-model"),
+      agentId: "ag-term-key",
+    }))
+    for (const tu of ["tu-term-key-1", "tu-term-key-2"]) {
+      await $.agent.spawn({
+        tool_use_id: tu,
+        prompt: "[dispatch-class:exec-0p] with key",
+        description: "with key",
+        subagentType: "glm-executor",
+        provider: { plugin: "engine", tier: "core" },
+        parentModel: "claude-sonnet-5",
+        permissionMode: "default",
+        background: false,
+        fork: false,
+        model: "busy-model",
+      })
+    }
+    const lines = kept.writes
+      .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
+      .map(w => JSON.parse(String(w.text)))
+    expect(lines.filter(r => String(r.rec).indexOf("terminal-absent-") === 0).length).toBe(0)
   })
 
   // CONSTRAINT: липкость видна только ПОРЯДКОМ моделей в next: ответ второго
@@ -1073,7 +1190,7 @@ describe("failover: agent.spawn + turn.step", () => {
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-fail-sticky",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       if (e.model === "busy-model") {
         return {
@@ -1086,7 +1203,7 @@ describe("failover: agent.spawn + turn.step", () => {
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn({
       tool_use_id: "tu-spawn-sticky",
@@ -1139,7 +1256,7 @@ describe("failover: agent.spawn + turn.step", () => {
   // `next`, бросающим ЛОЖЬ. Маршрут движка до хука пинят соседние зубы блока.
   // НЕ ИЗМЕРЕНО: метка `outcome` в журнале при ЛОЖНОМ броске -- она живёт за
   // границей (2) и делит флаг с решением ниже, которое зуб держит.
-  test("ложный бросок носителя — бросок, а не успех", async () => {
+  test("ложный бросок носителя — отказ, а не успех: ступень дальше, исчерпанный проход не бросает", async () => {
     const steps: Record<string, any> = {}
     register((ev: string, ...rest: any[]) => {
       steps[ev] = rest[rest.length - 1]
@@ -1172,8 +1289,11 @@ describe("failover: agent.spawn + turn.step", () => {
     expect(res && res.answer, "ложный бросок увёл на следующую ступень").toBe("from-second")
     expect(seen, "обе ступени пройдены").toEqual(["busy-model", "glm-5.3"])
 
-    // Бросок ПОСЛЕДНЕЙ ступени уезжает вызывающему нетронутым: съеденное
-    // исключение неотличимо от пустого ответа.
+    // CONSTRAINT (#514 H8): исчерпанный проход не бросает -- бросок до выдачи
+    // есть отказ по общему пути (класс temporary-unknown, метка). Ложный бросок
+    // при этом всё так же НЕ успех: шаг проходит все ступени и возвращает
+    // последний ответ (здесь ответа не было ни одного -- null), не «OK».
+    // busy-model бросила в первой половине и остывает -- отложена в хвост.
     const seenAll: string[] = []
     const allFalsy = (req: any) => (async function* () {
       seenAll.push(String(req.model))
@@ -1195,9 +1315,9 @@ describe("failover: agent.spawn + turn.step", () => {
       }, allFalsy))
     } catch (x) { caught = x }
 
-    expect(seenAll, "пройдены все ступени лестницы").toEqual(["busy-model", "glm-5.3", "grok-4.6"])
-    expect(caught, "ложный бросок последней ступени уезжает вызывающему").toBe(0)
-    expect(returned, "проглоченный бросок не подменяется пустым возвратом").toBe("НЕ ВЕРНУЛО")
+    expect(seenAll, "пройдены все ступени лестницы").toEqual(["glm-5.3", "grok-4.6", "busy-model"])
+    expect(caught, "исчерпанный проход не бросает (#514 H8)").toBe("НЕ БРОСИЛО")
+    expect(returned, "ложный бросок не выдан за успех: ответа нет").toBe(null)
   })
 
   // CONSTRAINT: кусок обязан пройти СКВОЗЬ движок до делегации мода (граница
@@ -1220,7 +1340,7 @@ describe("failover: agent.spawn + turn.step", () => {
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-fail-emit-ref",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       if (e.model === "busy-model") {
         yield { kind: "text", index: 0, text: "partial-emit-ref" }
@@ -1234,7 +1354,7 @@ describe("failover: agent.spawn + turn.step", () => {
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn({
       tool_use_id: "tu-spawn-emit-ref",
@@ -1268,6 +1388,7 @@ describe("failover: agent.spawn + turn.step", () => {
     const lines = kept.writes
       .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
       .map(w => JSON.parse(String(w.text)))
+      .filter(r => String(r.rec).indexOf("terminal-absent-") !== 0)
     expect(lines, "ровно одна попытка").toHaveLength(1)
     expect(lines[0].modelRequested).toBe("busy-model")
     expect(lines[0].outcome, "отказ после выдачи -- отдельное состояние, не empty").toBe("empty_after_emit")
@@ -1386,6 +1507,7 @@ describe("failover: проверяющий не уезжает на модель
     return kept.writes
       .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
       .map(w => JSON.parse(String(w.text)))
+      .filter(r => String(r.rec).indexOf("terminal-absent-") !== 0)
   }
 
   // Шаблон ступени: busy-model отказывает носителем (usage null, stopReason
@@ -1422,7 +1544,7 @@ describe("failover: проверяющий не уезжает на модель
         ? { model: "glm-5.3", agentId: "ag-226-exec-1" }
         : { model: "busy-model", agentId: "ag-226-crit-1" }
     })
-    on("turn.step", refusingFirst(seen))
+    on("turn.step", modelCapped(refusingFirst(seen)))
 
     const exec = await $.agent.spawn({
       tool_use_id: "tu-226-exec-1",
@@ -1480,7 +1602,7 @@ describe("failover: проверяющий не уезжает на модель
         ? { model: "glm-5.3", agentId: "ag-226-exec-2" }
         : { model: "busy-model", agentId: "ag-226-crit-2" }
     })
-    on("turn.step", refusingFirst(seen))
+    on("turn.step", modelCapped(refusingFirst(seen)))
 
     const exec = await $.agent.spawn({
       tool_use_id: "tu-226-exec-2",
@@ -1538,7 +1660,7 @@ describe("failover: проверяющий не уезжает на модель
         ? { model: "glm-5.3", agentId: "ag-226-exec-3" }
         : { model: "glm-5.3", agentId: "ag-226-crit-3" }
     })
-    on("turn.step", refusingFirst(seen))
+    on("turn.step", modelCapped(refusingFirst(seen)))
 
     const exec = await $.agent.spawn({
       tool_use_id: "tu-226-exec-3",
@@ -1597,7 +1719,7 @@ describe("failover: проверяющий не уезжает на модель
         ? { model: "glm-5.3", agentId: "ag-226-exec-4" }
         : { model: "busy-model", agentId: "ag-226-scout-4" }
     })
-    on("turn.step", refusingFirst(seen))
+    on("turn.step", modelCapped(refusingFirst(seen)))
 
     const exec = await $.agent.spawn({
       tool_use_id: "tu-226-exec-4",
@@ -1656,7 +1778,7 @@ describe("failover: проверяющий не уезжает на модель
         ? { model: "glm-5.3", agentId: "ag-226-exec-5" }
         : { model: "busy-model", agentId: "ag-226-crit-5" }
     })
-    on("turn.step", refusingFirst(seen))
+    on("turn.step", modelCapped(refusingFirst(seen)))
     on("command.run", { command: "clear" }, () => ({ text: "cleared" }))
 
     const exec = await $.agent.spawn({
@@ -1717,7 +1839,11 @@ describe("failover: проверяющий не уезжает на модель
       agentId: critAgain.agentId,
     }))
     expect(second && second.answer, "после /clear накопитель пуст: годна и glm-5.3").toBe("from-glm-5.3")
-    const lines = failoverLines(kept)
+    // CONSTRAINT (#509-FIX7 Р12): лестничный успех до /clear ставит подсказку
+    // главному лупу; /clear снимает её строкой nudge_dropped в журнал лестницы.
+    const all = failoverLines(kept)
+    expect(all.filter(r => r.outcome === "nudge_dropped").map(r => r.by), "подсказка о подмене снята сменой сессии").toEqual(["session-reset"])
+    const lines = all.filter(r => r.outcome !== "nudge_dropped")
     // ПРЯМАЯ улика предмета зуба -- накопитель: после /clear фильтровать нечем.
     expect(lines.length).toBe(3)
     expect(lines[1].rungsFiltered, "до /clear одна ступень отфильтрована").toBe(1)
@@ -1745,7 +1871,7 @@ describe("failover: проверяющий не уезжает на модель
         ? { model: "glm-5.3", agentId: "ag-226-exec-6" }
         : { model: "busy-model", agentId: "ag-226-crit-6" }
     })
-    on("turn.step", refusingFirst(seen))
+    on("turn.step", modelCapped(refusingFirst(seen)))
 
     const exec = await $.agent.spawn({
       tool_use_id: "tu-226-exec-6",
@@ -1816,7 +1942,7 @@ describe("failover: проверяющий не уезжает на модель
         ? { model: "grok-4.6", agentId: "ag-226-exec-7" }
         : { model: "busy-model", agentId: "ag-226-crit-7" }
     })
-    on("turn.step", refusingFirst(seen))
+    on("turn.step", modelCapped(refusingFirst(seen)))
 
     const crit = await $.agent.spawn({
       tool_use_id: "tu-226-crit-7",
@@ -1893,7 +2019,7 @@ describe("failover: проверяющий не уезжает на модель
         : { model: "busy-model", agentId: "ag-313-x-crit" }
     })
     // busy-model, qwen3.8-flash и glm-5.3 отказывают носителем, прочие отвечают.
-    on("turn.step", async function* (_$: unknown, e: any) {
+    on("turn.step", modelCapped(async function* (_$: unknown, e: any) {
       seen.push(String(e.model))
       if (e.model === "busy-model" || e.model === "qwen3.8-flash" || e.model === "glm-5.3") {
         return {
@@ -1906,7 +2032,7 @@ describe("failover: проверяющий не уезжает на модель
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     // Предыстория стыка: исполнитель стартует на glm-5.3 (spawn кладёт её в
     // накопитель), и glm-5.3 отказывает носителем в его шаге (веер ставит
@@ -1955,7 +2081,10 @@ describe("failover: проверяющий не уезжает на модель
     // остывании: фильтр вычеркнул её ДО плана, отсрочка не вернула хвостом.
     expect(seen, "glm-5.3 не звалась: вычеркнута до плана, отсрочка её не вернула").toEqual(["busy-model", "qwen3.8-flash"])
     const lines = failoverLines(kept)
-    const critLines = lines.filter((r: any) => String(r.rec).indexOf("turn-313-x-crit") >= 0)
+    // CONSTRAINT (#514 H5): исчерпанный шаг пишет и названную запись выхода из
+    // ожидания (стенд без двери паузы -- wait-unavailable); предмет зуба --
+    // записи ПОПЫТОК.
+    const critLines = lines.filter((r: any) => String(r.rec).indexOf("turn-313-x-crit") >= 0 && r.attempt !== undefined)
     expect(critLines.length).toBe(2)
     for (const rec of critLines) {
       expect(rec.modelRequested, "план после отсрочки без моделей исполнителя").not.toBe("glm-5.3")
@@ -1984,6 +2113,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
     return kept.writes
       .filter(w => String(w.path).indexOf(HOME + "/failover/journal.jsonl.shard.") === 0)
       .map(w => JSON.parse(String(w.text)))
+      .filter(r => String(r.rec).indexOf("terminal-absent-") !== 0)
   }
 
   function spawnSpec(agentId: string, prompt: string, model: string) {
@@ -2011,7 +2141,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-223-1",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       seenEffort.push(e.effort)
       if (e.model === "busy-model") {
@@ -2025,7 +2155,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn(spawnSpec(
       "ag-223-1",
@@ -2061,7 +2191,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-223-2",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       seenEffort.push(e.effort)
       if (e.model === "busy-model") {
@@ -2075,7 +2205,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn(spawnSpec(
       "ag-223-2",
@@ -2111,7 +2241,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-223-3",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       seenEffort.push(e.effort)
       if (e.model === "busy-model") {
@@ -2125,7 +2255,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn(spawnSpec(
       "ag-223-3",
@@ -2158,7 +2288,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-223-4",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       seenEffort.push(e.effort)
       if (e.model === "busy-model") {
@@ -2172,7 +2302,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn(spawnSpec(
       "ag-223-4",
@@ -2211,7 +2341,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
       model: String((e && e.model) || "busy-model"),
       agentId: "ag-223-5",
     }))
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       seen.push(String(e.model))
       if (e.model === "busy-model") {
         return {
@@ -2224,7 +2354,7 @@ describe("failover: объявленный эффорт ступени (#223)", 
         stopReason: "end_turn",
         usage: { input_tokens: 1, output_tokens: 2, model: e.model },
       }
-    })
+    }))
 
     const spawned = await $.agent.spawn(spawnSpec(
       "ag-223-5",
@@ -2313,7 +2443,7 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
       model: String((e && e.model) || "glm-5.3"),
       agentId: "ag-227a-1",
     }))
-    on("turn.step", async function* (_$, e) { return okBody(e) })
+    on("turn.step", modelCapped(async function* (_$, e) { return okBody(e) }))
     const spawned = await $.agent.spawn(spawnSpec("ag-227a-1"))
     expect(spawned.agentId).toBe("ag-227a-1")
     await settleStep($.turn.step({
@@ -2338,12 +2468,12 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
       agentId: "ag-227a-2",
     }))
     let n = 0
-    on("turn.step", async function* (_$, e) {
+    on("turn.step", modelCapped(async function* (_$, e) {
       n++
       if (n <= 3) return okBody(e)
       if (e.model === "glm-5.3") return emptyBody(e)
       return okBody(e)
-    })
+    }))
     const spawned = await $.agent.spawn(spawnSpec("ag-227a-2"))
     await settleStep($.turn.step({
       turnId: "turn-227a-2a", index: 0, model: "glm-5.3",
@@ -2382,7 +2512,7 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
       model: String((e && e.model) || "glm-5.3"),
       agentId: "ag-227a-3",
     }))
-    on("turn.step", async function* (_$, e) { return okBody(e) })
+    on("turn.step", modelCapped(async function* (_$, e) { return okBody(e) }))
     const spawned = await $.agent.spawn(spawnSpec("ag-227a-3"))
     await settleStep($.turn.step({
       turnId: "turn-227a-3a", index: 0, model: "glm-5.3",
@@ -2414,7 +2544,7 @@ describe("failover: свёртка скучных улик (#227-A)", () => {
       model: String((e && e.model) || "glm-5.3"),
       agentId: "ag-227a-4",
     }))
-    on("turn.step", async function* (_$, e) { return okBody(e) })
+    on("turn.step", modelCapped(async function* (_$, e) { return okBody(e) }))
     const spawned = await $.agent.spawn(spawnSpec("ag-227a-4"))
     await settleStep($.turn.step({
       turnId: "turn-227a-4a", index: 0, model: "glm-5.3",
@@ -2640,7 +2770,7 @@ describe("#393: отказ чтения ручки отличим от «руч�
       {},
       {
         [HOME + "/probes.toml"]:
-          '[probe.dup393]\nwhen = { field = "tool_name", equals = "Agent" }\n',
+          '[probe.dup393]\non = ["PreToolUse"]\nwhen = { field = "tool_name", equals = "Agent" }\n',
       }, {}, [],
       { envRefuses: () => ["CLAUDE_PROBES"] },
     )
@@ -2702,7 +2832,7 @@ describe("#393: отказ чтения ручки отличим от «руч�
       {},
       {
         [HOME + "/probes.toml"]:
-          '[probe.gen393]\nwhen = { field = "tool_name", equals = "Agent" }\n',
+          '[probe.gen393]\non = ["PreToolUse"]\nwhen = { field = "tool_name", equals = "Agent" }\n',
       }, {}, [],
       { envRefuses: () => ["CLAUDE_PROBES"] },
     )
@@ -2725,7 +2855,7 @@ describe("#393: отказ чтения ручки отличим от «руч�
       {},
       {
         // негодный regex: правило fail-closed к срабатыванию, но копит whenBad
-        [HOME + "/probes.toml"]: '[probe.wb393]\nwhen = { matches = "(" }\n',
+        [HOME + "/probes.toml"]: '[probe.wb393]\non = ["PreToolUse"]\nwhen = { matches = "(" }\n',
       }, {}, [],
       { envRefuses: () => ["CLAUDE_PROBES"] },
     )
@@ -2800,7 +2930,7 @@ describe("#393-FIX1: подставные значения и зеркала -- 
       {},
       {
         [HOME + "/probes.toml"]:
-          '[probe.f1cap]\nkind = "consult"\nact = "nudge"\n[probe.f1cap.when]\nfield = "tool_name"\nequals = "Agent"\n',
+          '[probe.f1cap]\nkind = "consult"\nact = "nudge"\non = ["PreToolUse"]\n[probe.f1cap.when]\nfield = "tool_name"\nequals = "Agent"\n',
       },
       { [capKey]: 8 },
       [],
@@ -2809,16 +2939,17 @@ describe("#393-FIX1: подставные значения и зеркала -- 
     on("tool.call", () => ({ result: "ran" }))
     await $.command.run({ command: "clear", args: "" })
 
-    // CONSTRAINT: наблюдаемое -- СИНХРОННЫЕ записи стора ветки нуджа (кэп и
-    // отметка пишутся до отложенной консультации): completes асинхронного
-    // нуджа к моменту возврата хука ещё пусты.
-    const capSets = () => kept.store.sets.filter(s => s.key === capKey)
+    // CONSTRAINT: наблюдаемое -- СИНХРОННАЯ запись отметки консультации ветки
+    // нуджа (пишется до отложенной консультации): completes асинхронного нуджа
+    // к моменту возврата хука ещё пусты. Записи ключа кэпа не наблюдаемое:
+    // прежнее число переводится в массив и пишется в стор и без консультации.
+    const lastSets = () => kept.store.sets.filter(s => s.key.indexOf("catalyst-probes:last:f1cap:") === 0)
     const first = await $.tool.call({
       tool: "Agent", description: "d",
       prompt: "[dispatch-class:exec-0p] f1cap one", subagent_type: "scout",
     })
     expect(first).toEqual({ result: "ran" })
-    expect(capSets(), "кэп исчерпан из стора -- нудж не срабатывает").toEqual([])
+    expect(lastSets(), "кэп исчерпан из стора -- нудж не срабатывает").toEqual([])
 
     capReadFails = true
     const second = await $.tool.call({
@@ -2826,7 +2957,7 @@ describe("#393-FIX1: подставные значения и зеркала -- 
       prompt: "[dispatch-class:exec-0p] f1cap two", subagent_type: "scout",
     })
     expect(second).toEqual({ result: "ran" })
-    expect(capSets(), "отказ чтения не снимает кэп -- зеркало помнит").toEqual([])
+    expect(lastSets(), "отказ чтения не снимает кэп -- зеркало помнит").toEqual([])
   })
 
   test("B-F1last: отказ чтения отметки кулдауна не открывает окно", async ($, on) => {
@@ -2836,7 +2967,7 @@ describe("#393-FIX1: подставные значения и зеркала -- 
     const kept = wired(
       on, 316_000_000,
       { CLAUDE_IDLE: "1" },
-      { [HOME + "/probes.toml"]: "[probe.idle-watch]\nact = \"nudge\"\n" },
+      { [HOME + "/probes.toml"]: "[probe.idle-watch]\nact = \"nudge\"\nwindow_min = 0\n" },
       { [lastK]: 316_000_000 - 1000 },
       [],
       { storeGetRefuses: () => (lastReadFails ? [lastK] : []) },
@@ -2982,7 +3113,7 @@ describe("#393-FIX1: подставные значения и зеркала -- 
       {},
       {
         [HOME + "/probes.toml"]:
-          '[probe.f1live]\nkind = "consult"\nact = "log_only"\n[probe.f1live.when]\nfield = "live_works"\ncount_below = 1\n',
+          '[probe.f1live]\nkind = "consult"\nact = "log_only"\non = ["PreToolUse"]\n[probe.f1live.when]\nfield = "live_works"\ncount_below = 1\n',
       },
       {}, [],
       { agentListValue: () => ({}) },
@@ -3072,5 +3203,32 @@ describe("#393-FIX1: подставные значения и зеркала -- 
     expect(kept.completes.length, "судья консультировался").toBeGreaterThanOrEqual(1)
     expect(String(kept.completes[0].prompt), "промпт называет недоступность сообщений").toContain(
       "=== SESSION SO FAR ===\n[session messages unreadable]")
+  })
+})
+
+// CONSTRAINT (#514 FIX2c): страж зуба -- не предел сценария: цикл зуба сам не
+// останавливается, страж держит конечным прогон под мутацией, снявшей
+// modelCapped. Текст броска стенда движок подменяет своим («no implementation
+// for turn.step», измерено 26.09), поэтому зуб судит место обрыва, а не текст.
+describe("#514 FIX2c: предел вызовов модели стенда движка", () => {
+  test("цикл шагов без паузы и без своего предела падает броском стенда", async ($, on) => {
+    wired(on, 90_000_000, {}, {})
+    let calls = 0
+    on("turn.step", modelCapped(async function* (_$, e) {
+      calls++
+      return {
+        turnId: e.turnId, index: e.index, answer: "ok", toolUses: [],
+        stopReason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1, model: e.model },
+      }
+    }))
+    let err: any = null
+    let steps = 0
+    for (; steps < 5000; steps++) {
+      const out = await drainStep($.turn.step({ turnId: "turn-cap-514", index: steps, model: "m-cap-514", messageCount: 1 }))
+      if (out.threw) { err = out.error; break }
+    }
+    expect(err !== null, "цикл прерван броском на вызове 2001").toBe(true)
+    expect({ steps, calls }).toEqual({ steps: 2000, calls: 2000 })
   })
 })

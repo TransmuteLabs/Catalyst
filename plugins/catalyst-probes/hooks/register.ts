@@ -20,11 +20,10 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.49"
+export const MOD_VERSION = "0.1.50"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
-export const FAILOVER_MAX_NEXT = 3
 export const FAILOVER_BIND_CAP = 512
 export const COACHING =
   "A subagent dispatch may be reviewed before it runs. " +
@@ -73,6 +72,7 @@ function isoOf(t: number): string {
   return Number.isFinite(d.getTime()) ? d.toISOString() : "invalid-time:" + String(t)
 }
 
+// CONSTRAINT (#509-FIX7d AR4): живой движок 2.1.283 не снимает turn.step, пока хук ждёт гонку двери со сроком ($.clock.after и $.clock.sleep): шаг прожил 30 с при бюджете 10 с, remainingMs не менялся (Catalyst-programs/2026-09-25-ladder-terminal-509/probe-ar4-live/logs/probe.jsonl); изолированное ожидание часов дольше бюджета не мерилось. Кит claude plugin test одиночное ожидание clock.after снимает на 10 с, поэтому такое ожидание зубом кита не мерится.
 // CONSTRAINT: временную границу ступени держит ЭТОТ сторож, а не одна лишь
 // просьба `arg.timeoutMs`. Ту границу исполняет образ (шаг 31 патча), и её
 // нет вовсе, когда поле не доехало; а переход по лестнице в runProbe делается
@@ -82,7 +82,7 @@ function isoOf(t: number): string {
 // Гонка НЕ отменяет висящий запрос (мод-API сигнала отмены не принимает:
 // `complete(request)` и только) -- она освобождает лестницу, оставляя запрос
 // доживать в фоне.
-async function raceDeadline($: any, work: Promise<any>, ms: number, label: string, rec: any): Promise<any> {
+async function raceDeadline($: any, work: Promise<any>, ms: number, label: string, rec: any, site: string): Promise<any> {
   if (!(typeof ms === "number" && isFinite(ms) && ms > 0)) return await work
   let wait: Promise<void> | null = null
   try { wait = $.clock.sleep(ms) } catch (x) { wait = null }
@@ -94,15 +94,22 @@ async function raceDeadline($: any, work: Promise<any>, ms: number, label: strin
   // 2026-09-16: зуб с отключёнными часами терял ОБЕ ответившие ступени) --
   // try выше ловит только синхронную форму. Отказ прибора не вправе гасить
   // ступень: несостоявшееся ожидание становится вечным, и гонку решает работа.
+  let dl: any = null
   const armed = wait.then(
-    () => { throw new Error("rung-deadline " + label + " " + ms + "ms") },
+    () => { dl = new Error("rung-deadline " + label + " " + ms + "ms"); throw dl },
     (x: any) => {
       rec.deadlineBlind = true
       rec.deadlineBlindErr = safeText(x).slice(0, 160)
       return new Promise<never>(() => {})
     },
   )
-  return await Promise.race([work, armed])
+  try {
+    return await Promise.race([work, armed])
+  } catch (x) {
+    // CONSTRAINT (#509-FIX8 Р12): работа, проигравшая срок, доживает в фоне, и её поздний отказ -- noteLost(site); отказ победившей работы несёт вызывающий, второй записи нет.
+    if (dl !== null && x === dl) work.catch((y: any) => noteLost(site, y, $))
+    throw x
+  }
 }
 
 function envOn(v: any): boolean {
@@ -163,17 +170,14 @@ export function classesOf(prompt: string): string[] {
   return set
 }
 
-export function failoverLadderBind(fo: any, subagentType: string, classId: string, allowedByClass?: any, incomingModel?: string): {
+export function failoverLadderBind(fo: any, subagentType: string, classId: string): {
   ladder: string[]
   rungEffort: { [k: string]: string }
   effortBad: { [k: string]: string }
   rungsDropped: number
-  source: "agent" | "class" | "default" | "allowed" | "none"
+  source: "agent" | "class" | "default" | "none"
 } {
   const empty = { ladder: [] as string[], rungEffort: {} as { [k: string]: string }, effortBad: {} as { [k: string]: string }, rungsDropped: 0, source: "none" as const }
-  // CONSTRAINT: allowed -- строго последний уровень. Явная лестница
-  // (agent/class/default) -- решение автора; allowed -- допуск клетки и не
-  // имеет права её перебить.
   if (fo && typeof fo === "object") {
     const fromAgent = tableRungs(fo.agent && subagentType ? fo.agent[subagentType] : null)
     if (fromAgent.models.length) return { ladder: fromAgent.models, rungEffort: fromAgent.rungEffort, effortBad: fromAgent.effortBad, rungsDropped: fromAgent.dropped, source: "agent" }
@@ -182,21 +186,491 @@ export function failoverLadderBind(fo: any, subagentType: string, classId: strin
     const fromDefault = tableRungs(fo.default)
     if (fromDefault.models.length) return { ladder: fromDefault.models, rungEffort: fromDefault.rungEffort, effortBad: fromDefault.effortBad, rungsDropped: fromDefault.dropped, source: "default" }
   }
-  const raw = allowedByClass && classId ? allowedByClass[classId] : null
-  if (!Array.isArray(raw) || !raw.length) return empty
-  const incoming = String(incomingModel || "")
-  const ladder: string[] = []
-  for (let i = 0; i < raw.length; i++) {
-    const m = raw[i]
-    if (typeof m !== "string" || !m) continue
-    if (incoming && m === incoming) continue
-    ladder.push(m)
+  return empty
+}
+
+// CONSTRAINT (#509-FIX1 E1): ОДНА нормализация имени модели для мода и прибора
+// (ladder-policy.py norm_model_id): trim, нижний регистр, снятие суффикса
+// окна "[1m]"/"[2m]". Второй дом правила развёл бы вердикты мода и прибора на
+// одном входе.
+// CONSTRAINT (#509-FIX3 AR-4): нормализованный id -- ТОЛЬКО для сравнений
+// (допуск, план, терминал, метки, фильтр #226). В next уходит строка как
+// написана: окно 1M и бета хоста ставятся только по суффиксу в строке модели.
+export function normModelId(x: any): string {
+  const s = String(x == null ? "" : x).trim().toLowerCase()
+  return /\[[12]m\]$/.test(s) ? s.slice(0, -4).trim() : s
+}
+
+// CONSTRAINT (#509-FIX1 E2): короткие имена версионно-зависимы
+// (rules/model-routing.md) -- терминалом не принимаются ни модом, ни прибором.
+export const TERMINAL_ALIASES = ["opus", "fable", "sonnet", "haiku"]
+
+// CONSTRAINT (#509-FIX1 B1): признак Anthropic-носителя с нативным эффортом --
+// нормализованный id с префиксом "claude-"; ему пин клетки не нужен.
+export function isAnthropicModelId(x: any): boolean {
+  return normModelId(x).indexOf("claude-") === 0
+}
+
+export function failoverTerminal(fo: any): { model: string; effort: string; effortBad: string; absent: string } {
+  const raw = fo && typeof fo === "object" ? fo.terminal : undefined
+  if (raw === undefined || raw === null) return { model: "", effort: "", effortBad: "", absent: "ключ terminal не объявлен" }
+  // CONSTRAINT: пустота меряется после trim -- тот же признак, что у прибора (ladder-policy.py правило-6).
+  if (typeof raw === "string" && !raw.trim()) return { model: "", effort: "", effortBad: "", absent: "ключ terminal пуст" }
+  const r = Array.isArray(raw) ? null : parseRungItem(raw)
+  const norm = r ? normModelId(r.model) : ""
+  if (!norm) return { model: "", effort: "", effortBad: "", absent: "форма terminal негодна" }
+  if (TERMINAL_ALIASES.indexOf(norm) >= 0) return { model: "", effort: "", effortBad: "", absent: "terminal-alias-refused" }
+  // CONSTRAINT (#509-FIX1 E3): не-Anthropic терминал прибор красит (правило-6),
+  // мод его отвергает той же границей -- иначе вердикты на одном входе разошлись бы.
+  if (!isAnthropicModelId(norm)) return { model: "", effort: "", effortBad: "", absent: "terminal-not-anthropic" }
+  return { model: String((r as RungItem).model), effort: r && r.effort || "", effortBad: r && r.effortBad || "", absent: "" }
+}
+
+// CONSTRAINT (#509-FIX1 A2/A3): ступень берётся, только если её нормализованное
+// имя есть в СЛИТОМ допуске клетки. Непригодный допуск не допускает ничего --
+// проход сводится к объявленной модели и терминалу, а не к полной лестнице.
+export function admitLadder(ladder: string[], classId: string, allowedByClass: any, usable: boolean): { ladder: string[]; notAdmitted: string[]; unavailable: boolean } {
+  const rows = Array.isArray(ladder) ? ladder : []
+  if (!usable) return { ladder: [], notAdmitted: [], unavailable: true }
+  const row = allowedByClass && typeof allowedByClass === "object" && Object.prototype.hasOwnProperty.call(allowedByClass, classId)
+    ? allowedByClass[classId] : []
+  const admitted: string[] = []
+  if (Array.isArray(row)) for (let i = 0; i < row.length; i++) admitted.push(normModelId(row[i]))
+  const keep: string[] = []
+  const not: string[] = []
+  for (let i = 0; i < rows.length; i++) {
+    if (admitted.indexOf(normModelId(rows[i])) >= 0) keep.push(rows[i])
+    else not.push(rows[i])
   }
-  if (!ladder.length) return empty
-  // CONSTRAINT: эффорт на этом уровне не выдумывается. Пин клетки живёт во
-  // frontmatter агента и в [pins]; выдуманный эффорт хуже отсутствующего.
-  // rungsDropped = 0: в allowed нет формы ступени, которую можно уронить.
-  return { ladder, rungEffort: {}, effortBad: {}, rungsDropped: 0, source: "allowed" }
+  return { ladder: keep, notAdmitted: not, unavailable: false }
+}
+
+export function admissionUsable(world: any): boolean {
+  const src = String((world && world.allowedSrc) || "")
+  if (!src || (world && world.allowedRefused)) return false
+  return src.indexOf("absent:") < 0
+}
+
+// --- #514: класс отказа и срок из текста -------------------------------------
+
+export const REFUSAL_TEXT_MAX = 300
+
+// CONSTRAINT (#509-FIX3 M1/M2): строка отказа -- первая непустая строка
+// СВЕЖЕГО assistant-текста (добавленного после начала попытки); класс решает
+// таблица префиксов ниже. Старая строка истории класс не решает.
+export function refusalLineOf(text: any): string {
+  const lines = String(text == null ? "" : text).split("\n")
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim()
+    if (l) return l
+  }
+  return ""
+}
+
+// CONSTRAINT (#509-FIX3 M2): таблица -- дословные тексты хоста. Решает
+// НАЧАЛО строки, не вхождение: «API Error: 402 Credit balance is too low» --
+// не форма хоста и не permanent-model.
+// CONSTRAINT (#509-FIX6 А3): дом переписи -- G/SCOUT-HOST-REFUSAL-TEXTS-283.md
+// (2.1.283, функция yUn); переход версии обязан перемерить перепись, а
+// таблица зуба -- сверить каждый литерал.
+export const REFUSAL_REQUEST_PREFIXES = [
+  "Prompt is too long", "Request too large (max", "Request too large for the API",
+  "Image was too large.", "PDF too large (max ", "PDF is password protected.", "The PDF file was not valid.",
+  "An image in the conversation exceeds the dimension limit", "Auto mode is unavailable for your plan",
+  "Autocompact is thrashing:",
+]
+export const REFUSAL_PERMANENT_PREFIXES = [
+  "Not logged in · Please run /login",
+  "Authentication required · Sign in again to continue",
+  "Please run /login",
+  "Failed to authenticate.",
+  "OAuth token revoked · Please run /login",
+  "Login expired · ",
+  "Authentication error · ",
+  "Credit balance is too low",
+  "Claude Opus is not available with the Claude Pro plan",
+  "Failed to authenticate: OAuth session expired and could not be refreshed",
+  "Your account does not have access to Claude.",
+  "Invalid API key · ", "Invalid auth token · ", "Invalid ANTHROPIC_CUSTOM_HEADERS · ",
+  "Invalid request header from the environment · ",
+  "Your ANTHROPIC_API_KEY belongs to a disabled organization · ",
+  "Your apiKeyHelper script is failing · ",
+  "Your organization has disabled Claude subscription access for Claude Code · ",
+  "Your organization has disabled API key authentication · ",
+  "Anthropic profile login expired · ",
+  "Your account is on hold and can't use Claude Code.",
+  "This service is disabled for your org",
+  "AWS credentials expired or invalid", "AWS authentication failed",
+  "Google Cloud credentials expired or invalid", "Google Cloud authentication failed",
+  "Microsoft Foundry authentication failed",
+  "Gateway refused the request",
+  "There's an issue with the selected model (",
+  "CLAUDE_CODE_NO_MODEL_FALLBACK is set: model substitution is disabled",
+  "The server routed this response to a model that is not in your organization’s availableModels allowlist; the response was discarded.",
+]
+// CONSTRAINT (#509-FIX7 А-Р6): строка хоста Hdt сама говорит о временности --
+// temporary-unknown; сверяется целиком и ДО префиксов permanent, соседняя
+// gateway-строка PJt того же префикса остаётся permanent.
+export const REFUSAL_TEMPORARY_EXACT = [
+  "Authentication error · This may be a temporary network issue, please try again",
+]
+// CONSTRAINT (#509-FIX7 Р14): мёртвый провайдер и квота решаются по тексту
+// строки ДО префиксных таблиц, включая обёртку `API Error`. Квота -- не лимит
+// Claude (#514): свой класс quota и своё остывание.
+export const PROVIDER_GONE_RX = /\b(unknown provider|model not found|no such model|unknown model|model [^\s]+ (?:is not|isn't) (?:available|supported))\b/i
+// CONSTRAINT (#509-FIX7b AR1): 402 -- только HTTP-статус (начало строки,
+// `API Error: 402`, `"status": 402`, `status=402`, `HTTP 402`); свободное число
+// («line 402», путь `/402/`) квотой не считается.
+// CONSTRAINT (#509-FIX8 Р2): в начале строки -- `402`, за которым пробел или
+// конец строки (форма SDK `<status> <тело>`); `402/…`, `402.`, `402-` -- не статус.
+export const QUOTA_RX = /^\s*402(?=\s|$)|(?:\bAPI Error:\s*|"status"\s*:\s*|\bstatus\s*[=:]\s*|\bHTTP(?:\/[\d.]+)?\s+)402\b|\b(?:payment required|insufficient (?:balance|credits?|quota)|credential_quota|quota (?:exceeded|exhausted))\b/i
+export const QUOTA_COOLDOWN_MS = 60 * 60 * 1000
+// CONSTRAINT (#509-FIX7 ADD1 Р14b): окно квоты z.ai (1308) по тексту -- запасной
+// признак к error.code; решает только на ступени не-Anthropic модели.
+export const QUOTA_WINDOW_RX = /\bUsage limit reached for \d+ hour/i
+const REFUSAL_JSON_TRIES = 8
+
+// CONSTRAINT (#509-FIX7 ADD1 Р14a/Р14b): error.code первого JSON-объекта строки
+// отказа, у которого есть error.code; строкой. Разбор без броска наружу: не
+// разобрано -- "" (кода нет), классификация идёт дальше по тексту. Пробуются
+// не больше REFUSAL_JSON_TRIES начал «{» и концов «}».
+export function refusalErrorCodeOf(text: any): string {
+  const s = String(text == null ? "" : text)
+  const starts: number[] = []
+  for (let i = s.indexOf("{"); i >= 0 && starts.length < REFUSAL_JSON_TRIES; i = s.indexOf("{", i + 1)) starts.push(i)
+  const ends: number[] = []
+  for (let i = s.lastIndexOf("}"); i >= 0 && ends.length < REFUSAL_JSON_TRIES; i = i > 0 ? s.lastIndexOf("}", i - 1) : -1) ends.push(i)
+  for (let a = 0; a < starts.length; a++) {
+    for (let b = 0; b < ends.length; b++) {
+      if (ends[b] <= starts[a]) continue
+      let o: any = null
+      try { o = JSON.parse(s.slice(starts[a], ends[b] + 1)) } catch (x) { continue }
+      const e = o && typeof o === "object" ? o.error : null
+      if (e && typeof e === "object" && e.code !== undefined && e.code !== null) return String(e.code)
+    }
+  }
+  return ""
+}
+// CONSTRAINT (#509-FIX6 А3): форма хоста «The model <id> is not available on
+// your <deployment> deployment» -- permanent-model, та же ступень, что префиксы.
+export const REFUSAL_MODEL_UNAVAILABLE_RX = /^The model [^\r\n]+ is not available on your /
+// CONSTRAINT (#509-FIX3 M2): список лимитных префиксов хоста qDr, дословно.
+export const REFUSAL_LIMIT_PREFIXES = [
+  "You've hit your", "You've reached your", "You're out of usage credits",
+  "Your org is out of usage · add funds to continue", "Your org is out of usage · contact your admin",
+  "Your seat type doesn't include usage credits", "Your seat type doesn't include usage",
+  "Your usage allocation has been disabled by your admin", "Your group's usage limit is set to $0",
+  "Fable 5 requires usage credits.", "You're out of extra usage", "Your seat type doesn't include extra usage",
+  "Fable limit reached · ",
+]
+// CONSTRAINT (#509-FIX4 F-3): лимитный класс несёт и форму билдера хоста fLn
+// «<Name> requires usage credits» (AN-509-HOST-REPORT Q2): имя непусто и без
+// переводов строки; qDr держит из этой формы одно «Fable 5».
+// CONSTRAINT (#509-FIX5 Р4): имя без двоеточия -- обёртка `API Error`/`Request
+// timed out` решает раньше всех форм, и «API Error: <Name> requires usage
+// credits» -- её класс, не лимитный.
+export const REFUSAL_CREDITS_RX = /^[^\r\n:]+ requires usage credits/
+// CONSTRAINT (#509-FIX6 А3): форма хоста «<Name> now uses usage credits · …» --
+// лимит Claude (#514); имя без двоеточия по той же причине, что у CREDITS_RX.
+export const REFUSAL_CREDITS_NOW_RX = /^[^\r\n:]+ now uses usage credits · /
+// CONSTRAINT (#509-FIX4 AR-c/F-5): прочие начала строк таблицы хоста; класс
+// у них -- temporary-unknown, но строка известна и решает поиск строки отказа.
+export const REFUSAL_OTHER_PREFIXES = ["API Error", "Request timed out"]
+
+function startsWithAny(text: string, prefixes: string[]): boolean {
+  for (let i = 0; i < prefixes.length; i++) if (text.indexOf(prefixes[i]) === 0) return true
+  return false
+}
+
+function isLimitLine(text: string): boolean {
+  return startsWithAny(text, REFUSAL_LIMIT_PREFIXES) || REFUSAL_CREDITS_RX.test(text) || REFUSAL_CREDITS_NOW_RX.test(text)
+}
+
+function isPermanentLine(text: string): boolean {
+  return startsWithAny(text, REFUSAL_PERMANENT_PREFIXES) || REFUSAL_MODEL_UNAVAILABLE_RX.test(text)
+}
+
+// CONSTRAINT (#509-FIX7 Р14/Р14a/Р14b): классы, решаемые телом строки раньше
+// префиксных таблиц; "" -- тело класса не решает. Правило окна z.ai -- только
+// при модели ступени не-Anthropic.
+function refusalBodyClassOf(text: string, model: string): string {
+  const code = refusalErrorCodeOf(text)
+  if (code === "model_not_found") return "permanent-model"
+  if (model && !isAnthropicModelId(model) && (code === "1308" || QUOTA_WINDOW_RX.test(text))) return "quota"
+  if (PROVIDER_GONE_RX.test(text)) return "permanent-model"
+  if (QUOTA_RX.test(text)) return "quota"
+  return ""
+}
+
+// CONSTRAINT (#509-FIX7b AR8): известны и классы тела (refusalBodyClassOf) --
+// бросок next одним телом такого отказа идёт дорогой лестницы, не hook-error.
+export function refusalKnown(line: any, model: string = ""): boolean {
+  const t = String(line == null ? "" : line).trim()
+  if (!t) return false
+  return startsWithAny(t, REFUSAL_REQUEST_PREFIXES) || isPermanentLine(t) ||
+    isLimitLine(t) || startsWithAny(t, REFUSAL_OTHER_PREFIXES) || refusalBodyClassOf(t, model) !== ""
+}
+
+function wholeIsJson(text: string): boolean {
+  const t = text.trim()
+  const open = t.charAt(0)
+  const close = open === "{" ? "}" : open === "[" ? "]" : ""
+  if (!close || t.charAt(t.length - 1) !== close) return false
+  try { JSON.parse(t) } catch (x) { return false }
+  return true
+}
+
+// CONSTRAINT (#509-FIX4 F-5): свежие assistant-тексты -- от старшего к
+// новейшему. Решает первая строка с известным началом таблицы: сообщения от
+// новейшего к старшему, внутри сообщения -- сверху вниз. Такой нет -- первая
+// непустая строка новейшего.
+// CONSTRAINT (#509-FIX8c Р1, #509-FIX8f Р2/Р4): сообщение, целиком являющееся JSON-документом (после trim объект «{…}» или массив «[…]», JSON.parse проходит), решает своим телом, и его строки не проверяются: класс тела есть -- строка отказа весь текст со свёрнутыми пробелами, нет -- сообщение известной строки не даёт. Иное сообщение решают его строки; строка с JSON внутри (форма хоста «API Error: 404 {…}») решает своим телом.
+export function refusalLineOfMessages(texts: any[], model: string = ""): { line: string; known: boolean } {
+  const rows = Array.isArray(texts) ? texts : []
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const whole = String(rows[i] == null ? "" : rows[i])
+    const doc = wholeIsJson(whole)
+    if (doc && refusalBodyClassOf(whole, model) !== "") return { line: whole.replace(/\s+/g, " ").trim(), known: true }
+    if (doc) continue
+    const lines = whole.split("\n")
+    for (let j = 0; j < lines.length; j++) {
+      const l = lines[j].trim()
+      if (l && refusalKnown(l, model)) return { line: l, known: true }
+    }
+  }
+  return { line: rows.length ? refusalLineOf(rows[rows.length - 1]) : "", known: false }
+}
+
+// CONSTRAINT (#509-FIX4 F1): session.messages отдаёт новейшие 4096 записей
+// (claude-code.d.ts:2404-2409). Чтение, упёршееся в окно, длиной не
+// сравнивается: окно сдвигается, и длина после попытки не растёт.
+export const SESSION_MESSAGES_WINDOW = 4096
+
+function historyIds(xs: any): string[] {
+  const out: string[] = []
+  if (Array.isArray(xs)) for (let i = 0; i < xs.length; i++) out.push(String(xs[i] && xs[i].tool_use_id))
+  return out
+}
+
+// CONSTRAINT (#509-FIX5 Р2): ключ записи -- role, text, tool_use_id каждой
+// записи toolUses и каждой записи toolResults по порядку. result/text/isError
+// tool-записей в ключ не входят: они появляются после ответа, и одна запись
+// разошлась бы сама с собой между двумя чтениями.
+function historyKey(row: any): string {
+  return JSON.stringify([String(row && row.role), String(row && row.text), historyIds(row && row.toolUses), historyIds(row && row.toolResults)])
+}
+
+// Все длины L >= 1, при которых суффикс before длины L равен префиксу after
+// длины L, от наибольшей: наибольшая и цепочка границ префикса after этой длины.
+function historyOverlaps(before: any[], after: any[]): number[] {
+  const a = after.map(historyKey)
+  const b = before.map(historyKey)
+  const m = a.length
+  if (!m || !b.length) return []
+  const pi: number[] = [0]
+  for (let i = 1, k = 0; i < m; i++) {
+    while (k > 0 && a[i] !== a[k]) k = pi[k - 1]
+    if (a[i] === a[k]) k++
+    pi.push(k)
+  }
+  let q = 0
+  for (let i = 0; i < b.length; i++) {
+    while (q > 0 && (q === m || a[q] !== b[i])) q = pi[q - 1]
+    if (q < m && a[q] === b[i]) q++
+  }
+  const out: number[] = []
+  for (let l = q; l > 0; l = pi[l - 1]) out.push(l)
+  return out
+}
+
+// CONSTRAINT (#509-FIX4 F1, #509-FIX5 Р2): у предела окна свежие записи -- после
+// единственного перекрытия: суффикс before равен началу after (по historyKey);
+// перекрытия нет -- чтение не выровнено (unread), старые строки свежими не
+// читаются; перекрытий больше одного -- window-ambiguous (unread).
+export function freshHistory(before: any[], after: any[]): { rows: any[] | null; why: string } {
+  const capped = before.length >= SESSION_MESSAGES_WINDOW || after.length >= SESSION_MESSAGES_WINDOW
+  if (!capped) {
+    if (after.length < before.length) return { rows: null, why: "history-shrank" }
+    return { rows: after.slice(before.length), why: "" }
+  }
+  const lens = historyOverlaps(before, after)
+  if (lens.length < 1) return { rows: null, why: "window-unaligned" }
+  // CONSTRAINT (#509-FIX5 Р2): неоднозначное выравнивание не доказывает
+  // отсутствие свежего отказа -- unread, не выбор одного из перекрытий.
+  if (lens.length > 1) return { rows: null, why: "window-ambiguous" }
+  return { rows: after.slice(lens[0]), why: "" }
+}
+
+function zoneParts(ms: number, tz: string): number[] | null {
+  const f = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  })
+  const parts = f.formatToParts(new Date(ms))
+  const get = (t: string) => {
+    for (let i = 0; i < parts.length; i++) if (parts[i].type === t) return Number(parts[i].value)
+    return NaN
+  }
+  const out = [get("year"), get("month"), get("day"), get("hour") % 24, get("minute"), get("second")]
+  for (let i = 0; i < out.length; i++) if (!Number.isFinite(out[i])) return null
+  return out
+}
+
+function zoneOffsetMs(ms: number, tz: string): number {
+  const p = zoneParts(ms, tz)
+  if (!p) return NaN
+  return Date.UTC(p[0], p[1] - 1, p[2], p[3], p[4], p[5]) - (ms - (((ms % 1000) + 1000) % 1000))
+}
+
+// CONSTRAINT (#509-FIX4 F5): ВСЕ UTC-моменты, у которых стенное время в зоне
+// равно дате и h:mm: повторный осенний час даёт два, весенний пропуск -- ни
+// одного, и тогда момент сдвигается вперёд на величину пропуска (стенное
+// минус смещение до перехода). Смещения берутся за сутки до и после стенного:
+// два перехода одной зоны ближе суток друг к другу не стоят.
+function wallInstants(y: number, mo: number, d: number, h: number, mi: number, tz: string): number[] {
+  const wall = Date.UTC(y, mo - 1, d, h, mi, 0)
+  const cd = new Date(wall)
+  if (!Number.isFinite(wall) || cd.getUTCFullYear() !== y || cd.getUTCMonth() !== mo - 1 || cd.getUTCDate() !== d) return []
+  const before = zoneOffsetMs(wall - 86400000, tz)
+  const after = zoneOffsetMs(wall + 86400000, tz)
+  const offs = [before, zoneOffsetMs(wall, tz), after]
+  const out: number[] = []
+  for (let i = 0; i < offs.length; i++) {
+    if (!Number.isFinite(offs[i])) continue
+    const t = wall - offs[i]
+    if (out.indexOf(t) >= 0) continue
+    const q = zoneParts(t, tz)
+    if (q && q[0] === y && q[1] === mo && q[2] === d && q[3] === h && q[4] === mi) out.push(t)
+  }
+  if (!out.length && Number.isFinite(before) && Number.isFinite(after) && after > before) out.push(wall - before)
+  return out
+}
+
+const RESET_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+const RX_RESETS = /·\s*resets\s+(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+)?(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,\s*(\d{4}))?,\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*\(([A-Za-z_]+(?:\/[A-Za-z0-9_+\-]+)*)\)/i
+
+// CONSTRAINT (#509-FIX3 M2): хвост хоста « · resets <t> (<IANA>)»: t --
+// «h[:mm]am|pm» или «H:MM», с датой -- «[День, ]Mon D[, YYYY], t».
+// CONSTRAINT (#509-FIX4 F5): кандидаты -- все наступления: время без даты --
+// на сегодня и завтра по дате зоны в atMs; дата без года -- в текущем и
+// следующем году зоны; с годом -- только в нём. Берётся наименьший кандидат
+// позади не больше чем на минуту; он позади вовсе -- срок неизвестен
+// (AR-FIX3-2: хост печатает минуты усечёнными, такой сброс ещё впереди, а не
+// через сутки). Кандидата нет -- срок неизвестен.
+export const RESET_BEHIND_MS = 60000
+export function resetsAtOf(line: string, atMs: number): { at: number; err: any } {
+  const m = RX_RESETS.exec(String(line || ""))
+  if (!m) return { at: 0, err: null }
+  let h = Number(m[4])
+  const mm = m[5] ? Number(m[5]) : 0
+  const ap = m[6] ? m[6].toLowerCase() : ""
+  const tz = m[7]
+  if (ap) {
+    if (h < 1 || h > 12) return { at: 0, err: null }
+    h = h % 12 + (ap === "pm" ? 12 : 0)
+  }
+  if (h > 23 || mm > 59) return { at: 0, err: null }
+  try {
+    if (typeof Intl === "undefined" || typeof Intl.DateTimeFormat !== "function") return { at: 0, err: null }
+    const p = zoneParts(atMs, tz)
+    if (!p) return { at: 0, err: null }
+    const cands: number[] = []
+    const take = (xs: number[]): void => { for (let i = 0; i < xs.length; i++) cands.push(xs[i]) }
+    if (m[1]) {
+      const mo = RESET_MONTHS.indexOf(m[1].toLowerCase()) + 1
+      const d = Number(m[2])
+      if (mo < 1 || d < 1 || d > 31) return { at: 0, err: null }
+      if (m[3]) take(wallInstants(Number(m[3]), mo, d, h, mm, tz))
+      else {
+        take(wallInstants(p[0], mo, d, h, mm, tz))
+        take(wallInstants(p[0] + 1, mo, d, h, mm, tz))
+      }
+    } else {
+      take(wallInstants(p[0], p[1], p[2], h, mm, tz))
+      const nd = new Date(Date.UTC(p[0], p[1] - 1, p[2] + 1))
+      take(wallInstants(nd.getUTCFullYear(), nd.getUTCMonth() + 1, nd.getUTCDate(), h, mm, tz))
+    }
+    let best = NaN
+    for (let i = 0; i < cands.length; i++) {
+      const c = cands[i]
+      // CONSTRAINT (AR-FIX3-2): граница строгая -- ровно 60 с позади не «меньше минуты», кандидат отброшен.
+      if (!(Number.isFinite(c) && c > atMs - RESET_BEHIND_MS)) continue
+      if (!(c >= best)) best = c
+    }
+    if (!Number.isFinite(best) || best < atMs) return { at: 0, err: null }
+    return { at: best, err: null }
+  } catch (x) {
+    return { at: 0, err: x }
+  }
+}
+
+// CONSTRAINT (#509-FIX3 M2): порядок -- request, permanent-model, лимит qDr
+// (temporary-known при разобранном сроке), иначе temporary-unknown. Дефект
+// запроса одинаков для любой модели и решает раньше модели.
+// CONSTRAINT (#509-FIX5 Р4, #509-FIX7 Р14/А-Р6/ADD1): порядок -- пусто,
+// error.code model_not_found (permanent-model), окно квоты z.ai на ступени
+// не-Anthropic модели (фильтр модели первым; error.code 1308 или
+// QUOTA_WINDOW_RX -- quota), мёртвый провайдер по тексту (permanent-model),
+// квота по тексту (quota), обёртка `API Error`/`Request timed out`
+// (temporary-unknown), request, точная временная строка (temporary-unknown),
+// permanent, лимит. Без модели ступени правило окна не действует.
+export function classifyRefusal(line: string, atMs: number, model: string = ""): { class: string; readyAt: number; err: any } {
+  const text = String(line || "").trim()
+  if (!text) return { class: "temporary-unknown", readyAt: 0, err: null }
+  const body = refusalBodyClassOf(text, model)
+  if (body) return { class: body, readyAt: 0, err: null }
+  if (startsWithAny(text, REFUSAL_OTHER_PREFIXES)) return { class: "temporary-unknown", readyAt: 0, err: null }
+  if (startsWithAny(text, REFUSAL_REQUEST_PREFIXES)) return { class: "request", readyAt: 0, err: null }
+  if (REFUSAL_TEMPORARY_EXACT.indexOf(text) >= 0) return { class: "temporary-unknown", readyAt: 0, err: null }
+  if (isPermanentLine(text)) return { class: "permanent-model", readyAt: 0, err: null }
+  if (isLimitLine(text)) {
+    const r = resetsAtOf(text, atMs)
+    if (r.at > 0) return { class: "temporary-known", readyAt: r.at, err: null }
+    return { class: "temporary-unknown", readyAt: 0, err: r.err }
+  }
+  return { class: "temporary-unknown", readyAt: 0, err: null }
+}
+
+// CONSTRAINT (#509-FIX4 F4, #509-FIX5 Р3): сторож фонового агента задаёт
+// CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS -- хост 2.1.282 берёт её первой и
+// допускает от 1 мс (AN-509-HOST-REPORT Q1: dl()); без неё сторож не меньше
+// 600 с. S -- целое конечное > 0, иначе сердцебиение по умолчанию. T =
+// pauseTimeout -- предел обеих дверей сна (кусок ожидания, пауза
+// перечитывания): min(15000, 2 * chunk + 1000).
+// CONSTRAINT (#509-FIX6 А1, #509-FIX7 А-Р1): следующий next при ожидании
+// начинается не позже D = callEndAt + S_eff - G плюс цена синхронного хвоста
+// и чтений часов. Ни одна дверь между проверкой срока и next за D не выходит:
+// сон ожидания и пауза перечитывания -- min(C, D - now - G/2) с пределом
+// двери min(T, D - now), при D - now <= G/2 сна нет; чтение истории (снимок
+// «до», перечитывание), свёртка и запись попытки (failoverFoldFlush /
+// failoverFoldObserve / appendJournal), записи журнала шага (waitRec,
+// skipped-dead, skipped-known, refusal-unread, rung-effort-refused) и тосты
+// (ожидание, нечитаемый отказ) ждутся гонкой raceUntil с остатком до D;
+// проигрыш -- дверь доживает в фоне, снимок истории тогда нечитаем и назван
+// строкой history-past-deadline. Записи выхода из шага (wait-aborted,
+// wait-unavailable, wait-no-target, wait-budget-exhausted) next не
+// предшествуют и ждутся целиком. Перебег виден записью stall-margin-exceeded,
+// меряемой непосредственно перед next; при S < 2000 гарантии нет -- запись
+// stall-below-floor. Выдать безвредный кусок вместо вызова нельзя: у потока
+// шесть видов кусков, и каждый уходит в сессию; engine -- только со своим ref
+// и один раз.
+export const HEARTBEAT_DEFAULT_MS = 240000
+export const STALL_FLOOR_MS = 2000
+export const PAUSE_TIMEOUT_MAX_MS = 15000
+// CONSTRAINT (#509-FIX6 А1): сторож хоста без переменной -- 600 с
+// (AN-509-HOST-REPORT Q1).
+export const STALL_HOST_DEFAULT_MS = 600000
+export function waitPaceOf(raw: any): { stall: number; stallEff: number; margin: number; heartbeat: number; chunk: number; belowFloor: boolean; pauseTimeout: number } {
+  let s = NaN
+  try { s = raw === undefined || raw === null ? NaN : Number(raw) } catch (x) { s = NaN }
+  const ok = Number.isInteger(s) && s > 0
+  let heartbeat = HEARTBEAT_DEFAULT_MS
+  if (ok) heartbeat = s > 30000 ? Math.min(HEARTBEAT_DEFAULT_MS, s - 15000) : Math.max(1000, Math.floor(s / 2))
+  const chunk = Math.min(4000, Math.floor(heartbeat / 2))
+  const pauseTimeout = Math.min(PAUSE_TIMEOUT_MAX_MS, 2 * chunk + 1000)
+  const stallEff = ok ? s : STALL_HOST_DEFAULT_MS
+  const margin = Math.min(30000, Math.max(500, Math.floor(stallEff / 4)))
+  return { stall: ok ? s : 0, stallEff, margin, heartbeat, chunk, belowFloor: ok && s < STALL_FLOOR_MS, pauseTimeout }
 }
 
 function allowedTableOf(parsed: any): { usable: true, allowedByClass: { [classId: string]: string[] }, effortByClass: { [classId: string]: string } } | { usable: false, reason: "unusable" | "noclasses" } {
@@ -382,8 +856,8 @@ export async function loadAllowedByClass($: any, env: any, cwdArg?: string): Pro
   return value
 }
 
-export function failoverLadder(fo: any, subagentType: string, classId: string, allowedByClass?: any, incomingModel?: string): string[] {
-  return failoverLadderBind(fo, subagentType, classId, allowedByClass, incomingModel).ladder
+export function failoverLadder(fo: any, subagentType: string, classId: string): string[] {
+  return failoverLadderBind(fo, subagentType, classId).ladder
 }
 
 export function nextFailoverModel(ladder: string[], failed: string[]): string | null {
@@ -399,32 +873,118 @@ export function nextFailoverModel(ladder: string[], failed: string[]): string | 
   return null
 }
 
+// CONSTRAINT (#514 H4, #330): план начинается с ОБЪЯВЛЕННОЙ модели, липкая
+// идёт второй. Липкая впереди объявленной навсегда уводила агента с его
+// модели: объявленная в план больше не возвращалась.
+// CONSTRAINT (#509-FIX3 AR-4): повтор узнаётся по нормализованному id, а в
+// план идёт первое вхождение как написано.
 export function failoverAttemptModels(incoming: string, sticky: string | null, ladder: string[]): string[] {
   const out: string[] = []
-  const used: string[] = []
-  let cur = (sticky && String(sticky)) || String(incoming || "")
-  while (out.length < FAILOVER_MAX_NEXT) {
-    if (!cur || used.indexOf(cur) >= 0) {
-      const n = nextFailoverModel(ladder, used)
-      if (!n) break
-      cur = n
-      continue
-    }
-    out.push(cur)
-    used.push(cur)
-    const n = nextFailoverModel(ladder, used)
-    if (!n) break
-    cur = n
+  const keys: string[] = []
+  const add = (x: any): void => {
+    const m = x ? String(x) : ""
+    if (!m) return
+    const k = normModelId(m)
+    if (keys.indexOf(k) >= 0) return
+    keys.push(k)
+    out.push(m)
   }
+  add(incoming)
+  add(sticky)
+  const rows = Array.isArray(ladder) ? ladder : []
+  for (let i = 0; i < rows.length; i++) add(rows[i])
   return out
 }
 
-export function isCarrierRefusal(res: any): boolean {
+// CONSTRAINT (#509-FIX1 C, #514 H3, #509-FIX3 H1): порядок плана шага --
+// объявленная КАК НАПИСАНА, липкая, допущенные ступени, отложенные остывающие
+// (temporary-*), ТЕРМИНАЛ строго последним. Терминал, совпавший с моделью из
+// середины, оттуда снимается. Объявленная, совпавшая с терминалом, остаётся
+// первой, терминал второй раз не добавляется и перехода нет (termAt -1, D-8a);
+// остывая, она уходит в самый конец и там -- терминал. Живая метка permanent-model пропускает
+// модель (dead), кроме терминала. skipKnown (проход пробуждения, AR-3) снимает
+// модели с живой меткой temporary-known в skippedKnown. Длина плана не
+// ограничена счётом (H9).
+export function failoverStepPlan(incoming: string, sticky: string | null, ladder: string[], terminal: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, opts: { skipKnown?: boolean } = {}): { plan: string[]; all: string[]; dead: string[]; evidence: { [k: string]: any }; termAt: number; skippedKnown: string[] } {
+  const base = failoverAttemptModels(incoming, sticky, ladder)
+  const term = String(terminal || "")
+  const termN = term ? normModelId(term) : ""
+  const inc = String(incoming || "")
+  const declTerm = !!termN && !!inc && normModelId(inc) === termN
+  const body: string[] = []
+  for (let i = 0; i < base.length; i++) {
+    if (i === 0 && declTerm) body.push(base[i])
+    else if (!termN || normModelId(base[i]) !== termN) body.push(base[i])
+  }
+  const alive: string[] = []
+  const dead: string[] = []
+  for (let i = 0; i < body.length; i++) {
+    const mark = marks.get(normModelId(body[i]))
+    if (!(declTerm && i === 0) && mark && mark.class === "permanent-model" && isModelCooling(body[i], atMs, marks)) dead.push(body[i])
+    else alive.push(body[i])
+  }
+  const d = deferCoolingAttemptModels(alive, atMs, marks)
+  let plan = d.plan.slice()
+  if (declTerm && isModelCooling(body[0], atMs, marks)) {
+    const j = plan.indexOf(body[0])
+    if (j >= 0) { plan.splice(j, 1); plan.push(body[0]) }
+  }
+  const all = body.slice()
+  const skippedKnown: string[] = []
+  const known = (m: string): boolean => {
+    const mk = marks.get(normModelId(m))
+    return !!(opts.skipKnown && mk && mk.class === "temporary-known" && isModelCooling(m, atMs, marks))
+  }
+  if (opts.skipKnown) {
+    const keep: string[] = []
+    for (let i = 0; i < plan.length; i++) {
+      if (known(plan[i])) skippedKnown.push(plan[i])
+      else keep.push(plan[i])
+    }
+    plan = keep
+  }
+  let termAt = -1
+  // CONSTRAINT (#509-FIX4 AR-5): остывшая объявленная, равная терминалу, в
+  // хвосте плана ПОСЛЕ ступеней -- терминальная попытка (cell-exhausted,
+  // без липкости); на первой позиции -- модель агента, не переход (D-8a).
+  if (declTerm) {
+    const j = plan.indexOf(body[0])
+    if (j > 0) termAt = j
+  }
+  if (term && !declTerm) {
+    all.push(term)
+    if (known(term)) skippedKnown.push(term)
+    else { termAt = plan.length; plan.push(term) }
+  }
+  return { plan, all, dead, evidence: d.evidence, termAt, skippedKnown }
+}
+
+// CONSTRAINT (#509-FIX3 AR-4): словари ступеней ключены строкой как написана;
+// точный ключ решает первым, нормализованный -- когда точного нет.
+export function modelKeyed(table: any, model: string): any {
+  if (!table || typeof table !== "object") return undefined
+  if (Object.prototype.hasOwnProperty.call(table, model)) return table[model]
+  const k = normModelId(model)
+  const ks = Object.keys(table)
+  for (let i = 0; i < ks.length; i++) if (normModelId(ks[i]) === k) return table[ks[i]]
+  return undefined
+}
+
+// CONSTRAINT (#509-FIX7 Р11): seen.served -- кто ответил, usage.model результата
+// или null без usage; берётся из ТОГО ЖЕ чтения usage, что предикат (#489-B1-FIX5
+// Z13.4: одно чтение полей ответа на попытку).
+export function isCarrierRefusal(res: any, seen?: { served: string | null }): boolean {
+  if (seen) seen.served = null
   if (!res || typeof res !== "object") return false
   // CONSTRAINT: оба поля. answer==="" не признак: честный ответ из
   // thinking-блоков несёт пустой текст при живом usage (домен #190).
   // Совпадение имени модели (usage.model) успехом не считается.
-  return res.usage === null && res.stopReason === null
+  // CONSTRAINT (#509-FIX7 Р15): отказ модели текстом при живом usage -- ответ носителя, лестница по содержанию модель не меняет.
+  const u = res.usage
+  if (seen) {
+    try { seen.served = u && typeof u === "object" && typeof u.model === "string" ? u.model : null } catch (x) { noteLost("failover-served-model", x) }
+  }
+  return u === null && res.stopReason === null
 }
 
 function parentDir(p: string): string {
@@ -1233,7 +1793,54 @@ async function findProjectHome($: any, cwd: string, globalHome: string): Promise
   return ""
 }
 
+// CONSTRAINT: словарь ключа `on` -- ровно перечень hook_event_name контракта
+// (claude-code.d.ts); гейт test-mod-units.sh пересчитывает его по d.ts, а зуб
+// p531 T13 сверяет с ним подписки classic.*.
+export const CLASSIC_EVENTS: readonly string[] = [
+  "ConfigChange", "CwdChanged", "DirectoryAdded", "Elicitation", "ElicitationResult",
+  "FileChanged", "InstructionsLoaded", "MessageDisplay", "Notification", "PermissionDenied",
+  "PermissionRequest", "PostCompact", "PostModelSwitch", "PostToolBatch", "PostToolUseFailure",
+  "PostToolUse", "PreCompact", "PreModelSwitch", "PreToolUse", "SessionEnd",
+  "SessionStart", "Setup", "StopFailure", "Stop", "SubagentStart",
+  "SubagentStop", "TaskCompleted", "TaskCreated", "TeammateIdle", "UserPromptExpansion",
+  "UserPromptSubmit", "WorktreeCreate", "WorktreeRemove",
+]
+// CONSTRAINT: PreToolUse и PostToolUse обслуживает единственная подписка
+// tool.call (вторая подписка той же двери молча заменила бы первую, #447);
+// MessageDisplay приходит на каждую дельту отрисовки и не регистрируется.
+const CLASSIC_VIA_TOOL_CALL = ["PreToolUse", "PostToolUse"]
+const CLASSIC_PER_DELTA = ["MessageDisplay"]
+
+// CONSTRAINT: отмена ждёт вердикта до next(e) -- это есть только у PreToolUse;
+// cancel/pending на прочем имени и на таймере -- on_bad, имя снимается.
+function probeTriggersOf(id: string, cfg: any, act: string, pending: boolean, builtin: boolean): { on: string[]; onBad: string[]; everyMs: number } {
+  const on: string[] = []
+  const onBad: string[] = []
+  const blocking = act === "cancel" || pending
+  let raw: any = cfg.on
+  if (raw === undefined || raw === null) raw = builtin ? ["PreToolUse"] : []
+  if (!Array.isArray(raw)) raw = [raw]
+  for (let i = 0; i < raw.length; i++) {
+    const name = String(raw[i])
+    if (CLASSIC_PER_DELTA.indexOf(name) >= 0) { if (onBad.indexOf(name + ":per-delta") < 0) onBad.push(name + ":per-delta"); continue }
+    if (CLASSIC_EVENTS.indexOf(name) < 0) { if (onBad.indexOf(name) < 0) onBad.push(name); continue }
+    if (blocking && name !== "PreToolUse") { if (onBad.indexOf(name + ":cancel-needs-PreToolUse") < 0) onBad.push(name + ":cancel-needs-PreToolUse"); continue }
+    if (on.indexOf(name) < 0) on.push(name)
+  }
+  let everyMs = num(cfg.every_min, 0, 1) * 60000
+  if (!everyMs && id === "idle-watch") everyMs = num(cfg.live_recheck_ms, 60000, 1000)
+  if (everyMs && blocking) { onBad.push("every_min:cancel-needs-PreToolUse"); everyMs = 0 }
+  return { on, onBad, everyMs }
+}
+
 function profileOf(id: string, cfg: any): any {
+  const p = profileBase(id, cfg)
+  if (p.kind === "consult") Object.assign(p, probeTriggersOf(id, cfg, p.act, p.pending, p.builtin))
+  else Object.assign(p, { on: [], onBad: [], everyMs: 0 })
+  return p
+}
+
+function profileBase(id: string, cfg: any): any {
   const kind = String(cfg.kind || (id === "form" ? "form" : "consult"))
   if (id === "judge") {
     return {
@@ -1458,6 +2065,44 @@ let allowedMemo: { t: number, key: string, value: { allowedByClass: { [classId: 
 // же причины после /resume не молчит вечно, но и не заливает журнал.
 const admissionRefusedSaid = new Set<string>()
 
+// CONSTRAINT (#509-FIX1 A2/A3/G, #514 H3): однократные записи лестницы -- на
+// ПРОЦЕСС, тем же приёмом, что admissionRefusedSaid: ключ держит только
+// удавшаяся запись.
+const terminalAbsentSaid = new Set<string>()
+const rungNotAdmittedSaid = new Set<string>()
+const admissionUnavailableSaid = new Set<string>()
+const skippedDeadSaid = new Set<string>()
+
+// CONSTRAINT: дверь сброса -- для тестового стенда; продовое поведение её не
+// зовёт (однократность на процесс).
+export function failoverSaidReset(): void {
+  terminalAbsentSaid.clear()
+  rungNotAdmittedSaid.clear()
+  admissionUnavailableSaid.clear()
+  skippedDeadSaid.clear()
+}
+
+// CONSTRAINT (#509-FIX7 Р16): fan-self-absent -- одна запись на tool_use_id,
+// потолок множества FAN_SELF_ABSENT_MAX, вытесняется старейший.
+const DISPATCHES_PAST_MAX = 20
+const FAN_SELF_ABSENT_MAX = 256
+const fanSelfAbsentSaid = new Set<string>()
+export function fanSelfAbsentReset(): void { fanSelfAbsentSaid.clear() }
+// CONSTRAINT (#509-FIX7b AR11): события с tool_use_id, выданным модом (таймер,
+// classic без своего), -- имя улики, не вызов: текущего вызова у них нет.
+const calllessEvents = new WeakSet<object>()
+
+async function journalOnce($: any, said: Set<string>, key: string, jpath: string, rec: any, site: string): Promise<void> {
+  if (!jpath || said.has(key)) return
+  said.add(key)
+  try {
+    await appendJournal($, jpath, rec)
+  } catch (x) {
+    said.delete(key)
+    noteLost(site, x, $)
+  }
+}
+
 // CONSTRAINT (#335): громкий отказ чужого носителя пишет в журнал ОДИН раз на
 // процесс на пару «проба x значение ручки» -- цикл проб видит отказ на каждом
 // вызове инструмента, и без однократности он заливал бы журнал. Дедуп НЕ
@@ -1479,6 +2124,7 @@ const ENV_UNREADABLE_NINE = [
 ]
 
 export async function worldFor($: any): Promise<any> {
+  const ep = epoch
   const now = await nowMs($)
   // CONSTRAINT: каталог -- ключ мемо, поэтому вычисляется ДО кэша той же
   // логикой, что и потребитель (loadWorld), и передаётся ему: повторный
@@ -1489,6 +2135,7 @@ export async function worldFor($: any): Promise<any> {
     try { cwd = String(await $.store.get(CWD_KEY) || "") } catch (x) { cwd = ""; noteLost("cwd-store-read", x, $) }
   }
   if (cwd && worldMemo && now - worldMemo.t < WORLD_MEMO_MS && worldMemo.cwd === cwd) {
+    if (probeHear === null) probeIndexFrom(worldMemo)
     return worldMemo
   }
   const env = await envBundle($)
@@ -1499,10 +2146,58 @@ export async function worldFor($: any): Promise<any> {
   }
   const world = await loadWorld($, env, cwd)
   const packed = { t: now, cwd, env, world }
+  // CONSTRAINT (#509-FIX8 Р5): мир, загруженный в прежней эпохе, -- мир прежней сессии: мемо и индекс слушателей новой эпохи он не пишет.
+  if (ep !== epoch) return packed
   // CONSTRAINT: при неопределимом каталоге мемо не используется и не
   // заполняется -- неизвестный ключ никогда не считается совпавшим (#308).
   if (cwd) worldMemo = packed
+  probeIndexFrom(packed)
   return packed
+}
+
+// CONSTRAINT: индекс слушателей читает быстрый путь classic.* синхронно, без
+// $ и без await; он пересобирается при каждой сборке мира (session.start,
+// tool.call, тик), поэтому правка probes.toml видна не позже следующей сборки.
+// null -- индекс ещё не построен (загрузка модуля или смена эпохи: мир новой
+// сессии может слушать другое): classic-хук и tool.call агента идут медленным
+// путём (сборка мира и решение по ней), первое событие не теряется.
+let probeHear: Set<string> | null = null
+let probeHearAgentTool = false
+let probeNotMain: string[] = []
+
+// CONSTRAINT: дверь сброса -- для тестового стенда (состояние загрузки модуля).
+export function probeIndexReset(): void {
+  probeHear = null
+  probeHearAgentTool = false
+  probeNotMain = []
+}
+
+function probeListens(p: any, env: any): boolean {
+  if (!p || p.kind !== "consult") return false
+  if (p.cfg && p.cfg.enabled === false) return false
+  return armStateOf(p, env).state === "armed"
+}
+
+function probeIndexFrom(packed: any): void {
+  const hear = new Set<string>()
+  let agentTool = false
+  const notMain: string[] = []
+  const probes = packed && packed.world && Array.isArray(packed.world.probes) ? packed.world.probes : []
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i]
+    if (!probeListens(p, packed.env)) continue
+    const on: string[] = Array.isArray(p.on) ? p.on : []
+    let toolEv = false
+    for (let j = 0; j < on.length; j++) {
+      if (CLASSIC_VIA_TOOL_CALL.indexOf(on[j]) >= 0) toolEv = true
+      else hear.add(on[j])
+    }
+    if (toolEv && p.mainLoopOnly) notMain.push(String(p.id))
+    if (toolEv && !p.mainLoopOnly) agentTool = true
+  }
+  probeHear = hear
+  probeHearAgentTool = agentTool
+  probeNotMain = notMain
 }
 
 // Отсутствие поля sid и есть чинимый дефект: неудача обязана быть ВИДНА
@@ -1584,7 +2279,7 @@ export function sweepRetryDue(tn: number): boolean {
 let cwdStoreStale = false
 // CONSTRAINT: отказ стора не обнуляет счёт и отметку: без зеркала отказ записи
 // снимал кэп и кулдаун.
-const capMirror = new Map<string, number>()
+const capMirror = new Map<string, number[]>()
 const lastMirror = new Map<string, number>()
 
 const failoverBinds = new Map<string, any>()
@@ -1593,25 +2288,71 @@ const failoverBinds = new Map<string, any>()
 // модели веера turn.step (#313). Метка несёт ПРИЧИНУ: читатели засчитывают
 // РАЗНЫЕ наборы причин, и без причины в метке дорога консультаций молча
 // расширила бы то, что она судит.
-export type RungCooldownMark = { at: number; reason: string }
+// CONSTRAINT (#514 H3): метка веера несёт СРОК (until) и КЛАСС отказа; окно
+// RUNG_COOLDOWN_MS судит только метки без срока (дорога консультаций,
+// rung-timeout).
+export type RungCooldownMark = { at: number; reason: string; until?: number; class?: string; n?: number; text?: string }
 export const RUNG_COOLDOWN_REASON_TIMEOUT = "rung-timeout"
 export const RUNG_COOLDOWN_REASON_CARRIER = "carrier-refusal"
-export const RUNG_COOLDOWN_REASONS_ALL = [RUNG_COOLDOWN_REASON_TIMEOUT, RUNG_COOLDOWN_REASON_CARRIER]
+export const RUNG_COOLDOWN_REASON_THROW = "carrier-throw"
+export const RUNG_COOLDOWN_REASONS_ALL = [RUNG_COOLDOWN_REASON_TIMEOUT, RUNG_COOLDOWN_REASON_CARRIER, RUNG_COOLDOWN_REASON_THROW]
 const rungCooldownMarks = new Map<string, RungCooldownMark>()
+
+// CONSTRAINT (#514 H3): backoff неизвестного срока по n подряд идущих отказов
+// модели: 30, 60, 120, 240 с, далее 240 с; отказ по модели -- час.
+export const REFUSAL_BACKOFF_MS = [30000, 60000, 120000, 240000]
+export const PERMANENT_MARK_MS = 3600000
+
+export function refusalBackoffMs(n: number): number {
+  const i = Math.max(1, Math.floor(Number(n) || 1)) - 1
+  return REFUSAL_BACKOFF_MS[Math.min(i, REFUSAL_BACKOFF_MS.length - 1)]
+}
 
 // CONSTRAINT: окно остывания судит ТОЛЬКО этот предикат. Второй дом правила
 // (rungsAfterCooldown против cooldownSnapshot против веера) спорил бы об
 // одном окне; до #313 два дома держались только комментарием.
+// CONSTRAINT (#509-FIX3 AR-4): ключ метки -- нормализованный id; строка как
+// написана в ключ не идёт, иначе «X[1m]» и «x» остывали бы порознь.
 export function isModelCooling(model: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): boolean {
-  const mark = marks.get(model)
-  return mark !== undefined && reasons.indexOf(mark.reason) >= 0 && atMs - mark.at <= RUNG_COOLDOWN_MS
+  const mark = marks.get(normModelId(model))
+  if (mark === undefined || reasons.indexOf(mark.reason) < 0) return false
+  if (typeof mark.until === "number") return atMs < mark.until
+  return atMs - mark.at <= RUNG_COOLDOWN_MS
+}
+
+// CONSTRAINT (#514 H3): срок метки -- из класса отказа. Класс request метки
+// не ставит: дефект запроса одинаков для любой модели и о модели не говорит.
+// CONSTRAINT (#509-FIX7 Р14): quota -- QUOTA_COOLDOWN_MS от отказа; метка не
+// мёртвая: модель откладывается в хвост плана, как остывающая.
+// Срок temporary-known, не лежащий в будущем, читается как неизвестный --
+// иначе перепроба шла бы без паузы.
+export function noteModelRefusal(model: string, atMs: number, cls: string, readyAt: number, reason: string, text: string, marks: Map<string, RungCooldownMark> = rungCooldownMarks): RungCooldownMark | null {
+  if (cls === "request") return null
+  const key = normModelId(model)
+  const prev = marks.get(key)
+  const n = (prev && typeof prev.n === "number" ? prev.n : 0) + 1
+  let klass = cls
+  let until = 0
+  if (cls === "permanent-model") until = atMs + PERMANENT_MARK_MS
+  else if (cls === "quota") until = atMs + QUOTA_COOLDOWN_MS
+  else if (cls === "temporary-known" && readyAt > atMs) until = readyAt
+  else { klass = "temporary-unknown"; until = atMs + refusalBackoffMs(n) }
+  const mark: RungCooldownMark = { at: atMs, reason, until, class: klass, n, text: String(text || "").slice(0, REFUSAL_TEXT_MAX) }
+  marks.set(key, mark)
+  return mark
+}
+
+// CONSTRAINT (#514 H3, З6): успех модели снимает её метку целиком, вместе со
+// счётом подряд идущих отказов.
+export function noteModelSuccess(model: string, marks: Map<string, RungCooldownMark> = rungCooldownMarks): void {
+  marks.delete(normModelId(model))
 }
 
 export function noteRungTimeout(model: string, errText: string, atMs: number, marks: Map<string, RungCooldownMark> = rungCooldownMarks, budgetClipped: boolean = false): boolean {
   if (errText.indexOf("rung-deadline") < 0) return false
   // CONSTRAINT: урезанный общим пределом бюджет доказывает таймаут,
   // но не недоступность модели; существующая метка тоже не продлевается.
-  if (!budgetClipped) marks.set(model, { at: atMs, reason: RUNG_COOLDOWN_REASON_TIMEOUT })
+  if (!budgetClipped) marks.set(normModelId(model), { at: atMs, reason: RUNG_COOLDOWN_REASON_TIMEOUT })
   return true
 }
 
@@ -1621,7 +2362,7 @@ export function noteRungTimeout(model: string, errText: string, atMs: number, ma
 // аналоги budgetClipped у noteRungTimeout: метится только то, что доказывает
 // недоступность МОДЕЛИ.
 export function noteRungCarrierRefusal(model: string, atMs: number, marks: Map<string, RungCooldownMark> = rungCooldownMarks): void {
-  marks.set(model, { at: atMs, reason: RUNG_COOLDOWN_REASON_CARRIER })
+  noteModelRefusal(model, atMs, "temporary-unknown", 0, RUNG_COOLDOWN_REASON_CARRIER, "", marks)
 }
 
 // CONSTRAINT: дверь сброса — для ТЕСТОВОГО стенда и будущих ручек; продовое
@@ -1641,7 +2382,7 @@ export function rungsAfterCooldown<T extends { model: string }>(ladder: T[], atM
   for (let i = 0; i < ladder.length; i++) {
     const rung = ladder[i]
     if (isModelCooling(rung.model, atMs, marks, reasons)) {
-      const mark = marks.get(rung.model) as RungCooldownMark
+      const mark = marks.get(normModelId(rung.model)) as RungCooldownMark
       skipped.push(rung.model)
       ages["rungCooldownAgeMs_" + rung.model] = atMs - mark.at
     } else {
@@ -1681,11 +2422,12 @@ export function clipLadderArg(arg: string): string {
 // об одном окне.
 // CONSTRAINT: дверь наблюдения засчитывает ОБЕ причины метки и называет
 // причину в выводе — дверь, скрывающая половину меток, хуже отсутствующей.
-export function cooldownSnapshot(atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): Array<{ model: string; leftMs: number; reason: string }> {
-  const out: Array<{ model: string; leftMs: number; reason: string }> = []
+export function cooldownSnapshot(atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): Array<{ model: string; leftMs: number; reason: string; class?: string }> {
+  const out: Array<{ model: string; leftMs: number; reason: string; class?: string }> = []
   marks.forEach((mark: RungCooldownMark, model: string) => {
     if (isModelCooling(model, atMs, marks, reasons)) {
-      out.push({ model, leftMs: RUNG_COOLDOWN_MS - (atMs - mark.at), reason: mark.reason })
+      if (typeof mark.until === "number") out.push({ model, leftMs: mark.until - atMs, reason: mark.reason, class: String(mark.class || "") })
+      else out.push({ model, leftMs: RUNG_COOLDOWN_MS - (atMs - mark.at), reason: mark.reason })
     }
   })
   return out
@@ -1704,7 +2446,7 @@ export function ladderCommandText(atMs: number, argRaw: string, marks: ReadonlyM
   } else if (!rows.length) {
     lines.push("под фильтр не попала ни одна ступень")
   } else {
-    for (const r of rows) lines.push(r.model + ": остывать ещё " + Math.ceil(r.leftMs / 1000) + " с (" + r.reason + ")")
+    for (const r of rows) lines.push(r.model + ": остывать ещё " + Math.ceil(r.leftMs / 1000) + " с (" + r.reason + (r.class ? ", " + r.class : "") + ")")
   }
   return lines.join("\n")
 }
@@ -1729,9 +2471,10 @@ export function deferCoolingAttemptModels(plan: string[], atMs: number, marks: R
   if (!deferred.length) return { plan, evidence: {} }
   const evidence: { [k: string]: any } = { cooldownDeferred: deferred.slice() }
   for (let i = 0; i < deferred.length; i++) {
-    const mark = marks.get(deferred[i]) as RungCooldownMark
+    const mark = marks.get(normModelId(deferred[i])) as RungCooldownMark
     evidence["cooldownAgeMs_" + deferred[i]] = atMs - mark.at
     evidence["cooldownReason_" + deferred[i]] = mark.reason
+    if (mark.class) evidence["cooldownClass_" + deferred[i]] = mark.class
   }
   return { plan: ready.concat(deferred), evidence }
 }
@@ -1781,10 +2524,120 @@ let sessionExecutorModelsOverflow = false
 export function sessionExecutorsReset(): void {
   sessionExecutorModels.length = 0
   sessionExecutorModelsOverflow = false
+  sessionReviewerServed.clear()
+  sessionReviewerServedGen++
 }
 
-export function sessionExecutorModelAdd(model: string): void {
+// CONSTRAINT (#509-FIX7 Р13): кто обслуживает проверяющих сессии -- агент ->
+// {модель, момент}: объявленная на спавне, модель ступени на каждом ok-шаге.
+// Потолок 64 агента, вытесняется старейший по t. План проверяющего вычитает из
+// СТУПЕНЕЙ модели других проверяющих не старше REVIEWER_LIVE_MS; объявленная
+// модель самого агента не вычитается.
+export const REVIEWER_LIVE_MS = 2 * 3600 * 1000
+export const SESSION_REVIEWER_SERVED_CAP = 64
+// CONSTRAINT (#509-FIX8f Р1): prevRec -- запись, которую заменил резерв (только
+// у резерва); cancelled -- резерв снят restore. Снятый узел держится, пока на
+// него ссылается более новый неурегулированный резерв того же агента;
+// урегулирование самого нового резерва освобождает цепочку.
+type ReviewerServedRec = { model: string; t: number; seq: number; gen: number; prevRec?: ReviewerServedRec; cancelled?: boolean }
+const sessionReviewerServed = new Map<string, ReviewerServedRec>()
+// CONSTRAINT (#509-FIX8c Р4): владелец записи -- seq постановки, не (модель, t):
+// два перекрывающихся шага одного агента на той же модели в тот же момент различимы.
+let sessionReviewerServedSeq = 0
+// CONSTRAINT (#509-FIX8g): поколение реестра растёт на каждом sessionExecutorsReset; запись несёт поколение своей постановки.
+let sessionReviewerServedGen = 0
+
+// CONSTRAINT (#509-FIX8f Р5): реестр держит SESSION_REVIEWER_SERVED_CAP самых
+// свежих по t и хранится в порядке возрастания t (сортировка устойчива: при
+// равном t раньше вытесняется поставленная раньше); вытесненные -- наружу.
+// CONSTRAINT (#509-FIX8h Р4): запись keep -- только что поставленная этим же
+// вызовом -- не вытесняется, какой бы старой по t она ни была: часы не обязаны
+// быть монотонными.
+function sessionReviewerServedTrim(keep: string): Array<[string, ReviewerServedRec]> {
+  const rows = Array.from(sessionReviewerServed.entries())
+  rows.sort((a, b) => a[1].t - b[1].t)
+  sessionReviewerServed.clear()
+  let drop = rows.length - SESSION_REVIEWER_SERVED_CAP
+  const evicted: Array<[string, ReviewerServedRec]> = []
+  for (let i = 0; i < rows.length; i++) {
+    if (drop > 0 && rows[i][0] !== keep) { evicted.push(rows[i]); drop-- }
+    else sessionReviewerServed.set(rows[i][0], rows[i][1])
+  }
+  return evicted
+}
+
+export function sessionReviewerServedSet(agentId: string, model: string, t: number, opts?: { reserve?: boolean }): Array<[string, ReviewerServedRec]> {
+  const id = String(agentId || "")
   const m = String(model || "")
+  if (!id || !m) return []
+  const rec: ReviewerServedRec = { model: m, t, seq: ++sessionReviewerServedSeq, gen: sessionReviewerServedGen }
+  if (opts && opts.reserve) {
+    const before = sessionReviewerServed.get(id)
+    if (before) rec.prevRec = before
+  }
+  sessionReviewerServed.delete(id)
+  sessionReviewerServed.set(id, rec)
+  return sessionReviewerServedTrim(id)
+}
+
+export function sessionReviewerServedGenOf(): number {
+  return sessionReviewerServedGen
+}
+
+export function sessionReviewerServedGet(agentId: string): ReviewerServedRec | undefined {
+  return sessionReviewerServed.get(String(agentId || ""))
+}
+
+function reviewerServedLive(rec: ReviewerServedRec | undefined): ReviewerServedRec | undefined {
+  let p = rec
+  while (p && p.cancelled) p = p.prevRec
+  return p
+}
+
+// CONSTRAINT (#509-FIX8 Р4, #509-FIX8c Р4/Р7, #509-FIX8f Р1/Р5): restore
+// первым делом помечает резерв снятым -- и при своём seq, и при чужом: чужой
+// резерв, заменивший этот, иначе вернул бы его мёртвым. Свой seq -- встаёт
+// первая неснятая запись цепочки prevRec, её нет -- запись удаляется. Затем при
+// любом seq обратно встают записи, вытесненные постановкой резерва (снятый
+// резерв -- первой неснятой записью своей цепочки), если их id в реестре нет и
+// они не старше REVIEWER_LIVE_MS на момент резерва; реестр перестраивается по t
+// и обрезается до потолка.
+export function sessionReviewerServedRestore(agentId: string, reserved: ReviewerServedRec, evicted: Array<[string, ReviewerServedRec]>): void {
+  const id = String(agentId || "")
+  reserved.cancelled = true
+  // CONSTRAINT (#509-FIX8g): резерв прошлого поколения (реестр сброшен новой сессией) ничего не возвращает -- ни своей записи, ни вытесненных.
+  if (reserved.gen !== sessionReviewerServedGen) return
+  const cur = sessionReviewerServed.get(id)
+  const own = !!cur && cur.seq === reserved.seq
+  let back: ReviewerServedRec | undefined = undefined
+  if (own) {
+    back = reviewerServedLive(reserved.prevRec)
+    if (back) sessionReviewerServed.set(id, back)
+    else sessionReviewerServed.delete(id)
+  }
+  for (let i = 0; i < evicted.length; i++) {
+    const k = evicted[i][0]
+    const rec = reviewerServedLive(evicted[i][1])
+    if (rec && !sessionReviewerServed.has(k) && reserved.t - rec.t <= REVIEWER_LIVE_MS) sessionReviewerServed.set(k, rec)
+  }
+  sessionReviewerServedTrim(back ? id : "")
+}
+
+export function sessionReviewersServedByOthers(agentId: string, atMs: number): string[] {
+  const id = String(agentId || "")
+  const out: string[] = []
+  sessionReviewerServed.forEach((r, k) => {
+    if (k === id || !(atMs - r.t <= REVIEWER_LIVE_MS)) return
+    const n = normModelId(r.model)
+    if (n && out.indexOf(n) < 0) out.push(n)
+  })
+  return out
+}
+
+// CONSTRAINT (#509-FIX3 M4): накопитель и проверка -- по нормализованному id с
+// обеих сторон: исполнитель «X[1m]» и терминал «x» -- одна модель.
+export function sessionExecutorModelAdd(model: string): void {
+  const m = normModelId(model)
   if (!m || sessionExecutorModels.indexOf(m) >= 0) return
   if (sessionExecutorModels.length >= SESSION_EXECUTOR_MODELS_CAP) {
     sessionExecutorModelsOverflow = true
@@ -1794,13 +2647,15 @@ export function sessionExecutorModelAdd(model: string): void {
 }
 
 export function sessionExecutorHas(model: string): boolean {
-  return sessionExecutorModels.indexOf(String(model || "")) >= 0
+  const m = normModelId(model)
+  return !!m && sessionExecutorModels.indexOf(m) >= 0
 }
 
 // CONSTRAINT (#489-B1-FIX5 Z13.4): второй аргумент -- Булево refusal, а не res:
 // isCarrierRefusal читает поля ответа, и на попытку он вычисляется ОДИН раз
 // вызывающим; предикат обязан оставаться чистым от чтений хостового объекта.
-export function failoverWouldSetSticky(didThrow: boolean, refusal: boolean, reviewer: boolean, model: string): boolean {
+export function failoverWouldSetSticky(didThrow: boolean, refusal: boolean, reviewer: boolean, model: string, terminalAttempt: boolean): boolean {
+  if (terminalAttempt) return false
   return !didThrow && !refusal && !(reviewer && sessionExecutorHas(model))
 }
 
@@ -2003,10 +2858,12 @@ export function failoverAttemptIsBoring(rec: any, stickyChanged: boolean): boole
   if (Number(rec.attempt) !== 0) return false
   if (stickyChanged) return false
   if (rec.ladderFullTaken) return false
+  if (rec.terminal) return false
   if (rec.startMatch) return false
   if (rec.stickyDropped) return false
   if (rec.execOverflow) return false
   if (num(rec.rungsFiltered, 0, 0) > 0) return false
+  if (num(rec.rungsFilteredReviewer, 0, 0) > 0) return false
   if (num(rec.rungsDropped, 0, 0) > 0) return false
   const ks = Object.keys(rec)
   for (let i = 0; i < ks.length; i++) {
@@ -2152,10 +3009,14 @@ export async function failoverFoldFlush($: any, world: any): Promise<void> {
   }
 }
 
-function newSession(): { rec: any; world: any } | null {
+function newSession($: any): { rec: any; world: any } | null {
   epoch++
+  capEpochPrune()
   sidMemo = null
   worldMemo = null
+  probeHear = null
+  probeHearAgentTool = false
+  probeNotMain = []
   allowedMemo = null
   promptTextMemo = {}
   rxCache = {}
@@ -2166,6 +3027,11 @@ function newSession(): { rec: any; world: any } | null {
   sweepSkips = 0
   sweepRunning = false
   sweepGen++
+  staleAgents.clear()
+  staleNudgedAt.clear()
+  staleLastSubmitAt = null
+  staleFlyAt = null
+  probeSessionReset($)
   failoverBindReset()
   sessionExecutorsReset()
   return failoverFoldReset()
@@ -2731,8 +3597,9 @@ export async function loadWorld($: any, env: any, cwdArg: string): Promise<any> 
     probes: probesOf(gParsed, pParsed),
     prompts: promptsOf(gParsed, pParsed),
     failover: failoverOf(gParsed, pParsed),
-    allowedByClass: allowedLoaded.allowedByClass,
     effortByClass: allowedLoaded.effortByClass,
+    allowedByClass: allowedLoaded.allowedByClass,
+    allowedRefused: allowedLoaded.refused || "",
     allowedSrc: allowedLoaded.allowedSrc,
   }
 }
@@ -2745,6 +3612,7 @@ function failoverOf(gParsed: any, pParsed: any): any {
     default: shallowMerge(g.default || {}, p.default || {}),
     class: shallowMerge(g.class || {}, p.class || {}),
     agent: shallowMerge(g.agent || {}, p.agent || {}),
+    terminal: p.terminal !== undefined ? p.terminal : g.terminal,
   }
 }
 
@@ -2850,8 +3718,6 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
   const jpath = world.globalHome + "/" + id + "/journal.jsonl"
   const rec: any = { id: ev && ev.tool_use_id, probe: id, tool, agent, t0, carrier: carrierOfJournal(p, env), mod: MOD_VERSION, sid: await sidFor($), projectHome: world.projectHome, globalHome: world.globalHome }
   const enforce = enforceOf(p, env, cfg)
-  let toastGot: string | undefined
-  let nudgeDelivered = false
   try {
     let sys = ""
     if (id === "judge" && env.JUDGE_PROMPT) {
@@ -2923,6 +3789,59 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
       }
     }
     const ctxAll = ctxLines.join("\n")
+    // CONSTRAINT (#509-FIX7 Р16): лента диспатчей -- контракт промта судьи
+    // (~/.claude/probes/judge/prompt.md, «Как читать веер по ленте»): строка на
+    // вызов Agent/Task из toolUses ассистентских строк; now -- у вызовов строки,
+    // несущей tool_use_id текущего вызова, self -- у него самого; прошлые -- не
+    // больше DISPATCHES_PAST_MAX последних, без now. Строки текущего вызова нет --
+    // now нет, одна запись fan-self-absent на tool_use_id; без tool_use_id
+    // (calllessEvents) текущего вызова нет, и записи нет (#509-FIX7b AR11).
+    let dispatchesText = ""
+    if (id === "judge" || (Array.isArray(cfg.show) && cfg.show.indexOf("dispatches") >= 0)) {
+      if (rec.messagesUnread) dispatchesText = "[session messages unreadable]"
+      else {
+        const tuidCur = ev && ev.tool_use_id != null && !(typeof ev === "object" && calllessEvents.has(ev)) ? String(ev.tool_use_id) : ""
+        const lineOf = (u: any, now: boolean, self: boolean): string => {
+          const inp = u && u.input && typeof u.input === "object" ? u.input : {}
+          const o: any = {
+            tool: String(u.tool),
+            subagent_type: inp.subagent_type == null ? null : String(inp.subagent_type),
+            model: inp.model == null ? null : String(inp.model),
+            description: String(inp.description == null ? "" : inp.description).slice(0, 200),
+          }
+          if (now) o.now = true
+          if (self) o.self = true
+          return JSON.stringify(o)
+        }
+        const past: string[] = []
+        let nowLines: string[] | null = null
+        const ml: any[] = Array.isArray(msgs) ? msgs : []
+        for (let i = 0; i < ml.length; i++) {
+          const m = ml[i]
+          if (!m || m.role !== "assistant" || !Array.isArray(m.toolUses)) continue
+          const uses = m.toolUses.filter((u: any) => u && (u.tool === "Agent" || u.tool === "Task"))
+          let cur = false
+          if (tuidCur) for (let j = 0; j < m.toolUses.length; j++) if (m.toolUses[j] && String(m.toolUses[j].tool_use_id) === tuidCur) cur = true
+          if (cur && nowLines === null) {
+            nowLines = uses.map((u: any) => lineOf(u, true, String(u.tool_use_id) === tuidCur))
+          } else {
+            for (let j = 0; j < uses.length; j++) past.push(lineOf(uses[j], false, false))
+          }
+        }
+        dispatchesText = past.slice(-DISPATCHES_PAST_MAX).concat(nowLines || []).join("\n")
+        if (nowLines === null && tuidCur) {
+          await journalOnce($, fanSelfAbsentSaid, tuidCur, jpath, {
+            t: isoOf(await nowMs($)), probe: id, rec: "fan-self-absent-" + (tuidCur || "none"),
+            outcome: "fan-self-absent", tool_use_id: tuidCur, sid: rec.sid,
+          }, "journal-fan-self-absent")
+          while (fanSelfAbsentSaid.size > FAN_SELF_ABSENT_MAX) {
+            const oldest = fanSelfAbsentSaid.values().next().value
+            if (oldest === undefined) break
+            fanSelfAbsentSaid.delete(oldest)
+          }
+        }
+      }
+    }
     // CONSTRAINT: потолок контекста -- СВОЙ у каждой ступени (rungCtx): промт
     // собирается в цикле ступеней, общая обрезка ВНЕ цикла давала всем ступеням
     // один и тот же текст.
@@ -2935,14 +3854,20 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
       parts.push("=== SESSION SO FAR ===\n" + context)
       if (p.id === "judge" || (Array.isArray(cfg.show) && cfg.show.indexOf("dispatch") >= 0) || p.act === "cancel") {
         parts.push("=== DISPATCH ===\n" + JSON.stringify({
-          tool, subagent_type: agent, model: ev && ev.model, prompt: prompt.slice(0, dchars),
+          tool, subagent_type: agent, model: ev && ev.model, prompt: prompt.slice(0, dchars), self: true,
         }))
+      }
+      if (id === "judge" || (Array.isArray(cfg.show) && cfg.show.indexOf("dispatches") >= 0)) {
+        parts.push("=== DISPATCHES ===\n" + dispatchesText)
       }
       if (p.id === "idle-watch" || (Array.isArray(cfg.show) && cfg.show.indexOf("fleet") >= 0)) {
         parts.push("=== FLEET ===\n" + JSON.stringify(ctx.live_works === null ? { live_works: null, live_works_unknown: true, tool } : { live_works: ctx.live_works, tool }))
       }
       if (Array.isArray(cfg.show) && cfg.show.indexOf("tool") >= 0 && p.id !== "idle-watch") {
-        parts.push("=== TOOL ===\n" + tool)
+        parts.push("=== TOOL ===\n" + tool + (ctx && ctx.event === "PostToolUse" ? "\n" + jsonClip(ctx.tool_result, dchars) : ""))
+      }
+      if (Array.isArray(cfg.show) && cfg.show.indexOf("event") >= 0) {
+        parts.push("=== EVENT ===\n" + jsonClip(ctx && ctx.eventInput !== undefined ? ctx.eventInput : ev, dchars))
       }
       const user = parts.join("\n\n")
       return (sys ? sys + "\n\n" : "") + user
@@ -3024,7 +3949,7 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
         // прежнему миру: вердикт не выносится, в кэш не пишется, лестница
         // прекращается. Молчаливый выброс запрещён (ПУСТО -- НЕ НОЛЬ):
         // ступень помечается полем staleEpoch в улике.
-        const ans = readComplete(await raceDeadline($, $.model.complete(arg), tmo, used, rec))
+        const ans = readComplete(await raceDeadline($, $.model.complete(arg), tmo, used, rec, "probe-rung-late"))
         if (epoch !== epCall) {
           rec.staleEpoch = true
           rec["ms_" + used] = await nowMs($) - rungT0
@@ -3105,12 +4030,19 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
         }
       }
       if (foldedKind(p.id, verdict.kind) && p.act === "nudge" && enforce) {
+        // CONSTRAINT: тост модели не виден -- доставка идёт очередью (context
+        // ближайшего tool.call того же агента либо submit на тике); тост --
+        // дополнительный канал и метки доставки не ставит.
+        const tq = await nowMs($)
+        rec.queued = epoch === epCall
+        if (rec.queued) await nudgeEnqueue($, ctx && ctx.agent_id ? String(ctx.agent_id) : "", {
+          text: "[" + id + "] " + clip(verdict.rest, NUDGE_TEXT_MAX), probe: id, t: tq, jpath, sid: rec.sid,
+        })
         try {
           await $.ui.toast((id) + ": " + verdict.rest.slice(0, 200))
-          nudgeDelivered = true
+          rec.toast = true
         } catch (x) {
-          // CONSTRAINT: флаг — присутствие отказа, не текст носителя. String(носителя) сам бросает и обрывает вызывающего; текст несёт toastErr.
-          toastGot = ""
+          rec.toast = false
           rec.toastErr = safeText(x).slice(0, 160)
         }
       }
@@ -3148,8 +4080,6 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
   const rest = String(rec.rest || "")
   let oc = outcomeOf(kind, p.id)
   if (foldedKind(p.id, kind) && !enforce) oc = "block_not_enforced"
-  if (toastGot !== undefined && foldedKind(p.id, kind) && enforce) oc = "nudge_undelivered"
-  else if (nudgeDelivered) oc = "nudge_delivered"
   // CONSTRAINT (#374): класс свёртки считается ЗДЕСЬ ОДИН раз, едет в улику
   // полем outcome, и журнальная строка переиспользует ЭТО ЖЕ значение. Второй
   // потребитель (прибор judge/compact.py) обязан читать готовое поле, а не
@@ -3160,12 +4090,15 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
     try { await $.fs.write(recPath, JSON.stringify(rec)) } catch (x) { noteLost("judge-record", x, $) }
   }
   try {
-    await appendJournal($, jpath, {
+    const jline: any = {
       t: isoOf(t0),
       probe: id, tool, agent, ms: rec.dtMs, outcome: oc,
       verdict: (kind + ": " + rest).slice(0, 400),
       jm: rec.used, rec: recName, carrier: carrierOfJournal(p, env), sid: rec.sid,
-    })
+    }
+    if (rec.toast !== undefined) jline.toast = rec.toast
+    if (rec.queued !== undefined) jline.queued = rec.queued
+    await appendJournal($, jpath, jline)
   } catch (x) {
     // CONSTRAINT: отказ журнальной дороги НЕ молчит. Улика уже на диске, и
     // причина дописывается в неё вторым заходом: пока catch был глухим, потеря
@@ -3954,18 +4887,42 @@ async function runForm($: any, p: any, env: any, world: any, ev: any): Promise<s
 function builtinTrigger(p: any, ev: any, ctx: any): boolean {
   const tool = String((ev && ev.tool) || "")
   if (p.id === "judge") return tool === "Agent" || tool === "Task"
-  if (p.id === "idle-watch") {
-    if (tool === "Agent" || tool === "Task") return false
-    // CONSTRAINT: неизвестный флот — не пустой флот: наблюдатель простоя не
-    // срабатывает, причина уходит в when_bad.
-    if (ctx.live_works === null) { addWhenBad(ctx, "unknown=live_works"); return false }
-    if (Number(ctx.live_works) > 0) return false
-    const cd = num(p.cfg.cooldown_min, 30, 0) * 60 * 1000
-    const last = Number(ctx.last_consultation || 0)
-    if (last && ctx.now - last < cd) return false
-    return true
-  }
   return false
+}
+
+// CONSTRAINT: предикат idle-watch -- README «Thresholds» (порядок отказов:
+// живая работа, счёт окна, незаполненное окно, cooldown); текущий запуск
+// Agent/Task учтён до счёта. "" -- все условия прошли; "when-bad" -- флот
+// неизвестен: неизвестный флот не пустой, причина уходит в when_bad.
+function idleGate(p: any, ctx: any, lst: any[] | null, now: number): string {
+  if (lst === null) { addWhenBad(ctx, "unknown=live_works"); return "when-bad" }
+  const cfg = p.cfg || {}
+  const kinds = idleKindsOf(cfg)
+  let liveN = 0
+  for (let i = 0; i < lst.length; i++) {
+    const a = lst[i]
+    if (!a) continue
+    const st = String(a.status)
+    if (st !== "running" && st !== "pending") continue
+    if (kinds.indexOf(liveKindOf(a)) >= 0) liveN++
+  }
+  if (liveN >= num(cfg.live_threshold, 1, 0)) return "live-work:" + liveN
+  const winMs = num(cfg.window_min, 30, 0) * 60000
+  let launches = 0
+  for (let i = 0; i < probeLaunches.length; i++) if (now - probeLaunches[i] < winMs && now >= probeLaunches[i]) launches++
+  if (launches >= num(cfg.threshold, 1, 0)) return "window-count:" + launches
+  const born = sessionStartAt === null ? now : sessionStartAt
+  if (now - born < winMs) return "window-not-filled"
+  const cd = idleCooldownMs(cfg)
+  const last = Number(ctx.last_consultation || 0)
+  if (last && now - last < cd) return "cooldown"
+  return ""
+}
+
+// CONSTRAINT: один дом cooldown idle-watch -- для idleGate и поздней
+// перепроверки probeMarkTake (две копии разошлись бы молча).
+function idleCooldownMs(cfg: any): number {
+  return num(cfg && cfg.cooldown_min, 30, 0) * 60000
 }
 
 // CONSTRAINT: «выдача» определяется ровно ЗДЕСЬ -- счёт кусков, прошедших из
@@ -4044,15 +5001,46 @@ function countEmitted(
   }
 }
 
+// CONSTRAINT: пометка агента ставится на КАЖДОМ куске до его выдачи хосту и
+// только на куске (конец потока -- не активность); без часов и без await.
+// Форма -- как у countEmitted: next, return, throw исходного итератора читаются
+// по одному разу, return()/throw() потребителя доходят до потока.
+function touchEach(src: any, aid: string): any {
+  return {
+    [Symbol.asyncIterator]: () => {
+      const it: any = src[Symbol.asyncIterator]()
+      const itNext = it.next
+      const wrap: any = {
+        next: async () => {
+          const r = await itNext.call(it)
+          const done = r.done
+          const value = r.value
+          if (!done) {
+            try { staleRecOf(aid).touched = true } catch (x) { noteLost("stale-agents-track", x) }
+          }
+          return { done, value }
+        },
+      }
+      const returnMethod = it.return
+      const throwMethod = it.throw
+      if (typeof returnMethod === "function") wrap.return = (v: any) => returnMethod.call(it, v)
+      if (typeof throwMethod === "function") wrap.throw = (x: any) => throwMethod.call(it, x)
+      return wrap
+    },
+  }
+}
+
 // CONSTRAINT: turn.step STREAMS -- простая async роняет загрузку ВСЕГО модуля.
 // next() бывает генератором или значением; ветка по Symbol.asyncIterator.
 async function* driveNext(
   n: any,
   emitted?: { n: number; content: number; kinds: string[] },
+  aid?: string,
 ): AsyncGenerator<any, any, any> {
   const iteratorMethod = n == null ? undefined : n[Symbol.asyncIterator]
   if (typeof iteratorMethod === "function") {
-    const src = { [Symbol.asyncIterator]: () => iteratorMethod.call(n) }
+    let src: any = { [Symbol.asyncIterator]: () => iteratorMethod.call(n) }
+    if (aid != null) src = touchEach(src, aid)
     if (emitted == null) return yield* src
     return yield* countEmitted(src, emitted)
   }
@@ -4124,14 +5112,1633 @@ function observerFailThrough($: any, e: any, next: any): any {
   return next(e)
 }
 
+// --- idle-watch: висящие агенты сессии и счёт флота сессий -------------------
+// CONSTRAINT: $.agent.list отдаёт агентов ТОЛЬКО своей сессии, общего реестра
+// флота у хоста нет -- счёт флота собирается из файлов, которые каждая сессия
+// публикует сама в <globalHome>/idle-watch/fleet/.
+export const STALE_AGENTS_PERIOD_MS = 60000
+export const FLEET_FRESH_MS = 180000
+export const FLEET_PRUNE_AGE_MS = 24 * 3600 * 1000
+export const FLEET_PRUNE_EVERY_MS = 3600 * 1000
+export const FLEET_TOOL = "fleet_status"
+export const FLEET_TOOL_FULL = "mcp__catalyst-probes__fleet_status"
+export const FLEET_TOOL_DESCRIPTION = "Сколько субагентов сейчас запущено во всех сессиях Claude Code на этой машине и в этой сессии"
+export const FLEET_COMMAND = "catalyst-fleet"
+export const FLEET_COMMAND_DESCRIPTION = "Сколько субагентов сейчас запущено во всех сессиях Claude Code на этой машине и в этой сессии."
+
+// CONSTRAINT: хуки не ждут и не читают часы хоста: они ставят только флаг
+// touched и вызов в полёте без времени; время -- now тика (точность ±1 период).
+type StaleRec = { firstSeen: number | null; lastAt: number | null; touched: boolean; inFlight: Map<string, { tool: string; seenAt: number | null }> }
+const staleAgents = new Map<string, StaleRec>()
+const staleNudgedAt = new Map<string, number>()
+let staleLastSubmitAt: number | null = null
+// CONSTRAINT: now тика, чей сигнал отправлен submit и не ответил; пока не null,
+// второго сигнала той же сессии нет (висящий submit доставит первый).
+let staleFlyAt: number | null = null
+let staleTimer: { cancel: () => void } | null = null
+let staleGen = 0
+let staleCallSeq = 0
+let staleArmFailedAt = -Infinity
+// CONSTRAINT: null -- session.start не наблюдался; сигнал уходит только при true.
+let staleInteractive: boolean | null = null
+let fleetPrunedAt = -Infinity
+const STALE_TERMINAL = ["completed", "failed", "killed"]
+
+const STALE_AGENTS_MAX = 256
+
+function staleRecOf(id: string): StaleRec {
+  let r = staleAgents.get(id)
+  if (!r) {
+    if (staleAgents.size >= STALE_AGENTS_MAX) staleEvictOne()
+    r = { firstSeen: null, lastAt: null, touched: false, inFlight: new Map() }
+    staleAgents.set(id, r)
+  }
+  return r
+}
+
+// CONSTRAINT: жёсткий предел учёта (список агентов может отказывать всю
+// сессию, а новые agentId приходят): вытесняется запись без пометки
+// активности с самым старым lastAt; все с пометкой -- первая по порядку
+// вставки. Хук часов не читает, поэтому возраст пометки -- её порядок, не время.
+function staleEvictOne(): void {
+  const ents = Array.from(staleAgents.entries())
+  let vk: string | null = null
+  let vt = Infinity
+  for (let i = 0; i < ents.length; i++) {
+    const r = ents[i][1]
+    if (r.touched) continue
+    const t = r.lastAt === null ? -Infinity : r.lastAt
+    if (vk === null || t < vt) { vk = ents[i][0]; vt = t }
+  }
+  if (vk === null && ents.length) vk = ents[0][0]
+  if (vk === null) return
+  staleAgents.delete(vk)
+  staleNudgedAt.delete(vk)
+}
+
+export function staleAgentsSnapshot(): Record<string, { firstSeen: number | null; lastAt: number | null; touched: boolean; inFlight: number; nudgedAt: number | null }> {
+  const out: Record<string, { firstSeen: number | null; lastAt: number | null; touched: boolean; inFlight: number; nudgedAt: number | null }> = {}
+  staleAgents.forEach((r, id) => {
+    const n = staleNudgedAt.get(id)
+    out[id] = { firstSeen: r.firstSeen, lastAt: r.lastAt, touched: r.touched, inFlight: r.inFlight.size, nudgedAt: n === undefined ? null : n }
+  })
+  return out
+}
+
+// CONSTRAINT: дверь сброса -- для тестового стенда; продовое поведение её не
+// зовёт (состояние «session.start не наблюдался» иначе недостижимо в процессе).
+export function staleInteractiveReset(): void {
+  staleInteractive = null
+}
+
+// CONSTRAINT: открытое множество статусов движка -- живой всякий, кроме
+// терминальных: в сторону сообщения, не молчания.
+function staleOpen(lst: any[]): Map<string, { a: any; status: string }> {
+  const out = new Map<string, { a: any; status: string }>()
+  for (let i = 0; i < lst.length; i++) {
+    const a = lst[i]
+    if (!a || !a.id) continue
+    const status = String(a.status)
+    if (STALE_TERMINAL.indexOf(status) >= 0) continue
+    out.set(String(a.id), { a, status })
+  }
+  return out
+}
+
+// CONSTRAINT: тот же образец, что armFailoverFoldTimer: поколение гасит колбэк
+// отменённой ручки (отказ cancel не оставляет второго живого тика) и ручки без
+// cancel. Отказ вооружения и ручка без cancel оставляют null и метку отказа:
+// tool.call главного лупа вооружает заново не чаще раза в период.
+export function armStaleAgentsTimer($: any, now: number): void {
+  staleGen++
+  const gen = staleGen
+  const prev = staleTimer
+  staleTimer = null
+  if (prev) {
+    try { prev.cancel() } catch (x) { noteLost("stale-agents-timer-cancel", x, $) }
+  }
+  try {
+    const h = $.clock.every(STALE_AGENTS_PERIOD_MS, async () => {
+      if (gen !== staleGen) return
+      probeTickShare = null
+      try { await staleAgentsTick($, gen) } catch (x) { noteLost("stale-agents-tick", x, $) }
+      try { await probeTimerTick($, gen) } catch (x) { noteLost("probe-timer-tick", x, $) }
+    })
+    if (h && typeof h.cancel === "function") staleTimer = h
+    else {
+      staleTimer = null
+      staleArmFailedAt = now
+      noteLost("stale-agents-timer-handle", new Error("clock.every returned no cancel"), $)
+    }
+  } catch (x) {
+    staleTimer = null
+    staleArmFailedAt = now
+    noteLost("stale-agents-timer-arm", x, $)
+  }
+}
+
+function idleWatchArm(packed: any): string {
+  const world = packed && packed.world
+  const probes = world && Array.isArray(world.probes) ? world.probes : []
+  for (let i = 0; i < probes.length; i++) {
+    if (probes[i] && probes[i].id === "idle-watch") return armStateOf(probes[i], packed.env).state
+  }
+  return "absent"
+}
+
+function idleWatchOf(packed: any): any {
+  const probes = packed.world.probes
+  for (let i = 0; i < probes.length; i++) if (probes[i].id === "idle-watch") return probes[i]
+  return null
+}
+
+function fleetDir(world: any): string {
+  return world.globalHome + "/idle-watch/fleet"
+}
+
+function fleetSafe(s: string): string {
+  let out = ""
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charAt(i)
+    out += /[A-Za-z0-9._-]/.test(c) ? c : "_"
+  }
+  return out
+}
+
+// CONSTRAINT: сентинел sid общий для всех сессий без sid -- запись под ним
+// сливала бы их счёт в одну сессию; такой записи нет вовсе.
+async function fleetPublish($: any, world: any, sid: string, rec: any, site: string = "fleet-publish"): Promise<void> {
+  if (sid === SID_UNAVAILABLE) {
+    noteLost("fleet-sid-unavailable", new Error("session id unavailable: own fleet record not written"), $)
+    return
+  }
+  try {
+    await $.fs.write(fleetDir(world) + "/" + fleetSafe(sid) + ".json", JSON.stringify(rec))
+  } catch (x) { noteLost(site, x, $) }
+}
+
+function fleetEnoent(x: any): boolean {
+  let code = false
+  try { code = !!(x && (x as any).code === "ENOENT") } catch (y) { code = false }
+  return code || safeText(x).indexOf("ENOENT") >= 0
+}
+
+let fleetCensusErr = ""
+
+type FleetRow = { sid: string; cwd: string; running: number | null; idleMax: number }
+type FleetCensus = { sessions: number; agents: number; unknown: number; unreadable: number; vanished: number; mine: number | null; rows: FleetRow[] }
+
+// CONSTRAINT: прополка удаляет только имя, пришедшее из list этого каталога:
+// имя с "/" или ".." вышло бы из каталога и пропускается целиком (не читается,
+// не считается, не удаляется); двери удаления у $.fs нет -- отсюда rm -f.
+export async function fleetCensus($: any, world: any): Promise<FleetCensus | null> {
+  const dir = fleetDir(world)
+  const now = await nowMs($)
+  let ents: any
+  try { ents = await $.fs.list(dir) } catch (x) {
+    const m = safeText(x)
+    fleetCensusErr = (m.indexOf("fs.list") === 0 ? m : "fs.list: " + m).slice(0, 160)
+    noteLost("fleet-list", x, $)
+    return null
+  }
+  if (!Array.isArray(ents)) {
+    fleetCensusErr = "fs.list вернул " + typeof ents
+    noteLost("fleet-list", new Error(fleetCensusErr), $)
+    return null
+  }
+  const own = fleetSafe(await sidFor($)) + ".json"
+  // CONSTRAINT: запись под сентинелом sid (от прежней версии) -- не сессия и не своя: mine при недоступном sid остаётся null.
+  const sentinel = fleetSafe(SID_UNAVAILABLE) + ".json"
+  const prune = !(now - fleetPrunedAt < FLEET_PRUNE_EVERY_MS)
+  if (prune) fleetPrunedAt = now
+  const c: FleetCensus = { sessions: 0, agents: 0, unknown: 0, unreadable: 0, vanished: 0, mine: null, rows: [] }
+  for (let i = 0; i < ents.length; i++) {
+    const name = String((ents[i] && ents[i].name) || "")
+    if (name.slice(-5) !== ".json") continue
+    if (name.indexOf("/") >= 0 || name.indexOf("..") >= 0) continue
+    if (name === sentinel) {
+      c.unreadable++
+      continue
+    }
+    const path = dir + "/" + name
+    const r = await readText($, path)
+    if (r.text === null) {
+      // CONSTRAINT: файл, снятый между list и чтением (чужая прополка, конец сессии), -- не порча записи.
+      let gone = false
+      try { await $.fs.stat(path) } catch (x) { gone = fleetEnoent(x) }
+      if (gone) c.vanished++
+      else c.unreadable++
+      continue
+    }
+    let rec: any = null
+    try { rec = JSON.parse(String(r.text)) } catch (x) { rec = null }
+    if (!rec || typeof rec !== "object" || typeof rec.t !== "number" || !Number.isFinite(rec.t)) {
+      c.unreadable++
+      continue
+    }
+    if (prune && now - rec.t > FLEET_PRUNE_AGE_MS) {
+      try {
+        const pr = await $.process.run(["/bin/rm", "-f", path], { timeoutMs: 5000 })
+        const code = pr && typeof pr === "object" ? pr.exitCode : undefined
+        if (code !== 0) noteLost("fleet-prune", new Error(path + ": rm exit " + String(code)), $)
+      } catch (x) { noteLost("fleet-prune", x, $) }
+      continue
+    }
+    if (rec.ended === true || now - rec.t > FLEET_FRESH_MS) continue
+    c.sessions++
+    const run = typeof rec.running === "number" && Number.isFinite(rec.running) ? rec.running : null
+    if (run === null) c.unknown++
+    else c.agents += run
+    if (name === own) c.mine = run
+    let idleMax = 0
+    const ags = Array.isArray(rec.agents) ? rec.agents : []
+    for (let j = 0; j < ags.length; j++) {
+      const im = Number(ags[j] && ags[j].idleMin)
+      if (im > idleMax) idleMax = im
+    }
+    c.rows.push({ sid: String(rec.sid || name.slice(0, -5)), cwd: String(rec.cwd || ""), running: run, idleMax })
+  }
+  return c
+}
+
+// CONSTRAINT: одна форма чисел для сообщения и fleet_status; все поля всегда -- частичный счёт не выглядит полным.
+function fleetNumbers(c: FleetCensus): string {
+  return "агентов " + c.agents + ", сессий " + c.sessions + " (в этой " + (c.mine === null ? "?" : String(c.mine)) + "); без счёта " + c.unknown + ", нечитаемых " + c.unreadable
+}
+
+function fleetText(c: FleetCensus | null, why: string): string {
+  if (!c) return "Флот: счёт недоступен (" + why + ")"
+  const lines = ["Флот: " + fleetNumbers(c)]
+  if (c.rows.length) {
+    lines.push("sid | cwd | running | самый долгий простой, мин")
+    for (let i = 0; i < c.rows.length; i++) {
+      const r = c.rows[i]
+      lines.push(r.sid.slice(0, 8) + " | " + r.cwd + " | " + (r.running === null ? "?" : String(r.running)) + " | " + r.idleMax)
+    }
+  }
+  return lines.join("\n")
+}
+
+async function fleetAnswer($: any): Promise<string> {
+  let packed: any = null
+  try { packed = await worldFor($) } catch (x) {
+    noteLost("fleet-world", x, $)
+    return fleetText(null, "мир не прочитан: " + safeText(x).slice(0, 160))
+  }
+  const arm = idleWatchArm(packed)
+  if (arm !== "armed") return fleetText(null, "idle-watch не вооружён: " + arm)
+  const c = await fleetCensus($, packed.world)
+  return fleetText(c, fleetCensusErr)
+}
+
+async function staleAgentsTick($: any, gen: number): Promise<void> {
+  let packed: any = null
+  try { packed = await worldFor($) } catch (x) { noteLost("stale-agents-world", x, $); return }
+  if (idleWatchArm(packed) !== "armed") {
+    // CONSTRAINT: учёт заводят хуки при любом состоянии пробы; не вооружённый тик только чистит его, иначе записи копятся до конца процесса.
+    // Сигнал в полёте (staleFlyAt) тик не забывает: его снимает только ответ submit или смена эпохи.
+    staleAgents.clear()
+    staleNudgedAt.clear()
+    staleLastSubmitAt = null
+    return
+  }
+  const world = packed.world
+  const p = idleWatchOf(packed)
+  // CONSTRAINT: /clear и /resume меняют epoch, не поколение таймера: сверка обоих
+  // после каждого await перед публикацией, submit и тостом не пускает запись и
+  // сигнал прежней сессии в новую (агенты выбраны по прежней). Между сверкой и
+  // действием await нет -- повторная сверка там ничего бы не ловила.
+  const ep = epoch
+  const live = (): boolean => gen === staleGen && ep === epoch
+  const sid = await sidFor($)
+  let lst: any = null
+  let listErr: any = null
+  const listSeq = nudgeSeq
+  try { lst = await $.agent.list() } catch (x) { listErr = x }
+  probeTickShare = { ep, seq: listSeq, lst: listErr === null && Array.isArray(lst) ? lst : null }
+  const now = await nowMs($)
+  if (!live()) return
+  if (listErr !== null || !Array.isArray(lst)) {
+    if (listErr !== null) noteLost("stale-agents-list", listErr, $)
+    else noteLost("stale-agents-list-shape", new Error("agent.list returned " + typeof lst), $)
+    // CONSTRAINT: без списка учёт не чистится по нему: запись без пометки
+    // активности дольше 2× порога висящего агента снимается по возрасту.
+    const staleDropMs = 2 * num(p.cfg.stale_agent_min, 30, 1) * 60000
+    staleAgents.forEach((r, id) => { if (!r.touched && r.lastAt !== null && now - r.lastAt > staleDropMs) { staleAgents.delete(id); staleNudgedAt.delete(id) } })
+    await fleetPublish($, world, sid, { v: 1, sid, cwd: world.cwd, t: now, running: null, agents: [] })
+    return
+  }
+  const open = staleOpen(lst)
+  staleAgents.forEach((_r, id) => { if (!open.has(id)) staleAgents.delete(id) })
+  staleNudgedAt.forEach((_t, id) => { if (!open.has(id)) staleNudgedAt.delete(id) })
+  const thr = num(p.cfg.stale_agent_min, 30, 1)
+  const cd = num(p.cfg.cooldown_min, 30, 0)
+  const pub: any[] = []
+  const hung: Array<{ id: string; a: any; status: string; r: StaleRec }> = []
+  open.forEach((o, id) => {
+    const r = staleRecOf(id)
+    if (r.firstSeen === null) r.firstSeen = now
+    if (r.lastAt === null || r.touched) {
+      r.lastAt = now
+      r.touched = false
+    }
+    r.inFlight.forEach((f) => { if (f.seenAt === null) f.seenAt = now })
+    const idle = now - (r.lastAt as number)
+    pub.push({ id, type: String(o.a.type || ""), idleMin: Math.floor(idle / 60000) })
+    if (idle >= thr * 60000) hung.push({ id, a: o.a, status: o.status, r })
+  })
+  const windowOpen = (): boolean => staleFlyAt === null && (staleLastSubmitAt === null || !(now - staleLastSubmitAt < cd * 60000))
+  await fleetPublish($, world, sid, { v: 1, sid, cwd: world.cwd, t: now, running: open.size, agents: pub })
+  const signal = hung.length > 0 && windowOpen()
+  if (!signal && now - fleetPrunedAt < FLEET_PRUNE_EVERY_MS) return
+  const census = await fleetCensus($, world)
+  if (!signal) return
+  // CONSTRAINT: выбор сделан до await тика; агент, получивший touched или
+  // ставший терминальным/исчезнувший за это время, из сигнала выбрасывается.
+  // Отказ повторного list не гасит сигнал -- в сторону сообщения.
+  let again: any = null
+  let againErr: any = null
+  try { again = await $.agent.list() } catch (x) { againErr = x }
+  if (!live()) return
+  let againOpen: Map<string, { a: any; status: string }> | null = null
+  let recheck = "ok"
+  if (againErr !== null) {
+    noteLost("stale-agents-recheck", againErr, $)
+    recheck = "failed: " + safeText(againErr).slice(0, 160)
+  } else if (!Array.isArray(again)) {
+    noteLost("stale-agents-recheck-shape", new Error("agent.list returned " + typeof again), $)
+    recheck = "not-array: " + typeof again
+  } else againOpen = staleOpen(again)
+  const named = hung.filter((h) => !h.r.touched && (againOpen === null || againOpen.has(h.id)))
+  // CONSTRAINT: окно -- не больше одного сигнала на сессию за cooldown_min;
+  // проверка и отметка без await между ними (параллельный тик второго сигнала
+  // не даёт), отметка до submit (бросок submit не даёт повтора каждую минуту).
+  if (!named.length || !windowOpen()) return
+  const prevSubmitAt = staleLastSubmitAt
+  staleLastSubmitAt = now
+  const lines: string[] = ["[catalyst-probes idle-watch] В этой сессии висят незакрытые агенты (без шагов модели и без новых вызовов инструментов ≥ " + thr + " мин):"]
+  const jAgents: any[] = []
+  const stops: string[] = []
+  for (let i = 0; i < named.length; i++) {
+    const h = named[i]
+    const prev = staleNudgedAt.get(h.id)
+    staleNudgedAt.set(h.id, now)
+    const idleMin = Math.floor((now - (h.r.lastAt as number)) / 60000)
+    const ageMin = Math.floor((now - (h.r.firstSeen as number)) / 60000)
+    let oldest: { tool: string; seenAt: number } | null = null
+    h.r.inFlight.forEach((f) => {
+      if (f.seenAt !== null && (oldest === null || f.seenAt < oldest.seenAt)) oldest = { tool: f.tool, seenAt: f.seenAt }
+    })
+    let line = "- " + h.id + " «" + String(h.a.description || "") + "» (" + String(h.a.type || "") + (h.status !== "running" ? ", статус " + h.status : "") + "): без активности " + idleMin + " мин, живёт " + ageMin + " мин"
+    const ja: any = { id: h.id, type: String(h.a.type || ""), idleMin, ageMin }
+    if (prev !== undefined) ja.prevNudgedAt = isoOf(prev)
+    const o = oldest as { tool: string; seenAt: number } | null
+    if (o) {
+      line += "; ждёт инструмент " + o.tool + " ≥ " + Math.floor((now - o.seenAt) / 60000) + " мин"
+      ja.inFlightTool = o.tool
+    }
+    lines.push(line)
+    jAgents.push(ja)
+    stops.push("TaskStop " + h.id)
+  }
+  lines.push("Если отчёт агента уже получен и сохранён — закрой агента (" + stops.join(", ") + "). Если отчёта нет — проверь его вывод и сними его фоновые процессы и циклы ожидания. Не держи законченных агентов открытыми.")
+  lines.push(census ? "Флот сейчас: " + fleetNumbers(census) + "." : "Флот: счёт недоступен (" + fleetCensusErr + ").")
+  const jrec: any = { t: isoOf(now), kind: "STALE_AGENTS", agents: jAgents, recheck }
+  if (staleInteractive !== true) {
+    // CONSTRAINT: прогон без человека (-p, SDK) и неизвестный режим сигнала не получают -- чужой ход в автоматическом прогоне; след остаётся в журнале.
+    jrec.delivered = staleInteractive === false ? "not-interactive" : "interactive-unknown"
+  } else {
+    // CONSTRAINT: submit не ждётся -- его ответ может прийти лишь после хода сессии, и ожидание держало бы тик; отказ пишется отдельной записью под своим именем шарда (одно t с записью тика перетёрло бы её).
+    const text = lines.join("\n")
+    const tNudge = isoOf(now)
+    // CONSTRAINT: сигнал в полёте до ответа submit (staleFlyAt): истечение срока
+    // пишет строку и повтора не открывает. Поздний успех снимает полёт (окно
+    // закрыто от этого сигнала); поздний отказ снимает полёт и открывает окно --
+    // повтор на следующем тике. Трогаются только свой полёт и своё окно (новая
+    // сессия их сбросила).
+    staleFlyAt = now
+    const landed = (): void => { if (epoch === ep && staleFlyAt === now) staleFlyAt = null }
+    // CONSTRAINT: строка отказа сигнала -- и бросок submit (err), и разрешённый
+    // { drop } (by drop, reason): drop -- решение хука, не потеря, noteLost нет.
+    const refusal = (r: SubmitAns, isLate: boolean): any => {
+      const o: any = { t: tNudge, rec: "stale-agents-submit-err-" + String(now), kind: "STALE_AGENTS_SUBMIT_ERR" }
+      if (isLate) o.late = true
+      if (r.kind === "drop") { o.by = "drop"; o.reason = clip(r.reason, 240) }
+      else if (r.kind === "err") o.err = safeText(r.x).slice(0, 240)
+      return o
+    }
+    const late = (r: SubmitAns): void => {
+      landed()
+      if (r.kind === "ok") return
+      if (r.kind === "err") noteLost("stale-agents-submit-late", r.x, $)
+      if (epoch === ep && staleLastSubmitAt === now) staleLastSubmitAt = prevSubmitAt
+      void appendJournal($, world.globalHome + "/idle-watch/journal.jsonl", refusal(r, true)).catch((y: any) => noteLost("stale-agents-journal", y, $))
+    }
+    void submitBounded($, text, "stale-agents-submit", late).then((r) => {
+      if (r.kind === "timeout") {
+        return appendJournal($, world.globalHome + "/idle-watch/journal.jsonl", {
+          t: tNudge, rec: "stale-agents-submit-timeout-" + String(now), kind: "STALE_AGENTS_SUBMIT_TIMEOUT", ms: SUBMIT_DEADLINE_MS,
+        }).catch((y: any) => noteLost("stale-agents-journal", y, $))
+      }
+      landed()
+      if (r.kind === "ok") return undefined
+      if (r.kind === "err") noteLost("stale-agents-submit", r.x, $)
+      return appendJournal($, world.globalHome + "/idle-watch/journal.jsonl", refusal(r, false)).catch((y: any) => noteLost("stale-agents-journal", y, $))
+    })
+    try { await $.ui.toast(("idle-watch: незакрытых агентов " + named.length + ": " + named.map((h) => h.id).join(", ")).slice(0, 200)) } catch (x) {
+      jrec.toastErr = safeText(x).slice(0, 160)
+      noteLost("stale-agents-toast", x, $)
+    }
+  }
+  try { await appendJournal($, world.globalHome + "/idle-watch/journal.jsonl", jrec) } catch (x) { noteLost("stale-agents-journal", x, $) }
+}
+
+// --- #531: триггеры проб (on / every_min), idle-watch по README, доставка nudge ---
+const IDLE_LIVE_KINDS = ["local_agent", "remote_agent", "in_process_teammate"]
+
+// CONSTRAINT: AgentInfo вида работы не несёт: type "teammate" -- in-process
+// teammate, прочее -- локальный агент; удалённых работ $.agent.list не отдаёт.
+function liveKindOf(a: any): string {
+  return String(a && a.type) === "teammate" ? "in_process_teammate" : "local_agent"
+}
+
+function idleKindsOf(cfg: any): string[] {
+  return cfg && Array.isArray(cfg.live_kinds) ? cfg.live_kinds.map((k: any) => String(k)) : IDLE_LIVE_KINDS
+}
+
+export const NUDGE_QUEUE_MAX = 5
+export const NUDGE_SUBMIT_AGE_MS = 60000
+export const NUDGE_AGENT_QUEUES_MAX = 64
+const NUDGE_AGENT_GONE_MS = 600000
+const SUBMIT_DEADLINE_MS = 60000
+const NUDGE_TEXT_MAX = 2000
+const PROBE_LAUNCH_MAX = 256
+const PROBE_CAP_MAX = 8
+const PROBE_CAP_WINDOW_MS = 3600000
+const NUDGE_SUBMIT_FAILS_MAX = 3
+const PROBE_SAY_FLOOR_MS = 60000
+
+// CONSTRAINT: fly -- submit записи отправлен и не ответил (срок истёк или нет):
+// текст модель получит при следующем простое. Такую запись не отдаёт ни один
+// канал, её не вытесняют и не снимают как agent-gone; снимает её только ответ
+// submit -- успех (доставлена), drop (отказ хука) или отказ (fly снят, запись
+// в голову очереди; NUDGE_SUBMIT_FAILS_MAX отказов подряд -- снята), либо
+// смена эпохи. fails -- число отказов submit этой записи.
+type NudgeItem = { text: string; probe: string; t: number; jpath: string; sid: string; seq: number; said: string[]; done?: boolean; fly?: boolean; fails?: number }
+
+// CONSTRAINT: очередь -- на (сессия, агент): ключ "" -- главный луп, иначе id
+// агента, чьё событие вызвало консультацию; сессию держит newSession.
+const nudgeQueue = new Map<string, NudgeItem[]>()
+let nudgeSeq = 0
+let probeRecSeq = 0
+let sessionStartAt: number | null = null
+let probeLaunches: number[] = []
+const probeEvalAt = new Map<string, number>()
+const filteredSaidAt = new Map<string, number>()
+const probeConfigSaid = new Set<string>()
+const notMainPending = new Map<string, number>()
+// CONSTRAINT (#509-FIX7 Р17): барьер двойного счёта not-main -- tool_use_id,
+// засчитанный одним из путей (быстрым или медленным), второй раз не считается;
+// потолок NOT_MAIN_COUNTED_MAX, вытесняется старейший.
+const NOT_MAIN_COUNTED_MAX = 256
+const notMainCounted = new Set<string>()
+function notMainMark(tuid: string): void {
+  notMainCounted.add(tuid)
+  while (notMainCounted.size > NOT_MAIN_COUNTED_MAX) {
+    const oldest = notMainCounted.values().next().value
+    if (oldest === undefined) break
+    notMainCounted.delete(oldest)
+  }
+}
+function notMainCount(tuid: string): void {
+  if (!probeNotMain.length || (tuid && notMainCounted.has(tuid))) return
+  for (let i = 0; i < probeNotMain.length; i++) notMainPending.set(probeNotMain[i], (notMainPending.get(probeNotMain[i]) || 0) + 1)
+  if (tuid) notMainMark(tuid)
+}
+// CONSTRAINT (#509-FIX7 Р12): подсказка главному лупу о шаге, обслуженном не
+// объявленной моделью, -- одна на (агент, модель ступени) в сессии.
+const ladderServedSaid = new Set<string>()
+const nudgeAbsentSince = new Map<string, number>()
+let probeTickShare: { ep: number; seq: number; lst: any[] | null } | null = null
+
+// CONSTRAINT: смена эпохи снимает очереди прежней сессии (текст в новую не
+// переносится), но не молча: каждая снятая запись -- строка nudge_dropped
+// session-reset в её журнал (её jpath и sid), запись в полёте -- с fly.
+// Снимок очереди -- синхронно до clear, строки -- после, без ожидания.
+function probeSessionReset($: any): void {
+  const dropped: Array<{ k: string; it: NudgeItem }> = []
+  nudgeQueue.forEach((q, k) => { for (let i = 0; i < q.length; i++) dropped.push({ k, it: q[i] }) })
+  if (dropped.length) void (async () => {
+    for (let i = 0; i < dropped.length; i++) {
+      const d = dropped[i]
+      const extra: any = { outcome: "nudge_dropped", by: "session-reset", agent: d.k || "main" }
+      if (d.it.fly) extra.fly = true
+      await nudgeJournal($, d.it, extra)
+    }
+  })()
+  nudgeQueue.clear()
+  nudgeAbsentSince.clear()
+  sessionStartAt = null
+  probeLaunches = []
+  probeEvalAt.clear()
+  filteredSaidAt.clear()
+  probeConfigSaid.clear()
+  notMainPending.clear()
+  notMainCounted.clear()
+  ladderServedSaid.clear()
+  probeTickShare = null
+}
+
+export function probeQueueSnapshot(): any {
+  const out: any = {}
+  nudgeQueue.forEach((q, k) => { out[k] = q.map((it) => ({ text: it.text, probe: it.probe, t: it.t, fly: it.fly === true })) })
+  return out
+}
+
+// CONSTRAINT: кэп nudge/log_only -- не больше PROBE_CAP_MAX консультаций на
+// сессию за последние PROBE_CAP_WINDOW_MS (отметки времени, не пожизненный
+// счёт). Число в сторе -- прежняя форма без времён: его отметки ставятся
+// временем ПЕРВОГО чтения в процессе (дальше число не читается, отметки живут
+// в зеркале) и сразу пишутся в стор массивом (capSeedFrom), иначе прежний
+// исчерпанный счёт немел бы навсегда, а каждая перезагрузка мода датировала
+// бы число заново. Отметка из будущего (часы назад) считается в окне -- в
+// сторону ограничения расхода.
+const capLegacySeen = new Set<string>()
+function capMarksOf(v: any, now: number, sid: string): number[] {
+  if (Array.isArray(v)) return v.map((t: any) => Number(t)).filter((t: number) => Number.isFinite(t))
+  const n = typeof v === "number" ? v : Number(v)
+  if (!(Number.isFinite(n) && n > 0) || capLegacySeen.has(sid)) return []
+  capLegacySeen.add(sid)
+  return new Array(Math.min(Math.floor(n), PROBE_CAP_MAX)).fill(now)
+}
+
+function capLive(marks: number[], now: number): number[] {
+  return marks.filter((t) => now - t < PROBE_CAP_WINDOW_MS).slice(-PROBE_CAP_MAX)
+}
+
+// CONSTRAINT: зеркало -- больший из двух живых наборов (стор и зеркало), как
+// максимум у прежнего счёта: стор ниже зеркала значит упавшую свою запись.
+// Пишется и при удачном чтении: отказ следующего чтения не снимает кэп.
+function capSeed(sid: string, stored: number[], now: number): void {
+  const a = capLive(stored, now)
+  const b = capLive(capMirror.get(sid) || [], now)
+  capMirror.set(sid, a.length > b.length ? a : b)
+}
+
+// CONSTRAINT: проверка и отметка -- синхронно по зеркалу, без await между ними:
+// две параллельные оценки не проходят кэп обе. null -- окно полно.
+function capTake(sid: string, now: number): number[] | null {
+  const cur = capLive(capMirror.get(sid) || [], now)
+  if (cur.length >= PROBE_CAP_MAX) { capMirror.set(sid, cur); return null }
+  const next = cur.concat([now])
+  capMirror.set(sid, next)
+  return next
+}
+
+function capSeedFrom($: any, sid: string, v: any, now: number): void {
+  let stored: number[] = []
+  try { stored = capMarksOf(v, now, sid) } catch (x) { noteLost("session-cap-read", x, $) }
+  capSeed(sid, stored, now)
+  if (stored.length && !Array.isArray(v)) capPersist($, sid)
+}
+
+// CONSTRAINT: все записи массива кэпа -- одной цепочкой, и каждая берёт
+// ТЕКУЩЕЕ зеркало в момент исполнения, не снимок до await: записи,
+// завершившиеся в обратном порядке, иначе оставляли бы в сторе меньший набор.
+// Вызывающий цепочку не ждёт: висящая запись стора не держит tool.call.
+let capWriteChain: Promise<void> = Promise.resolve()
+// CONSTRAINT (#509-FIX7 Р18): sid, чья последняя запись кэпа отказана, --
+// в capUnlanded до удачной записи; прополка эпохи такой ключ не снимает: в
+// сторе прежнее число, и /resume датировал бы его заново.
+const capUnlanded = new Set<string>()
+// CONSTRAINT (#509-FIX8 Р9): неприземлённых ключей не больше CAP_UNLANDED_MAX.
+// Сверх предела вытесняется старейший по порядку вставки, кроме sid текущей
+// эпохи; зеркало вытесненного снимается, только если его массив -- тот же, что
+// на последней смене эпохи (capEpochSeen): тронутый новой эпохой ключ несёт её
+// отметки. Вытеснение названо noteLost.
+export const CAP_UNLANDED_MAX = 64
+let capEpochSeen = new Map<string, number[]>()
+function capUnlandedEvict($: any, sid: string): void {
+  while (capUnlanded.size > CAP_UNLANDED_MAX) {
+    const ks = Array.from(capUnlanded)
+    let victim = ""
+    for (let i = 0; i < ks.length; i++) if (ks[i] !== sid && ks[i] !== sidMemo) { victim = ks[i]; break }
+    if (!victim) return
+    capUnlanded.delete(victim)
+    const m = capMirror.get(victim)
+    if (m !== undefined && capEpochSeen.get(victim) === m) capMirror.delete(victim)
+    noteLost("session-cap-unlanded-evicted", new Error(victim), $)
+  }
+}
+function capPersist($: any, sid: string): void {
+  const run = async (): Promise<void> => {
+    const cur = capMirror.get(sid)
+    if (!cur) return
+    try {
+      await $.store.set(CAP_KEY + ":" + sid, cur.slice())
+      capUnlanded.delete(sid)
+    } catch (x) {
+      capUnlanded.add(sid)
+      capUnlandedEvict($, sid)
+      noteLost("session-cap", x, $)
+    }
+  }
+  capWriteChain = capWriteChain.then(run, run)
+}
+
+// CONSTRAINT: память кэпа прошлой эпохи (зеркало и отметки прежнего числа)
+// снимается последним звеном цепочки записей, после записей, уже стоящих в
+// очереди: они берут зеркало в момент исполнения, и итог старого sid доходит
+// до стора (его читает /resume). Снимается только ключ, не тронутый новой
+// эпохой (тот же массив зеркала): тронутый -- текущий sid, его запись идёт
+// следом и без зеркала пропала бы. Иначе память процесса росла бы с числом
+// сессий.
+function capEpochPrune(): void {
+  const seen = new Map<string, number[]>()
+  capMirror.forEach((m, k) => { seen.set(k, m) })
+  capEpochSeen = seen
+  const legacy = Array.from(capLegacySeen)
+  const prune = (): void => {
+    seen.forEach((m, k) => { if (capMirror.get(k) === m && !capUnlanded.has(k)) capMirror.delete(k) })
+    for (const k of legacy) if (!capMirror.has(k)) capLegacySeen.delete(k)
+  }
+  capWriteChain = capWriteChain.then(prune, prune)
+}
+
+// CONSTRAINT: двери -- для тестового стенда: ключи зеркала кэпа, отметки
+// прежнего числа, неприземлённые ключи и сброс состояния кэпа процесса (так
+// выглядит перезагрузка мода; стор остаётся).
+export function probeCapSids(): string[] {
+  return Array.from(capMirror.keys())
+}
+
+export function probeCapLegacySids(): string[] {
+  return Array.from(capLegacySeen)
+}
+
+export function probeCapUnlandedSids(): string[] {
+  return Array.from(capUnlanded)
+}
+
+export function probeCapStateReset(): void {
+  capMirror.clear()
+  capLegacySeen.clear()
+  capUnlanded.clear()
+  capEpochSeen = new Map()
+  capWriteChain = Promise.resolve()
+}
+
+// CONSTRAINT: cooldown не-cancel пробы на любом триггере -- cooldown_min из
+// [defaults] или таблицы (cfg уже слит); ключа нет -- паузы нет, 0 -- выключено.
+// Встроенные пробы держат свои пороги (idle-watch -- idleGate, судья -- cancel).
+function probeCooldownMs(p: any): number {
+  if (p.builtin || p.act === "cancel" || p.pending) return 0
+  const raw = p.cfg ? p.cfg.cooldown_min : undefined
+  if (raw === undefined || raw === null) return 0
+  const cd = num(raw, 0, 0) * 60000
+  return cd
+}
+
+function probeCooldownBy(p: any, last: number, now: number): string {
+  const cd = probeCooldownMs(p)
+  return cd > 0 && last && now - last < cd ? "cooldown" : ""
+}
+
+// CONSTRAINT: отметка консультации -- один синхронный шаг ПОСЛЕ последнего
+// await оценки: перепроверка cooldown пробы по зеркалу отметки, кэп, отметка и
+// постановка записи кэпа. Ранняя проверка до await пересечения двух оценок
+// (два события, таймер и tool.call) не закрывает: обе видят старую отметку.
+// "" -- консультация идёт, иначе причина filtered.
+function probeMarkTake($: any, p: any, lk: string, sid: string, now: number): string {
+  const cd = p.id === "idle-watch" ? idleCooldownMs(p.cfg) : probeCooldownMs(p)
+  const prev = lastMirror.get(lk) || 0
+  if (cd > 0 && prev && now - prev < cd) return "cooldown"
+  const marks = capTake(sid, now)
+  if (!marks) return "consult-cap"
+  lastMirror.set(lk, now)
+  capPersist($, sid)
+  return ""
+}
+
+// CONSTRAINT: разрешённое значение submit -- PromptSubmitResult: объект со
+// строкой drop, в том числе пустой, -- текст не вошёл (отказ хука), не доставка.
+// Чтение значения, бросившее, -- отказ submit, не успех.
+type SubmitAns = { kind: "ok" } | { kind: "drop"; reason: string } | { kind: "err"; x: any }
+function submitAnsOf(v: any): SubmitAns {
+  try {
+    if (v && typeof v === "object" && typeof v.drop === "string") return { kind: "drop", reason: v.drop || "(пустая причина)" }
+  } catch (x) { return { kind: "err", x } }
+  return { kind: "ok" }
+}
+
+// CONSTRAINT: $.prompt.submit ограничен сроком гонкой с $.clock.after. Истечение
+// срока не отменяет висящий submit: его поздний ответ уходит в late(r), и
+// вызывающий снимает повтор сам. Часы, отказавшие взвести срок, названы
+// noteLost; ожидание тогда без срока, как до него.
+function submitBounded($: any, text: string, site: string, late: (r: SubmitAns) => void): Promise<SubmitAns | { kind: "timeout" }> {
+  return new Promise((resolve) => {
+    let state = 0
+    let timer: any = null
+    try {
+      timer = $.clock.after(SUBMIT_DEADLINE_MS, () => {
+        if (state !== 0) return
+        state = 2
+        resolve({ kind: "timeout" })
+      })
+    } catch (x) { noteLost(site + "-deadline", x, $) }
+    const stop = (): void => {
+      try { if (timer && typeof timer.cancel === "function") timer.cancel() } catch (x) { noteLost(site + "-deadline-cancel", x, $) }
+    }
+    Promise.resolve().then(() => $.prompt.submit({ text })).then(
+      (v: any) => {
+        const r = submitAnsOf(v)
+        if (state === 2) { late(r); return }
+        state = 1
+        stop()
+        resolve(r)
+      },
+      (x: any) => {
+        if (state === 2) { late({ kind: "err", x }); return }
+        state = 1
+        stop()
+        resolve({ kind: "err", x })
+      },
+    )
+  })
+}
+
+// CONSTRAINT (#509-FIX7d AR4): живой движок 2.1.283 не снимает turn.step, пока хук ждёт гонку двери со сроком ($.clock.after и $.clock.sleep): шаг прожил 30 с при бюджете 10 с, remainingMs не менялся (Catalyst-programs/2026-09-25-ladder-terminal-509/probe-ar4-live/logs/probe.jsonl); изолированное ожидание часов дольше бюджета не мерилось. Кит claude plugin test одиночное ожидание clock.after снимает на 10 с, поэтому такое ожидание зубом кита не мерится.
+// CONSTRAINT (#509-FIX7 А-Р1): ожидание двери ограничено сроком гонкой с
+// $.clock.after; срок истёк -- {late: true}, дверь доживает в фоне, её поздний
+// отказ -- noteLost(site). Отказ двери до срока пробрасывается. Часы, отказавшие
+// взвести срок, -- noteLost, ожидание тогда без срока.
+// CONSTRAINT (#509-FIX8 Р6): поздний успех двери, чьё значение несёт причину
+// отказа (lateWhy вернул не null/undefined), -- тоже noteLost(site).
+function raceUntil($: any, work: Promise<any>, ms: number, site: string, lateWhy?: (v: any) => any): Promise<{ late: boolean; v?: any }> {
+  return new Promise((resolve, reject) => {
+    let state = 0
+    let timer: any = null
+    const lateNow = (): void => {
+      if (state !== 0) return
+      state = 2
+      resolve({ late: true })
+    }
+    if (!(ms > 0)) lateNow()
+    else {
+      try { timer = $.clock.after(ms, lateNow) } catch (x) { noteLost(site + "-deadline", x, $) }
+    }
+    const stop = (): void => {
+      try { if (timer && typeof timer.cancel === "function") timer.cancel() } catch (x) { noteLost(site + "-deadline-cancel", x, $) }
+    }
+    Promise.resolve(work).then(
+      (v: any) => {
+        if (state === 2) {
+          if (lateWhy) {
+            const why = lateWhy(v)
+            if (why !== null && why !== undefined) noteLost(site, why, $)
+          }
+          return
+        }
+        state = 1
+        stop()
+        resolve({ late: false, v })
+      },
+      (x: any) => {
+        if (state === 2) { noteLost(site, x, $); return }
+        state = 1
+        stop()
+        reject(x)
+      },
+    )
+  })
+}
+
+function jsonClip(v: any, n: number): string {
+  let s: any = ""
+  try { s = JSON.stringify(v === undefined ? null : v) } catch (x) { s = "[unserializable: " + safeText(x).slice(0, 80) + "]" }
+  s = String(s)
+  return n > 0 && s.length > n ? s.slice(0, n) : s
+}
+
+function flatInto(ctx: any, ev: any): void {
+  if (!ev || typeof ev !== "object") return
+  const ks = Object.keys(ev)
+  for (let i = 0; i < ks.length; i++) {
+    const k = ks[i]
+    if (Object.prototype.hasOwnProperty.call(ctx, k)) continue
+    const v = ev[k]
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") ctx[k] = v
+  }
+}
+
+function probeRec(kind: string, t: number): string {
+  return kind + "-" + String(t) + "-" + String(++probeRecSeq)
+}
+
+async function probeAgentList($: any): Promise<any[] | null> {
+  try {
+    const l = await $.agent.list()
+    if (Array.isArray(l)) return l
+    noteLost("agent-list-shape", new Error("agent.list returned " + typeof l), $)
+    return null
+  } catch (x) {
+    noteLost("agent-list", x, $)
+    return null
+  }
+}
+
+// CONSTRAINT (#509-FIX7 Р12): подсказка без дома журнала (лестница без
+// globalHome) ставится и доставляется; её строк журнала нет.
+async function nudgeJournal($: any, it: NudgeItem, extra: any, t?: number): Promise<void> {
+  if (!it.jpath) return
+  try {
+    const tn = t === undefined ? await nowMs($) : t
+    await appendJournal($, it.jpath, Object.assign({ t: isoOf(tn), probe: it.probe }, extra, {
+      text: clip(it.text, 400), rec: probeRec(String(extra.outcome), tn), sid: it.sid,
+    }))
+  } catch (x) { noteLost("nudge-journal", x, $) }
+}
+
+// CONSTRAINT: вытесняется старейшая запись; вставка и вытеснение -- без await
+// между ними (параллельная консультация не видит очередь длиннее предела).
+// CONSTRAINT: очередей агентов не больше NUDGE_AGENT_QUEUES_MAX; при новой
+// очереди сверх предела снимается та, в которую дольше всех не ставили (её
+// последняя запись с наименьшим seq); очередь главного лупа в предел не входит.
+async function nudgeEnqueue($: any, key: string, it: { text: string; probe: string; t: number; jpath: string; sid: string }): Promise<void> {
+  let q = nudgeQueue.get(key)
+  const capped: Array<{ k: string; it: NudgeItem }> = []
+  if (!q) {
+    q = []
+    nudgeQueue.set(key, q)
+    if (key) {
+      let n = 0
+      nudgeQueue.forEach((_q, k) => { if (k) n++ })
+      while (n > NUDGE_AGENT_QUEUES_MAX) {
+        let vk = ""
+        let vs = Infinity
+        const ents = Array.from(nudgeQueue.entries())
+        for (let i = 0; i < ents.length; i++) {
+          const k = ents[i][0]
+          const qq = ents[i][1]
+          if (!k || k === key) continue
+          const s = qq.length ? qq[qq.length - 1].seq : -1
+          if (s < vs) { vs = s; vk = k }
+        }
+        if (!vk) break
+        const vq = nudgeQueue.get(vk) || []
+        nudgeQueue.delete(vk)
+        nudgeAbsentSince.delete(vk)
+        for (let i = 0; i < vq.length; i++) capped.push({ k: vk, it: vq[i] })
+        n--
+      }
+    }
+  }
+  const fresh: NudgeItem = Object.assign({ seq: ++nudgeSeq, said: [] as string[] }, it)
+  q.push(fresh)
+  // CONSTRAINT: запись в полёте занимает слот и не вытесняется: уходит старейшая
+  // не в полёте; все прочие в полёте -- не встаёт сама новая (queue-cap).
+  const out: Array<{ it: NudgeItem; by: string }> = []
+  while (q.length > NUDGE_QUEUE_MAX) {
+    const d = q.splice(q.findIndex((x) => !x.fly), 1)[0]
+    out.push({ it: d, by: d === fresh ? "queue-cap" : "queue-max" })
+  }
+  for (let i = 0; i < capped.length; i++) await nudgeJournal($, capped[i].it, { outcome: "nudge_dropped", by: "queue-cap", agent: capped[i].k })
+  for (let i = 0; i < out.length; i++) await nudgeJournal($, out[i].it, { outcome: "nudge_dropped", by: out[i].by, agent: key || "main" })
+}
+
+// CONSTRAINT: канал (а): очередь агента уходит полем context результата его
+// ближайшего tool.call; свой context результата сохраняется; deny не несёт
+// текста -- очередь ждёт следующего вызова. Снятие очереди -- синхронно до
+// первого await: второй канал того же текста уже не увидит.
+async function nudgeDeliverContext($: any, key: string, res: any): Promise<any> {
+  const q = nudgeQueue.get(key)
+  if (!q || !q.length) return res
+  if (!res || typeof res !== "object" || Array.isArray(res) || "deny" in res) return res
+  const give = q.filter((it) => !it.fly)
+  if (!give.length) return res
+  const keep = q.filter((it) => it.fly)
+  if (keep.length) nudgeQueue.set(key, keep)
+  else nudgeQueue.delete(key)
+  const own: string[] = Array.isArray(res.context) ? res.context.slice() : (res.context != null ? [String(res.context)] : [])
+  const out = Object.assign({}, res, { context: own.concat(give.map((it) => it.text)) })
+  const t = await nowMs($)
+  for (let i = 0; i < give.length; i++) await nudgeJournal($, give[i], { outcome: "nudge_delivered", channel: "context", agent: key || "main" }, t)
+  return out
+}
+
+// CONSTRAINT: запись в полёте остаётся в очереди главного лупа, поэтому ответ
+// submit работает с ней на месте: успех снимает, отказ переносит в голову.
+// Очередь прежней эпохи уже сброшена -- искать не в чем.
+function nudgeFlyTake(it: NudgeItem): void {
+  const q = nudgeQueue.get("")
+  const j = q ? q.indexOf(it) : -1
+  if (!q || j < 0) return
+  q.splice(j, 1)
+  if (!q.length) nudgeQueue.delete("")
+}
+
+function nudgeFlyToHead(it: NudgeItem, ep: number): void {
+  if (epoch !== ep) return
+  const q = nudgeQueue.get("")
+  const j = q ? q.indexOf(it) : -1
+  if (!q || j < 0) return
+  q.splice(j, 1)
+  q.unshift(it)
+}
+
+// CONSTRAINT: не больше одной строки filtered / when_bad на (проба, класс) за
+// cooldown_min и не чаще раза в PROBE_SAY_FLOOR_MS: cooldown_min = 0 снимает
+// паузу консультаций, не предел строк журнала. Отметка ставится синхронно до
+// await записи (параллельная оценка второй строки не даёт). false -- строка
+// подавлена частотой.
+function probeSayDue(p: any, cls: string, now: number): boolean {
+  const key = p.id + "|" + cls
+  const cd = Math.max(num(p.cfg && p.cfg.cooldown_min, 30, 0) * 60000, PROBE_SAY_FLOOR_MS)
+  const prev = filteredSaidAt.get(key)
+  if (prev !== undefined && now >= prev && now - prev < cd) return false
+  filteredSaidAt.set(key, now)
+  return true
+}
+
+async function probeFiltered($: any, world: any, p: any, by: string, event: string, now: number, n?: number): Promise<boolean> {
+  const cls = by.split(":")[0]
+  if (!probeSayDue(p, cls, now)) return false
+  const rec: any = { t: isoOf(now), probe: p.id, outcome: "filtered", by, event, rec: probeRec("filtered-" + cls, now), sid: await sidFor($) }
+  if (n !== undefined) rec.n = n
+  try { await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", rec) } catch (x) { noteLost("probe-filtered", x, $) }
+  return true
+}
+
+// CONSTRAINT: строка конфига -- одна на (проба, отметка) за сессию; пишут её
+// только вооружённые пробы (выключенная проба не работает и не отчитывается).
+async function probeConfigNotes($: any, packed: any, now: number): Promise<void> {
+  const probes = packed.world.probes
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i]
+    if (!probeListens(p, packed.env)) continue
+    const jpath = packed.world.globalHome + "/" + p.id + "/journal.jsonl"
+    const bad: string[] = Array.isArray(p.onBad) ? p.onBad : []
+    for (let j = 0; j < bad.length; j++) {
+      const key = p.id + "|on_bad|" + bad[j]
+      if (probeConfigSaid.has(key)) continue
+      await journalOnce($, probeConfigSaid, key, jpath, { t: isoOf(now), probe: p.id, outcome: "on_bad", by: bad[j], rec: probeRec("on_bad", now), sid: await sidFor($) }, "probe-on-bad")
+    }
+    if (!p.builtin && !p.on.length && !p.everyMs) {
+      const key = p.id + "|no-trigger"
+      if (probeConfigSaid.has(key)) continue
+      await journalOnce($, probeConfigSaid, key, jpath, { t: isoOf(now), probe: p.id, outcome: "skip_degraded", by: "no-trigger", rec: probeRec("skip_degraded", now), sid: await sidFor($) }, "probe-no-trigger")
+    }
+    // CONSTRAINT: $.agent.list удалённых работ не отдаёт -- вид remote_agent в
+    // live_kinds ненаблюдаем; строка -- одна на сессию, вид из счёта не выводится.
+    if (p.id === "idle-watch" && idleKindsOf(p.cfg).indexOf("remote_agent") >= 0) {
+      const by = "live_kinds_unobservable:remote_agent"
+      const key = p.id + "|" + by
+      if (probeConfigSaid.has(key)) continue
+      await journalOnce($, probeConfigSaid, key, jpath, { t: isoOf(now), probe: p.id, outcome: "skip_degraded", by, rec: probeRec("skip_degraded", now), sid: await sidFor($) }, "probe-live-kinds")
+    }
+  }
+}
+
+function probeCtxOf(event: string, ev: any, input: any, now: number, aid: string | undefined, lst: any[] | null, last: number): any {
+  const ctx: any = {
+    now, event,
+    live_works: lst === null ? null : lst.length,
+    unknown: lst === null ? ["live_works"] : [],
+    last_consultation: last,
+    agent_id: aid,
+  }
+  if (event === "PostToolUse") ctx.tool_name = String((ev && ev.tool) || "")
+  if (event !== "timer") flatInto(ctx, input)
+  Object.defineProperty(ctx, "eventInput", { value: input, enumerable: false })
+  return ctx
+}
+
+async function probeWhenBad($: any, world: any, p: any, env: any, ev: any, ctx: any, now: number): Promise<void> {
+  if (!probeSayDue(p, "when_bad", now)) return
+  try {
+    await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", {
+      t: isoOf(now), tool: String((ev && ev.tool) || ""), agent: String((ev && ev.subagent_type) || ""), outcome: "when_bad",
+      rec: modRecName(ev), carrier: carrierOfJournal(p, env), sid: await sidFor($),
+      whenBad: ctx.whenBad, ms: 0, probe: p.id,
+    })
+  } catch (x) { noteLost("journal-when-bad", x, $) }
+}
+
+async function probeObserveBg($: any, p: any, env: any, world: any, ev: any, ctx: any, sid: string, epCall: number): Promise<void> {
+  let raw: any = undefined
+  try { raw = await $.store.get(CAP_KEY + ":" + sid) } catch (x) { noteLost("session-cap-read", x, $) }
+  if (epoch !== epCall) return
+  // CONSTRAINT: слияние стора с зеркалом -- ПОСЛЕ await, отметка -- без await
+  // следом: две параллельные оценки не проходят кэп и cooldown обе.
+  capSeedFrom($, sid, raw, ctx.now)
+  const lk = lastKey(p.id, world.cwd)
+  const why = probeMarkTake($, p, lk, sid, ctx.now)
+  if (why) { await probeFiltered($, world, p, why, String(ctx.event || ""), ctx.now); return }
+  try { await $.store.set(lk, ctx.now) } catch (x) { noteLost("consult-last", x, $) }
+  if (epoch !== epCall) return
+  ;(async () => { try { await consultBg($, p, env, world, ev, ctx, "", epCall) } catch (x) { noteLost("observer-consult", x, $) } })()
+}
+
+// CONSTRAINT: оценка наблюдающей пробы вне PreToolUse (прочие classic-события,
+// PostToolUse, таймер); отмена сюда не доходит -- её имена сняты on_bad.
+async function probeEvaluate($: any, packed: any, p: any, o: { event: string; ev: any; input: any; lst: any[] | null; now: number; aid: string | undefined; ep: number; toolResult?: any }): Promise<void> {
+  if (p.act === "cancel" || p.pending) return
+  const env = packed.env
+  const world = packed.world
+  if (p.mainLoopOnly && o.aid) { await probeFiltered($, world, p, "not-main", o.event, o.now); return }
+  const lk = lastKey(p.id, world.cwd)
+  let lastStore = 0
+  try { lastStore = Number(await $.store.get(lk) || 0) } catch (x) { noteLost("consult-last-read", x, $) }
+  const last = Math.max(lastStore, lastMirror.get(lk) || 0)
+  lastMirror.set(lk, last)
+  const ctx = probeCtxOf(o.event, o.ev, o.input, o.now, o.aid, o.lst, last)
+  if (o.event === "PostToolUse") ctx.tool_result = o.toolResult
+  let by = ""
+  if (p.id === "idle-watch") by = idleGate(p, ctx, o.lst, o.now)
+  else if (p.cfg && p.cfg.when) {
+    const u = whenFields(p.cfg.when).filter((f) => ctx.unknown.indexOf(f) >= 0)
+    if (u.length) { for (const f of u) addWhenBad(ctx, "unknown=" + f); by = "when-bad" }
+    else if (!pred(p.cfg.when, ctx)) by = "when-false"
+  }
+  if (!by) by = probeCooldownBy(p, last, o.now)
+  if (ctx.whenBad) { await probeWhenBad($, world, p, env, o.ev, ctx, o.now); return }
+  if (by) { await probeFiltered($, world, p, by, o.event, o.now); return }
+  if (epoch !== o.ep) return
+  await probeObserveBg($, p, env, world, o.ev, ctx, await sidFor($), o.ep)
+}
+
+async function classicRun($: any, name: string, e: any, next: any): Promise<any> {
+  try { await classicProbe($, name, e) } catch (x) { noteLost("probe-classic", x, $) }
+  return next(e)
+}
+
+async function classicProbe($: any, name: string, e: any): Promise<void> {
+  const ev = snapEvent($, e, "classic." + name)
+  const ep = epoch
+  const packed = await worldFor($)
+  const now = await nowMs($)
+  if (ep !== epoch) return
+  if (sessionStartAt === null) sessionStartAt = now
+  await probeConfigNotes($, packed, now)
+  const ps: any[] = packed.world.probes.filter((p: any) => probeListens(p, packed.env) && p.on.indexOf(name) >= 0)
+  if (!ps.length) return
+  const aid = ev.agent_id != null && ev.agent_id !== "" ? String(ev.agent_id) : undefined
+  const lst = await probeAgentList($)
+  // CONSTRAINT: у classic-события нет tool_use_id -- без своего имени улика и
+  // шард журнала каждого события ложились бы в один mod-noid.
+  const evc = Object.assign({}, ev, { tool_use_id: ev.tool_use_id || probeRec("classic-" + name, now) })
+  if (!ev.tool_use_id) calllessEvents.add(evc)
+  for (let i = 0; i < ps.length; i++) {
+    if (ep !== epoch) return
+    await probeEvaluate($, packed, ps[i], { event: name, ev: evc, input: ev, lst, now, aid, ep })
+  }
+}
+
+// CONSTRAINT: main-only проба на tool.call агента -- оценка not-main; путь
+// агента не читает часов и не зовёт $, поэтому он только считает, а строку
+// пишет тик (счёт n -- с прошлой записанной строки).
+async function probeNotMainFlush($: any, packed: any, now: number): Promise<void> {
+  if (!notMainPending.size) return
+  const pend = Array.from(notMainPending.entries())
+  notMainPending.clear()
+  for (let i = 0; i < pend.length; i++) {
+    const id = pend[i][0]
+    const n = pend[i][1]
+    const p = packed.world.probes.find((x: any) => x && x.id === id)
+    if (!p) continue
+    if (!(await probeFiltered($, packed.world, p, "not-main", "tool.call", now, n))) {
+      notMainPending.set(id, (notMainPending.get(id) || 0) + n)
+    }
+  }
+}
+
+async function probeTimerDeliver($: any, lst: any[] | null | undefined, listSeq: number, now: number, ep: number): Promise<void> {
+  if (Array.isArray(lst)) {
+    const open = staleOpen(lst)
+    const listed = new Set<string>()
+    for (let i = 0; i < lst.length; i++) if (lst[i] && lst[i].id) listed.add(String(lst[i].id))
+    const gone: Array<{ k: string; it: NudgeItem }> = []
+    nudgeQueue.forEach((q, k) => {
+      if (!k) return
+      if (open.has(k)) { nudgeAbsentSince.delete(k); return }
+      // CONSTRAINT: терминальный статус в списке -- ушедший сразу (Р6). Агента
+      // нет в списке -- ушедший после NUDGE_AGENT_GONE_MS подряд (отсчёт -- с
+      // первого тика без него, появление его сбрасывает); разовое отсутствие в
+      // списке очередь не снимает.
+      if (!listed.has(k)) {
+        const since = nudgeAbsentSince.get(k)
+        if (since === undefined) { nudgeAbsentSince.set(k, now); return }
+        if (now - since < NUDGE_AGENT_GONE_MS) return
+      }
+      // CONSTRAINT: ушедшим считается только агент записи, поставленной ДО
+      // запроса списка: агент, родившийся после запроса, в нём быть не мог.
+      const keep = q.filter((it) => it.seq > listSeq)
+      for (let i = 0; i < q.length; i++) if (q[i].seq <= listSeq) gone.push({ k, it: q[i] })
+      if (keep.length) nudgeQueue.set(k, keep)
+      else nudgeQueue.delete(k)
+    })
+    for (let i = 0; i < gone.length; i++) await nudgeJournal($, gone[i].it, { outcome: "nudge_undelivered", by: "agent-gone", agent: gone[i].k })
+    nudgeAbsentSince.forEach((_t, k) => { if (!nudgeQueue.has(k)) nudgeAbsentSince.delete(k) })
+  }
+  if (epoch !== ep) return
+  const q = nudgeQueue.get("")
+  if (!q || !q.length) return
+  if (staleInteractive === true) {
+    const ripe = q.filter((it) => !it.fly && now - it.t >= NUDGE_SUBMIT_AGE_MS)
+    if (!ripe.length) return
+    // CONSTRAINT: submit не ждётся (его ответ может прийти лишь после хода
+    // сессии). Один текст -- одна доставка: запись остаётся в очереди в полёте
+    // до ответа submit; истечение срока пишет строку и не возвращает текст ни
+    // одному каналу (висящий submit доставит его при простое сессии).
+    for (let i = 0; i < ripe.length; i++) {
+      const it = ripe[i]
+      it.fly = true
+      const answered = (r: SubmitAns, late: boolean): Promise<void> | undefined => {
+        if (r.kind === "ok") {
+          nudgeFlyTake(it)
+          if (it.done) return undefined
+          it.done = true
+          const extra: any = { outcome: "nudge_delivered", channel: "submit", agent: "main" }
+          if (late) extra.late = true
+          return nudgeJournal($, it, extra)
+        }
+        // CONSTRAINT: drop -- отказ хука, решение, не сбой: запись снимается,
+        // повторной отправки нет.
+        if (r.kind === "drop") {
+          nudgeFlyTake(it)
+          if (it.done) return undefined
+          it.done = true
+          const dx: any = { outcome: "nudge_undelivered", by: "drop", agent: "main", reason: clip(r.reason, 240) }
+          if (late) dx.late = true
+          return nudgeJournal($, it, dx)
+        }
+        noteLost(late ? "nudge-submit-late" : "nudge-submit", r.x, $)
+        it.fly = false
+        it.fails = (it.fails || 0) + 1
+        // CONSTRAINT: отказ submit, повторяющийся каждый тик, ограничен:
+        // NUDGE_SUBMIT_FAILS_MAX отказов подряд одной записи -- запись снята
+        // строкой с числом попыток (успех и drop снимают её раньше).
+        if (it.fails >= NUDGE_SUBMIT_FAILS_MAX) {
+          nudgeFlyTake(it)
+          if (it.done) return undefined
+          it.done = true
+          const gx: any = { outcome: "nudge_undelivered", by: "submit-failed", agent: "main", attempts: it.fails, err: safeText(r.x).slice(0, 240) }
+          if (late) gx.late = true
+          return nudgeJournal($, it, gx)
+        }
+        nudgeFlyToHead(it, ep)
+        if (it.said.indexOf("submit-failed") >= 0) return undefined
+        it.said.push("submit-failed")
+        const fx: any = { outcome: "nudge_undelivered", by: "submit-failed", agent: "main", err: safeText(r.x).slice(0, 240) }
+        if (late) fx.late = true
+        return nudgeJournal($, it, fx)
+      }
+      void submitBounded($, it.text, "nudge-submit", (r) => { void answered(r, true) }).then((r) => {
+        if (r.kind !== "timeout") return answered(r, false)
+        if (it.said.indexOf("submit-timeout") >= 0) return undefined
+        it.said.push("submit-timeout")
+        return nudgeJournal($, it, { outcome: "nudge_undelivered", by: "submit-timeout", agent: "main" })
+      })
+    }
+    return
+  }
+  // CONSTRAINT: прогон без человека и неизвестный режим submit не получают
+  // (механика #530); строка -- одна на запись и причину, текст ждёт канала (а).
+  const by = staleInteractive === false ? "not-interactive" : "interactive-unknown"
+  for (let i = 0; i < q.length; i++) {
+    const it = q[i]
+    if (it.fly || now - it.t < NUDGE_SUBMIT_AGE_MS || it.said.indexOf(by) >= 0) continue
+    it.said.push(by)
+    await nudgeJournal($, it, { outcome: "nudge_undelivered", by, agent: "main" })
+  }
+}
+
+// CONSTRAINT: отдельного таймера нет -- тик 60 с #530 зовёт это после проверки
+// агентов; список агентов берётся у тика висящих агентов, если тот его снял.
+// Эпоха и поколение сверяются после каждого await до консультации и доставки.
+async function probeTimerTick($: any, gen: number): Promise<void> {
+  const share = probeTickShare
+  probeTickShare = null
+  if (gen !== staleGen) return
+  const ep = epoch
+  const live = (): boolean => gen === staleGen && ep === epoch
+  const packed = await worldFor($)
+  const now = await nowMs($)
+  if (!live()) return
+  if (sessionStartAt === null) sessionStartAt = now
+  await probeConfigNotes($, packed, now)
+  if (!live()) return
+  const born: number = sessionStartAt === null ? now : sessionStartAt
+  const due: any[] = []
+  const probes = packed.world.probes
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i]
+    if (!probeListens(p, packed.env) || !p.everyMs || p.act === "cancel" || p.pending) continue
+    const lastEval = probeEvalAt.has(p.id) ? (probeEvalAt.get(p.id) as number) : born
+    if (now - lastEval >= p.everyMs) due.push(p)
+  }
+  let agentKeys = false
+  nudgeQueue.forEach((_q, k) => { if (k) agentKeys = true })
+  let lst: any[] | null | undefined = undefined
+  let listSeq = 0
+  if (due.length || agentKeys) {
+    if (share && share.ep === ep) { lst = share.lst; listSeq = share.seq }
+    else {
+      listSeq = nudgeSeq
+      lst = await probeAgentList($)
+    }
+    if (!live()) return
+  }
+  const evT = { tool_use_id: "timer-" + String(now) }
+  calllessEvents.add(evT)
+  for (let i = 0; i < due.length; i++) {
+    if (!live()) return
+    probeEvalAt.set(due[i].id, now)
+    await probeEvaluate($, packed, due[i], { event: "timer", ev: evT, input: { event: "timer" }, lst: lst === undefined ? null : lst, now, aid: undefined, ep })
+  }
+  if (!live()) return
+  await probeNotMainFlush($, packed, now)
+  if (!live()) return
+  await probeTimerDeliver($, lst, listSeq, now, ep)
+}
+
 // CONSTRAINT: для стриминговой регистрации обработчик отказа обязан быть
 // генератором (валидатор: событие streams -- "it takes async function*") и
 // прогонять поток next ТОЙ ЖЕ дорогой, что основной хук -- driveNext по
 // Symbol.asyncIterator: голый `return next(e)` отдал бы ОБЪЕКТ ГЕНЕРАТОРА
 // вместо потока, шаги не эмитились бы, и это второе место разошлось бы
 // молча.
+// CONSTRAINT: $ здесь не читается -- отказ чтения agentId учитывается noteLost без $.
 async function* observerFailThroughStream($: any, e: any, next: any): AsyncGenerator<any, any, any> {
-  return yield* driveNext(next(e))
+  let aid: string | undefined = undefined
+  try {
+    const a = e == null ? undefined : e.agentId
+    if (a != null && a !== "") aid = String(a)
+  } catch (x) { noteLost("stale-agents-track", x) }
+  return yield* driveNext(next(e), undefined, aid)
+}
+
+// CONSTRAINT: одно тело для главного лупа и для агента при пробе
+// subagents = true на Pre/PostToolUse; main-only пробы агента пропускаются.
+// Объявление -- на верхнем уровне файла: загрузчик пускает $ только в такие.
+async function toolCallProbed($: any, e: any, next: any, isAgent: boolean, aid: string, hearNull: boolean = false): Promise<any> {
+  const ev = snapEvent($, e, "tool.call")
+  if (ev.tool === FLEET_TOOL_FULL) return { result: await fleetAnswer($) }
+  if (!isAgent && !staleTimer) {
+    const tArm = await nowMs($)
+    if (!(tArm - staleArmFailedAt < STALE_AGENTS_PERIOD_MS)) armStaleAgentsTimer($, tArm)
+  }
+  const tool = String((ev && ev.tool) || "")
+  // CONSTRAINT: tool.call главного лупа (нет agentId) -- горячий путь.
+  // Замер 2026-09-18, транскрипт worktree claudeapp session 9632494b,
+  // 493 часа с tool_use: медиана 41/час, пик 251/час (2026-09-15T20).
+  // command.describe даёт 254 чтения за одну сборку промпта; без мемо
+  // этот путь читал probes.toml на каждый вызов. Мир берётся через
+  // worldFor -- то же окно, что у describe/spawn.
+  const packed = await worldFor($)
+  // CONSTRAINT (#509-FIX7 Р17): вызов агента, вошедший при probeHear === null,
+  // считает not-main по индексу, собранному этим worldFor, -- как быстрый путь.
+  if (isAgent && hearNull) notMainCount(ev && ev.tool_use_id != null && ev.tool_use_id !== "" ? String(ev.tool_use_id) : "")
+  const env = packed.env
+  const world = packed.world
+  const prompt = String((ev && ev.prompt) || "")
+  const agent = String((ev && ev.subagent_type) || "")
+  const t0 = await nowMs($)
+  const sid = await sidFor($)
+  // CONSTRAINT: метка мира снимается ОДИН раз на консультацию, рядом с sid, и
+  // едет в consultBg параметром. Снимать её заново на каждой ступени нельзя:
+  // смена сессии, пришедшаяся на ОТКАЗ ступени, дала бы следующей ступени уже
+  // свежую метку -- её вердикт применился бы к новому миру, но лёг бы под
+  // ключ кэша, посчитанный из СТАРОГО sid (строка ниже).
+  const epCall = epoch
+  if (sessionStartAt === null) sessionStartAt = t0
+  // CONSTRAINT: запуск Agent/Task главного лупа учитывается ДО счёта окна
+  // idle-watch (README «Thresholds»: текущий диспатч в окне).
+  if (!isAgent && (tool === "Agent" || tool === "Task")) {
+    probeLaunches.push(t0)
+    probeLaunchesPrune(world, env, t0)
+  }
+  await probeConfigNotes($, packed, t0)
+  let live: number | null = 0
+  let lstArr: any[] | null = []
+  try {
+    const lst = await $.agent.list()
+    if (Array.isArray(lst)) { live = lst.length; lstArr = lst }
+    // CONSTRAINT: не-массив -- не «ноль живых», а неизвестность: live=null
+    // уводит when по live_works в ветку unknown, а не в ложное срабатывание.
+    else { live = null; lstArr = null; noteLost("agent-list-shape", new Error("agent.list returned " + typeof lst), $) }
+  } catch (x) { live = null; lstArr = null; noteLost("agent-list", x, $) }
+
+  let hardDeny: string | null = null
+  // CONSTRAINT: ключ кэпа сессионный -- бессрочный кросс-сессионный ключ
+  // навсегда хоронил ветку nudge/log_only; окно и слияние -- capSeed/capTake.
+  let capRaw: any = undefined
+  try { capRaw = await $.store.get(CAP_KEY + ":" + sid) } catch (x) { noteLost("session-cap-read", x, $) }
+  capSeedFrom($, sid, capRaw, t0)
+
+  for (let i = 0; i < world.probes.length; i++) {
+    const p = world.probes[i]
+    const arm = armStateOf(p, env)
+    if (arm.state === "off") continue
+    if (p.mainLoopOnly && isAgent) continue
+    if (p.kind === "form") {
+      if (p.cfg && p.cfg.enabled === false) continue
+      // CONSTRAINT (#335): отказ -- в точке действия формы (её список
+      // инструментов); вне списка форма не действовала бы -- и не гасит.
+      // CONSTRAINT (#393): нечитаемая ручка -- та же точка действия.
+      if (arm.state === "env-unreadable" && formActsOnTool(String((ev && ev.tool) || ""))) {
+        const d = await refuseEnvUnreadable($, world, arm, t0, sid)
+        if (d && !hardDeny) hardDeny = d
+        continue
+      }
+      if (arm.state === "foreign-carrier" && formActsOnTool(String((ev && ev.tool) || ""))) {
+        const d = await refuseForeignCarrier($, world, arm, t0, sid)
+        if (d && !hardDeny) hardDeny = d
+        continue
+      }
+      const d = await runForm($, p, env, world, ev)
+      if (d && !hardDeny) hardDeny = d
+      continue
+    }
+    if (p.kind !== "consult") continue
+    if (!Array.isArray(p.on) || p.on.indexOf("PreToolUse") < 0) continue
+
+    let last = 0
+    let lastStore = 0
+    try { lastStore = Number(await $.store.get(lastKey(p.id, world.cwd)) || 0) } catch (x) { noteLost("consult-last-read", x, $) }
+    // CONSTRAINT: максимум, не последнее чтение: зеркало ставится синхронно, стор --
+    // после await; стор ниже зеркала бывает и при упавшей своей записи, и при
+    // чередовании двух консультаций (запись поздней отметки завершилась раньше
+    // ранней). Шаг часов назад понижает оба дома одной отметкой.
+    last = Math.max(lastStore, lastMirror.get(lastKey(p.id, world.cwd)) || 0)
+    // CONSTRAINT: зеркало отметки пишется и при удачном чтении -- та же
+    // дыра, что у кэпа: отказ чтения стора не должен открывать окно.
+    lastMirror.set(lastKey(p.id, world.cwd), last)
+    const ctx: any = {
+      now: t0,
+      tool_name: tool,
+      tool,
+      subagent_type: agent,
+      prompt,
+      live_works: live,
+      unknown: live === null ? ["live_works"] : [],
+      last_consultation: last,
+      agent_id: isAgent ? aid : undefined,
+      event: "PreToolUse",
+    }
+    flatInto(ctx, ev)
+
+    let fire = false
+    let by = ""
+    if (p.id === "idle-watch") { by = idleGate(p, ctx, lstArr, t0); fire = by === "" }
+    else if (p.builtin) { fire = builtinTrigger(p, ev, ctx); if (!fire) by = "when-false" }
+    else if (p.cfg && p.cfg.when) { const u = whenFields(p.cfg.when).filter((f) => ctx.unknown.indexOf(f) >= 0); if (u.length) { for (const f of u) addWhenBad(ctx, "unknown=" + f); fire = false } else { fire = pred(p.cfg.when, ctx); if (!fire) by = "when-false" } }
+    else fire = true
+    if (fire) { by = probeCooldownBy(p, last, t0); if (by) fire = false }
+    if (!fire) {
+      // CONSTRAINT: несработавший триггер вооружённой пробы пишет filtered
+      // (частота -- probeFiltered); мёртвое правило пишет when_bad ниже.
+      if (!ctx.whenBad && by && by !== "when-bad" && arm.state === "armed" && !(p.cfg && p.cfg.enabled === false)) {
+        await probeFiltered($, world, p, by, "PreToolUse", t0)
+      }
+      // CONSTRAINT (#391): при несработавшем правиле consultBg не зовётся, и
+      // улика из ctx не доехала бы никуда -- поэтому мёртвое правило пишет
+      // СВОЮ строку. Граница молчания чужого носителя -- та же, что у
+      // пропуска судьи (#335): он не работал, ему не о чем отчитываться.
+      // Нечитаемая ручка (#393) -- та же граница: состояние неизвестно.
+      if (ctx.whenBad && arm.state !== "foreign-carrier" && arm.state !== "env-unreadable" && probeSayDue(p, "when_bad", t0)) {
+        try {
+          await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", {
+            t: isoOf(t0), tool, agent, outcome: "when_bad",
+            rec: modRecName(ev), carrier: carrierOfJournal(p, env), sid: await sidFor($),
+            whenBad: ctx.whenBad, ms: 0, probe: p.id,
+          })
+        } catch (x) { noteLost("journal-when-bad", x, $) }
+      }
+      continue
+    }
+
+    if (p.cfg && p.cfg.enabled === false) {
+      if (p.id === "judge") {
+        const recName = "mod-" + String((ev && ev.tool_use_id) || "noid") + ".json"
+        try {
+          await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
+            t: isoOf(t0), tool, agent, outcome: "skip_disabled",
+            rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), ms: 0, probe: "judge",
+          })
+        } catch (x) { noteLost("journal-skip-disabled", x, $) }
+      }
+      continue
+    }
+
+    if (p.id === "judge") {
+      const cls = classesOf(prompt)
+      const amb = cls.length > 1
+      const cl = cls.length === 1 ? cls[0] : ""
+      const skipC = listOf(p.cfg, "classes_skip")
+      const skipA = listOf(p.cfg, "agents_skip")
+      const judgeC = listOf(p.cfg, "classes_judge")
+      const judgeA = listOf(p.cfg, "agents_judge")
+      const badPat: string[] = []
+      let by: string | null = null
+      if (!amb) {
+        for (let s = 0; s < skipC.length; s++) {
+          if (reTestMark(skipC[s], cl, "classes_skip", badPat)) { by = "classes_skip"; break }
+        }
+      }
+      if (!by) {
+        for (let s = 0; s < skipA.length; s++) {
+          if (reTestMark(skipA[s], agent, "agents_skip", badPat)) { by = "agents_skip"; break }
+        }
+      }
+      if (!by && (judgeC.length > 0 || judgeA.length > 0) && !amb) {
+        let hit = false
+        const badBefore = badPat.length
+        for (let s = 0; s < judgeC.length; s++) {
+          if (reTestMark(judgeC[s], cl, "classes_judge", badPat)) hit = true
+        }
+        for (let s = 0; s < judgeA.length; s++) {
+          if (reTestMark(judgeA[s], agent, "agents_judge", badPat)) hit = true
+        }
+        // CONSTRAINT (#391): негодный образец в списках СУДЬИ судью НЕ
+        // снимает -- направление отказа в сторону защиты. Негодность
+        // skip-списков сюда не считается (там пропуск просто не случится),
+        // потому граница берётся по длине bad ДО этих двух циклов.
+        if (!hit && badPat.length === badBefore) by = cl ? "not_in_judge_list" : "no_class_marker"
+      }
+      if (badPat.length) ctx.badPattern = badPat.join(" ")
+      if (by) {
+        // CONSTRAINT (#335): чужой носитель не работал -- журнал судьи
+        // описывает содеянное им, а он не сделал ничего: пропуск молчит.
+        // CONSTRAINT (#393): нечитаемая ручка -- та же граница молчания:
+        // состояние пробы неизвестно, журнал не называет ложную причину
+        // пропуска и не подписывает неизвестного носителя.
+        if (arm.state !== "foreign-carrier" && arm.state !== "env-unreadable") {
+          const recName = "mod-" + String((ev && ev.tool_use_id) || "noid") + ".json"
+          try {
+            const jskip: any = {
+              t: isoOf(t0), tool, agent, outcome: "skip",
+              rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), reason: by, cls, ms: 0, probe: "judge",
+            }
+            if (badPat.length) jskip.badPattern = badPat.join(" ")
+            await appendJournal($, world.globalHome + "/judge/journal.jsonl", jskip)
+          } catch (x) { noteLost("journal-skip", x, $) }
+        }
+        continue
+      }
+    }
+
+    // CONSTRAINT (#335): точка отказа консультации -- за ВЫЧИСЛЯЕМОЙ
+    // границей действия судьи, его списками классов и агентов: пропуск по
+    // ним -- та же граница, что список инструментов у формы, вычисляемая,
+    // а не статическая. Консультация без списков блок не проходит вовсе,
+    // и её отказ стоит здесь же -- сразу за выключателем enabled.
+    // CONSTRAINT (#393): нечитаемая ручка отказывает в той же точке.
+    if (arm.state === "env-unreadable") {
+      const d = await refuseEnvUnreadable($, world, arm, t0, sid)
+      if (d && !hardDeny) hardDeny = d
+      continue
+    }
+    if (arm.state === "foreign-carrier") {
+      const d = await refuseForeignCarrier($, world, arm, t0, sid)
+      if (d && !hardDeny) hardDeny = d
+      continue
+    }
+
+    if (p.act === "cancel" || p.pending) {
+      // CONSTRAINT: допуск повтора уборки решается синхронно ПОСЛЕ чтения часов: идущая уборка и уже снятый отказ повтора не открывают, две консультации одного окна не запускают две уборки.
+      if (!sweepRunning && (!sweepDone || sweepFailed)) {
+        let due = !sweepDone
+        if (!due) {
+          const tn = await nowMs($)
+          due = !sweepRunning && sweepFailed && sweepRetryDue(tn)
+        }
+        if (due) await sweepVerdictStore($, world, sid, env)
+      }
+      const key = verdictKey(p.id, sid, tool, agent, prompt)
+      const ttlMs = num(p.cfg && p.cfg.verdict_cache_ms, VERDICT_TTL_MS_DEFAULT, 1)
+      let stored: any
+      try { stored = await $.store.get(key) } catch (x) { stored = undefined; noteLost("verdict-cache-read", x, $) }
+      const enforce = enforceOf(p, env, p.cfg)
+      const failClosed = bl3(p.cfg.fail_closed, p.id === "judge")
+      const storedKind = stored && typeof stored === "object" ? stored.kind : undefined
+      const storedT = storedKind && !passKind(p.id, storedKind) ? stored.t : undefined
+      if (memoUsable({ kind: storedKind, t: storedT }, t0, ttlMs, p.id)) {
+        stored = { kind: storedKind, t: storedT, used: stored.used, dtMs: stored.dtMs, threw: stored.threw, rest: stored.rest }
+        // CONSTRAINT: попадание в кэш обязано оставлять тот же след, что и
+        // консульт, -- без улики и строки журнала оно отменяло суд молча.
+        const recName = modRecName(ev)
+        const ageMs = t0 - stored.t
+        let recErr = ""
+        try {
+          await $.fs.write(modRecPath(world, p.id, ev), JSON.stringify({
+            id: ev && ev.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
+            mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
+            used: stored.used, dtMs: stored.dtMs, ...(stored.threw !== undefined ? { threw: stored.threw } : {}),
+          }))
+        } catch (x) { recErr = safeText(x).slice(0, 240) }
+        try {
+          const jline: any = {
+            t: isoOf(t0), tool, agent, outcome: "memo", rec: recName,
+            carrier: carrierOfJournal(p, env), sid, kind: String(stored.kind), ageMs, ms: 0, probe: p.id,
+          }
+          if (recErr) jline.recErr = recErr
+          await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", jline)
+        } catch (x) {
+          try {
+            recErr = recErr || safeText(x).slice(0, 240)
+            await $.fs.write(modRecPath(world, p.id, ev), JSON.stringify({
+              id: ev && ev.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
+              mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
+              used: stored.used, dtMs: stored.dtMs, ...(stored.threw !== undefined ? { threw: stored.threw } : {}), journalErr: recErr,
+            }))
+          } catch (y) { noteLost("judge-memo-record", y, $) }
+        }
+        if (foldedKind(p.id, String(stored.kind))) {
+          if (!enforce) continue
+          hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(stored.rest || stored.kind)
+          continue
+        }
+        if (stored.kind === "NONE") {
+          if (!failClosed) continue
+          hardDeny = "Subagent dispatch cancelled: the judge obtained no verdict on any rung. This is NOT the routing-table.toml gate. Tell the human and do the work without a subagent, or retry later."
+          continue
+        }
+      }
+      let rec: any = null
+      try { rec = await consultBg($, p, env, world, ev, ctx, key, epCall) } catch (x) { rec = null; noteLost("judge-consult", x, $) }
+      const kind = rec && rec.kind ? String(rec.kind) : ""
+      if (passKind(p.id, kind)) continue
+      if (foldedKind(p.id, kind)) {
+        if (enforce) {
+          hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(rec.rest || kind)
+        }
+        continue
+      }
+      if (failClosed && (kind === "NONE" || !kind)) {
+        hardDeny = "Subagent dispatch cancelled: the judge obtained no verdict on any rung. This is NOT the routing-table.toml gate. Tell the human and do the work without a subagent, or retry later."
+      }
+      continue
+    }
+
+    if (p.act === "nudge" || p.act === "log_only") {
+      const why = probeMarkTake($, p, lastKey(p.id, world.cwd), sid, t0)
+      if (why) {
+        await probeFiltered($, world, p, why, "PreToolUse", t0)
+        continue
+      }
+      try { await $.store.set(lastKey(p.id, world.cwd), t0) } catch (x) { noteLost("consult-last", x, $) }
+      ;(async () => { try { await consultBg($, p, env, world, ev, ctx, "", epCall) } catch (x) { noteLost("observer-consult", x, $) } })()
+    }
+  }
+
+  if (hardDeny) return { deny: hardDeny }
+  // CONSTRAINT: агент без id не получает очередь главного лупа.
+  const aKey: string | null = isAgent ? (aid || null) : ""
+  const post: any[] = []
+  for (let i = 0; i < world.probes.length; i++) {
+    const p = world.probes[i]
+    if (!probeListens(p, env) || p.on.indexOf("PostToolUse") < 0) continue
+    if ((p.mainLoopOnly && isAgent) || p.act === "cancel" || p.pending) continue
+    post.push(p)
+  }
+  const qPending = aKey === null ? undefined : nudgeQueue.get(aKey)
+  if (!post.length && !(qPending && qPending.length)) return next(e)
+  const res = await next(e)
+  if (post.length && epoch === epCall) {
+    const tp = await nowMs($)
+    for (let i = 0; i < post.length; i++) {
+      if (epoch !== epCall) break
+      await probeEvaluate($, packed, post[i], {
+        event: "PostToolUse", ev, input: ev, lst: lstArr, now: tp, aid: isAgent ? aid : undefined, ep: epCall,
+        toolResult: res && typeof res === "object" ? res.result : res,
+      })
+    }
+  }
+  // CONSTRAINT: эпоха сменилась за время вызова -- очередь уже новой сессии:
+  // к результату инструмента прежней она не прикладывается.
+  if (aKey === null || epoch !== epCall) return res
+  return nudgeDeliverContext($, aKey, res)
+}
+
+// CONSTRAINT: история запусков -- для счёта окна idle-watch: прополка по
+// возрасту (старше наибольшего window_min вооружённых проб; нет вооружённых --
+// по возрасту не полется) и предел длины не ниже наибольшего threshold + 1:
+// усечение ниже порога меняло бы смысл условия launches < threshold.
+function probeLaunchesPrune(world: any, env: any, now: number): void {
+  let winMs = -1
+  let thr = 0
+  const probes = world && Array.isArray(world.probes) ? world.probes : []
+  for (let i = 0; i < probes.length; i++) {
+    const p = probes[i]
+    if (!probeListens(p, env)) continue
+    const cfg = p.cfg || {}
+    winMs = Math.max(winMs, num(cfg.window_min, 30, 0) * 60000)
+    thr = Math.max(thr, num(cfg.threshold, 1, 0))
+  }
+  if (winMs >= 0) probeLaunches = probeLaunches.filter((t) => !(now - t > winMs))
+  const lim = Math.max(PROBE_LAUNCH_MAX, thr + 1)
+  if (probeLaunches.length > lim) probeLaunches.splice(0, probeLaunches.length - lim)
 }
 
 export function register(on: any) {
@@ -4154,7 +6761,44 @@ export function register(on: any) {
         immediate: false,
       })
     } catch (x) { noteLost("ladder-command-register", x, $) }
+    staleInteractive = !!(ev && ev.isInteractive === true)
+    try {
+      const tStart = await nowMs($)
+      sessionStartAt = tStart
+      armStaleAgentsTimer($, tStart)
+    } catch (x) { noteLost("stale-agents-timer-start", x, $) }
+    // CONSTRAINT: индекс слушателей classic.* строится сборкой мира; без неё
+    // событие до первого tool.call не видело бы ни одной пробы.
+    try { await worldFor($) } catch (x) { noteLost("probe-index-start", x, $) }
+    try {
+      await $.tool.register({ name: FLEET_TOOL, description: FLEET_TOOL_DESCRIPTION, inputSchema: { type: "object", properties: {} } })
+    } catch (x) { noteLost("fleet-tool-register", x, $) }
+    try {
+      await $.command.register({ name: FLEET_COMMAND, description: FLEET_COMMAND_DESCRIPTION, immediate: false })
+    } catch (x) { noteLost("fleet-command-register", x, $) }
     return next(e)
+  })
+    .catch(observerFailThrough)
+
+  // CONSTRAINT: session.end публикует конец сессии под её собственным id
+  // (e.sessionId): после /clear процесс продолжается под другим, и запись
+  // живой сессии не должна перекрыться чужим концом.
+  on("session.end", async ($: any, e: any, next: any) => {
+    const ev = snapEvent($, e, "session.end")
+    let packed: any = null
+    try { packed = await worldFor($) } catch (x) { noteLost("fleet-end-world", x, $) }
+    if (packed && idleWatchArm(packed) === "armed") {
+      try {
+        const sid = String((ev && ev.sessionId) || "") || await sidFor($)
+        await fleetPublish($, packed.world, sid, { v: 1, sid, cwd: packed.world.cwd, t: await nowMs($), running: 0, agents: [], ended: true }, "fleet-end-publish")
+      } catch (x) { noteLost("fleet-end-publish", x, $) }
+    }
+    return next(e)
+  })
+    .catch(observerFailThrough)
+
+  on("command.run", { command: [FLEET_COMMAND] }, async ($: any, e: any, next: any) => {
+    return { text: await fleetAnswer($) }
   })
     .catch(observerFailThrough)
 
@@ -4167,7 +6811,7 @@ export function register(on: any) {
     // CONSTRAINT: хвост пишется отдельно от ответа команды -- запись не
     // задерживает /clear, отказ учитывается по месту failover-fold-reset-tail.
     let tail: any = null
-    try { tail = newSession() } catch (x) { noteLost("new-session", x, $) }
+    try { tail = newSession($) } catch (x) { noteLost("new-session", x, $) }
     if (tail) {
       const w = tail.world
       const jpath = w && w.globalHome ? w.globalHome + "/failover/journal.jsonl" : ""
@@ -4249,305 +6893,95 @@ export function register(on: any) {
     // КАЖДОЙ проверке `"agentId" in`; вычисляется один раз здесь и берётся
     // ниже из isAgent.
     const isAgent = "agentId" in e
-    if (isAgent) return next(e)
-    const ev = snapEvent($, e, "tool.call")
-    const tool = String((ev && ev.tool) || "")
-    // CONSTRAINT: tool.call главного лупа (нет agentId) -- горячий путь.
-    // Замер 2026-09-18, транскрипт worktree claudeapp session 9632494b,
-    // 493 часа с tool_use: медиана 41/час, пик 251/час (2026-09-15T20).
-    // command.describe даёт 254 чтения за одну сборку промпта; без мемо
-    // этот путь читал probes.toml на каждый вызов. Мир берётся через
-    // worldFor -- то же окно, что у describe/spawn.
-    const packed = await worldFor($)
-    const env = packed.env
-    const world = packed.world
-    const prompt = String((ev && ev.prompt) || "")
-    const agent = String((ev && ev.subagent_type) || "")
-    const t0 = await nowMs($)
-    const sid = await sidFor($)
-    // CONSTRAINT: метка мира снимается ОДИН раз на консультацию, рядом с sid, и
-    // едет в consultBg параметром. Снимать её заново на каждой ступени нельзя:
-    // смена сессии, пришедшаяся на ОТКАЗ ступени, дала бы следующей ступени уже
-    // свежую метку -- её вердикт применился бы к новому миру, но лёг бы под
-    // ключ кэша, посчитанный из СТАРОГО sid (строка ниже).
-    const epCall = epoch
-    let live: number | null = 0
-    try {
-      const lst = await $.agent.list()
-      if (Array.isArray(lst)) live = lst.length
-      // CONSTRAINT: не-массив -- не «ноль живых», а неизвестность: live=null
-      // уводит when по live_works в ветку unknown, а не в ложное срабатывание.
-      else { live = null; noteLost("agent-list-shape", new Error("agent.list returned " + typeof lst), $) }
-    } catch (x) { live = null; noteLost("agent-list", x, $) }
-
-    let hardDeny: string | null = null
-    let cap = 0
-    // CONSTRAINT: счётчик сессионный по ключу -- бессрочный кросс-сессионный
-    // ключ навсегда хоронил ветку nudge/log_only на значении capMax.
-    let capStore = 0
-    try { capStore = Number(await $.store.get(CAP_KEY + ":" + sid) || 0) } catch (x) { noteLost("session-cap-read", x, $) }
-    // CONSTRAINT: максимум, не последнее чтение: свои записи кэпа и отметки
-    // монотонны; стор ниже зеркала значит упавшую свою запись, не законное понижение.
-    cap = Math.max(capStore, capMirror.get(sid) || 0)
-    // CONSTRAINT: зеркало пишется и при удачном чтении: без этого ветка
-    // «кэп исчерпан» leave зеркало пустым, и следующий отказ чтения стора
-    // снимал бы кэп целиком.
-    capMirror.set(sid, cap)
-    const capMax = 8
-
-    for (let i = 0; i < world.probes.length; i++) {
-      const p = world.probes[i]
-      const arm = armStateOf(p, env)
-      if (arm.state === "off") continue
-      if (p.mainLoopOnly && isAgent) continue
-      if (p.kind === "form") {
-        if (p.cfg && p.cfg.enabled === false) continue
-        // CONSTRAINT (#335): отказ -- в точке действия формы (её список
-        // инструментов); вне списка форма не действовала бы -- и не гасит.
-        // CONSTRAINT (#393): нечитаемая ручка -- та же точка действия.
-        if (arm.state === "env-unreadable" && formActsOnTool(String((ev && ev.tool) || ""))) {
-          const d = await refuseEnvUnreadable($, world, arm, t0, sid)
-          if (d && !hardDeny) hardDeny = d
-          continue
+    // CONSTRAINT: инструмент флота обслуживает ЭТА подписка первой веткой, для главного лупа и агентов: у плагина ровно одна подписка tool.call (вторая той же двери могла бы молча заменить первую -- судью, #447).
+    if (isAgent) {
+      // CONSTRAINT: событие агента не материализуется: читаются ровно tool,
+      // agentId, tool_use_id по разу. Учёт активности не имеет права ломать
+      // вызов: он под глухим try, next(e) зовётся при любом его исходе.
+      let toolA: any = undefined
+      let aidA: any = undefined
+      let tuidA: any = undefined
+      try {
+        toolA = e.tool
+        aidA = e.agentId
+        tuidA = e.tool_use_id
+      } catch (x) { noteLost("stale-agents-track", x, $) }
+      if (toolA === FLEET_TOOL_FULL) return { result: await fleetAnswer($) }
+      let aidT = ""
+      let keyT = ""
+      try {
+        if (aidA != null && aidA !== "") {
+          aidT = String(aidA)
+          const r = staleRecOf(aidT)
+          r.touched = true
+          keyT = tuidA != null && tuidA !== "" ? String(tuidA) : "seq-" + String(++staleCallSeq)
+          r.inFlight.set(keyT, { tool: String(toolA || ""), seenAt: null })
         }
-        if (arm.state === "foreign-carrier" && formActsOnTool(String((ev && ev.tool) || ""))) {
-          const d = await refuseForeignCarrier($, world, arm, t0, sid)
-          if (d && !hardDeny) hardDeny = d
-          continue
-        }
-        const d = await runForm($, p, env, world, ev)
-        if (d && !hardDeny) hardDeny = d
-        continue
-      }
-      if (p.kind !== "consult") continue
-
-      let last = 0
-      let lastStore = 0
-      try { lastStore = Number(await $.store.get(lastKey(p.id, world.cwd)) || 0) } catch (x) { noteLost("consult-last-read", x, $) }
-      // CONSTRAINT: максимум, не последнее чтение: зеркало ставится синхронно, стор --
-      // после await; стор ниже зеркала бывает и при упавшей своей записи, и при
-      // чередовании двух консультаций (запись поздней отметки завершилась раньше
-      // ранней). Шаг часов назад понижает оба дома одной отметкой.
-      last = Math.max(lastStore, lastMirror.get(lastKey(p.id, world.cwd)) || 0)
-      // CONSTRAINT: зеркало отметки пишется и при удачном чтении -- та же
-      // дыра, что у кэпа: отказ чтения стора не должен открывать окно.
-      lastMirror.set(lastKey(p.id, world.cwd), last)
-      const ctx: any = {
-        now: t0,
-        tool_name: tool,
-        tool,
-        subagent_type: agent,
-        prompt,
-        live_works: live,
-        unknown: live === null ? ["live_works"] : [],
-        last_consultation: last,
-        agent_id: undefined,
-      }
-
-      let fire = false
-      if (p.builtin) fire = builtinTrigger(p, ev, ctx)
-      else if (p.cfg && p.cfg.when) { const u = whenFields(p.cfg.when).filter((f) => ctx.unknown.indexOf(f) >= 0); if (u.length) { for (const f of u) addWhenBad(ctx, "unknown=" + f); fire = false } else fire = pred(p.cfg.when, ctx) }
-      else continue
-      if (!fire) {
-        // CONSTRAINT (#391): при несработавшем правиле consultBg не зовётся, и
-        // улика из ctx не доехала бы никуда -- поэтому мёртвое правило пишет
-        // СВОЮ строку. Граница молчания чужого носителя -- та же, что у
-        // пропуска судьи (#335): он не работал, ему не о чем отчитываться.
-        // Нечитаемая ручка (#393) -- та же граница: состояние неизвестно.
-        if (ctx.whenBad && arm.state !== "foreign-carrier" && arm.state !== "env-unreadable") {
+      } catch (x) { noteLost("stale-agents-track", x, $) }
+      // CONSTRAINT: main-only проба, слушающая Pre/PostToolUse, на вызове агента
+      // оценивается как not-main; путь агента не читает часов и не зовёт $ --
+      // здесь только счёт, строку пишет тик.
+      const tuidT = tuidA != null && tuidA !== "" ? String(tuidA) : ""
+      const hearNull = probeHear === null
+      notMainCount(tuidT)
+      try {
+        if (hearNull || probeHearAgentTool) return await toolCallProbed($, e, next, true, aidT, hearNull)
+        const epA = epoch
+        const res = await next(e)
+        return aidT && epoch === epA && nudgeQueue.has(aidT) ? await nudgeDeliverContext($, aidT, res) : res
+      } finally {
+        if (aidT) {
           try {
-            await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", {
-              t: isoOf(t0), tool, agent, outcome: "when_bad",
-              rec: modRecName(ev), carrier: carrierOfJournal(p, env), sid: await sidFor($),
-              whenBad: ctx.whenBad, ms: 0, probe: p.id,
-            })
-          } catch (x) { noteLost("journal-when-bad", x, $) }
+            const r = staleRecOf(aidT)
+            r.touched = true
+            r.inFlight.delete(keyT)
+          } catch (x) { noteLost("stale-agents-track", x, $) }
         }
-        continue
-      }
-
-      if (p.cfg && p.cfg.enabled === false) {
-        if (p.id === "judge") {
-          const recName = "mod-" + String((ev && ev.tool_use_id) || "noid") + ".json"
-          try {
-            await appendJournal($, world.globalHome + "/judge/journal.jsonl", {
-              t: isoOf(t0), tool, agent, outcome: "skip_disabled",
-              rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), ms: 0, probe: "judge",
-            })
-          } catch (x) { noteLost("journal-skip-disabled", x, $) }
-        }
-        continue
-      }
-
-      if (p.id === "judge") {
-        const cls = classesOf(prompt)
-        const amb = cls.length > 1
-        const cl = cls.length === 1 ? cls[0] : ""
-        const skipC = listOf(p.cfg, "classes_skip")
-        const skipA = listOf(p.cfg, "agents_skip")
-        const judgeC = listOf(p.cfg, "classes_judge")
-        const judgeA = listOf(p.cfg, "agents_judge")
-        const badPat: string[] = []
-        let by: string | null = null
-        if (!amb) {
-          for (let s = 0; s < skipC.length; s++) {
-            if (reTestMark(skipC[s], cl, "classes_skip", badPat)) { by = "classes_skip"; break }
-          }
-        }
-        if (!by) {
-          for (let s = 0; s < skipA.length; s++) {
-            if (reTestMark(skipA[s], agent, "agents_skip", badPat)) { by = "agents_skip"; break }
-          }
-        }
-        if (!by && (judgeC.length > 0 || judgeA.length > 0) && !amb) {
-          let hit = false
-          const badBefore = badPat.length
-          for (let s = 0; s < judgeC.length; s++) {
-            if (reTestMark(judgeC[s], cl, "classes_judge", badPat)) hit = true
-          }
-          for (let s = 0; s < judgeA.length; s++) {
-            if (reTestMark(judgeA[s], agent, "agents_judge", badPat)) hit = true
-          }
-          // CONSTRAINT (#391): негодный образец в списках СУДЬИ судью НЕ
-          // снимает -- направление отказа в сторону защиты. Негодность
-          // skip-списков сюда не считается (там пропуск просто не случится),
-          // потому граница берётся по длине bad ДО этих двух циклов.
-          if (!hit && badPat.length === badBefore) by = cl ? "not_in_judge_list" : "no_class_marker"
-        }
-        if (badPat.length) ctx.badPattern = badPat.join(" ")
-        if (by) {
-          // CONSTRAINT (#335): чужой носитель не работал -- журнал судьи
-          // описывает содеянное им, а он не сделал ничего: пропуск молчит.
-          // CONSTRAINT (#393): нечитаемая ручка -- та же граница молчания:
-          // состояние пробы неизвестно, журнал не называет ложную причину
-          // пропуска и не подписывает неизвестного носителя.
-          if (arm.state !== "foreign-carrier" && arm.state !== "env-unreadable") {
-            const recName = "mod-" + String((ev && ev.tool_use_id) || "noid") + ".json"
-            try {
-              const jskip: any = {
-                t: isoOf(t0), tool, agent, outcome: "skip",
-                rec: recName, carrier: carrierOfJournal(p, env), sid: await sidFor($), reason: by, cls, ms: 0, probe: "judge",
-              }
-              if (badPat.length) jskip.badPattern = badPat.join(" ")
-              await appendJournal($, world.globalHome + "/judge/journal.jsonl", jskip)
-            } catch (x) { noteLost("journal-skip", x, $) }
-          }
-          continue
-        }
-      }
-
-      // CONSTRAINT (#335): точка отказа консультации -- за ВЫЧИСЛЯЕМОЙ
-      // границей действия судьи, его списками классов и агентов: пропуск по
-      // ним -- та же граница, что список инструментов у формы, вычисляемая,
-      // а не статическая. Консультация без списков блок не проходит вовсе,
-      // и её отказ стоит здесь же -- сразу за выключателем enabled.
-      // CONSTRAINT (#393): нечитаемая ручка отказывает в той же точке.
-      if (arm.state === "env-unreadable") {
-        const d = await refuseEnvUnreadable($, world, arm, t0, sid)
-        if (d && !hardDeny) hardDeny = d
-        continue
-      }
-      if (arm.state === "foreign-carrier") {
-        const d = await refuseForeignCarrier($, world, arm, t0, sid)
-        if (d && !hardDeny) hardDeny = d
-        continue
-      }
-
-      if (p.act === "cancel" || p.pending) {
-        // CONSTRAINT: допуск повтора уборки решается синхронно ПОСЛЕ чтения часов: идущая уборка и уже снятый отказ повтора не открывают, две консультации одного окна не запускают две уборки.
-        if (!sweepRunning && (!sweepDone || sweepFailed)) {
-          let due = !sweepDone
-          if (!due) {
-            const tn = await nowMs($)
-            due = !sweepRunning && sweepFailed && sweepRetryDue(tn)
-          }
-          if (due) await sweepVerdictStore($, world, sid, env)
-        }
-        const key = verdictKey(p.id, sid, tool, agent, prompt)
-        const ttlMs = num(p.cfg && p.cfg.verdict_cache_ms, VERDICT_TTL_MS_DEFAULT, 1)
-        let stored: any
-        try { stored = await $.store.get(key) } catch (x) { stored = undefined; noteLost("verdict-cache-read", x, $) }
-        const enforce = enforceOf(p, env, p.cfg)
-        const failClosed = bl3(p.cfg.fail_closed, p.id === "judge")
-        const storedKind = stored && typeof stored === "object" ? stored.kind : undefined
-        const storedT = storedKind && !passKind(p.id, storedKind) ? stored.t : undefined
-        if (memoUsable({ kind: storedKind, t: storedT }, t0, ttlMs, p.id)) {
-          stored = { kind: storedKind, t: storedT, used: stored.used, dtMs: stored.dtMs, threw: stored.threw, rest: stored.rest }
-          // CONSTRAINT: попадание в кэш обязано оставлять тот же след, что и
-          // консульт, -- без улики и строки журнала оно отменяло суд молча.
-          const recName = modRecName(ev)
-          const ageMs = t0 - stored.t
-          let recErr = ""
-          try {
-            await $.fs.write(modRecPath(world, p.id, ev), JSON.stringify({
-              id: ev && ev.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
-              mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
-              used: stored.used, dtMs: stored.dtMs, ...(stored.threw !== undefined ? { threw: stored.threw } : {}),
-            }))
-          } catch (x) { recErr = safeText(x).slice(0, 240) }
-          try {
-            const jline: any = {
-              t: isoOf(t0), tool, agent, outcome: "memo", rec: recName,
-              carrier: carrierOfJournal(p, env), sid, kind: String(stored.kind), ageMs, ms: 0, probe: p.id,
-            }
-            if (recErr) jline.recErr = recErr
-            await appendJournal($, world.globalHome + "/" + p.id + "/journal.jsonl", jline)
-          } catch (x) {
-            try {
-              recErr = recErr || safeText(x).slice(0, 240)
-              await $.fs.write(modRecPath(world, p.id, ev), JSON.stringify({
-                id: ev && ev.tool_use_id, probe: p.id, tool, agent, t0, carrier: carrierOfJournal(p, env),
-                mod: MOD_VERSION, sid, memo: true, kind: String(stored.kind), ageMs,
-                used: stored.used, dtMs: stored.dtMs, ...(stored.threw !== undefined ? { threw: stored.threw } : {}), journalErr: recErr,
-              }))
-            } catch (y) { noteLost("judge-memo-record", y, $) }
-          }
-          if (foldedKind(p.id, String(stored.kind))) {
-            if (!enforce) continue
-            hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(stored.rest || stored.kind)
-            continue
-          }
-          if (stored.kind === "NONE") {
-            if (!failClosed) continue
-            hardDeny = "Subagent dispatch cancelled: the judge obtained no verdict on any rung. This is NOT the routing-table.toml gate. Tell the human and do the work without a subagent, or retry later."
-            continue
-          }
-        }
-        let rec: any = null
-        try { rec = await consultBg($, p, env, world, ev, ctx, key, epCall) } catch (x) { rec = null; noteLost("judge-consult", x, $) }
-        const kind = rec && rec.kind ? String(rec.kind) : ""
-        if (passKind(p.id, kind)) continue
-        if (foldedKind(p.id, kind)) {
-          if (enforce) {
-            hardDeny = "Subagent dispatch cancelled by the dispatch judge (this is NOT the routing-table.toml gate). Reason: " + String(rec.rest || kind)
-          }
-          continue
-        }
-        if (failClosed && (kind === "NONE" || !kind)) {
-          hardDeny = "Subagent dispatch cancelled: the judge obtained no verdict on any rung. This is NOT the routing-table.toml gate. Tell the human and do the work without a subagent, or retry later."
-        }
-        continue
-      }
-
-      if (p.act === "nudge" || p.act === "log_only") {
-        if (cap >= capMax) {
-          continue
-        }
-        cap++
-        capMirror.set(sid, cap)
-        try { await $.store.set(CAP_KEY + ":" + sid, cap) } catch (x) { noteLost("session-cap", x, $) }
-        lastMirror.set(lastKey(p.id, world.cwd), t0)
-        try { await $.store.set(lastKey(p.id, world.cwd), t0) } catch (x) { noteLost("consult-last", x, $) }
-        ;(async () => { try { await consultBg($, p, env, world, ev, ctx, "", epCall) } catch (x) { noteLost("observer-consult", x, $) } })()
       }
     }
-
-    if (hardDeny) return { deny: hardDeny }
-    return next(e)
+    return toolCallProbed($, e, next, false, "")
   })
     .catch(($: any, e: any, next: any) => decisiveFailClosed($, "tool.call", e, next))
 
+  // CONSTRAINT: по одной подписке на имя CLASSIC_EVENTS кроме PreToolUse,
+  // PostToolUse (tool.call) и MessageDisplay (дельта отрисовки). Имя события в
+  // on() -- литерал: загрузчик отвергает вычисленное имя (замер #531,
+  // loader-a-loop.log), поэтому цикла здесь нет. Быстрый путь -- синхронный
+  // next(e) без $ и без await, когда индекс не знает слушателя.
+  on("classic.ConfigChange", ($: any, e: any, next: any) => probeHear === null || probeHear.has("ConfigChange") ? classicRun($, "ConfigChange", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.CwdChanged", ($: any, e: any, next: any) => probeHear === null || probeHear.has("CwdChanged") ? classicRun($, "CwdChanged", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.DirectoryAdded", ($: any, e: any, next: any) => probeHear === null || probeHear.has("DirectoryAdded") ? classicRun($, "DirectoryAdded", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.Elicitation", ($: any, e: any, next: any) => probeHear === null || probeHear.has("Elicitation") ? classicRun($, "Elicitation", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.ElicitationResult", ($: any, e: any, next: any) => probeHear === null || probeHear.has("ElicitationResult") ? classicRun($, "ElicitationResult", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.FileChanged", ($: any, e: any, next: any) => probeHear === null || probeHear.has("FileChanged") ? classicRun($, "FileChanged", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.InstructionsLoaded", ($: any, e: any, next: any) => probeHear === null || probeHear.has("InstructionsLoaded") ? classicRun($, "InstructionsLoaded", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.Notification", ($: any, e: any, next: any) => probeHear === null || probeHear.has("Notification") ? classicRun($, "Notification", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.PermissionDenied", ($: any, e: any, next: any) => probeHear === null || probeHear.has("PermissionDenied") ? classicRun($, "PermissionDenied", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.PermissionRequest", ($: any, e: any, next: any) => probeHear === null || probeHear.has("PermissionRequest") ? classicRun($, "PermissionRequest", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.PostCompact", ($: any, e: any, next: any) => probeHear === null || probeHear.has("PostCompact") ? classicRun($, "PostCompact", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.PostModelSwitch", ($: any, e: any, next: any) => probeHear === null || probeHear.has("PostModelSwitch") ? classicRun($, "PostModelSwitch", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.PostToolBatch", ($: any, e: any, next: any) => probeHear === null || probeHear.has("PostToolBatch") ? classicRun($, "PostToolBatch", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.PostToolUseFailure", ($: any, e: any, next: any) => probeHear === null || probeHear.has("PostToolUseFailure") ? classicRun($, "PostToolUseFailure", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.PreCompact", ($: any, e: any, next: any) => probeHear === null || probeHear.has("PreCompact") ? classicRun($, "PreCompact", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.PreModelSwitch", ($: any, e: any, next: any) => probeHear === null || probeHear.has("PreModelSwitch") ? classicRun($, "PreModelSwitch", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.SessionEnd", ($: any, e: any, next: any) => probeHear === null || probeHear.has("SessionEnd") ? classicRun($, "SessionEnd", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.SessionStart", ($: any, e: any, next: any) => probeHear === null || probeHear.has("SessionStart") ? classicRun($, "SessionStart", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.Setup", ($: any, e: any, next: any) => probeHear === null || probeHear.has("Setup") ? classicRun($, "Setup", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.StopFailure", ($: any, e: any, next: any) => probeHear === null || probeHear.has("StopFailure") ? classicRun($, "StopFailure", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.Stop", ($: any, e: any, next: any) => probeHear === null || probeHear.has("Stop") ? classicRun($, "Stop", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.SubagentStart", ($: any, e: any, next: any) => probeHear === null || probeHear.has("SubagentStart") ? classicRun($, "SubagentStart", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.SubagentStop", ($: any, e: any, next: any) => probeHear === null || probeHear.has("SubagentStop") ? classicRun($, "SubagentStop", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.TaskCompleted", ($: any, e: any, next: any) => probeHear === null || probeHear.has("TaskCompleted") ? classicRun($, "TaskCompleted", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.TaskCreated", ($: any, e: any, next: any) => probeHear === null || probeHear.has("TaskCreated") ? classicRun($, "TaskCreated", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.TeammateIdle", ($: any, e: any, next: any) => probeHear === null || probeHear.has("TeammateIdle") ? classicRun($, "TeammateIdle", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.UserPromptExpansion", ($: any, e: any, next: any) => probeHear === null || probeHear.has("UserPromptExpansion") ? classicRun($, "UserPromptExpansion", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.UserPromptSubmit", ($: any, e: any, next: any) => probeHear === null || probeHear.has("UserPromptSubmit") ? classicRun($, "UserPromptSubmit", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.WorktreeCreate", ($: any, e: any, next: any) => probeHear === null || probeHear.has("WorktreeCreate") ? classicRun($, "WorktreeCreate", e, next) : next(e)).catch(observerFailThrough)
+  on("classic.WorktreeRemove", ($: any, e: any, next: any) => probeHear === null || probeHear.has("WorktreeRemove") ? classicRun($, "WorktreeRemove", e, next) : next(e)).catch(observerFailThrough)
+
   on("agent.spawn", async ($: any, e: any, next: any) => {
+    // CONSTRAINT (#509-FIX8h Р2): поколение реестров сессии -- до первого await; сменилось к записи (сброс новой сессией) -- обе записи спавна пропускаются.
+    const genSpawn = sessionReviewerServedGenOf()
     const ev = snapEvent($, e, "agent.spawn")
     const subagentType = String((ev && ev.subagentType) || "")
     const cls = classesOf(String((ev && ev.prompt) || ""))
@@ -4564,52 +6998,105 @@ export function register(on: any) {
     const resDeny = result && result.deny
     const resAgentId = result && result.agentId
     if (!result || resDeny || !resAgentId) return result
-    if (classHasPrefix(classId, EXECUTOR_CLASS_PREFIXES)) sessionExecutorModelAdd(spawnModel)
+    const spawnReviewer = classHasPrefix(classId, REVIEWER_CLASS_PREFIXES)
+    const tSpawn = spawnReviewer ? await nowMs($) : 0
+    const spawnGenOk = genSpawn === sessionReviewerServedGenOf()
+    if (spawnGenOk && classHasPrefix(classId, EXECUTOR_CLASS_PREFIXES)) sessionExecutorModelAdd(spawnModel)
+    if (spawnGenOk && spawnReviewer) sessionReviewerServedSet(String(resAgentId), spawnModel, tSpawn)
     if (!world || !world.failover || !bl3(world.failover.enabled, true)) return result
-    const info = failoverLadderBind(world.failover, subagentType, classId, world.allowedByClass, spawnModel)
+    const info = failoverLadderBind(world.failover, subagentType, classId)
+    const term = failoverTerminal(world.failover)
+    const adm = admitLadder(info.ladder, classId, world.allowedByClass, admissionUsable(world))
+    let rungEffort = info.rungEffort
+    let effortBad = info.effortBad
+    // CONSTRAINT (D-3a): одноимённая ступень лестницы сохраняет свой эффорт.
+    if (term.effort && modelKeyed(rungEffort, term.model) === undefined) rungEffort = Object.assign({}, rungEffort, { [term.model]: term.effort })
+    if (term.effortBad && modelKeyed(effortBad, term.model) === undefined) effortBad = Object.assign({}, effortBad, { [term.model]: term.effortBad })
     // CONSTRAINT: пустая лестница неотличима от забытой, если source/allowedSrc
     // не записаны. Привязка кладётся на всех ветках, включая ladder.length===0
-    // (клетка 1d, пустой allowed, оба адреса таблицы недоступны).
+    // (клетка без лестницы, слитый допуск без её ступеней или непригоден).
     failoverBindSet(String(resAgentId), {
-      ladder: info.ladder, subagentType, class: classId, sticky: null,
-      rungEffort: info.rungEffort, effortBad: info.effortBad, rungsDropped: info.rungsDropped,
-      source: info.source, allowedSrc: world.allowedSrc,
+      ladder: adm.ladder, subagentType, class: classId, sticky: null,
+      rungEffort, effortBad, rungsDropped: info.rungsDropped,
+      source: info.source, allowedSrc: world.allowedSrc, terminal: term.model,
     })
+    const jpath = world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
+    let sidS = ""
+    try { sidS = await sidFor($) } catch (x) { sidS = SID_UNAVAILABLE }
+    const tS = await nowMs($)
+    if (adm.unavailable && info.ladder.length) {
+      const key = String(world.allowedSrc || "") + "\0" + String(world.allowedRefused || "")
+      await journalOnce($, admissionUnavailableSaid, key, jpath, {
+        t: isoOf(tS), sid: sidS,
+        rec: "admission-unavailable-" + String(resAgentId),
+        outcome: "admission-unavailable",
+        agentId: String(resAgentId), subagentType, class: classId,
+        allowedSrc: world.allowedSrc,
+        reason: world.allowedRefused || (world.allowedSrc ? "допуск не найден" : "допуск не прочитан"),
+        rungsDeclared: info.ladder.slice(),
+      }, "journal-admission-unavailable")
+    }
+    for (let i = 0; i < adm.notAdmitted.length; i++) {
+      const model = adm.notAdmitted[i]
+      await journalOnce($, rungNotAdmittedSaid, classId + "\0" + normModelId(model), jpath, {
+        t: isoOf(tS), sid: sidS,
+        rec: "rung-not-admitted-" + String(resAgentId) + "-" + String(i),
+        outcome: "rung-not-admitted",
+        agentId: String(resAgentId), subagentType, class: classId,
+        model, source: info.source, allowedSrc: world.allowedSrc,
+      }, "journal-rung-not-admitted")
+    }
     // CONSTRAINT: журнал пустой лестницы пишется ЗДЕСЬ, один раз на агента.
     // turn.step на пустой привязке выходит до journalExtra -- писать оттуда
     // залило бы журнал на каждом шаге.
-    if (!info.ladder.length) {
+    if (!adm.ladder.length) {
       try {
-        const sid = await sidFor($)
-        const t1 = await nowMs($)
         // CONSTRAINT: пустой дом даёт путь от корня -- писать наружу нельзя.
         // Тот же гард несёт писатель попыток ниже.
-        const jpath = world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
         if (jpath) await appendJournal($, jpath, {
-          t: isoOf(t1),
-          sid,
+          t: isoOf(tS),
+          sid: sidS,
           rec: "empty-ladder-" + String(resAgentId),
           agentId: String(resAgentId),
           subagentType,
           class: classId,
           source: info.source,
           allowedSrc: world.allowedSrc,
+          terminal: term.model,
         })
       } catch (x) { noteLost("journal-empty-ladder", x, $) }
+    }
+    if (term.absent) {
+      await journalOnce($, terminalAbsentSaid, term.absent, jpath, {
+        t: isoOf(tS),
+        sid: sidS,
+        rec: "terminal-absent-" + String(resAgentId),
+        agentId: String(resAgentId),
+        subagentType,
+        class: classId,
+        reason: term.absent,
+      }, "journal-terminal-absent")
     }
     return result
   })
     .catch(($: any, e: any, next: any) => decisiveFailClosed($, "agent.spawn", e, next))
 
   on("turn.step", async function* ($: any, e: any, next: any) {
+    // CONSTRAINT (#509-FIX8h Р2): поколение реестров сессии на начало шага -- до первого await; попытка с резервом сверяет поколение резерва.
+    const genStep = sessionReviewerServedGenOf()
     const ev = snapEvent($, e, "turn.step")
     const aid = ev && ev.agentId
+    if (aid != null && aid !== "") {
+      try {
+        staleRecOf(String(aid)).touched = true
+      } catch (x) { noteLost("stale-agents-track", x, $) }
+    }
     if (aid == null || aid === "") {
       return yield* driveNext(next(e))
     }
     const bind = failoverBindGet(String(aid))
-    if (!bind || !bind.ladder || !bind.ladder.length) {
-      return yield* driveNext(next(e))
+    if (!bind || ((!bind.ladder || !bind.ladder.length) && !bind.terminal)) {
+      return yield* driveNext(next(e), undefined, String(aid))
     }
     let world: any = null
     try {
@@ -4617,7 +7104,7 @@ export function register(on: any) {
       world = w && w.world
     } catch (x) { world = null; noteLost("failover-step-world", x, $) }
     if (world && world.failover && !bl3(world.failover.enabled, true)) {
-      return yield* driveNext(next(e))
+      return yield* driveNext(next(e), undefined, String(aid))
     }
     const original = String(ev.model || "")
     // CONSTRAINT (#226): проверяющего (crit-/audit-) нельзя переводить на модель,
@@ -4628,20 +7115,37 @@ export function register(on: any) {
     const executor = classHasPrefix(bind.class, EXECUTOR_CLASS_PREFIXES)
     let planLadder: string[] = bind.ladder
     let rungsFiltered = 0
+    let rungsFilteredReviewer = 0
     let ladderFullTaken = false
     const startMatch = reviewer && sessionExecutorHas(original)
+    const epStep = epoch
+    let others: string[] = []
+    const origN = normModelId(original)
     if (reviewer) {
+      const bindLadder: string[] = bind.ladder ?? []
       const keep: string[] = []
-      for (let i = 0; i < bind.ladder.length; i++) {
-        if (!sessionExecutorHas(bind.ladder[i])) keep.push(bind.ladder[i])
+      for (let i = 0; i < bindLadder.length; i++) {
+        if (!sessionExecutorHas(bindLadder[i])) keep.push(bindLadder[i])
       }
-      rungsFiltered = bind.ladder.length - keep.length
-      if (keep.length) {
-        planLadder = keep
-      } else {
+      rungsFiltered = bindLadder.length - keep.length
+      // CONSTRAINT (#509-FIX7 Р13): из ступеней проверяющего вычитаются модели,
+      // обслуживающие ДРУГИХ проверяющих сессии не дольше REVIEWER_LIVE_MS;
+      // объявленная модель самого агента этим фильтром не снимается.
+      others = sessionReviewersServedByOthers(String(aid), await nowMs($))
+      const keepR: string[] = []
+      for (let i = 0; i < keep.length; i++) {
+        const k = normModelId(keep[i])
+        if (k === origN || others.indexOf(k) < 0) keepR.push(keep[i])
+      }
+      rungsFilteredReviewer = keep.length - keepR.length
+      if (keepR.length) {
+        planLadder = keepR
+      } else if (bindLadder.length) {
         // Остановленный проверяющий хуже проверки той же моделью, но молчаливое
         // совпадение хуже обоих.
-        planLadder = bind.ladder
+        // CONSTRAINT (#509-FIX7 Р13): занятость другими проверяющими снимает
+        // только свой фильтр -- фильтр моделей исполнителя (#226) остаётся.
+        planLadder = keep.length ? keep : bind.ladder
         ladderFullTaken = true
       }
     }
@@ -4653,47 +7157,190 @@ export function register(on: any) {
     // накопитель растёт позже установки, проверка в прошлом снова преждевременна.
     let planSticky = bind.sticky
     let stickyDropped = false
+    let stickyDroppedReviewer = false
     if (reviewer && planSticky && sessionExecutorHas(String(planSticky))) {
       planSticky = null
       stickyDropped = true
     }
+    // CONSTRAINT (#509-FIX8 Р3): липкая модель, обслуживающая другого
+    // проверяющего сессии, снимается тем же фильтром, что ступени (Р13), и при
+    // ladderFullTaken; объявленная модель самого агента не снимается.
+    if (reviewer && planSticky && normModelId(String(planSticky)) !== origN && others.indexOf(normModelId(String(planSticky))) >= 0) {
+      planSticky = null
+      stickyDroppedReviewer = true
+    }
     // CONSTRAINT (#313): остывающие модели ОТКЛАДЫВАЮТСЯ в хвост плана, но не
     // удаляются — удаление возвращало бы отказ при живой собственной модели
-    // (дефект отклонённой #311). Применяется ровно к результату
-    // failoverAttemptModels, до проверки пустоты.
-    const cooldownDefer = deferCoolingAttemptModels(failoverAttemptModels(original, planSticky, planLadder), await nowMs($))
-    const plan = cooldownDefer.plan
-    if (!plan.length) return yield* driveNext(next(e))
+    // (дефект отклонённой #311). Исключение -- живая метка permanent-model
+    // (#514 H3): такая модель пропускается, терминал -- никогда.
+    // CONSTRAINT (#509-FIX1 D): терминал модели исполнителя снимается у
+    // проверяющего при ЛЮБОЙ базе, включая пустую, -- тем же фильтром, что ступени.
+    const termModel = String(bind.terminal || "")
+    let planTerminal = termModel
+    let terminalFiltered = false
+    if (termModel && reviewer && sessionExecutorHas(termModel)) {
+      planTerminal = ""
+      terminalFiltered = true
+    }
+    const firstPlan = failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($))
+    if (!firstPlan.plan.length && !firstPlan.dead.length) return yield* driveNext(next(e), undefined, String(aid))
+    // CONSTRAINT (#509-FIX3 M5, #509-FIX4 F4, #509-FIX5 Р3): сторож сбрасывает
+    // только поток агента, в том числе запись отказа next; сердцебиение, кусок
+    // и предел двери паузы -- из waitPaceOf по переменной сторожа, прочитанной
+    // один раз на шаг ДО первого прохода: пауза перечитывания первого прохода
+    // уже идёт куском и пределом T от S.
+    let stallRaw: any = undefined
+    try { stallRaw = await $.env.get("CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS") } catch (x) { stallRaw = undefined; noteLost("failover-stall-env", x, $) }
+    const pace = waitPaceOf(stallRaw)
+    const HEARTBEAT_MS = pace.heartbeat
+    const CHUNK_MS = pace.chunk
+    const CHUNK_ARG = (CHUNK_MS / 1000).toFixed(3)
+    const CHUNK_REAL_MS = Math.floor(CHUNK_MS * 3 / 4)
+    const PAUSE_TIMEOUT_MS = pace.pauseTimeout
+    const STALL_EFF_MS = pace.stallEff
+    const MARGIN_MS = pace.margin
+    const HALF_MARGIN_MS = Math.floor(MARGIN_MS / 2)
     // Отметки шага #226 уезжают в КАЖДУЮ запись попытки: улика попытки
     // самодостаточна и без соседних строк шага.
-    const journalExtra: any = {}
+    const journalBase: any = { declared: original }
     if (reviewer) {
-      journalExtra.rungsFiltered = rungsFiltered
-      if (ladderFullTaken) journalExtra.ladderFullTaken = true
-      if (startMatch) journalExtra.startMatch = true
-      if (stickyDropped) journalExtra.stickyDropped = true
+      journalBase.rungsFiltered = rungsFiltered
+      journalBase.rungsFilteredReviewer = rungsFilteredReviewer
+      if (ladderFullTaken) journalBase.ladderFullTaken = true
+      if (startMatch) journalBase.startMatch = true
+      if (stickyDropped) journalBase.stickyDropped = true
+      if (stickyDroppedReviewer) journalBase.stickyDroppedReviewer = true
     }
-    if (sessionExecutorModelsOverflow) journalExtra.execOverflow = true
-    if (bind.rungsDropped) journalExtra.rungsDropped = bind.rungsDropped
-    if (bind.source) journalExtra.source = bind.source
-    if (bind.allowedSrc) journalExtra.allowedSrc = bind.allowedSrc
-    // CONSTRAINT (#313): улика отложенных остывающих моделей уезжает в КАЖДУЮ
-    // запись попытки, как отметки #226 выше; при нуле отложенных объект пуст
-    // и полей не добавляет вовсе.
-    Object.assign(journalExtra, cooldownDefer.evidence)
+    if (terminalFiltered) journalBase.terminalFiltered = true
+    if (sessionExecutorModelsOverflow) journalBase.execOverflow = true
+    if (bind.rungsDropped) journalBase.rungsDropped = bind.rungsDropped
+    if (bind.source) journalBase.source = bind.source
+    if (bind.allowedSrc) journalBase.allowedSrc = bind.allowedSrc
+    const jpath = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
+    const recHead = String(aid) + "-" + String(ev.turnId || "") + "-" + String(ev.index)
     let lastRes: any = null
-    let lastThrow: any = null
-    let sawThrow = false
-    for (let attempt = 0; attempt < plan.length; attempt++) {
-      const model = plan[attempt]
+    let lastClass = ""
+    let lastText = ""
+    let attemptN = 0
+    let waitN = 0
+    let passN = 0
+    // CONSTRAINT (#509-FIX1 I, #509-FIX3 L1): rungsTried -- ТОЛЬКО реально
+    // вызванные модели ТЕКУЩЕГО прохода; отказанные по эффорту и пропущенные
+    // мёртвые -- своими списками того же прохода. Через проходы не копятся.
+    let called: string[] = []
+    let effortRefused: string[] = []
+    let skippedDead: string[] = []
+    // CONSTRAINT (#509-FIX3 M3): цель пробуждения не берёт модель, которую
+    // вызвать нельзя (эффорт), и модель, ответившую дефектом запроса: такой
+    // ответ не зависит от времени, и её «готовность сейчас» крутила бы
+    // пробуждения через кусок паузы.
+    const stepEffortRefused: string[] = []
+    const stepRequest: string[] = []
+    let unreadToasted = false
+    const newPass = (): void => { passN++; called = []; effortRefused = []; skippedDead = [] }
+    const planTermN = planTerminal ? normModelId(planTerminal) : ""
+    const aborted = (): boolean => {
+      try { return !!(next.signal && next.signal.aborted) } catch (x) { noteLost("failover-signal", x, $); return false }
+    }
+    // CONSTRAINT: next без счётчика (движок, корневой next теста) -- бюджет
+    // бесконечен (d.ts NextBudget: remainingMs Infinity).
+    const budgetLeft = (): number => {
+      try {
+        const b = next.budget
+        const v = b ? Number(b.remainingMs) : Infinity
+        return Number.isNaN(v) ? Infinity : v
+      } catch (x) { noteLost("failover-budget", x, $); return Infinity }
+    }
+    const markOf = (m: string): any => rungCooldownMarks.get(normModelId(m))
+    // CONSTRAINT (#509-FIX6 А1): конец последнего неудачного вызова next --
+    // первым await после его окончания, до журнала, чтения истории и паузы
+    // перечитывания; 0 -- неудачного вызова в шаге не было.
+    let callEndAt = 0
+    let waiting = false
+    // CONSTRAINT (#509-FIX7 А-Р1): D = callEndAt + S_eff - G; ниже пола и до
+    // первого неудачного вызова срока нет.
+    const deadlineAt = (): number => (!pace.belowFloor && callEndAt > 0 ? callEndAt + STALL_EFF_MS - MARGIN_MS : Infinity)
+    // CONSTRAINT (#509-FIX7 А-Р1): дверь, которую путь к next ждёт, ждётся не
+    // дольше остатка до D; проигрыш -- {late: true}, дверь доживает в фоне.
+    // Дверь стартует после чтения часов и в том же синхронном отрезке, что
+    // взвод срока: между её стартом и взводом нет await.
+    const byD = async (work: () => Promise<any>, site: string, lateWhy?: (v: any) => any): Promise<{ late: boolean; v?: any }> => {
+      const d = deadlineAt()
+      if (d === Infinity) return { late: false, v: await work() }
+      const left = d - (await nowMs($))
+      return await raceUntil($, work(), left, site, lateWhy)
+    }
+    // CONSTRAINT (#509-FIX7 А-Р1): сон -- min(C, D - now - G/2), предел двери
+    // min(T, D - now); остаток до D не больше G/2 -- сна нет (ms <= 0). cut --
+    // предел двери держит D, а не T.
+    const sleepPlan = (now: number): { ms: number; arg: string; limit: number; cut: boolean; realMs: number } => {
+      const left = deadlineAt() - now
+      const ms = left === Infinity ? CHUNK_MS : Math.min(CHUNK_MS, left - HALF_MARGIN_MS)
+      const limit = left === Infinity ? PAUSE_TIMEOUT_MS : Math.max(0, Math.min(PAUSE_TIMEOUT_MS, left))
+      const full = ms === CHUNK_MS
+      return { ms, arg: full ? CHUNK_ARG : (Math.max(0, ms) / 1000).toFixed(3), limit, cut: left <= PAUSE_TIMEOUT_MS, realMs: full ? CHUNK_REAL_MS : Math.floor(ms * 3 / 4) }
+    }
+    // CONSTRAINT (#509-FIX7 А-Р1): запись на пути к next ждётся гонкой с D
+    // (raced); запись выхода из шага next не предшествует -- ждётся целиком.
+    const writeRec = async (rec: any, site: string, raced: boolean = true): Promise<void> => {
+      if (!jpath) return
+      try {
+        if (raced) await byD(() => appendJournal($, jpath, rec), site)
+        else await appendJournal($, jpath, rec)
+      } catch (x) { noteLost(site, x, $) }
+    }
+    let sidStep = ""
+    try { sidStep = await sidFor($) } catch (x) { sidStep = SID_UNAVAILABLE }
+    const waitRec = async (kind: string, fields: any, raced: boolean = true): Promise<void> => {
+      const tW = await nowMs($)
+      await writeRec(Object.assign({
+        t: isoOf(tW), sid: sidStep,
+        rec: recHead + "-" + kind + "-" + String(waitN++),
+        outcome: kind,
+        agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+        turnId: ev.turnId, index: ev.index,
+      }, journalBase, fields), "journal-" + kind, raced)
+    }
+    const toastByD = async (text: string, site: string): Promise<void> => {
+      try { await byD(async () => await $.ui.toast(text), site) } catch (x) { noteLost(site, x, $) }
+    }
+    // CONSTRAINT (#509-FIX4 F6): начало последнего вызова next -- ставится ДО
+    // вызова: сердцебиение меряет промежуток между началами вызовов.
+    let lastProbeAt = 0
+    // CONSTRAINT (#509-FIX4 F2): штатный ответ {deny} и любой ответ не списком --
+    // чтение не состоялось (unread), а не пустая история: иначе старые строки
+    // читались бы свежими, а бросок без строки -- ошибкой хука.
+    // CONSTRAINT (#509-FIX8c Р2): пойманный бросок null/undefined -- why явная строка, прочие -- значение как есть: поздний исход читается по why (histLateWhy), и отказ значением null/undefined иначе терялся молча.
+    const readHistory = async (): Promise<{ rows: any[] | null; why: any }> => {
+      let got: any = null
+      try {
+        got = await $.session.messages({ agentId: String(aid) })
+        if (Array.isArray(got)) {
+          const rows: any[] = []
+          const idsOf = (xs: any): any[] => historyIds(xs).map(id => ({ tool_use_id: id }))
+          for (let i = 0; i < got.length; i++) {
+            const r = got[i]
+            rows.push({ role: String(r && r.role), text: String(r == null || r.text == null ? "" : r.text), toolUses: idsOf(r && r.toolUses), toolResults: idsOf(r && r.toolResults) })
+          }
+          return { rows, why: null }
+        }
+        if (got && typeof got === "object" && got.deny !== undefined) return { rows: null, why: "session.messages deny: " + String(got.deny) }
+      } catch (x) { return { rows: null, why: x === null || x === undefined ? "(отказ без значения: " + String(x) + ")" : x } }
+      return { rows: null, why: "session.messages: ответ не список и не {deny}" }
+    }
+    const histLateWhy = (v: any): any => v && v.why
+
+    const attemptOne = async function* (model: string, terminalAttempt: boolean, extra: any, heartbeat: boolean = false, ahead: { plan: string[]; at: number; termAt: number } | null = null): AsyncGenerator<any, { final: boolean; res: any; paused?: boolean; taken?: boolean }, any> {
+      const attempt = attemptN++
       const t0 = await nowMs($)
-      const declared = bind.rungEffort && bind.rungEffort[model]
+      const declared = modelKeyed(bind.rungEffort, model)
+      const bad = modelKeyed(bind.effortBad, model)
       // CONSTRAINT: эффорт применяется ТОЛЬКО на реальном переходе
-      // (model !== original). На попытке 0, идущей моделью хоста,
-      // авторитет у frontmatter агента -- пин ТОЙ ЖЕ клетки и он
-      // конкретнее реестра; hookEffortValue перебил бы его (первый
-      // приоритет в DE).
-      let req: any
+      // (model !== original). На попытке, идущей моделью хоста, авторитет у
+      // frontmatter агента -- пин ТОЙ ЖЕ клетки и он конкретнее реестра;
+      // hookEffortValue перебил бы его (первый приоритет в DE).
+      let req: any = null
+      let refuseReason = ""
       if (model === original) {
         req = e
       } else if (declared) {
@@ -4704,6 +7351,18 @@ export function register(on: any) {
         // max→high / xhigh→high у моделей без соответствующего флага, без
         // отказа, и кламп с этой поверхности ненаблюдаем.
         req = Object.assign({}, ev, { model, effort: declared })
+      } else if (isAnthropicModelId(model)) {
+        // CONSTRAINT (#509-FIX1 B1/B2): Anthropic-носитель освобождён от пина:
+        // без объявленного эффорта запрос уходит с УДАЛЁННЫМ полем effort --
+        // пин модели старта не наследуется (#266), хост применяет нативный.
+        // Негодный объявленный эффорт -- отказ с той же причиной, что у
+        // прибора, а не тихая езда без эффорта.
+        if (bad) {
+          refuseReason = "эффорт негоден: " + String(bad)
+        } else {
+          req = Object.assign({}, ev, { model })
+          delete req.effort
+        }
       } else {
         // CONSTRAINT (#266): «ступень без эффорта» невозможна -- поле effort
         // отсутствующим не бывает, движок восполняет его пином frontmatter
@@ -4714,50 +7373,88 @@ export function register(on: any) {
         // у какой паре «клетка x модель» -- решение юзера (#266), мод его не
         // выдумывает.
         const pin = world && world.effortByClass ? world.effortByClass[bind.class] : undefined
-        if (!effortOk(pin)) {
-          const tR = await nowMs($)
-          try {
-            let sidR = ""
-            try { sidR = await sidFor($) } catch (x) { sidR = SID_UNAVAILABLE }
-            const jpathR = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
-            if (jpathR) {
-              const recR: any = {
-                t: isoOf(tR),
-                sid: sidR,
-                rec: String(aid) + "-" + String(ev.turnId || "") + "-" + String(ev.index) + "-" + String(attempt) + "-rung-effort-refused",
-                agentId: String(aid),
-                subagentType: bind.subagentType,
-                class: bind.class,
-                turnId: ev.turnId,
-                index: ev.index,
-                attempt,
-                modelRequested: model,
-                outcome: "rung-effort-refused",
-                reason: pin === undefined || pin === null || pin === ""
-                  ? "пин эффорта клетки не объявлен"
-                  : "пин эффорта клетки не годен: " + String(pin),
-                source: bind.source,
-                allowedSrc: bind.allowedSrc,
-              }
-              // CONSTRAINT: негодный эффорт ступени обязан быть НАЗВАН и в
-              // отказе (parseRungItem обещает улику effortBad_<модель>): без
-              // поля читатель отличил бы отказ по опечатке от отказа по
-              // отсутствию пина.
-              if (bind.effortBad && bind.effortBad[model]) recR["effortBad_" + model] = bind.effortBad[model]
-              await appendJournal($, jpathR, recR)
-            }
-          } catch (x) { noteLost("journal-rung-effort-refused", x, $) }
-          continue
+        if (effortOk(pin)) {
+          req = Object.assign({}, ev, { model, effort: pin })
+        } else {
+          refuseReason = pin === undefined || pin === null || pin === ""
+            ? "пин эффорта клетки не объявлен"
+            : "пин эффорта клетки не годен: " + String(pin)
         }
-        req = Object.assign({}, ev, { model, effort: pin })
       }
-      let res: any = null
-      let threw: any = null
-      // CONSTRAINT: факт броска несёт ОТДЕЛЬНЫЙ флаг, а не истинность значения.
-      // `throw 0` / `throw ""` / `throw null` -- законные броски, и по значению
-      // они неотличимы от «не бросали»: ступень объявила бы отказ успехом,
-      // залипла на ней и вернула null вызывающему.
-      let didThrow = false
+      if (refuseReason) {
+        effortRefused.push(model)
+        if (stepEffortRefused.indexOf(model) < 0) stepEffortRefused.push(model)
+        const recR: any = {
+          t: isoOf(await nowMs($)),
+          sid: sidStep,
+          rec: recHead + "-" + String(attempt) + "-rung-effort-refused",
+          agentId: String(aid),
+          subagentType: bind.subagentType,
+          class: bind.class,
+          turnId: ev.turnId,
+          index: ev.index,
+          attempt,
+          pass: passN,
+          modelRequested: model,
+          outcome: "rung-effort-refused",
+          reason: refuseReason,
+          source: bind.source,
+          allowedSrc: bind.allowedSrc,
+        }
+        if (terminalAttempt) {
+          recR.terminal = true
+          recR.terminalReason = "cell-exhausted"
+          recR.rungsTried = called.slice()
+          recR.rungsEffortRefused = effortRefused.slice(0, -1)
+          recR.rungsSkippedDead = skippedDead.slice()
+        }
+        // CONSTRAINT: негодный эффорт ступени обязан быть НАЗВАН и в
+        // отказе (parseRungItem обещает улику effortBad_<модель>): без
+        // поля читатель отличил бы отказ по опечатке от отказа по
+        // отсутствию пина.
+        if (bad) recR["effortBad_" + model] = bad
+        await writeRec(recR, "journal-rung-effort-refused")
+        return { final: false, res: null }
+      }
+      // CONSTRAINT (#509-FIX8 Р4): проверка занятости и резерв модели
+      // проверяющего -- одним синхронным отрезком от t0, без await между ними:
+      // два проверяющих не выбирают одну свободную модель параллельно. Пропуск
+      // -- только не объявленной и не терминальной попытки и только пока в
+      // плане впереди есть модель, не занятая другими (терминал свободен);
+      // проход без свободных пробует занятую.
+      let reserved: ReviewerServedRec | null = null
+      let reservedEvicted: Array<[string, ReviewerServedRec]> = []
+      if (reviewer) {
+        const takenBy = sessionReviewersServedByOthers(String(aid), t0)
+        const busy = (m: string): boolean => takenBy.indexOf(normModelId(m)) >= 0
+        let freeAhead = false
+        if (ahead) {
+          for (let j = ahead.at + 1; j < ahead.plan.length && !freeAhead; j++) {
+            if (j === ahead.termAt || !busy(ahead.plan[j])) freeAhead = true
+          }
+        }
+        if (model !== original && !terminalAttempt && busy(model) && freeAhead) {
+          await writeRec({
+            t: isoOf(t0),
+            sid: sidStep,
+            rec: recHead + "-" + String(attempt) + "-reviewer-taken",
+            agentId: String(aid),
+            subagentType: bind.subagentType,
+            class: bind.class,
+            turnId: ev.turnId,
+            index: ev.index,
+            attempt,
+            pass: passN,
+            modelRequested: model,
+            outcome: "reviewer-taken",
+            source: bind.source,
+            allowedSrc: bind.allowedSrc,
+          }, "journal-reviewer-taken")
+          return { final: false, res: null, taken: true }
+        }
+        reservedEvicted = sessionReviewerServedSet(String(aid), model, t0, { reserve: true })
+        reserved = sessionReviewerServedGet(String(aid)) || null
+      }
       // CONSTRAINT: кусок, уже ушедший наружу, находится у сессии -- отмены
       // нет. Ступень, выдавшая хотя бы один кусок С СОДЕРЖИМЫМ, СОСТОЯЛАСЬ:
       // переход с неё запрещён и при отказе носителя, и при броске, иначе к
@@ -4766,96 +7463,576 @@ export function register(on: any) {
       // не любой элемент потока. Служебная оболочка потока сессии не достаётся,
       // склеивать нечего, и запрет на ней был ложным -- см. chunkCarriesContent.
       const emitted = { n: 0, content: 0, kinds: [] as string[] }
+      let reserveSettled = false
+      // CONSTRAINT (#509-FIX8c Р3): .return() на генераторе, чей .next() ждёт зависший поток, до finally не доходит; резерв снимает отмена next.signal (одноразовая подписка, снимается в finally) тем же правилом, что finally. Сигнала без addEventListener нет или он уже отменён -- немедленная проверка aborted().
+      let reserveUnsub: (() => void) | null = null
+      if (reserved) {
+        const rsv = reserved
+        const onAbort = (): void => {
+          if (!reserveSettled && emitted.content === 0) { sessionReviewerServedRestore(String(aid), rsv, reservedEvicted); reserveSettled = true }
+        }
+        let sig: any = null
+        try { sig = next.signal } catch (x) { noteLost("failover-signal", x, $) }
+        if (sig && !aborted() && typeof sig.addEventListener === "function") {
+          try {
+            sig.addEventListener("abort", onAbort, { once: true })
+            reserveUnsub = () => sig.removeEventListener("abort", onAbort)
+          } catch (x) { noteLost("failover-reserve-abort", x, $) }
+        } else if (aborted()) onAbort()
+      }
       try {
-        res = yield* driveNext(next(req), emitted)
-      } catch (x) { threw = x; didThrow = true }
-      // CONSTRAINT (#489-B1-FIX5 Z13.4): refusal -- ЕДИНСТВЕННОЕ чтение полей
-      // ответа на попытку; outcome, sticky и метка остывания берут его.
-      const refusal = isCarrierRefusal(res)
-      const t1 = await nowMs($)
-      // CONSTRAINT: решает СОДЕРЖИМОЕ, не счёт кусков -- см. countEmitted.
-      // Поле emitted в улике остаётся СЫРЫМ счётом: по нему сравниваются все
-      // прежние записи, и именно оно показало дефект (11 служебных кусков).
-      const afterEmit = emitted.content > 0
-      const outcome = didThrow
-        ? (afterEmit ? "threw_after_emit" : "threw")
-        : (refusal ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
-      const recKey = String(aid) + "-" + String(ev.turnId || "") + "-" + String(ev.index) + "-" + String(attempt)
-      // CONSTRAINT: предсказание смены липкости -- тот же предикат, что установка
-      // ниже (failoverWouldSetSticky). Улика пишется ДО bind.sticky = model;
-      // расхождение двух вызовов посчитает скучность по устаревшему правилу и
-      // пропустит разрез окна.
-      const willSetSticky = failoverWouldSetSticky(didThrow, refusal, reviewer, model)
-      const stickyChanged = !!(willSetSticky && bind.sticky !== model)
-      try {
-        let sid = ""
-        try { sid = await sidFor($) } catch (x) { sid = SID_UNAVAILABLE }
-        const jpath = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
-        if (jpath) {
-          const rec: any = {
-            t: isoOf(t1),
-            sid,
-            rec: recKey,
-            agentId: String(aid),
-            subagentType: bind.subagentType,
-            class: bind.class,
-            turnId: ev.turnId,
-            index: ev.index,
-            attempt,
-            modelRequested: model,
-            outcome,
-            emitted: emitted.n,
-            emittedContent: emitted.content,
-            emittedKinds: emitted.kinds,
-            dtMs: t1 - t0,
-            laddered: model !== original,
-            ...journalExtra,
+        const triedBefore = called.slice()
+        called.push(model)
+        // CONSTRAINT (#509-FIX3 M1, #509-FIX4 F1): строку отказа решают только
+        // записи, добавленные ПОСЛЕ начала попытки; снимок «до» -- сами записи
+        // (роль и текст), не их число: у окна 4096 число не растёт.
+        // CONSTRAINT (#509-FIX7 А-Р1): снимок ждётся не дольше D; проигрыш --
+        // вызов без свежего снимка (снимок нечитаем) и строка history-past-deadline.
+        let snap0: { rows: any[] | null; why: any } = { rows: null, why: null }
+        const s0 = await byD(readHistory, "failover-history-late", histLateWhy)
+        if (s0.late) {
+          snap0 = { rows: null, why: "deadline: снимок истории не успел к D" }
+          void waitRec("history-past-deadline", { forAttempt: attempt, modelRequested: model }, false).catch(x => noteLost("failover-history-late-rec", x, $))
+        } else snap0 = s0.v
+        // CONSTRAINT (#509-FIX7 А-Р2/А-Р8): перебег срока меряется непосредственно
+        // перед next, после всех ждущихся дверей; ниже пола записи нет. Запись
+        // не ждётся -- вызов она не задерживает.
+        const tCall = await nowMs($)
+        if (!pace.belowFloor && waiting && callEndAt && tCall - callEndAt >= STALL_EFF_MS) {
+          void waitRec("stall-margin-exceeded", { gapMs: tCall - callEndAt, stallMs: STALL_EFF_MS, marginMs: MARGIN_MS }, false).catch(x => noteLost("failover-stall-margin", x, $))
+        }
+        lastProbeAt = t0
+        let res: any = null
+        let threw: any = null
+        // CONSTRAINT: факт броска несёт ОТДЕЛЬНЫЙ флаг, а не истинность значения.
+        // `throw 0` / `throw ""` / `throw null` -- законные броски, и по значению
+        // они неотличимы от «не бросали»: ступень объявила бы отказ успехом,
+        // залипла на ней и вернула null вызывающему.
+        let didThrow = false
+        try {
+          res = yield* driveNext(next(req), emitted, String(aid))
+        } catch (x) { threw = x; didThrow = true }
+        // CONSTRAINT (#489-B1-FIX5 Z13.4): refusal -- ЕДИНСТВЕННОЕ чтение полей
+        // ответа на попытку; outcome, sticky и метка остывания берут его.
+        const seenRes: { served: string | null } = { served: null }
+        const refusal = isCarrierRefusal(res, seenRes)
+        const served = seenRes.served
+        const t1 = await nowMs($)
+        // CONSTRAINT: решает СОДЕРЖИМОЕ, не счёт кусков -- см. countEmitted.
+        // Поле emitted в улике остаётся СЫРЫМ счётом: по нему сравниваются все
+        // прежние записи, и именно оно показало дефект (11 служебных кусков).
+        const afterEmit = emitted.content > 0
+        const outcome = didThrow
+          ? (afterEmit ? "threw_after_emit" : "threw")
+          : (refusal ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
+        const failed = (didThrow || refusal) && !afterEmit
+        if (failed) callEndAt = t1
+        if (failed && reserved) { sessionReviewerServedRestore(String(aid), reserved, reservedEvicted); reserveSettled = true }
+        let stopNow = failed && aborted()
+        let cls = ""
+        let clsText = ""
+        let readyAt = 0
+        let unread = false
+        let unreadErr: any = null
+        let reread = false
+        let rereadStep = false
+        let rereadAborted = false
+        let pausedOk = false
+        if (failed && !stopNow) {
+          // CONSTRAINT (#514 H1, З2, З7, #509-FIX3 M1/AR-5): класс отказа различает
+          // ТОЛЬКО свежий текст сессии агента; поля ответа у лимита Claude и у
+          // любого отказа одни и те же (usage null, stopReason null). Отказ
+          // чтения -- temporary-unknown.
+          // CONSTRAINT (#509-FIX4 AR-c, #509-FIX5 Р3/Р11, #509-FIX8c Р1): порядок у
+          // броска -- свежая строка с известным началом; иначе текст самой ошибки
+          // тем же выбором, что свежие сообщения (refusalLineOfMessages: текст целиком
+          // JSON -- класс тела, иначе строка с известным началом); иначе одна пауза куском ожидания и одно повторное
+          // чтение против того же снимка «до» (когда запись отказа хоста
+          // становится видна относительно броска, не доказано); иначе
+          // нечитаемое -- temporary-unknown, прочитанное без свежей строки --
+          // hook-error. При нечитаемом снимке «до» шаг 3 -- только пауза;
+          // перечитывать не против чего, итог unread.
+          let line = ""
+          let fresh = false
+          let known = false
+          // CONSTRAINT (#509-FIX5 Р10): улика нечитаемого -- одна на попытку.
+          let lostSaid = false
+          const look = async (): Promise<void> => {
+            let s1 = snap0
+            if (snap0.rows) {
+              const g = await byD(readHistory, "failover-history-late", histLateWhy)
+              s1 = g.late ? { rows: null, why: "deadline: чтение истории не успело к D" } : g.v
+            }
+            const fr = snap0.rows && s1.rows ? freshHistory(snap0.rows, s1.rows) : { rows: null, why: s1.why }
+            if (!fr.rows) {
+              unread = true
+              unreadErr = fr.why
+              fresh = false
+              known = false
+              line = ""
+              if (!lostSaid) { lostSaid = true; noteLost("failover-refusal-messages", unreadErr, $) }
+              return
+            }
+            unread = false
+            unreadErr = null
+            const texts: string[] = []
+            for (let i = 0; i < fr.rows.length; i++) if (fr.rows[i].role === "assistant") texts.push(fr.rows[i].text)
+            fresh = texts.length > 0
+            const pick = refusalLineOfMessages(texts, model)
+            line = pick.line
+              known = pick.known
           }
-          if (declared && model !== original) rec.rungEffortRequested = declared
-          if (bind.effortBad && bind.effortBad[model]) rec["effortBad_" + model] = bind.effortBad[model]
-          armFailoverFoldTimer($, world, t1)
-          if (failoverAttemptIsBoring(rec, stickyChanged)) {
-            await failoverFoldObserve($, world, t1, String(bind.sticky || model || ""), sid, String(aid))
-          } else {
-            await failoverFoldFlush($, world)
-            await appendJournal($, jpath, rec)
+          await look()
+          if (didThrow && !known) {
+            const errPick = refusalLineOfMessages([safeText(threw)], model)
+            if (errPick.known) { line = errPick.line; known = true; unread = false }
+          }
+          if (didThrow && !known) {
+            rereadStep = true
+            // CONSTRAINT (#509-FIX5 Р3, #509-FIX7 А-Р1): пауза -- один сон
+            // ожидания по правилу срока D (sleepPlan: длительность и предел) и
+            // засчитывается его правилом: код 0 и не меньше трёх четвертей его
+            // длительности по часам мода. Несостоявшаяся пауза барьера появления
+            // строки отказа не выдержала -- unread, повторного чтения нет; нет
+            // места для сна или сон оборван пределом D -- reread-pause-deadline.
+            const tPause = await nowMs($)
+            const sp = sleepPlan(tPause)
+            let pauseCode: any = undefined
+            let pauseThrew = false
+            let pauseByD = sp.ms <= 0
+            let pauseElapsed = 0
+            if (!pauseByD) {
+              try {
+                const pr = await $.process.run(["/bin/sleep", sp.arg], { timeoutMs: sp.limit })
+                pauseCode = pr && typeof pr === "object" ? pr.exitCode : undefined
+              } catch (x) { pauseThrew = true; noteLost("failover-reread-pause", x, $) }
+              pauseElapsed = (await nowMs($)) - tPause
+              if (sp.cut && pauseElapsed >= sp.limit && (pauseThrew || pauseCode !== 0 || !(pauseElapsed >= sp.realMs))) pauseByD = true
+            }
+            if (aborted()) { stopNow = true; rereadAborted = true; unread = false }
+            else if (pauseByD) {
+              if (snap0.rows) { unread = true; unreadErr = "reread-pause-deadline" }
+            } else if (pauseThrew || pauseCode !== 0 || !(pauseElapsed >= sp.realMs)) {
+              // CONSTRAINT (#509-FIX5b (б)): reread-pause-failed -- причина только
+              // при читаемом снимке «до»; при нечитаемом причина -- ошибка его
+              // чтения, а несостоявшаяся пауза уходит в noteLost.
+              if (snap0.rows) { unread = true; unreadErr = "reread-pause-failed" }
+              else if (!pauseThrew) noteLost("failover-reread-pause", "кусок паузы: код " + String(pauseCode) + ", прошло " + String(pauseElapsed) + " мс", $)
+            } else {
+              // CONSTRAINT (#509-FIX5b (а)): reread -- повторное чтение состоялось;
+              // при нечитаемом снимке «до» читать не против чего.
+              pausedOk = true
+              if (snap0.rows) reread = true
+              await look()
+            }
+          }
+          if (!stopNow) {
+            if (unread) {
+              cls = "temporary-unknown"
+            } else if (didThrow && !fresh && !known) {
+              cls = "hook-error"
+            } else {
+              const c = classifyRefusal(line, t1, model)
+              if (c.err) noteLost("failover-refusal-time", c.err, $)
+              cls = c.class
+              readyAt = c.readyAt
+              clsText = line.slice(0, REFUSAL_TEXT_MAX)
+            }
+            lastClass = cls
+            lastText = clsText
+            if (cls === "request" && stepRequest.indexOf(model) < 0) stepRequest.push(model)
           }
         }
-      } catch (x) { noteLost("failover-fold-journal", x, $) }
-      if (didThrow) {
-        // CONSTRAINT: исключение носителя гасится ТОЛЬКО пока есть следующая
-        // ступень. На последней оно уезжает вызывающему нетронутым: съеденное
-        // исключение неотличимо от пустого ответа. Выдавшая ступень бросает
-        // ту же дисциплину независимо от номера: её куски уже у сессии.
-        lastThrow = threw
-        sawThrow = true
-        if (afterEmit || attempt === plan.length - 1) throw threw
+        // CONSTRAINT: предсказание смены липкости -- тот же предикат, что установка
+        // ниже (failoverWouldSetSticky). Улика пишется ДО bind.sticky = model;
+        // расхождение двух вызовов посчитает скучность по устаревшему правилу и
+        // пропустит разрез окна.
+        const willSetSticky = failoverWouldSetSticky(didThrow, refusal, reviewer, model, terminalAttempt)
+        const stickyChanged = !!(willSetSticky && bind.sticky !== model)
+        try {
+          if (jpath) {
+            const rec: any = {
+              t: isoOf(t1),
+              sid: sidStep,
+              rec: recHead + "-" + String(attempt),
+              agentId: String(aid),
+              subagentType: bind.subagentType,
+              class: bind.class,
+              turnId: ev.turnId,
+              index: ev.index,
+              attempt,
+              pass: passN,
+              modelRequested: model,
+              outcome,
+              emitted: emitted.n,
+              emittedContent: emitted.content,
+              emittedKinds: emitted.kinds,
+              dtMs: t1 - t0,
+              laddered: model !== original,
+              modelServed: served,
+              ...extra,
+            }
+            if (terminalAttempt) {
+              rec.terminal = true
+              rec.reason = "cell-exhausted"
+              rec.rungsTried = triedBefore
+              rec.rungsEffortRefused = effortRefused.slice()
+              rec.rungsSkippedDead = skippedDead.slice()
+            }
+            if (cls) {
+              rec.refusalClass = cls
+              rec.refusalText = clsText
+              if (readyAt) rec.readyAt = isoOf(readyAt)
+            }
+            if (stopNow) rec.aborted = true
+            if (rereadStep) rec.reread = reread
+            if (declared && model !== original) rec.rungEffortRequested = declared
+            if (bad) rec["effortBad_" + model] = bad
+            armFailoverFoldTimer($, world, t1)
+            const boring = failoverAttemptIsBoring(rec, stickyChanged)
+            await byD(async () => {
+              if (boring) {
+                await failoverFoldObserve($, world, t1, String(bind.sticky || model || ""), sidStep, String(aid))
+              } else {
+                await failoverFoldFlush($, world)
+                await appendJournal($, jpath, rec)
+              }
+            }, "failover-fold-journal")
+          }
+        } catch (x) { noteLost("failover-fold-journal", x, $) }
+        if (rereadAborted) await waitRec("wait-aborted", { reason: "прерван во время паузы повторного чтения" }, false)
+        if (unread) {
+          const why = safeText(unreadErr).slice(0, 200)
+          await writeRec({
+            t: isoOf(t1), sid: sidStep,
+            rec: recHead + "-" + String(attempt) + "-refusal-unread",
+            outcome: "refusal-unread",
+            agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+            turnId: ev.turnId, index: ev.index,
+            forAttempt: attempt, pass: passN, modelRequested: model,
+            reason: why,
+          }, "journal-refusal-unread")
+          if (!unreadToasted) {
+            unreadToasted = true
+            await toastByD("агент " + String(bind.subagentType || aid) + ": текст отказа не прочитан (" + why + ")", "failover-unread-toast")
+          }
+        }
+        // CONSTRAINT (#509-FIX3 L2): отказ сердцебиения тем же классом, что живая
+        // метка, срок не двигает: иначе проба каждые 240 с продлевала бы метку
+        // бессрочно, и полный проход после её срока не наступал бы.
+        const markRefusal = (reason: string): void => {
+          if (!cls) return
+          const mk = heartbeat ? markOf(model) : null
+          if (mk && mk.class === cls && isModelCooling(model, t1)) return
+          noteModelRefusal(model, t1, cls, readyAt, reason, clsText)
+        }
+        if (didThrow) {
+          // CONSTRAINT: выдавшая ступень бросает ту же дисциплину независимо от
+          // номера: её куски уже у сессии. Бросок ДО выдачи со свежей строкой --
+          // отказ по общему пути (#514 H8): исчерпанный проход не бросает.
+          // hook-error (AR-5) пробрасывается видимо, без метки и ожидания.
+          if (afterEmit || cls === "hook-error") throw threw
+          markRefusal(RUNG_COOLDOWN_REASON_THROW)
+          return { final: stopNow, res: lastRes, paused: pausedOk }
+        }
+        // CONSTRAINT (#226): липкость не ставится на совпадение проверяющего с
+        // моделью исполнителя. У удачной ступени исполнителя модель запоминается
+        // как факт сессии.
+        if (!refusal) {
+          // CONSTRAINT (#509-FIX8h Р2): поколение реестров сменилось с резерва (без резерва -- с начала шага) -- обе записи успеха пропускаются: старая сессия в новую не пишет.
+          const stepGenOk = (reserved ? reserved.gen : genStep) === sessionReviewerServedGenOf()
+          if (stepGenOk && executor) sessionExecutorModelAdd(model)
+          if (reviewer) {
+            if (reserved) reserved.prevRec = undefined
+            if (stepGenOk) sessionReviewerServedSet(String(aid), model, t1)
+            reserveSettled = true
+          }
+          if (failoverWouldSetSticky(false, refusal, reviewer, model, terminalAttempt)) bind.sticky = model
+          noteModelSuccess(model)
+          // CONSTRAINT (#509-FIX7 Р12, #509-FIX8 Р10): шаг, обслуженный не
+          // объявленной моделью, -- подсказка главному лупу ставится не больше
+          // одного раза на (агент, модель ступени) за сессию: постановка
+          // at-most-once, не гарантия доставки; ключ -- модель ступени, не
+          // usage.model. Подсказка идёт общей очередью главного лупа: context
+          // следующего tool.call либо submit на тике, когда тексту не меньше 60 с;
+          // вытеснение названо nudge_dropped, отказ постановки -- noteLost
+          // failover-served-nudge. Эпоха сменилась за шаг -- подсказка не
+          // ставится (очередь уже новой сессии).
+          if (model !== original && epoch === epStep) {
+            const said = String(aid) + "\0" + normModelId(model)
+            if (!ladderServedSaid.has(said)) {
+              ladderServedSaid.add(said)
+              void nudgeEnqueue($, "", {
+                text: "агент " + String(aid) + " (" + String(bind.subagentType || "") + "): объявлен " + original + ", шаг обслужила " + model + " — вердикт этого агента принадлежит " + model,
+                probe: "failover", t: t1, jpath, sid: sidStep,
+              }).catch(x => noteLost("failover-served-nudge", x, $))
+            }
+          }
+          return { final: true, res }
+        }
+        lastRes = res
+        // CONSTRAINT: отказ носителя ПОСЛЕ выдачи уезжает вызывающему как есть:
+        // куски первой ступени уже у сессии, вторая приклеила бы к ним чужой
+        // хвост. До первой выдачи отказ ведёт на следующую ступень.
+        if (afterEmit) return { final: true, res }
+        // CONSTRAINT (#313): метка -- ТОЛЬКО на отказ ДО первого содержимого;
+        // метка процессная и переживает newSession.
+        markRefusal(RUNG_COOLDOWN_REASON_CARRIER)
+        return { final: stopNow, res, paused: pausedOk }
+      } finally {
+        // CONSTRAINT (#509-FIX8b): любой иной выход из попытки, в том числе брошенный потребителем генератор (.return() на yield* driveNext), снимает резерв правилом отказа: без содержимого у сессии ступень не состоялась.
+        if (reserved && !reserveSettled && emitted.content === 0) sessionReviewerServedRestore(String(aid), reserved, reservedEvicted)
+        if (reserved && !reserveSettled && emitted.content > 0) reserved.prevRec = undefined
+        if (reserveUnsub) { try { reserveUnsub() } catch (x) { noteLost("failover-reserve-abort", x, $) } }
+      }
+    }
+
+    // CONSTRAINT (#509-FIX4 F3, #509-FIX5 Р1): выход без ожидания -- только
+    // если хотя бы одна модель дала request в этом шаге, а каждая прочая
+    // различная модель полного плана шага (объявленная, липкая, ступени,
+    // терминал; по normModelId) дала request, отказана по эффорту или несёт на
+    // atMs живую метку permanent-model (skipped-dead на начало прохода или
+    // получившая permanent в этом шаге): у permanent срока, которого можно
+    // дождаться, нет, и выход она не держит. Пропущенная skipped-known-until
+    // или несущая живую метку иного класса модель ждёт своего срока. Все
+    // permanent и ни одного request -- ожидание permanentOnly.
+    const inNorm = (list: string[], k: string): boolean => {
+      for (let i = 0; i < list.length; i++) if (normModelId(list[i]) === k) return true
+      return false
+    }
+    const stepAllRequest = (built: any, atMs: number): boolean => {
+      const keys: string[] = []
+      let n = 0
+      for (let i = 0; i < built.all.length; i++) {
+        const m = built.all[i]
+        const k = normModelId(m)
+        if (keys.indexOf(k) >= 0) continue
+        keys.push(k)
+        if (inNorm(stepEffortRefused, k)) continue
+        const pm = markOf(m)
+        if (pm && pm.class === "permanent-model" && isModelCooling(m, atMs)) continue
+        if (!inNorm(stepRequest, k)) return false
+        if (isModelCooling(m, atMs)) return false
+        n++
+      }
+      return n > 0
+    }
+
+    const passOnce = async function* (built: any, wake: boolean): AsyncGenerator<any, { final: boolean; res: any; allRequest: boolean; paused: boolean }, any> {
+      newPass()
+      const tP = await nowMs($)
+      for (let i = 0; i < built.dead.length; i++) {
+        const m = built.dead[i]
+        if (skippedDead.indexOf(m) < 0) skippedDead.push(m)
+        const mk = markOf(m)
+        await byD(() => journalOnce($, skippedDeadSaid, normModelId(m) + "\0" + String(mk ? mk.at : ""), jpath, {
+          t: isoOf(tP), sid: sidStep,
+          rec: recHead + "-skipped-dead-" + String(attemptN) + "-" + String(i),
+          outcome: "skipped-dead",
+          agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+          turnId: ev.turnId, index: ev.index, pass: passN,
+          model: m, until: mk && typeof mk.until === "number" ? isoOf(mk.until) : "",
+          refusalText: mk ? String(mk.text || "") : "",
+        }, "journal-skipped-dead"), "journal-skipped-dead")
+      }
+      // CONSTRAINT (#509-FIX3 AR-3): проход пробуждения не зовёт модель с живым
+      // известным сроком -- ответ до срока известен заранее; пропуск назван.
+      if (wake) {
+        for (let i = 0; i < built.skippedKnown.length; i++) {
+          const m = built.skippedKnown[i]
+          const mk = markOf(m)
+          await writeRec({
+            t: isoOf(tP), sid: sidStep,
+            rec: recHead + "-skipped-known-" + String(passN) + "-" + String(i),
+            outcome: "skipped-known-until",
+            agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+            turnId: ev.turnId, index: ev.index, pass: passN,
+            model: m, until: mk && typeof mk.until === "number" ? isoOf(mk.until) : "",
+            refusalText: mk ? String(mk.text || "") : "",
+          }, "journal-skipped-known")
+        }
+      }
+      const extra = Object.assign({}, journalBase, built.evidence)
+      if (built.dead.length) extra.rungsSkippedDeadStep = built.dead.slice()
+      // CONSTRAINT (#509-FIX6 А1): флаг паузы -- от последней попытки с
+      // вызовом; отказ по эффорту вызова не делал и флаг не трогает.
+      let paused = false
+      for (let i = 0; i < built.plan.length; i++) {
+        const r = yield* attemptOne(built.plan[i], i === built.termAt, extra, false, { plan: built.plan, at: i, termAt: built.termAt })
+        if (r.final) return { final: true, res: r.res, allRequest: false, paused: false }
+        if (r.paused !== undefined) paused = r.paused
+      }
+      return { final: false, res: lastRes, allRequest: stepAllRequest(built, await nowMs($)), paused }
+    }
+
+    lastProbeAt = await nowMs($)
+    const first = yield* passOnce(firstPlan, false)
+    if (first.final) return first.res
+    // CONSTRAINT (#514 H6): дефект запроса одинаков для любой модели --
+    // ожидание его не лечит; переполнение контекста обрабатывает харнес.
+    if (first.allRequest) return lastRes
+
+    // --- #514 H5: ожидание вместо смерти агента -------------------------------
+    // CONSTRAINT (#509-FIX4 F-2): пауза -- $.process.run(sleep): бюджет хука
+    // она не тратит (измерено, AN-509-HOST.md:11), $.clock.sleep тратит. Кусок
+    // не больше 4 с меньше lingerMs 5 с, поэтому прерывание юзером отпускает
+    // шаг чисто. Потолка числа циклов нет (слово юзера 2); выходы -- успех,
+    // прерывание, отказ двери паузы, нет цели; ветка wait-budget-exhausted --
+    // страховка на хосте, чей next бюджет считает.
+    if (pace.belowFloor) await waitRec("stall-below-floor", { stallMs: pace.stall, heartbeatMs: HEARTBEAT_MS })
+    // CONSTRAINT (#514 H5.1): цель -- наименьший срок по моделям прохода и
+    // терминалу; permanent-model не в счёт, пока есть хоть одна другая.
+    // Отказанные по эффорту не в счёт вовсе: вызова не будет, и их протухшая
+    // метка крутила бы проходы без паузы. Модель без метки готова сейчас.
+    // CONSTRAINT (#509-FIX8d Р1): у проверяющего кандидат цели -- не модель, обслуживающая другого проверяющего (sessionReviewersServedByOthers на atMs); объявленная модель самого агента и терминал не вычитаются -- то же правило, что у плана (Р13) и у пропуска попытки (терминал свободен). Кандидатов нет -- null, выход «нет цели».
+    const wakeTarget = (atMs: number, built: any): { wakeAt: number; model: string; permanentOnly: boolean } | null => {
+      const takenW = reviewer ? sessionReviewersServedByOthers(String(aid), atMs) : []
+      const takenOut = (m: string): boolean => {
+        const k = normModelId(m)
+        return k !== origN && k !== planTermN && takenW.indexOf(k) >= 0
+      }
+      const cands: string[] = []
+      for (let i = 0; i < built.all.length; i++) {
+        const m = built.all[i]
+        if (stepEffortRefused.indexOf(m) < 0 && stepRequest.indexOf(m) < 0 && cands.indexOf(m) < 0 && !takenOut(m)) cands.push(m)
+      }
+      if (!cands.length) return null
+      const untilOf = (m: string): number => {
+        const mk = markOf(m)
+        if (!mk) return atMs
+        if (typeof mk.until === "number") return mk.until
+        return mk.at + RUNG_COOLDOWN_MS
+      }
+      const isPerm = (m: string): boolean => { const mk = markOf(m); return !!(mk && mk.class === "permanent-model" && untilOf(m) > atMs) }
+      let pool = cands.filter(m => !isPerm(m))
+      const permanentOnly = !pool.length
+      if (permanentOnly) pool = cands
+      let best = pool[0]
+      for (let i = 1; i < pool.length; i++) if (untilOf(pool[i]) < untilOf(best)) best = pool[i]
+      return { wakeAt: untilOf(best), model: best, permanentOnly }
+    }
+    const marksView = (built: any): any => {
+      const out: any = {}
+      for (let i = 0; i < built.all.length; i++) {
+        const mk = markOf(built.all[i])
+        if (mk) out[built.all[i]] = { until: typeof mk.until === "number" ? isoOf(mk.until) : "", class: String(mk.class || mk.reason || "") }
+      }
+      return out
+    }
+    let built = firstPlan
+    let begun = false
+    // CONSTRAINT (#514 FIX2): пауза между двумя вызовами модели гарантируется
+    // флагом, а не метками. Модель без будущей метки даёт wakeAt = now, и ветка
+    // wake без флага крутила бы вызовы без паузы -- горячий цикл запросов к API;
+    // потолка числа циклов нет (слово юзера), поэтому держит только кусок паузы.
+    // Первый проход до цикла -- тоже вызов.
+    // CONSTRAINT (#509-FIX6 А1): засчитанная пауза перечитывания последней
+    // попытки -- тоже пауза после вызова.
+    let pausedSinceCall = !!first.paused
+    const begin = async (target: any): Promise<void> => {
+      if (begun) return
+      begun = true
+      await waitRec("wait-begin", {
+        refusalClass: lastClass, refusalText: lastText,
+        wakeAt: isoOf(target.wakeAt), wakeModel: target.model,
+        permanentOnly: target.permanentOnly, marks: marksView(built),
+      })
+      // CONSTRAINT (#514 H7): один тост на агента на эпизод ожидания.
+      await toastByD("агент " + String(bind.subagentType || aid) + " ждёт сброса лимита: " + target.model + " до " + isoOf(target.wakeAt), "failover-wait-toast")
+    }
+    waiting = true
+    for (;;) {
+      if (aborted()) { await waitRec("wait-aborted", {}, false); return lastRes }
+      const left = budgetLeft()
+      if (left < 1500) { await waitRec("wait-budget-exhausted", { reason: "бюджет хука хоста", remainingMs: left }, false); return lastRes }
+      const now = await nowMs($)
+      const target = wakeTarget(now, built)
+      if (!target) { await waitRec("wait-no-target", { reason: "в проходе нет вызываемой модели" }, false); return lastRes }
+      const mayCall = pausedSinceCall
+      if (mayCall && now >= target.wakeAt) {
+        await begin(target)
+        await waitRec("wait-probe", { kind: "wake", model: target.model })
+        lastProbeAt = now
+        built = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks, { skipKnown: true })
+        const r = yield* passOnce(built, true)
+        pausedSinceCall = !!r.paused
+        if (r.final) return r.res
+        if (r.allRequest) return lastRes
         continue
       }
-      lastRes = res
-      lastThrow = null
-      sawThrow = false
-      // CONSTRAINT (#226): липкость не ставится на ступень-совпадение --
-      // failoverAttemptModels кладёт липкую ступень в plan[0], и совпадение
-      // зацепило бы проверяющего за модель исполнителя навсегда. У удачной
-      // ступени исполнителя модель запоминается как факт сессии.
-      if (!refusal) {
-        if (executor) sessionExecutorModelAdd(model)
-        if (failoverWouldSetSticky(false, refusal, reviewer, model)) bind.sticky = model
+      // CONSTRAINT (#509-FIX6 А1, #509-FIX7 А-Р1): проба по сроку D =
+      // callEndAt + S_eff - G допустима и без паузы после вызова: до D остаётся
+      // не больше G/2 -- места для сна нет. Ниже пола ветки срока нет: при
+      // S <= 1000 срок D наступает не позже куска от конца вызова, и ветка
+      // крутила бы вызовы без паузы (#514 FIX2).
+      const heartbeatDue = mayCall && now - lastProbeAt >= HEARTBEAT_MS
+      const deadlineDue = deadlineAt() - now <= HALF_MARGIN_MS
+      if (heartbeatDue || deadlineDue) {
+        await begin(target)
+        await waitRec("wait-probe", { kind: heartbeatDue ? "heartbeat" : "deadline", model: target.model })
+        lastProbeAt = now
+        newPass()
+        // CONSTRAINT (#509-FIX5 Р5): проба терминала -- терминальная попытка
+        // и при объявленной = терминал: cell-exhausted, без липкости.
+        const isTerm = !!planTermN && normModelId(target.model) === planTermN
+        // CONSTRAINT (#509-FIX8c Р6, #509-FIX8d Р1): проба несёт ahead позиции цели в плане шага -- та же проверка «модель занята другим проверяющим», что у прохода; reviewer-taken ведёт на следующие элементы плана тем же циклом, что проход, без повторной пробы занятой. Цели нет в плане (dead, skippedKnown) -- позиция -1: весь план впереди.
+        const probeAt = built.plan.indexOf(target.model)
+        const probeExtra = Object.assign({}, journalBase, built.evidence)
+        const r = yield* attemptOne(target.model, isTerm, probeExtra, true, { plan: built.plan, at: probeAt, termAt: built.termAt })
+        if (r.taken) {
+          let pausedRest = false
+          for (let j = probeAt + 1; j < built.plan.length; j++) {
+            const rj = yield* attemptOne(built.plan[j], j === built.termAt, probeExtra, false, { plan: built.plan, at: j, termAt: built.termAt })
+            if (rj.final) return rj.res
+            if (rj.paused !== undefined) pausedRest = rj.paused
+          }
+          pausedSinceCall = pausedRest
+          continue
+        }
+        pausedSinceCall = !!r.paused
+        if (r.final) return r.res
+        continue
       }
-      // CONSTRAINT (#313): метка недоступности — ТОЛЬКО на отказ носителя ДО
-      // первого содержимого (ровно предикат перехода на следующую ступень):
-      // бросок — транспортный отказ (различение #239), выдавшая содержимое
-      // ступень состоялась. Метка переживёт newSession — процессная.
-      if (refusal && !afterEmit) noteRungCarrierRefusal(model, t1)
-      // CONSTRAINT: отказ носителя ПОСЛЕ выдачи уезжает вызывающему как есть:
-      // куски первой ступени уже у сессии, вторая приклеила бы к ним чужой
-      // хвост. До первой выдачи поведение прежнее -- отказ ведёт на следующую
-      // ступень.
-      if (afterEmit || !refusal) return res
+      // CONSTRAINT (#509-FIX7 А-Р1): сон -- sleepPlan: не дольше min(C, D -
+      // now - G/2), предел двери min(T, D - now). Сон, оборванный пределом D
+      // (прошло не меньше предела), -- не отказ двери: срок наступил, следующий
+      // виток зовёт next веткой срока.
+      const sp = sleepPlan(now)
+      let ran: any = null
+      let ranErr: any = null
+      let ranThrew = false
+      try {
+        ran = await $.process.run(["/bin/sleep", sp.arg], { timeoutMs: sp.limit })
+      } catch (x) { ranThrew = true; ranErr = x }
+      // CONSTRAINT (#509-FIX3 L5): прерывание -- первым после куска, раньше
+      // begin(), журнала и тоста.
+      if (aborted()) { await waitRec("wait-aborted", {}, false); return lastRes }
+      // CONSTRAINT (#509-FIX3 L4, #509-FIX4 F4): кусок засчитывается паузой
+      // только при коде 0 и не меньше трёх четвертей куска по часам мода;
+      // иначе названный выход, не вызов модели без паузы.
+      const tChunk = await nowMs($)
+      const code = !ranThrew && ran && typeof ran === "object" ? ran.exitCode : undefined
+      const elapsed = tChunk - now
+      const sleptOk = !ranThrew && code === 0 && elapsed >= sp.realMs
+      // CONSTRAINT: страховка от бесконечного цикла без паузы при D в прошлом (мутант f6-a1-deadline); в бою первой срабатывает ветка срока.
+      if (!sleptOk && sp.cut && sp.limit > 0 && elapsed >= sp.limit) {
+        void waitRec("sleep-cut-deadline", { limitMs: sp.limit, elapsedMs: elapsed, exitCode: code, threw: ranThrew }, false).catch(x => noteLost("failover-sleep-cut", x, $))
+        continue
+      }
+      if (ranThrew) {
+        // CONSTRAINT: отказ двери паузы -- названный выход, не цикл без паузы.
+        await waitRec("wait-unavailable", { reason: safeText(ranErr).slice(0, 200), wakeAt: isoOf(target.wakeAt), wakeModel: target.model, begun }, false)
+        return lastRes
+      }
+      if (!sleptOk) {
+        await waitRec("wait-unavailable", { reason: "кусок паузы: код " + String(code) + ", прошло " + String(elapsed) + " мс", exitCode: code, elapsedMs: elapsed, wakeAt: isoOf(target.wakeAt), wakeModel: target.model, begun }, false)
+        return lastRes
+      }
+      // CONSTRAINT: агент, ждущий окна лимита, жив -- засчитанная пауза ставит пометку; незасчитанная выходит выше без неё.
+      try { staleRecOf(String(aid)).touched = true } catch (x) { noteLost("stale-agents-track", x) }
+      pausedSinceCall = true
+      await begin(target)
     }
-    if (sawThrow) throw lastThrow
-    return lastRes
   })
     .catch(observerFailThroughStream)
 }

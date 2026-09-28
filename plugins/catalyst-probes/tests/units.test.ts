@@ -18,7 +18,7 @@ import {
   formVerdictUpper, formVocabRefusal,
   MOD_VERSION, RUNG_COOLDOWN_MS, noteRungTimeout, rungsAfterCooldown,
   failoverLadder, failoverLadderBind, loadAllowedByClass, loadWorld, worldFor, nextFailoverModel, failoverAttemptModels,
-  isCarrierRefusal, FAILOVER_MAX_NEXT, FAILOVER_BIND_CAP, chunkCarriesContent,
+  isCarrierRefusal, FAILOVER_BIND_CAP, chunkCarriesContent,
   failoverBindSet, failoverBindGet, failoverBindReset,
   FAILOVER_FOLD_PERIOD_MS, FOLD_ARM_RETRY_MS, failoverAttemptIsBoring, armFailoverFoldTimer,
   failoverFoldCount, failoverFoldNote, failoverFoldFlush, failoverFoldReset, failoverFoldWriteErr, failoverFoldSplitLost, failoverFoldResetLost,
@@ -27,7 +27,7 @@ import {
   cooldownSnapshot, ladderCommandText, clipLadderArg,
   isModelCooling, noteRungCarrierRefusal, deferCoolingAttemptModels, rungCooldownReset,
   LADDER_COMMAND, LADDER_COMMAND_DESCRIPTION, LADDER_COMMAND_ARG_HINT,
-  LADDER_COMMAND_ARG_MAX, register,
+  LADDER_COMMAND_ARG_MAX, register as registerRaw514,
   COACHING, COACHING_SPLICE_SHA256,
 } from "../hooks/register.ts"
 // CONSTRAINT (#393-A2): lostWrites -- состояние МОДУЛЯ, а раннер держит один
@@ -35,6 +35,11 @@ import {
 // ДО волны экспорта lostWritesSnapshot нет и именованный импорт ронял бы весь
 // файл -- красная фаза обязана показывать отказ КАЖДОГО зуба отдельной строкой.
 import * as registerModule393 from "../hooks/register.ts"
+import { TERMINAL_PARITY_509 } from "./terminal-parity-509.ts"
+
+import { STAND_MODEL_CAP_TEXT, standModelOver, cappedRegister } from "./stand-cap-514.ts"
+
+const register = cappedRegister(registerRaw514)
 
 // CONSTRAINT: sha256-прибор несёт сам набор юнитов: раннер отказывает
 // node:test/node:assert/node:fs, а веб-глобалы (crypto, TextEncoder) в нём
@@ -871,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.49")
+  expect(MOD_VERSION).toBe("0.1.50")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1074,33 +1079,11 @@ test("failoverLadder: нет ни одной таблицы -- пустая ле
   expect(failoverLadder({}, "glm-executor", "exec-0p")).toStrictEqual([])
 })
 
-test("failoverLadderBind: клетка без лестницы берёт allowed без входящей, порядок табличный", () => {
-  const allowed = { "1a": ["glm-5.3-flash", "glm-5.3", "grok-4.6"] }
-  const info = failoverLadderBind({}, "any-agent", "1a", allowed, "glm-5.3-flash")
-  expect(info.ladder).toStrictEqual(["glm-5.3", "grok-4.6"])
-  expect(info.source).toBe("allowed")
-})
-
 test("failoverLadderBind: явная поклеточная лестница выигрывает у allowed", () => {
   const fo = parseToml(FAILOVER_TOML).failover
-  const allowed = { "exec-0p": ["x1", "x2", "x3"] }
-  const info = failoverLadderBind(fo, "other-agent", "exec-0p", allowed, "c1")
+  const info = failoverLadderBind(fo, "other-agent", "exec-0p")
   expect(info.ladder).toStrictEqual(["c1", "c2"])
   expect(info.source).toBe("class")
-})
-
-test("failoverLadderBind: единственная allowed -- входящая, уровень пуст", () => {
-  const allowed = { "1d": ["glm-5.3"] }
-  const info = failoverLadderBind({}, "any-agent", "1d", allowed, "glm-5.3")
-  expect(info.ladder).toStrictEqual([])
-  expect(info.source).toBe("none")
-})
-
-test("failoverLadderBind: пустой allowed -- уровень пуст", () => {
-  const allowed = { adjudication: [] as string[] }
-  const info = failoverLadderBind({}, "any-agent", "adjudication", allowed, "glm-5.3")
-  expect(info.ladder).toStrictEqual([])
-  expect(info.source).toBe("none")
 })
 
 test("loadAllowedByClass: оба адреса недоступны -- allowedSrc absent:, без исключения", async () => {
@@ -1111,15 +1094,6 @@ test("loadAllowedByClass: оба адреса недоступны -- allowedSrc
   const got = await loadAllowedByClass($, env)
   expect(got.allowedSrc.indexOf("env:absent")).toBe(0)
   expect(got.allowedByClass).toEqual({})
-})
-
-test("failoverLadderBind: ступени allowed несут пустой rungEffort", () => {
-  const allowed = { "1a": ["m1", "m2", "m3"] }
-  const info = failoverLadderBind({}, "any-agent", "1a", allowed, "m1")
-  expect(info.ladder).toStrictEqual(["m2", "m3"])
-  expect(info.source).toBe("allowed")
-  expect(info.rungEffort).toEqual({})
-  expect(info.rungsDropped).toBe(0)
 })
 
 function spawnHook(): any {
@@ -1181,6 +1155,7 @@ test("agent.spawn: пустая лестница 1d всё равно кладё
   expect(bind && bind.ladder).toStrictEqual([])
   expect(bind && bind.allowedSrc).toBe("env")
   const shards = writes.filter(w => String(w.path).indexOf("/failover/journal.jsonl.shard.") >= 0)
+    .filter(w => String(JSON.parse(String(w.text)).rec).indexOf("terminal-absent-") !== 0)
   expect(shards.length).toBe(1)
   const rec = JSON.parse(String(shards[0].text))
   expect(String(rec.rec).indexOf("empty-ladder")).toBe(0)
@@ -1289,26 +1264,6 @@ test("loadAllowedByClass: битая env-таблица не выигрывае�
   })
   expect(got.allowedSrc).toBe("env:unusable→marketplace")
   expect(got.allowedByClass["1a"]).toStrictEqual(["glm-5.3-flash", "glm-5.3", "grok-4.6"])
-})
-
-test("loadWorld: живой файл таблицы доезжает до ступеней bind", async () => {
-  const table = "/tbl-live/routing-table.toml"
-  const probes = "/probes-live/probes.toml"
-  const files: Record<string, string> = {
-    [probes]: "[failover]\nenabled = true\n",
-    [table]: "[classes.1a]\nallowed = [\"glm-5.3-flash\", \"glm-5.3\", \"grok-4.6\"]\n",
-  }
-  const { $ } = fsEnv$(files, {
-    CLAUDE_PROBES_DIR: "/probes-live",
-    CATALYST_ROUTING_TABLE: table,
-  }, 94_000_000)
-  const world = await loadWorld($, {
-    PROBES_DIR: "/probes-live", ROUTING_TABLE: table, CONFIG_DIR: "", HOME: "", PWD: "/work",
-  }, "/work")
-  const info = failoverLadderBind(world.failover, "any-agent", "1a", world.allowedByClass, "glm-5.3-flash")
-  expect(info.ladder).toStrictEqual(["glm-5.3", "grok-4.6"])
-  expect(info.source).toBe("allowed")
-  expect(world.allowedSrc).toBe("env")
 })
 
 test("loadAllowedByClass: заданный env-путь без файла -- env:absent в цепочке", async () => {
@@ -1628,7 +1583,7 @@ test("#335 form: ВЫКЛЮЧЕНА (formOn), носитель patch -- тихо
 
 test("#335 idle-watch: включена, носитель НЕ задан -- вооружена", async () => {
   const files: Record<string, string> = {
-    "/probes-335-i1/probes.toml": "[probe.idle-watch]\nact = \"log_only\"\n",
+    "/probes-335-i1/probes.toml": "[probe.idle-watch]\nact = \"log_only\"\nwindow_min = 0\n",
   }
   const { $ } = fsEnv$(files, {
     CLAUDE_PROBES_DIR: "/probes-335-i1",
@@ -1648,7 +1603,7 @@ test("#335 idle-watch: включена, носитель НЕ задан -- в�
 
 test("#335 idle-watch: включена, носитель patch -- громкий отказ, значение ручки в исходе = patch", async () => {
   const files: Record<string, string> = {
-    "/probes-335-i2/probes.toml": "[probe.idle-watch]\nact = \"log_only\"\n",
+    "/probes-335-i2/probes.toml": "[probe.idle-watch]\nact = \"log_only\"\nwindow_min = 0\n",
   }
   const { $, writes } = fsEnv$(files, {
     CLAUDE_PROBES_DIR: "/probes-335-i2",
@@ -2002,7 +1957,7 @@ test("#391 C: негодный образец в when пробу НЕ запус
   const files: Record<string, string> = {
     "/probes-391-c/probes.toml":
       "[probe.judge]\nenabled = false\n[probe.form]\nenabled = false\n" +
-      "[probe.idle-watch]\nenabled = false\n[probe.dead-rule]\nkind = \"consult\"\n" +
+      "[probe.idle-watch]\nenabled = false\n[probe.dead-rule]\nkind = \"consult\"\non = [\"PreToolUse\"]\n" +
       "[probe.dead-rule.when]\nfield = \"tool\"\nmatches = \"Age(nt\"\n",
   }
   const { $, writes } = fsEnv$(files, {
@@ -2066,7 +2021,7 @@ test("#335 carrier журнала: skip_disabled при чужом носите�
 
 test("#335 граница без списков: консультация БЕЗ списков классов + чужой носитель -- отказ звучит", async () => {
   const files: Record<string, string> = {
-    "/probes-335-c8/probes.toml": "[probe.idle-watch]\n",
+    "/probes-335-c8/probes.toml": "[probe.idle-watch]\nwindow_min = 0\n",
   }
   const { $ } = fsEnv$(files, {
     CLAUDE_PROBES_DIR: "/probes-335-c8",
@@ -2115,7 +2070,7 @@ models = ["a1", "a2"]
 [failover.class.exec-0p]
 models = ["c1"]
 `).failover
-  const info = failoverLadderBind(fo, "glm-executor", "exec-0p", { "exec-0p": ["x1", "x2"] }, "a1")
+  const info = failoverLadderBind(fo, "glm-executor", "exec-0p")
   expect(info.ladder).toStrictEqual(["a1", "a2"])
   expect(info.source).toBe("agent")
 })
@@ -2126,10 +2081,9 @@ test("nextFailoverModel: пропуск уже отказавшей модели
   expect(nextFailoverModel(["a", "b", "c"], ["b"])).toBe("a")
 })
 
-test("failoverAttemptModels: потолок трёх вызовов", () => {
+test("#509 D-1: все ступени без потолка", () => {
   const seq = failoverAttemptModels("incoming", null, ["m1", "m2", "m3", "m4", "m5"])
-  expect(seq).toStrictEqual(["incoming", "m1", "m2"])
-  expect(seq.length).toBe(FAILOVER_MAX_NEXT)
+  expect(seq).toStrictEqual(["incoming", "m1", "m2", "m3", "m4", "m5"])
 })
 
 test("isCarrierRefusal: usage null и stopReason null -- отказ носителя", () => {
@@ -2554,7 +2508,9 @@ test("ladder-cmd: ПРОВОДКА -- регистрация из session.start,
     command: { register: async (spec: any) => { specs.push(spec) } },
   }
   await started[0].fn($, { cwd: "/probe" }, async (x: any) => "NEXT-" + String(x && x.cwd))
-  expect(specs.length).toBe(1)
+  // CONSTRAINT (stale-agents Д8): вторая команда мода -- catalyst-fleet, регистрируется после лестницы.
+  expect(specs.length).toBe(2)
+  expect(specs[1].name).toBe("catalyst-fleet")
   expect(specs[0].name).toBe("catalyst-ladder")
   expect(specs[0].description).toBe(LADDER_COMMAND_DESCRIPTION)
   expect(specs[0].argumentHint).toBe("[модель]")
@@ -2812,7 +2768,10 @@ test("#313 T2: отказ носителя ПОСЛЕ содержимого м�
   failoverBindReset()
 })
 
-test("#313 T3: бросок метки НЕ ставит -- различение #239 цело", async () => {
+// CONSTRAINT (#514 H1/H8): бросок до выдачи -- отказ по общему пути и ставит
+// метку; различение #239 живёт в ПРИЧИНЕ метки (carrier-throw против
+// carrier-refusal).
+test("#313 T3: бросок ставит метку с причиной carrier-throw -- различение #239 в причине", async () => {
   failoverBindReset()
   const next = fan313Stream({
     "f313-t3-throw": fan313Throw,
@@ -2820,7 +2779,9 @@ test("#313 T3: бросок метки НЕ ставит -- различение
   })
   const out = await fan313Run("f313-t3", "f313-t3-throw", ["f313-t3-ok"], next)
   expect(out.value && out.value.text).toBe("OK-t3")
-  expect(isModelCooling("f313-t3-throw", FAN313_NOW + 1)).toBe(false)
+  expect(isModelCooling("f313-t3-throw", FAN313_NOW + 1)).toBe(true)
+  const row = cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t3-throw")
+  expect(row.map((r: any) => [r.reason, r.class])).toEqual([["carrier-throw", "temporary-unknown"]])
   failoverBindReset()
 })
 
@@ -2886,7 +2847,7 @@ test("#313 T7: собственная модель агента остывает
   const out = await fan313Run("f313-t7", "f313-t7-own", ["f313-t7-step"], next)
   expect(next.seen, "собственная модель достигается после здоровой ступени").toEqual(["f313-t7-step", "f313-t7-own"])
   expect(out.value && out.value.text).toBe("OK-t7-own")
-  expect(isModelCooling("f313-t7-own", FAN313_NOW + 1), "метка пережила шаг").toBe(true)
+  expect(isModelCooling("f313-t7-own", FAN313_NOW + 1), "успех модели снимает её метку (#514 H3)").toBe(false)
   failoverBindReset()
 })
 
@@ -2975,7 +2936,9 @@ test("catch: каждое подписанное событие несёт об�
   expect(step.length, "turn.step -- одна стримовая регистрация").toBe(1)
   expect(step[0].h.constructor.name, "turn.step -- async-генератор").toBe("AsyncGeneratorFunction")
   const others = handlers.filter(x => x.ev !== "turn.step")
-  expect(others.length, "остальные восемь регистраций -- не стрим").toBe(8)
+  // CONSTRAINT (stale-agents Д6, Д8, FIX1): +2 регистрации -- session.end, command.run{catalyst-fleet}; fleet_status обслуживает основная tool.call, второй tool.call у плагина нет.
+  // CONSTRAINT (#531 Р2): +30 регистраций classic.* -- CLASSIC_EVENTS без PreToolUse, PostToolUse, MessageDisplay.
+  expect(others.length, "остальные сорок регистраций -- не стрим").toBe(40)
   for (const x of others) {
     expect(typeof x.h, `${x.ev} несёт функцию`).toBe("function")
     expect(x.h.constructor.name, `${x.ev} не async-генератор`).not.toBe("AsyncGeneratorFunction")
@@ -3037,6 +3000,11 @@ type Fail393 = {
   everyCancel?: boolean
 }
 
+// CONSTRAINT (#514 FIX2 Д2): предел вызовов двери паузы на один стенд. Зуб,
+// ушедший в цикл ожидания, падает названным броском, а не растит память
+// процесса харнеса без предела (26.09 мак упал: прогоны по 18-42 GiB).
+const STAND_PROC_CALL_CAP = 2000
+
 function mod$393(o: {
   files?: Record<string, string>
   env?: Record<string, string>
@@ -3046,6 +3014,12 @@ function mod$393(o: {
   answers?: any[]
   envRefuses?: string[]
   fail?: Fail393
+  // CONSTRAINT (#514): двери process/messages -- ТОЛЬКО по заказу зуба. Без
+  // заказа двери process нет вовсе (как у движкового харнеса: «no
+  // implementation for process.run»), и ожидание исчерпанного шага выходит
+  // названной записью, а не циклом на неподвижных часах.
+  proc?: (argv: string[], init: any, setNow: (n: number) => void, getNow: () => number) => Promise<any>
+  messages?: (arg: any) => any
 }) {
   let now = o.now ?? 97_600_000
   const sid = o.sid ?? "sid-units"
@@ -3053,8 +3027,12 @@ function mod$393(o: {
   const storeSets: { key: string; value: any }[] = []
   const storeDeletes: string[] = []
   const everyCbs: any[] = []
+  // CONSTRAINT: clock.after стенда сам не срабатывает -- срок наступает только
+  // явным вызовом cb зубом; отменённый таймер помечается и зубом не зовётся.
+  const afterCbs: Array<{ ms: number; cb: any; cancelled: boolean }> = []
   const toasts: string[] = []
   const store = new Map<string, any>(Object.entries(o.stored || {}))
+  const modelKey = {}
   const $: any = {
     clock: {
       now: async () => now,
@@ -3063,6 +3041,11 @@ function mod$393(o: {
         return {
           cancel: () => { if (o.fail && o.fail.everyCancel) throw new Error("clock.every: scripted cancel refusal") },
         }
+      },
+      after: (ms: number, cb: any) => {
+        const h = { ms, cb, cancelled: false }
+        afterCbs.push(h)
+        return { cancel: () => { h.cancelled = true } }
       },
     },
     env: {
@@ -3111,7 +3094,7 @@ function mod$393(o: {
         return [...store.keys()]
       },
     },
-    session: { id: async () => sid, messages: async () => [] },
+    session: { id: async () => sid, messages: async (arg: any) => (o.messages ? o.messages(arg) : []) },
     agent: {
       list: async () => {
         if (o.fail && o.fail.agentList && o.fail.agentList()) throw new Error("agent.list: scripted refusal")
@@ -3120,6 +3103,7 @@ function mod$393(o: {
     },
     model: {
       complete: async (arg: any) => {
+        if (standModelOver(modelKey)) throw new Error(STAND_MODEL_CAP_TEXT)
         const a = (o.answers || []).shift()
         if (a === undefined) throw new Error("model.complete: no answer scripted for " + String(arg && arg.model))
         return a
@@ -3133,7 +3117,18 @@ function mod$393(o: {
       },
     },
   }
-  return { $, writes, storeSets, storeDeletes, store, everyCbs, toasts, setNow: (n: number) => { now = n } }
+  if (o.proc) {
+    const proc = o.proc
+    let procCalls = 0
+    $.process = {
+      run: async (argv: string[], init: any) => {
+        procCalls++
+        if (procCalls > STAND_PROC_CALL_CAP) throw new Error("stand: process.run call cap " + String(STAND_PROC_CALL_CAP))
+        return proc(argv, init, (n: number) => { now = n }, () => now)
+      },
+    }
+  }
+  return { $, writes, storeSets, storeDeletes, store, everyCbs, afterCbs, toasts, setNow: (n: number) => { now = n }, getNow: () => now }
 }
 
 function subs393(): Array<{ ev: string; matcher: any; fn: any }> {
@@ -3375,7 +3370,7 @@ test("#393-A2 B(2679) form-record: отказ записи улики формы
 test("#393-A2 B(3006) journal-when-bad: отказ журнала мёртвого правила назван", async () => {
   await drainFold393()
   const m = mod$393({
-    files: { "/probes-a2-3006/probes.toml": '[probe.dead3006]\nkind = "consult"\n[probe.dead3006.when]\nfield = "tool"\nmatches = "Age(nt"\n' },
+    files: { "/probes-a2-3006/probes.toml": '[probe.dead3006]\nkind = "consult"\non = ["PreToolUse"]\n[probe.dead3006.when]\nfield = "tool"\nmatches = "Age(nt"\n' },
     env: { CLAUDE_PROBES_DIR: "/probes-a2-3006", PWD: "/work-a2-3006" },
     now: 97_611_000,
     fail: { fsWrite: (p) => p.indexOf("/dead3006/journal.jsonl") >= 0 },
@@ -3536,7 +3531,7 @@ test("#393-A2 appendJournal: несериализуемый объект бро�
   expect(lostN393("failover-fold-journal") >= 1, "бросок сериализации дошёл до catch места").toBe(true)
   fail = false
   await drainStream(step(m.$, { agentId: "ag-a2circ", turnId: "t-clean-a2circ", index: 0, model: "busy-a2circ", messageCount: 1 }, refuse))
-  const lines = shards393(m.writes, "/failover/journal.jsonl.shard.")
+  const lines = shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => r.attempt !== undefined)
   expect(lines.length).toBe(2)
   expect(String(lines[0].journalWriteErr || ""), "след отказавшей сериализации уехал следующей записью").toContain("/failover/journal.jsonl")
   failoverBindReset()
@@ -3753,7 +3748,7 @@ test("#393-A2 флот неизвестен: idle-watch молчит, причи
   const m = mod$393({
     files: {
       "/probes-a2-live/probes.toml":
-        '[probe.idle-watch]\nact = "log_only"\n[probe.live393]\nkind = "consult"\n[probe.live393.when]\nfield = "live_works"\ncount_below = 1\n',
+        '[probe.idle-watch]\nact = "log_only"\nwindow_min = 0\n[probe.live393]\nkind = "consult"\non = ["PreToolUse"]\n[probe.live393.when]\nfield = "live_works"\ncount_below = 1\n',
     },
     env: { CLAUDE_PROBES_DIR: "/probes-a2-live", PWD: "/work-a2-live", CLAUDE_IDLE: "1" },
     now: 97_634_000,
@@ -3819,7 +3814,7 @@ test("#393-A2 кэп: отказ записи стора не снимает к�
   const m = mod$393({
     files: {
       "/probes-a2-cap/probes.toml":
-        '[probe.c393cap]\nkind = "consult"\nact = "nudge"\n[probe.c393cap.when]\nfield = "tool_name"\nequals = "Read"\n',
+        '[probe.c393cap]\nkind = "consult"\nact = "nudge"\non = ["PreToolUse"]\n[probe.c393cap.when]\nfield = "tool_name"\nequals = "Read"\n',
     },
     env: { CLAUDE_PROBES_DIR: "/probes-a2-cap", PWD: "/work-a2-cap" },
     now: 97_637_000,
@@ -3842,7 +3837,7 @@ test("#393-A2 кэп: отказ записи стора не снимает к�
 test("#393-A2 кулдаун: отказ записи отметки не снимает кулдаун", async () => {
   await clear393()
   const m = mod$393({
-    files: { "/probes-a2-cd/probes.toml": '[probe.idle-watch]\nact = "nudge"\n' },
+    files: { "/probes-a2-cd/probes.toml": '[probe.idle-watch]\nact = "nudge"\nwindow_min = 0\n' },
     env: { CLAUDE_PROBES_DIR: "/probes-a2-cd", PWD: "/work-a2-cd", CLAUDE_IDLE: "1" },
     now: 97_638_000,
     sid: "sid-a2-cd",
@@ -4087,7 +4082,7 @@ test("#393-A2-FIX1 U-F5sum: потерянное складывается при
   const m = mod$393({
     files: {
       "/probes-f1-sum5/probes.toml":
-        '[probe.f5sum]\nkind = "consult"\nact = "nudge"\n[probe.f5sum.when]\nfield = "tool_name"\nequals = "Read"\n',
+        '[probe.f5sum]\nkind = "consult"\nact = "nudge"\non = ["PreToolUse"]\n[probe.f5sum.when]\nfield = "tool_name"\nequals = "Read"\n',
     },
     env: { CLAUDE_PROBES_DIR: "/probes-f1-sum5", PWD: "/work-f1-sum5" },
     now: 97_740_000,
@@ -5770,7 +5765,7 @@ test("#489-B1 Z5 consult: нечитаемый prompt.md пробы назван
   await drainFold393()
   const home = "/probes-z5-b1"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nwindow_min = 0\n' },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z5-b1", CLAUDE_IDLE: "1" },
     now: 200_040_000,
     answers: ["SILENT: z5"],
@@ -5786,7 +5781,7 @@ test("#489-B1 Z6 consult: нечитаемое вложение названо p
   await drainFold393()
   const home = "/probes-z6-b1"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nattach_files = 1\n' },
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nattach_files = 1\nwindow_min = 0\n' },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z6-b1", CLAUDE_IDLE: "1" },
     now: 200_050_000,
     answers: ["SILENT: z6"],
@@ -5991,7 +5986,7 @@ test("#455-B1 Z14 idle-watch: enforce=false не тостит и пишет bloc
   await drainFold393()
   const home = "/probes-z14-b1"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nenforce = false\n' },
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nenforce = false\nwindow_min = 0\n' },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z14-b1", CLAUDE_IDLE: "1" },
     now: 200_200_000,
     answers: ["NUDGE: x"],
@@ -6003,33 +5998,37 @@ test("#455-B1 Z14 idle-watch: enforce=false не тостит и пишет bloc
   expect(lines.some((r: any) => r.outcome === "block_not_enforced")).toBe(true)
 })
 
+// CONSTRAINT (#531 Р6): тост -- дополнительный канал: он пишется полем toast,
+// метку nudge_delivered ставит только доставка очереди (context/submit).
 test("#455-B1 Z15 idle-watch: без enforce тост один и исход не block_not_enforced", async () => {
   await drainFold393()
   const home = "/probes-z15-b1"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nwindow_min = 0\n' },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z15-b1", CLAUDE_IDLE: "1" },
     now: 200_210_000,
     answers: ["NUDGE: x"],
   })
   await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
   await settle393()
-  expect(m.toasts.length, "дефолт nudge доставляет ровно один тост").toBe(1)
+  expect(m.toasts.length, "дефолт nudge даёт ровно один тост").toBe(1)
   expect(String(m.toasts[0])).toContain("x")
   const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
   expect(lines.length).toBeGreaterThan(0)
-  expect(lines.some((r: any) => r.outcome === "nudge_delivered"), "доставленный nudge — nudge_delivered").toBe(true)
+  expect(lines.some((r: any) => r.toast === true && r.outcome !== "block_not_enforced"), "тост -- полем toast").toBe(true)
+  expect(lines.some((r: any) => r.outcome === "nudge_delivered"), "один тост доставкой не метится").toBe(false)
   const recs = m.writes
     .filter(w => w.path.indexOf("/idle-watch/records/") >= 0)
     .map(w => JSON.parse(String(w.text)))
-  expect(recs.some((r: any) => r.outcome === "nudge_delivered"), "исход улики — nudge_delivered").toBe(true)
+  expect(recs.some((r: any) => r.toast === true && r.queued === true), "улика: тост и постановка в очередь").toBe(true)
+  await clear393()
 })
 
-test("#455-B1 Z16 idle-watch: отказ тоста при enforce — nudge_undelivered и toastErr", async () => {
+test("#455-B1 Z16 idle-watch: отказ тоста при enforce — toast false и toastErr", async () => {
   await drainFold393()
   const home = "/probes-z16-b1"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nwindow_min = 0\n' },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-z16-b1", CLAUDE_IDLE: "1" },
     now: 200_220_000,
     answers: ["NUDGE: x"],
@@ -6038,11 +6037,12 @@ test("#455-B1 Z16 idle-watch: отказ тоста при enforce — nudge_und
   await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
   await settle393()
   const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "nudge_undelivered")).toBe(true)
+  expect(lines.some((r: any) => r.toast === false)).toBe(true)
   const recs = m.writes
     .filter(w => w.path.indexOf("/idle-watch/records/") >= 0)
     .map(w => JSON.parse(String(w.text)))
   expect(recs.some((r: any) => String(r.toastErr || "").indexOf("scripted toast refusal") >= 0)).toBe(true)
+  await clear393()
 })
 
 test("#455-B1 Z17 generic cancel: enforce=false не отменяет диспатч, без ручки — отменяет", async () => {
@@ -6050,7 +6050,7 @@ test("#455-B1 Z17 generic cancel: enforce=false не отменяет диспа
   const off = mod$393({
     files: {
       "/probes-z17a-b1/probes.toml":
-        '[probe.z17a]\nkind = "consult"\nact = "cancel"\nenforce = false\n[probe.z17a.when]\nfield = "tool_name"\nequals = "Read"\n',
+        '[probe.z17a]\nkind = "consult"\nact = "cancel"\nenforce = false\non = ["PreToolUse"]\n[probe.z17a.when]\nfield = "tool_name"\nequals = "Read"\n',
     },
     env: { CLAUDE_PROBES_DIR: "/probes-z17a-b1", PWD: "/work-z17a-b1", CLAUDE_PROBES: "1" },
     now: 200_230_000,
@@ -6065,7 +6065,7 @@ test("#455-B1 Z17 generic cancel: enforce=false не отменяет диспа
   const on = mod$393({
     files: {
       "/probes-z17b-b1/probes.toml":
-        '[probe.z17b]\nkind = "consult"\nact = "cancel"\n[probe.z17b.when]\nfield = "tool_name"\nequals = "Read"\n',
+        '[probe.z17b]\nkind = "consult"\nact = "cancel"\non = ["PreToolUse"]\n[probe.z17b.when]\nfield = "tool_name"\nequals = "Read"\n',
     },
     env: { CLAUDE_PROBES_DIR: "/probes-z17b-b1", PWD: "/work-z17b-b1", CLAUDE_PROBES: "1" },
     now: 200_240_000,
@@ -6195,11 +6195,11 @@ test("#448-B1-FIX1 W5 allowedSrc: нечитаемый CATALYST_ROUTING_TABLE к
   expect(String(empty.allowedSrc)).toContain("absent:")
 })
 
-test("#455-B1-FIX1 W6 nudge: тост отвергнут пустой строкой — nudge_undelivered", async () => {
+test("#455-B1-FIX1 W6 nudge: тост отвергнут пустой строкой — toast false", async () => {
   await drainFold393()
   const home = "/probes-w6-b1"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nwindow_min = 0\n' },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w6-b1", CLAUDE_IDLE: "1" },
     now: 210_050_000,
     answers: ["NUDGE: x"],
@@ -6208,12 +6208,13 @@ test("#455-B1-FIX1 W6 nudge: тост отвергнут пустой строк
   await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
   await settle393()
   const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "nudge_undelivered")).toBe(true)
+  expect(lines.some((r: any) => r.toast === false)).toBe(true)
   const recs = m.writes
     .filter(w => w.path.indexOf("/idle-watch/records/") >= 0)
     .map(w => JSON.parse(String(w.text)))
   expect(recs.some((r: any) => r.toastErr === "(empty error)")).toBe(true)
-  expect(recs.some((r: any) => r.outcome === "nudge_undelivered"), "исход улики — nudge_undelivered").toBe(true)
+  expect(recs.some((r: any) => r.toast === false), "улика -- toast false").toBe(true)
+  await clear393()
 })
 
 test("#455-B1-FIX1 W7 memo: threw пустой строкой присутствует в улике", async () => {
@@ -6226,7 +6227,7 @@ test("#455-B1-FIX1 W7 memo: threw пустой строкой присутств
   const m = mod$393({
     files: {
       [home + "/probes.toml"]:
-        '[probe.w7p]\nkind = "consult"\nact = "cancel"\n[probe.w7p.when]\nfield = "tool_name"\nequals = "Read"\n',
+        '[probe.w7p]\nkind = "consult"\nact = "cancel"\non = ["PreToolUse"]\n[probe.w7p.when]\nfield = "tool_name"\nequals = "Read"\n',
     },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w7-b1", CLAUDE_PROBES: "1" },
     now: 210_060_000,
@@ -6448,7 +6449,7 @@ test("#455-B1-FIX2 Y6a memo: отказ журнала — вторая улик
   const m = mod$393({
     files: {
       [home + "/probes.toml"]:
-        '[probe.y6a]\nkind = "consult"\nact = "cancel"\n[probe.y6a.when]\nfield = "tool_name"\nequals = "Read"\n',
+        '[probe.y6a]\nkind = "consult"\nact = "cancel"\non = ["PreToolUse"]\n[probe.y6a.when]\nfield = "tool_name"\nequals = "Read"\n',
     },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6a-fix2", CLAUDE_PROBES: "1" },
     now: 220_050_000,
@@ -6514,7 +6515,7 @@ test("#455-B1-FIX2 Y6c memo: BLOCK при enforce=false не отменяет д
   const m = mod$393({
     files: {
       [home + "/probes.toml"]:
-        '[probe.y6c]\nkind = "consult"\nact = "cancel"\nenforce = false\n[probe.y6c.when]\nfield = "tool_name"\nequals = "Read"\n',
+        '[probe.y6c]\nkind = "consult"\nact = "cancel"\nenforce = false\non = ["PreToolUse"]\n[probe.y6c.when]\nfield = "tool_name"\nequals = "Read"\n',
     },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6c-fix2", CLAUDE_PROBES: "1" },
     now: 220_080_000,
@@ -6537,11 +6538,11 @@ test("#455-B1-FIX2 Y6c memo: BLOCK при enforce=false не отменяет д
   expect(recs.some((r: any) => r.memo === true), "улика мемо").toBe(true)
 })
 
-test("#455-B1-FIX2 Y6d nudge: тост бросает undefined — nudge_undelivered, toastErr undefined", async () => {
+test("#455-B1-FIX2 Y6d nudge: тост бросает undefined — toast false, toastErr undefined", async () => {
   await drainFold393()
   const home = "/probes-y6d-fix2"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\n' },
+    files: { [home + "/probes.toml"]: '[probe.idle-watch]\nact = "nudge"\nwindow_min = 0\n' },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-y6d-fix2", CLAUDE_IDLE: "1" },
     now: 220_090_000,
     answers: ["NUDGE: x"],
@@ -6550,12 +6551,13 @@ test("#455-B1-FIX2 Y6d nudge: тост бросает undefined — nudge_undeli
   await hook393(subs393(), "tool.call")(m.$, { tool: "Read" }, async (e: any) => e)
   await settle393()
   const lines = shards393(m.writes, "/idle-watch/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "nudge_undelivered")).toBe(true)
+  expect(lines.some((r: any) => r.toast === false)).toBe(true)
   const recs = m.writes
     .filter(w => w.path.indexOf("/idle-watch/records/") >= 0)
     .map(w => JSON.parse(String(w.text)))
   expect(recs.some((r: any) => r.toastErr === "undefined")).toBe(true)
-  expect(recs.some((r: any) => r.outcome === "nudge_undelivered"), "исход улики — nudge_undelivered").toBe(true)
+  expect(recs.some((r: any) => r.toast === false), "улика -- toast false").toBe(true)
+  await clear393()
 })
 
 test("#489-B1-FIX2 Y6e read: бросающий code не рвёт чтение, unreadable EIO", async () => {
@@ -6903,7 +6905,7 @@ test("#489-B1-FIX4 F17 memo consumer reads host fields once", async () => {
   const sid = "f17-memo"
   const prompt = "f17"
   const key = verdictKey("f17", sid, "Read", "", prompt)
-  const m = mod$393({ files: { [home + "/probes.toml"]: '[probe.f17]\nkind = "consult"\nact = "cancel"\nenforce = false\n[probe.f17.when]\nfield = "tool_name"\nequals = "Read"\n' }, env: { CLAUDE_PROBES_DIR: home, PWD: home, CLAUDE_PROBES: "1" }, now: 260_000_000, sid })
+  const m = mod$393({ files: { [home + "/probes.toml"]: '[probe.f17]\nkind = "consult"\nact = "cancel"\nenforce = false\non = ["PreToolUse"]\n[probe.f17.when]\nfield = "tool_name"\nequals = "Read"\n' }, env: { CLAUDE_PROBES_DIR: home, PWD: home, CLAUDE_PROBES: "1" }, now: 260_000_000, sid })
   const reads: Record<string, number> = {}
   const values: any = { kind: "BLOCK", t: 260_000_000, rest: "f17", used: "model", dtMs: 1, threw: "first" }
   const stored: any = {}
@@ -6911,7 +6913,12 @@ test("#489-B1-FIX4 F17 memo consumer reads host fields once", async () => {
   const get = m.$.store.get
   m.$.store.get = async (k: string) => k === key ? stored : get(k)
   let called = 0
-  m.$.model.complete = async () => { called++; return "BLOCK: live" }
+  const capKey = {}
+  m.$.model.complete = async () => {
+    if (standModelOver(capKey)) throw new Error(STAND_MODEL_CAP_TEXT)
+    called++
+    return "BLOCK: live"
+  }
   const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Read", prompt }, async () => ({ ran: true }))
   expect(out.ran, "F17 memo consumer proceeds").toBe(true)
   expect(called, "F17 memo consumer no consult").toBe(0)
@@ -8075,3 +8082,6815 @@ for (const [id, cmd, refuse] of PROBE10) {
     expect({ id, refused: f.length > 0, f }).toEqual({ id, refused: refuse, f: refuse ? f : [] })
   })
 }
+
+// --- #509: лестница без потолка, терминальная ступень исчерпанной клетки -------
+//
+// CONSTRAINT: зубы #509 гоняют РЕАЛЬНЫЕ обработчики agent.spawn/turn.step
+// (hook393) на мире mod$393; часы и имена моделей уникальны на зуб: метки
+// остывания и накопитель моделей исполнителя -- состояние процесса.
+// failoverTerminal читается через namespace-импорт: именованный импорт
+// отсутствующего экспорта ронял бы весь файл вместо одного зуба.
+
+const refuse509: any = () => (async function* () { return { usage: null, stopReason: null } })()
+const ok509 = (tag: string): any => () => (async function* () {
+  return { usage: { out: 1 }, stopReason: "end_turn", text: "OK-" + tag }
+})()
+
+function next509(script: { [model: string]: any }): any {
+  const seen: string[] = []
+  const next: any = (req: any) => {
+    const model = String(req && req.model)
+    seen.push(model)
+    const act = script[model]
+    if (!act) throw new Error("next509: нет сценария для " + model)
+    return act()
+  }
+  next.seen = seen
+  return next
+}
+
+function world509(tag: string, now: number, probes: string = "[failover]\nenabled = true\n", extraFiles: Record<string, string> = {}, extraEnv: Record<string, string> = {}): any {
+  const dir = "/probes-509" + tag
+  return mod$393({
+    files: Object.assign({ [dir + "/probes.toml"]: probes }, extraFiles),
+    env: Object.assign({ CLAUDE_PROBES_DIR: dir }, extraEnv),
+    now,
+  })
+}
+
+async function step509(m: any, aid: string, original: string, next: any): Promise<any> {
+  return await drainStream(hook393(subs393(), "turn.step")(m.$, {
+    agentId: aid, turnId: "t-" + aid, index: 0, model: original, messageCount: 1,
+  }, next))
+}
+
+function attempts509(m: any, aid: string): any[] {
+  return shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => r.agentId === aid && r.attempt !== undefined)
+}
+
+function effortAll509(models: string[]): { [k: string]: string } {
+  const out: { [k: string]: string } = {}
+  for (const x of models) out[x] = "max"
+  return out
+}
+
+test("#509 (а): пять отказавших ступеней -- шесть попыток и терминал последним", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const m = world509("a", 509_100_000)
+  const ladder = ["r509a-1", "r509a-2", "r509a-3", "r509a-4", "r509a-5"]
+  failoverBindSet("ag-509a", { ladder, terminal: "t509a", rungEffort: effortAll509(ladder.concat(["t509a"])), subagentType: "t", class: "", sticky: null })
+  const script: any = { "in509a": refuse509, "t509a": refuse509 }
+  for (const r of ladder) script[r] = refuse509
+  const next = next509(script)
+  const out = await step509(m, "ag-509a", "in509a", next)
+  const plan = ["in509a"].concat(ladder, ["t509a"])
+  expect(next.seen, "вся лестница без потолка, терминал последним").toEqual(plan)
+  expect(isCarrierRefusal(out.value)).toBe(true)
+  const recs = attempts509(m, "ag-509a")
+  expect(recs.map(r => r.modelRequested)).toEqual(plan)
+  for (let i = 0; i < 6; i++) expect(recs[i].terminal, "попытка " + i + " не терминал").toBe(undefined)
+  const last = recs[6]
+  expect(last.terminal).toBe(true)
+  expect(last.reason).toBe("cell-exhausted")
+  expect(last.rungsTried).toEqual(plan.slice(0, 6))
+  expect(last.outcome, "отказ терминала -- обычная запись отказа").toBe("empty")
+  failoverBindReset()
+})
+
+test("#509 (б): клетка без лестницы при непустом допуске -- план [входящая, терминал]", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const table = "/tbl-509b/routing-table.toml"
+  const m = world509("b", 509_200_000,
+    '[failover]\nenabled = true\nterminal = {model = "claude-t509b", effort = "high"}\n',
+    { [table]: '[classes.c509b]\nallowed = ["x509b-1", "x509b-2", "in509b"]\n' },
+    { CATALYST_ROUTING_TABLE: table })
+  const res = await hook393(subs393(), "agent.spawn")(m.$, {
+    subagentType: "any-agent", prompt: "[dispatch-class:c509b] x", model: "in509b",
+  }, async () => ({ agentId: "ag-509b" }))
+  expect(res.agentId).toBe("ag-509b")
+  const bind = failoverBindGet("ag-509b")
+  expect(bind && bind.ladder).toStrictEqual([])
+  expect(bind && bind.source).toBe("none")
+  expect(bind && bind.terminal).toBe("claude-t509b")
+  const empty = shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => String(r.rec).indexOf("empty-ladder-") === 0)
+  expect(empty.length).toBe(1)
+  expect(empty[0].terminal, "журнал пустой лестницы несёт терминал").toBe("claude-t509b")
+  const next = next509({ "in509b": refuse509, "claude-t509b": ok509("509b") })
+  const out = await step509(m, "ag-509b", "in509b", next)
+  expect(next.seen, "ни одной модели допуска клетки").toEqual(["in509b", "claude-t509b"])
+  expect(out.value && out.value.text).toBe("OK-509b")
+  failoverBindReset()
+})
+
+test("#509 (в): успех терминала не ставит липкость", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const m = world509("c", 509_300_000)
+  failoverBindSet("ag-509c", { ladder: ["r509c"], terminal: "t509c", rungEffort: effortAll509(["r509c", "t509c"]), subagentType: "t", class: "", sticky: null })
+  const next = next509({ "in509c": refuse509, "r509c": refuse509, "t509c": ok509("509c") })
+  const out = await step509(m, "ag-509c", "in509c", next)
+  expect(next.seen).toEqual(["in509c", "r509c", "t509c"])
+  expect(out.value && out.value.text).toBe("OK-509c")
+  expect(failoverBindGet("ag-509c").sticky, "bind.sticky не изменён").toBe(null)
+  const recs = attempts509(m, "ag-509c")
+  expect(recs.length).toBe(3)
+  expect(recs[2].terminal).toBe(true)
+  expect(recs[2].outcome).toBe("ok")
+  failoverBindReset()
+})
+
+test("#509 (г): остывающая ступень перед терминалом, остывающий терминал всё равно последний (#509-FIX1 C1)", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const now = 509_400_000
+  const m = world509("g", now)
+  noteRungCarrierRefusal("r509g-cold", now - 5000)
+  failoverBindSet("ag-509g", { ladder: ["r509g-cold", "r509g-live"], terminal: "t509g", rungEffort: effortAll509(["r509g-cold", "r509g-live", "t509g"]), subagentType: "t", class: "", sticky: null })
+  const next = next509({ "in509g": refuse509, "r509g-cold": refuse509, "r509g-live": refuse509, "t509g": refuse509 })
+  await step509(m, "ag-509g", "in509g", next)
+  expect(next.seen, "живая ступень, затем остывающая, терминал последним").toEqual(["in509g", "r509g-live", "r509g-cold", "t509g"])
+  noteRungCarrierRefusal("r509g2-cold", now - 5000)
+  noteRungCarrierRefusal("t509g2", now - 4000)
+  failoverBindSet("ag-509g2", { ladder: ["r509g2-cold", "r509g2-live"], terminal: "t509g2", rungEffort: effortAll509(["r509g2-cold", "r509g2-live", "t509g2"]), subagentType: "t", class: "", sticky: null })
+  const next2 = next509({ "in509g2": refuse509, "r509g2-cold": refuse509, "r509g2-live": refuse509, "t509g2": refuse509 })
+  await step509(m, "ag-509g2", "in509g2", next2)
+  expect(next2.seen, "остывающий терминал -- в хвосте среди остывающих").toEqual(["in509g2", "r509g2-live", "r509g2-cold", "t509g2"])
+  failoverBindReset()
+})
+
+test("#509 (д): проверяющий с исполнителем на терминальной модели -- терминала в плане нет", async () => {
+  await drainFold393()
+  failoverBindReset()
+  sessionExecutorsReset()
+  sessionExecutorModelAdd("t509d")
+  const m = world509("d", 509_500_000)
+  failoverBindSet("ag-509d", { ladder: ["r509d"], terminal: "t509d", rungEffort: effortAll509(["r509d", "t509d"]), subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next509({ "in509d": refuse509, "r509d": refuse509, "t509d": ok509("509d") })
+  const out = await step509(m, "ag-509d", "in509d", next)
+  expect(next.seen).toEqual(["in509d", "r509d"])
+  expect(isCarrierRefusal(out.value)).toBe(true)
+  const recs = attempts509(m, "ag-509d")
+  expect(recs.length).toBe(2)
+  for (const r of recs) expect(r.terminalFiltered, "отметка фильтра терминала").toBe(true)
+  sessionExecutorsReset()
+  failoverBindReset()
+})
+
+test("#509 (е): ключа нет / пуст / список / объект без model -- terminal-absent, план без терминала", async () => {
+  const cases: Array<[string, string, string]> = [
+    ["e1", "[failover]\nenabled = true\n", "ключ terminal не объявлен"],
+    ["e2", '[failover]\nenabled = true\nterminal = ""\n', "ключ terminal пуст"],
+    ["e3", '[failover]\nenabled = true\nterminal = ["t509e3"]\n', "форма terminal негодна"],
+    ["e4", '[failover]\nenabled = true\nterminal = {effort = "high"}\n', "форма terminal негодна"],
+  ]
+  let k = 0
+  for (const [tag, probes, reason] of cases) {
+    await drainFold393()
+    failoverBindReset()
+    // CONSTRAINT (#509-FIX1 G): terminal-absent -- один раз на процесс на причину.
+    R514.failoverSaidReset()
+    const m = world509(tag, 509_600_000 + (k++) * 100_000, probes)
+    const aid = "ag-509" + tag
+    await hook393(subs393(), "agent.spawn")(m.$, {
+      subagentType: "any-agent", prompt: "[dispatch-class:c509e] x", model: "in509" + tag,
+    }, async () => ({ agentId: aid }))
+    const bind = failoverBindGet(aid)
+    expect({ tag, terminal: bind && bind.terminal }).toEqual({ tag, terminal: "" })
+    const absent = shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => String(r.rec) === "terminal-absent-" + aid)
+    expect({ tag, n: absent.length }).toEqual({ tag, n: 1 })
+    expect({ tag, reason: absent[0].reason, agentId: absent[0].agentId, subagentType: absent[0].subagentType, class: absent[0].class })
+      .toEqual({ tag, reason, agentId: aid, subagentType: "any-agent", class: "c509e" })
+    const next = next509({ ["in509" + tag]: refuse509 })
+    await step509(m, aid, "in509" + tag, next)
+    expect({ tag, seen: next.seen }).toEqual({ tag, seen: ["in509" + tag] })
+  }
+  failoverBindReset()
+})
+
+test("#509 (ж): агент объявлен на терминальной модели -- она первой, терминал второй раз не добавляется (#509-FIX3 H1)", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const m = world509("j", 510_100_000)
+  failoverBindSet("ag-509j", { ladder: ["r509j"], terminal: "t509j", rungEffort: effortAll509(["r509j", "t509j"]), subagentType: "t", class: "", sticky: null })
+  const next = next509({ "t509j": refuse509, "r509j": refuse509 })
+  await step509(m, "ag-509j", "t509j", next)
+  expect(next.seen, "объявленная первой, терминал в проходе один раз").toEqual(["t509j", "r509j"])
+  const recs = attempts509(m, "ag-509j")
+  expect(recs.length).toBe(2)
+  expect(recs[0].modelRequested).toBe("t509j")
+  expect(recs[0].terminal, "первая попытка объявленной -- не переход (D-8a)").toBe(undefined)
+  expect(recs[0].reason).toBe(undefined)
+  expect(recs[1].modelRequested).toBe("r509j")
+  expect(recs[1].terminal).toBe(undefined)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509 (з): эффорт терминала из формы ключа -- в rungEffort привязки", async () => {
+  const ft = (registerModule393 as any).failoverTerminal
+  expect(typeof ft, "failoverTerminal экспортирована").toBe("function")
+  expect(ft({ terminal: { model: "claude-t509z", effort: "high" } })).toEqual({ model: "claude-t509z", effort: "high", effortBad: "", absent: "" })
+  expect(ft({ terminal: "claude-t509z" })).toEqual({ model: "claude-t509z", effort: "", effortBad: "", absent: "" })
+  expect(ft({ terminal: { model: "claude-t509z", effort: "bogus" } })).toEqual({ model: "claude-t509z", effort: "", effortBad: "bogus", absent: "" })
+  await drainFold393()
+  failoverBindReset()
+  const m = world509("z", 510_200_000,
+    '[failover]\nenabled = true\nterminal = {model = "claude-t509z", effort = "high"}\n\n[failover.class.c509z]\nmodels = [{model = "r509z", effort = "max"}]\n')
+  await hook393(subs393(), "agent.spawn")(m.$, {
+    subagentType: "any-agent", prompt: "[dispatch-class:c509z] x", model: "in509z",
+  }, async () => ({ agentId: "ag-509z" }))
+  const bind = failoverBindGet("ag-509z")
+  expect(bind && bind.terminal).toBe("claude-t509z")
+  expect(bind && bind.rungEffort).toEqual({ "r509z": "max", "claude-t509z": "high" })
+  expect(shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => String(r.rec).indexOf("terminal-absent-") === 0).length).toBe(0)
+  failoverBindReset()
+})
+
+test("#509 (и): проверяющий с пустой лестницей и терминалом -- без ложного ladderFullTaken", async () => {
+  await drainFold393()
+  failoverBindReset()
+  sessionExecutorsReset()
+  const m = world509("i", 510_300_000)
+  failoverBindSet("ag-509i", { ladder: [], terminal: "t509i", rungEffort: effortAll509(["t509i"]), subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next509({ "in509i": refuse509, "t509i": ok509("509i") })
+  await step509(m, "ag-509i", "in509i", next)
+  expect(next.seen).toEqual(["in509i", "t509i"])
+  const recs = attempts509(m, "ag-509i")
+  expect(recs.length).toBe(2)
+  for (const r of recs) expect(r.ladderFullTaken, "ступеней не было -- фильтровать нечего").toBe(undefined)
+  sessionExecutorsReset()
+  failoverBindReset()
+})
+
+test("#509 (к): терминал на попытке 0 (объявленная мертва) не сворачивается в агрегат", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const now = 510_400_000
+  const m = world509("k", now)
+  R514.noteModelRefusal("in509k", now - 1000, "permanent-model", 0, "carrier-refusal", "Credit balance is too low")
+  failoverBindSet("ag-509k", { ladder: [], terminal: "t509k", rungEffort: effortAll509(["t509k"]), subagentType: "t", class: "", sticky: null })
+  const next = next509({ "t509k": ok509("509k") })
+  const out = await step509(m, "ag-509k", "in509k", next)
+  expect(next.seen, "объявленная пропущена мёртвой, терминал -- попытка 0").toEqual(["t509k"])
+  expect(out.value && out.value.text).toBe("OK-509k")
+  const recs = attempts509(m, "ag-509k")
+  expect(recs.length, "улика терминала пишется записью, не свёрткой").toBe(1)
+  expect(recs[0].attempt).toBe(0)
+  expect(recs[0].terminal).toBe(true)
+  expect(recs[0].outcome).toBe("ok")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509 (л): отказ эффорта на терминале несёт улику исчерпанной клетки", async () => {
+  await drainFold393()
+  failoverBindReset()
+  const m = world509("l", 510_500_000)
+  failoverBindSet("ag-509l", { ladder: ["r509l"], terminal: "t509l", rungEffort: { "r509l": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = next509({ "in509l": refuse509, "r509l": refuse509 })
+  await step509(m, "ag-509l", "in509l", next)
+  expect(next.seen, "терминал без эффорта отказан до вызова").toEqual(["in509l", "r509l"])
+  const refused = attempts509(m, "ag-509l").filter(r => r.outcome === "rung-effort-refused")
+  expect(refused.length).toBe(1)
+  expect(refused[0].modelRequested).toBe("t509l")
+  expect(refused[0].terminal).toBe(true)
+  expect(refused[0].terminalReason).toBe("cell-exhausted")
+  expect(refused[0].rungsTried).toEqual(["in509l", "r509l"])
+  expect(refused[0].reason).toBe("пин эффорта клетки не объявлен")
+  failoverBindReset()
+})
+
+test("#509 (м): терминал, пустой после trim, -- отсутствует, как у прибора", async () => {
+  const ft = (registerModule393 as any).failoverTerminal
+  expect(ft({ terminal: "  " })).toEqual({ model: "", effort: "", effortBad: "", absent: "ключ terminal пуст" })
+  expect(ft({ terminal: { model: " \t ", effort: "high" } })).toEqual({ model: "", effort: "", effortBad: "", absent: "форма terminal негодна" })
+  await drainFold393()
+  failoverBindReset()
+  const m = world509("m", 510_600_000, '[failover]\nenabled = true\nterminal = "   "\n')
+  await hook393(subs393(), "agent.spawn")(m.$, {
+    subagentType: "any-agent", prompt: "[dispatch-class:c509m] x", model: "in509m",
+  }, async () => ({ agentId: "ag-509m" }))
+  expect(failoverBindGet("ag-509m").terminal).toBe("")
+  const absent = shards393(m.writes, "/failover/journal.jsonl.shard.").filter(r => String(r.rec) === "terminal-absent-ag-509m")
+  expect(absent.length).toBe(1)
+  expect(absent[0].reason).toBe("ключ terminal пуст")
+  const next = next509({ "in509m": refuse509 })
+  await step509(m, "ag-509m", "in509m", next)
+  expect(next.seen, "пробельный терминал в план не попадает").toEqual(["in509m"])
+  failoverBindReset()
+})
+
+test("#509 (н): проверяющий, привязка без ladder, с терминалом -- шаг не падает", async () => {
+  await drainFold393()
+  failoverBindReset()
+  sessionExecutorsReset()
+  const m = world509("n", 510_700_000)
+  failoverBindSet("ag-509n", { terminal: "t509n", rungEffort: effortAll509(["t509n"]), subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next509({ "in509n": refuse509, "t509n": ok509("509n") })
+  const out = await step509(m, "ag-509n", "in509n", next)
+  expect(next.seen).toEqual(["in509n", "t509n"])
+  expect(out.value && out.value.text).toBe("OK-509n")
+  for (const r of attempts509(m, "ag-509n")) expect(r.ladderFullTaken).toBe(undefined)
+  sessionExecutorsReset()
+  failoverBindReset()
+})
+
+// --- #509-FIX1 + #514: допуск, терминал последним, ожидание вместо смерти ------
+//
+// CONSTRAINT: новые экспорты читаются через namespace-импорт: на дереве до
+// волны их нет, и именованный импорт ронял бы весь файл вместо одного зуба.
+// Часы движет ТОЛЬКО подставной $.process.run (N с на `/bin/sleep N`); реальных пауз
+// нет. Однократные записи журнала -- состояние процесса, поэтому каждый зуб
+// начинает со сброса (failoverSaidReset) и уникальных имён моделей.
+const R514: any = registerModule393 as any
+
+function reset514(): void {
+  if (typeof R514.failoverSaidReset === "function") R514.failoverSaidReset()
+  failoverBindReset()
+  sessionExecutorsReset()
+}
+
+// CONSTRAINT (#514 FIX3 M1): шов сессии стенда -- ИСТОРИЯ сообщений, растущая
+// как у хоста: отказ носителя дописывает свою assistant-строку, бросок без
+// строки (throwSilent) и отказ без строки (silent) не дописывают ничего;
+// history -- строки, стоявшие в сессии до шага. procResult заменяет исход
+// куска паузы (код выхода и сдвиг часов) для зубов двери паузы.
+// CONSTRAINT (#509-FIX4): window -- окно хоста (новейшие N записей, контракт
+// session.messages 4096); reply(n) -- ответ n-го чтения вместо истории
+// ({deny}, не список), undefined -- история.
+// CONSTRAINT (#509-FIX6 А1): doorCost(door, n) -- цена n-го вызова двери
+// записи (fs.write), чтения истории (session.messages) или тоста (ui.toast) в
+// мс часов стенда; номер -- по порядку вызова, часы сдвигаются по выходу из
+// двери, и по возврату, и по броску (#509-FIX7 А-Р3). Без doorCost двери
+// часов не двигают.
+// CONSTRAINT (#509-FIX7 А-Р1): procTimeout -- дверь сна держит init.timeoutMs
+// по контракту хоста: сон дольше предела двигает часы на предел и бросает.
+// afterFire -- clock.after стенда срабатывает сам, когда цена двери doorCost
+// переходит его срок: часы встают на срок, колбэк зовётся, и дверь часов
+// дальше не двигает -- её остаток идёт параллельно.
+function host514(tag: string, now: number, o: {
+  probes?: string
+  files?: Record<string, string>
+  env?: Record<string, string>
+  envRefuses?: string[]
+  sleepHook?: (n: number, now: number) => void
+  noProc?: boolean
+  history?: string[]
+  procResult?: (n: number) => { exitCode: number; advanceMs: number }
+  onMessages?: (n: number) => void
+  window?: number
+  reply?: (n: number) => any
+  doorCost?: (door: "write" | "messages" | "toast", n: number) => number
+  procTimeout?: boolean
+  afterFire?: boolean
+} = {}): any {
+  const dir = "/probes-514" + tag
+  const state: any = { history: [] as any[], sleeps: [] as number[], procCalls: [] as any[], messagesThrow: false, writeThrow: false, messageArgs: [] as any[], fired: [] as number[] }
+  for (const t of o.history || []) state.history.push({ role: "user", text: "q" }, { role: "assistant", text: t })
+  const m = mod$393({
+    files: Object.assign({ [dir + "/probes.toml"]: o.probes ?? "[failover]\nenabled = true\n" }, o.files || {}),
+    env: Object.assign({ CLAUDE_PROBES_DIR: dir }, o.env || {}),
+    envRefuses: o.envRefuses,
+    now,
+    proc: o.noProc ? undefined : async (argv: string[], init: any, setNow: (n: number) => void, getNow: () => number) => {
+      state.procCalls.push({ argv, init })
+      state.sleeps.push(getNow())
+      let adv = 0
+      let code = 0
+      if (o.procResult) {
+        const r = o.procResult(state.sleeps.length)
+        adv = r.advanceMs
+        code = r.exitCode
+      } else {
+        const secs = Array.isArray(argv) && argv[0] === "/bin/sleep" ? Number(argv[1]) : NaN
+        adv = Number.isFinite(secs) ? secs * 1000 : 0
+      }
+      const lim = init && typeof init.timeoutMs === "number" ? init.timeoutMs : Infinity
+      if (o.procTimeout && adv > lim) {
+        setNow(getNow() + lim)
+        if (o.sleepHook) o.sleepHook(state.sleeps.length, getNow())
+        throw new Error("process.run: timed out after " + String(lim) + " ms")
+      }
+      setNow(getNow() + adv)
+      if (o.sleepHook) o.sleepHook(state.sleeps.length, getNow())
+      return { exitCode: code, stdout: "", stderr: "" }
+    },
+    messages: (arg: any) => {
+      state.messageArgs.push(arg)
+      if (o.onMessages) o.onMessages(state.messageArgs.length)
+      if (state.messagesThrow) throw new Error("session.messages: scripted refusal")
+      if (o.reply) {
+        const r = o.reply(state.messageArgs.length)
+        if (r !== undefined) return r
+      }
+      return o.window ? state.history.slice(-o.window) : state.history.slice()
+    },
+  })
+  state.m = m
+  const timers: Array<{ due: number; cb: any; off: boolean }> = []
+  state.timers = timers
+  if (o.afterFire) {
+    const after0 = m.$.clock.after
+    m.$.clock.after = (ms: number, cb: any) => {
+      const h0 = after0(ms, cb)
+      const t = { due: m.getNow() + ms, cb, off: false }
+      timers.push(t)
+      return { cancel: () => { t.off = true; h0.cancel() } }
+    }
+  }
+  const spend = (c: number): void => {
+    if (!(c > 0)) return
+    const end = m.getNow() + c
+    let first: any = null
+    for (const t of timers) if (!t.off && t.due <= end && (first === null || t.due < first.due)) first = t
+    if (first === null) { m.setNow(end); return }
+    first.off = true
+    m.setNow(Math.max(m.getNow(), first.due))
+    state.fired.push(first.due)
+    first.cb()
+  }
+  if (o.doorCost) {
+    const cost = o.doorCost
+    const write0 = m.$.fs.write
+    const messages0 = m.$.session.messages
+    const toast0 = m.$.ui.toast
+    const n = { write: 0, messages: 0, toast: 0 }
+    m.$.fs.write = async (p: string, text: string) => {
+      const c = cost("write", ++n.write)
+      try {
+        if (state.writeThrow) throw new Error("fs.write: scripted refusal")
+        return await write0(p, text)
+      } finally { spend(c) }
+    }
+    m.$.session.messages = async (arg: any) => {
+      const c = cost("messages", ++n.messages)
+      try { return await messages0(arg) } finally { spend(c) }
+    }
+    m.$.ui.toast = async (text: string) => {
+      const c = cost("toast", ++n.toast)
+      try { return await toast0(text) } finally { spend(c) }
+    }
+  }
+  return state
+}
+
+// act(k, now): null -- успех; { usageModel: X } -- успех, usage.model = X;
+// строка -- отказ носителя с этим текстом в сессии; { throw: text } -- бросок
+// next со строкой в сессии; { throwSilent: text } -- бросок без строки;
+// { silent: true } -- отказ носителя без строки.
+function next514(h: any, script: { [model: string]: (k: number, now: number) => any }): any {
+  const seen: string[] = []
+  const reqs: any[] = []
+  const count: { [m: string]: number } = {}
+  const next: any = (req: any) => {
+    const model = String(req && req.model)
+    seen.push(model)
+    reqs.push(req)
+    const act = script[model]
+    if (!act) throw new Error("next514: нет сценария для " + model)
+    const k = count[model] = (count[model] ?? -1) + 1
+    return (async function* () {
+      const t = await h.m.$.clock.now()
+      const r = act(k, t)
+      if (r === null) return { usage: { out: 1 }, stopReason: "end_turn", text: "OK-" + model }
+      if (r && typeof r === "object" && typeof r.usageModel === "string") return { usage: { out: 1, model: r.usageModel }, stopReason: "end_turn", text: "OK-" + model }
+      if (r && typeof r === "object" && r.throwSilent) throw new Error(r.throwSilent)
+      if (r && typeof r === "object" && r.silent) return { usage: null, stopReason: null }
+      if (r && typeof r === "object" && r.throw) { h.history.push({ role: "assistant", text: r.throw }); throw new Error(r.throw) }
+      h.history.push({ role: "assistant", text: String(r) })
+      return { usage: null, stopReason: null }
+    })()
+  }
+  next.seen = seen
+  next.reqs = reqs
+  next.signal = { aborted: false }
+  next.budget = { ms: 10000, remainingMs: Infinity }
+  return next
+}
+
+async function step514(h: any, aid: string, original: string, next: any, extra: any = {}): Promise<any> {
+  return await drainStream(hook393(subs393(), "turn.step")(h.m.$, Object.assign({
+    agentId: aid, turnId: "t-" + aid, index: 0, model: original, messageCount: 1,
+  }, extra), next))
+}
+
+async function spawn514(h: any, aid: string, cls: string, model: string, subagentType = "any-agent"): Promise<any> {
+  return await hook393(subs393(), "agent.spawn")(h.m.$, {
+    subagentType, prompt: "[dispatch-class:" + cls + "] x", model,
+  }, async () => ({ agentId: aid }))
+}
+
+function journal514(h: any): any[] {
+  return shards393(h.m.writes, "/failover/journal.jsonl.shard.")
+}
+
+function attempts514(h: any, aid: string): any[] {
+  return journal514(h).filter(r => r.agentId === aid && r.attempt !== undefined)
+}
+
+function waits514(h: any, aid: string, kind: string): any[] {
+  return journal514(h).filter(r => r.agentId === aid && r.outcome === kind)
+}
+
+const refuseAll514 = (text: string) => (_k: number, _t: number) => text
+const TABLE514 = "/tbl-514/routing-table.toml"
+
+test("#514 H2 / FIX3 M2: хвост «· resets» лимитной строки хоста -- каждый даёт свой readyAt", () => {
+  const cr = R514.classifyRefusal
+  expect(typeof cr, "classifyRefusal экспортирована").toBe("function")
+  const now = Date.parse("2026-09-25T20:10:39Z")
+  const cases: Array<[string, string, number]> = [
+    ["You've hit your session limit · resets 2:30am (Europe/Volgograd)", "temporary-known", Date.parse("2026-09-25T23:30:00Z")],
+    ["You've hit your session limit · resets 9:10pm (Europe/Volgograd)", "temporary-known", Date.parse("2026-09-26T18:10:00Z")],
+    ["You've hit your session limit · resets 11pm (Europe/Moscow) · progress saved", "temporary-known", Date.parse("2026-09-25T20:00:00Z") + 86400000],
+    ["You've hit your weekly limit · resets Sep 30, 3pm (Europe/Moscow)", "temporary-known", Date.parse("2026-09-30T12:00:00Z")],
+    ["You've hit your weekly limit · resets Wed, Sep 30, 3:15pm (Europe/Moscow)", "temporary-known", Date.parse("2026-09-30T12:15:00Z")],
+    ["You're out of usage credits · resets 23:45 (UTC)", "temporary-known", Date.parse("2026-09-25T23:45:00Z")],
+    ["You've hit your Opus limit · resets Jan 2, 2027, 9am (America/New_York)", "temporary-known", Date.parse("2027-01-02T14:00:00Z")],
+    ["You've hit your weekly limit · resets Jan 5, 3pm (UTC)", "temporary-known", Date.parse("2027-01-05T15:00:00Z")],
+  ]
+  for (const [line, cls, at] of cases) {
+    const got = cr(line, now)
+    expect({ line, cls: got.class, at: got.readyAt }).toEqual({ line, cls, at })
+  }
+})
+
+test("#514 H2: нечитаемый, прошедший, отрицательный и безпоясный срок -- срок неизвестен", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-09-25T20:10:39Z")
+  for (const line of [
+    "API Error: 429 Too Many Requests",
+    "API Error: 429 quota held until 2020-01-01T00:00:00Z",
+    "API Error: 429 rate limit, reset in -5 minutes",
+    "API Error: 429 limit will reset at 2026-09-17 08:24:51",
+    "API Error: 429 rate limit, reset in 0s",
+    "You've hit your session limit · resets 2:30am (Nowhere/Atlantis)",
+    "You've hit your weekly limit · resets Feb 30, 3pm (UTC)",
+    "You've hit your weekly limit · resets Jan 2, 2025, 9am (UTC)",
+    "",
+  ]) {
+    const got = cr(line, now)
+    expect({ line, cls: got.class, at: got.readyAt }).toEqual({ line, cls: "temporary-unknown", at: 0 })
+  }
+})
+
+// CONSTRAINT (#514 FIX3 M2): строки -- ДОСЛОВНЫЕ тексты хоста 2.1.282
+// (AN-509-HOST-REPORT.md Q2) с заполненными подстановками; по строке на
+// каждую строку таблицы брифа и на каждый из 12 префиксов qDr.
+const QDR514 = [
+  "You've hit your", "You've reached your", "You're out of usage credits",
+  "Your org is out of usage · add funds to continue", "Your org is out of usage · contact your admin",
+  "Your seat type doesn't include usage credits", "Your seat type doesn't include usage",
+  "Your usage allocation has been disabled by your admin", "Your group's usage limit is set to $0",
+  "Fable 5 requires usage credits", "You're out of extra usage", "Your seat type doesn't include extra usage",
+]
+
+test("#514 FIX3 M2: время «resets» в пределах минуты позади -- срок неизвестен, а не через сутки", () => {
+  const cr = R514.classifyRefusal
+  const at = Date.parse("2026-09-25T20:00:30Z")
+  const got = cr("You've hit your session limit · resets 11pm (Europe/Moscow)", at)
+  expect({ cls: got.class, at: got.readyAt }).toEqual({ cls: "temporary-unknown", at: 0 })
+  const later = cr("You've hit your session limit · resets 11pm (Europe/Moscow)", Date.parse("2026-09-25T20:01:00Z"))
+  expect({ cls: later.class, at: later.readyAt }).toEqual({ cls: "temporary-known", at: Date.parse("2026-09-26T20:00:00Z") })
+})
+
+test("#514 H1 / FIX3 M2: классы отказа по таблице хоста 2.1.282 -- по строке на каждую строку таблицы", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-09-25T20:10:39Z")
+  const cases: Array<[string, string]> = [
+    ["Prompt is too long", "request"],
+    ["Prompt is too long · this conversation is a single exchange and cannot be compacted", "request"],
+    ["Request too large (max 32MB). Double press esc to go back and try with a smaller file.", "request"],
+    ["API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment. If it persists, check https://status.claude.com.", "temporary-unknown"],
+    ["API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.", "temporary-unknown"],
+    ["API Error: Request rejected (429) · rate limited", "temporary-unknown"],
+    ["API Error: Server is temporarily limiting requests (not your usage limit) · this may be a temporary capacity issue.", "temporary-unknown"],
+    ["Request timed out", "temporary-unknown"],
+    ["You've hit your session limit", "temporary-unknown"],
+    ["You've hit your session limit · resets soon", "temporary-unknown"],
+    ["You've hit your session limit · resets 2:30am (Nowhere/Atlantis)", "temporary-unknown"],
+    ["Not logged in · Please run /login", "permanent-model"],
+    ["Authentication required · Sign in again to continue", "permanent-model"],
+    ["Please run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "permanent-model"],
+    ["Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "permanent-model"],
+    ["OAuth token revoked · Please run /login", "permanent-model"],
+    ["Login expired · Please run /login", "permanent-model"],
+    ["Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator", "permanent-model"],
+    ["Credit balance is too low", "permanent-model"],
+    ["Claude Opus is not available with the Claude Pro plan. If you have updated your subscription plan recently, run /logout and /login for the plan to take effect.", "permanent-model"],
+  ]
+  for (const pre of QDR514) cases.push([pre + " · resets 2:30am (Europe/Volgograd)", "temporary-known"], [pre, "temporary-unknown"])
+  for (const [line, cls] of cases) expect({ line, cls: cr(line, now).class }).toEqual({ line, cls })
+  const pick = R514.refusalLineOf
+  expect(typeof pick).toBe("function")
+  expect(pick("\n  Prompt is too long\nхвост")).toBe("Prompt is too long")
+  expect(pick("")).toBe("")
+})
+
+test("#514 H3: backoff неизвестного срока 30/60/120/240/240 с, модель -- час, успех снимает", () => {
+  const note = R514.noteModelRefusal
+  expect(typeof note).toBe("function")
+  const marks = new Map<string, any>()
+  const untils: number[] = []
+  for (let i = 0; i < 5; i++) untils.push(note("m514b", 1000 * i, "temporary-unknown", 0, "carrier-refusal", "t", marks).until - 1000 * i)
+  expect(untils).toEqual([30000, 60000, 120000, 240000, 240000])
+  const p = note("m514p", 5000, "permanent-model", 0, "carrier-refusal", "t", marks)
+  expect(p.until).toBe(5000 + 3600000)
+  expect(p.class).toBe("permanent-model")
+  const k = note("m514k", 5000, "temporary-known", 99000, "carrier-refusal", "t", marks)
+  expect(k.until).toBe(99000)
+  expect(isModelCooling("m514k", 98999, marks)).toBe(true)
+  expect(isModelCooling("m514k", 99000, marks)).toBe(false)
+  R514.noteModelSuccess("m514b", marks)
+  expect(marks.has("m514b")).toBe(false)
+  expect(note("m514b", 9000, "temporary-unknown", 0, "carrier-refusal", "t", marks).until).toBe(9000 + 30000)
+})
+
+test("#514 J5(а): все отказывают со сроком «resets» через 2 мин -- ожидание до readyAt, перепроба, успех", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 10, 0, 0)
+  const h = host514("a", T0)
+  failoverBindSet("ag-514a", { ladder: ["r514a"], terminal: "claude-t514a", rungEffort: { "r514a": "max" }, subagentType: "t514", class: "", sticky: null })
+  const text = "You've hit your session limit · resets 10:02am (UTC)"
+  const next = next514(h, {
+    "in514a": refuseAll514(text),
+    "r514a": (_k, t) => (t >= T0 + 120000 ? null : text),
+    "claude-t514a": refuseAll514(text),
+  })
+  const out = await step514(h, "ag-514a", "in514a", next)
+  expect(out.value && out.value.text, "агент жив: ответ ступени после ожидания").toBe("OK-r514a")
+  expect(next.seen.slice(0, 3), "первый проход целиком").toEqual(["in514a", "r514a", "claude-t514a"])
+  expect(next.seen.slice(3), "после срока -- полный проход от объявленной").toEqual(["in514a", "r514a"])
+  const begin = waits514(h, "ag-514a", "wait-begin")
+  expect(begin.length).toBe(1)
+  expect(begin[0].refusalClass).toBe("temporary-known")
+  expect(begin[0].wakeAt).toBe(new Date(T0 + 120000).toISOString())
+  expect(waits514(h, "ag-514a", "wait-probe").map(r => r.kind)).toEqual(["wake"])
+  expect(h.sleeps.length, "ожидание кусками по 4 с").toBe(30)
+  for (const c of h.procCalls) expect(c).toEqual({ argv: ["/bin/sleep", "4.000"], init: { timeoutMs: 9000 } })
+  expect(h.m.toasts.length, "один тост на эпизод").toBe(1)
+  expect(h.m.toasts[0]).toContain("агент t514 ждёт сброса лимита")
+  const recs = attempts514(h, "ag-514a")
+  expect(recs[0].refusalClass).toBe("temporary-known")
+  expect(recs[0].refusalText).toBe(text)
+  failoverBindReset()
+})
+
+test("#514 J5(б): permanent-model пропускается во втором шаге, skipped-dead один раз", async () => {
+  reset514()
+  const T0 = 514_200_000
+  const h = host514("b", T0)
+  failoverBindSet("ag-514b", { ladder: ["dead514b"], terminal: "claude-t514b", rungEffort: { "dead514b": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, {
+    "in514b": refuseAll514("API Error: 429 rate limit"),
+    "dead514b": refuseAll514("Credit balance is too low"),
+    "claude-t514b": () => null,
+  })
+  await step514(h, "ag-514b", "in514b", next)
+  expect(next.seen).toEqual(["in514b", "dead514b", "claude-t514b"])
+  const next2 = next514(h, {
+    "in514b": refuseAll514("API Error: 429 rate limit"),
+    "claude-t514b": () => null,
+  })
+  await step514(h, "ag-514b", "in514b", next2, { index: 1 })
+  expect(next2.seen, "мёртвая пропущена, остывающая объявленная отложена").toEqual(["in514b", "claude-t514b"])
+  const next3 = next514(h, { "in514b": refuseAll514("API Error: 429 rate limit"), "claude-t514b": () => null })
+  await step514(h, "ag-514b", "in514b", next3, { index: 2 })
+  const dead = journal514(h).filter(r => r.outcome === "skipped-dead")
+  expect(dead.length, "один раз на (процесс, модель, метка)").toBe(1)
+  expect(dead[0].model).toBe("dead514b")
+  const term = attempts514(h, "ag-514b").filter(r => r.terminal && r.index === 1)
+  expect(term.length).toBe(1)
+  expect(term[0].rungsSkippedDead).toEqual(["dead514b"])
+  failoverBindReset()
+})
+
+test("#514 J5(в): успех модели снимает её метку", async () => {
+  reset514()
+  const T0 = 514_300_000
+  const h = host514("c", T0)
+  failoverBindSet("ag-514c", { ladder: [], terminal: "claude-t514c", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in514c": (k) => (k === 0 ? "API Error: 429 rate limit" : null), "claude-t514c": () => null })
+  await step514(h, "ag-514c", "in514c", next)
+  expect(isModelCooling("in514c", T0 + 1)).toBe(true)
+  h.m.setNow(T0 + 31000)
+  await step514(h, "ag-514c", "in514c", next, { index: 1 })
+  expect(isModelCooling("in514c", T0 + 31000)).toBe(false)
+  const snap = cooldownSnapshot(T0 + 31000).filter(r => r.model === "in514c")
+  expect(snap).toEqual([])
+  const again = R514.noteModelRefusal("in514c", T0 + 32000, "temporary-unknown", 0, "carrier-refusal", "")
+  expect(again.until - (T0 + 32000), "счёт подряд идущих отказов сброшен успехом").toBe(30000)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 J5(г): после истечения метки объявленная модель первой при живой липкой", async () => {
+  reset514()
+  const T0 = 514_400_000
+  const h = host514("g", T0)
+  failoverBindSet("ag-514g", { ladder: ["r514g"], terminal: "claude-t514g", rungEffort: { "r514g": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in514g": (k) => (k === 0 ? "API Error: 429 rate limit" : null), "r514g": () => null, "claude-t514g": () => null })
+  await step514(h, "ag-514g", "in514g", next)
+  expect(failoverBindGet("ag-514g").sticky).toBe("r514g")
+  h.m.setNow(T0 + 31000)
+  const next2 = next514(h, { "in514g": () => null, "r514g": () => null, "claude-t514g": () => null })
+  await step514(h, "ag-514g", "in514g", next2, { index: 1 })
+  expect(next2.seen, "объявленная первой, не липкая").toEqual(["in514g"])
+  const next3 = next514(h, { "in514g": refuseAll514("API Error: 429 rate limit"), "r514g": () => null, "claude-t514g": () => null })
+  await step514(h, "ag-514g", "in514g", next3, { index: 2 })
+  expect(next3.seen, "липкая второй").toEqual(["in514g", "r514g"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 J5(д): прерывание во время ожидания -- wait-aborted, без броска", async () => {
+  reset514()
+  const T0 = 514_500_000
+  let next: any = null
+  const h = host514("d", T0, { sleepHook: (n) => { if (n === 3) next.signal.aborted = true } })
+  failoverBindSet("ag-514d", { ladder: [], terminal: "claude-t514d", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  next = next514(h, { "in514d": refuseAll514("API Error: 429 rate limit"), "claude-t514d": refuseAll514("API Error: 429 rate limit") })
+  const out = await step514(h, "ag-514d", "in514d", next)
+  expect(isCarrierRefusal(out.value), "возвращён последний ответ").toBe(true)
+  expect(h.sleeps.length).toBe(3)
+  const ab = waits514(h, "ag-514d", "wait-aborted")
+  expect(ab.length).toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 J5(е): бюджет хука ниже 1500 мс -- wait-budget-exhausted", async () => {
+  reset514()
+  const T0 = 514_600_000
+  const h = host514("e", T0)
+  failoverBindSet("ag-514e", { ladder: [], terminal: "claude-t514e", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in514e": refuseAll514("API Error: 429 rate limit"), "claude-t514e": refuseAll514("API Error: 429 rate limit") })
+  next.budget = { ms: 10000, remainingMs: 1499 }
+  const out = await step514(h, "ag-514e", "in514e", next)
+  expect(isCarrierRefusal(out.value)).toBe(true)
+  expect(h.sleeps.length).toBe(0)
+  const ex = waits514(h, "ag-514e", "wait-budget-exhausted")
+  expect(ex.length).toBe(1)
+  expect(ex[0].reason).toBe("бюджет хука хоста")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 J5(ж): класс request -- без ожидания", async () => {
+  reset514()
+  const T0 = 514_700_000
+  const h = host514("j", T0)
+  failoverBindSet("ag-514j", { ladder: [], terminal: "claude-t514j", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const txt = "Prompt is too long"
+  const next = next514(h, { "in514j": refuseAll514(txt), "claude-t514j": refuseAll514(txt) })
+  const out = await step514(h, "ag-514j", "in514j", next)
+  expect(isCarrierRefusal(out.value)).toBe(true)
+  expect(next.seen).toEqual(["in514j", "claude-t514j"])
+  expect(h.sleeps.length).toBe(0)
+  expect(waits514(h, "ag-514j", "wait-begin").length).toBe(0)
+  expect(attempts514(h, "ag-514j").map(r => r.refusalClass)).toEqual(["request", "request"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 J5(з): сердцебиение -- перепроба не реже 240 с по часам", async () => {
+  reset514()
+  const T0 = 514_800_000
+  const h = host514("z", T0)
+  failoverBindSet("ag-514z", { ladder: ["r514z"], terminal: "claude-t514z", rungEffort: { "r514z": "max" }, subagentType: "t", class: "", sticky: null })
+  const txt = "You've hit your session limit · resets 12am (UTC)"
+  const next = next514(h, {
+    "in514z": (_k, t) => (t >= T0 + 700000 ? null : txt),
+    "r514z": refuseAll514(txt),
+    "claude-t514z": refuseAll514(txt),
+  })
+  const out = await step514(h, "ag-514z", "in514z", next)
+  expect(out.value && out.value.text).toBe("OK-in514z")
+  const probes = waits514(h, "ag-514z", "wait-probe")
+  expect(probes.length).toBeGreaterThan(1)
+  let prev = Date.parse(waits514(h, "ag-514z", "wait-begin")[0].t)
+  for (const p of probes) {
+    expect(p.kind).toBe("heartbeat")
+    const t = Date.parse(p.t)
+    expect(t - prev).toBeLessThanOrEqual(240000)
+    prev = t
+  }
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 J5(и): нечитаемый срок -- temporary-unknown с backoff в метке", async () => {
+  reset514()
+  const T0 = 514_900_000
+  const h = host514("i", T0, { noProc: true })
+  failoverBindSet("ag-514i", { ladder: [], terminal: "claude-t514i", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in514i": refuseAll514("API Error: 429 Too Many Requests"), "claude-t514i": () => null })
+  await step514(h, "ag-514i", "in514i", next)
+  const rec = attempts514(h, "ag-514i")[0]
+  expect(rec.refusalClass).toBe("temporary-unknown")
+  expect(isModelCooling("in514i", T0 + 29999)).toBe(true)
+  expect(isModelCooling("in514i", T0 + 30000)).toBe(false)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 J5(к): отказ session.messages -- temporary-unknown и noteLost", async () => {
+  reset514()
+  const T0 = 515_000_000
+  const h = host514("k", T0, { noProc: true })
+  h.messagesThrow = true
+  failoverBindSet("ag-514k", { ladder: [], terminal: "claude-t514k", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in514k": refuseAll514("API Error: 400 unknown provider for model in514k"), "claude-t514k": () => null })
+  await step514(h, "ag-514k", "in514k", next)
+  expect(h.messageArgs[0]).toEqual({ agentId: "ag-514k" })
+  const rec = attempts514(h, "ag-514k")[0]
+  expect(rec.refusalClass).toBe("temporary-unknown")
+  expect(rec.lost && rec.lost["failover-refusal-messages"] && rec.lost["failover-refusal-messages"].n).toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 H8: бросок без прерывания -- не пробрасывается, ожидание без двери названо", async () => {
+  reset514()
+  const T0 = 515_100_000
+  const h = host514("t", T0, { noProc: true })
+  failoverBindSet("ag-514t", { ladder: [], terminal: "claude-t514t", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in514t": () => ({ throw: "boom" }), "claude-t514t": () => ({ throw: "boom2" }) })
+  let threw: any = null
+  try { await step514(h, "ag-514t", "in514t", next) } catch (x) { threw = x }
+  expect(threw, "исчерпанный проход не бросает").toBe(null)
+  expect(next.seen).toEqual(["in514t", "claude-t514t"])
+  expect(attempts514(h, "ag-514t").map(r => r.refusalClass)).toEqual(["temporary-unknown", "temporary-unknown"])
+  expect(waits514(h, "ag-514t", "wait-unavailable").length).toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 H8: бросок при прерванном сигнале -- lastRes без броска и без ожидания", async () => {
+  reset514()
+  const T0 = 515_200_000
+  const h = host514("u", T0)
+  failoverBindSet("ag-514u", { ladder: [], terminal: "claude-t514u", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  let next: any = null
+  next = next514(h, { "in514u": () => { next.signal.aborted = true; return { throw: "aborted" } }, "claude-t514u": () => null })
+  let threw: any = null
+  let out: any = null
+  try { out = await step514(h, "ag-514u", "in514u", next) } catch (x) { threw = x }
+  expect(threw).toBe(null)
+  expect(out.value).toBe(null)
+  expect(next.seen).toEqual(["in514u"])
+  expect(h.sleeps.length).toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// CONSTRAINT (#514 FIX2 Д3): метка отказа не переживает проход -- стенд
+// сбрасывает метки на первом чтении next.budget после нового вызова модели
+// (budgetLeft читает его раз за тик цикла ожидания). Своего предела вызовов
+// у зубов ожидания нет: под мутацией, снявшей паузу, process.run не зовётся
+// вовсе, и прогон держит конечным предел модели стенда (stand-cap-514.ts).
+
+function unmarked514(next: any, after: (calls: number) => boolean = () => true): void {
+  let resetAt = -1
+  Object.defineProperty(next, "budget", {
+    get: () => {
+      if (next.seen.length !== resetAt) {
+        resetAt = next.seen.length
+        if (after(resetAt)) rungCooldownReset()
+      }
+      return { ms: 10000, remainingMs: Infinity }
+    },
+  })
+}
+
+test("#514 FIX2 Д3(а): метка не переживает проход -- кусок паузы между любыми двумя вызовами, выход по пределу стенда wait-unavailable", async () => {
+  reset514()
+  const T0 = 516_600_000
+  const h = host514("pa", T0)
+  failoverBindSet("ag-514pa", { ladder: ["m514pa"], terminal: "", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  // Метка первого вызова (минута = 15 кусков) живёт, дальше метки
+  // сбрасываются: предел двери паузы наступает раньше предела модели стенда.
+  const sleepsAtCall: number[] = []
+  const next = next514(h, {
+    "m514pa": (k) => {
+      sleepsAtCall.push(h.sleeps.length)
+      return k === 0 ? "You've hit your session limit · resets 11:31pm (UTC)" : "API Error: Request rejected (429) · rate limited"
+    },
+  })
+  unmarked514(next, (calls) => calls > 1)
+  const out = await step514(h, "ag-514pa", "m514pa", next)
+  expect(isCarrierRefusal(out.value), "возвращён последний ответ").toBe(true)
+  const calls = next.seen.length
+  expect(h.sleeps.length >= calls - 1, "кусков паузы " + String(h.sleeps.length) + " при вызовах " + String(calls)).toBe(true)
+  expect(sleepsAtCall[1] - sleepsAtCall[0], "метка минута -- 15 кусков").toBe(15)
+  const gaps: string[] = []
+  for (let i = 2; i < sleepsAtCall.length; i++) {
+    const d = sleepsAtCall[i] - sleepsAtCall[i - 1]
+    if (d !== 1) gaps.push("вызов " + String(i) + ": кусков " + String(d))
+  }
+  expect(gaps, "без метки -- ровно один кусок между соседними вызовами").toEqual([])
+  expect(h.sleeps.length, "успешных кусков -- предел стенда").toBe(2000)
+  expect(calls, "вызов после каждого куска, начиная с пятнадцатого").toBe(1987)
+  const un = waits514(h, "ag-514pa", "wait-unavailable")
+  expect(un.length).toBe(1)
+  expect(String(un[0].reason)).toContain("stand: process.run call cap 2000")
+  expect(waits514(h, "ag-514pa", "wait-aborted").length, "выход не по пределу вызовов зуба").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX2: прерывание во время обязательной паузы отпускает шаг -- wait-aborted, второго вызова нет", async () => {
+  for (const mode of ["return", "throw"]) {
+    reset514()
+    const T0 = mode === "return" ? 516_700_000 : 516_800_000
+    let next: any = null
+    const h = host514("pb" + mode, T0, {
+      sleepHook: (n) => {
+        if (n !== 1) return
+        next.signal.aborted = true
+        if (mode === "throw") throw new Error("sleep: killed by abort")
+      },
+    })
+    const aid = "ag-514pb" + mode
+    const model = "m514pb" + mode
+    failoverBindSet(aid, { ladder: [model], terminal: "", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+    next = next514(h, { [model]: refuseAll514("API Error: 429 rate limit") })
+    unmarked514(next)
+    let threw: any = null
+    let out: any = null
+    try { out = await step514(h, aid, model, next) } catch (x) { threw = x }
+    expect({ mode, threw }).toEqual({ mode, threw: null })
+    expect(isCarrierRefusal(out.value), mode + ": возвращён последний ответ").toBe(true)
+    expect({ mode, calls: next.seen.length, sleeps: h.sleeps.length }).toEqual({ mode, calls: 1, sleeps: 1 })
+    expect({ mode, aborted: waits514(h, aid, "wait-aborted").length, unavailable: waits514(h, aid, "wait-unavailable").length }).toEqual({ mode, aborted: 1, unavailable: 0 })
+    rungCooldownReset()
+    failoverBindReset()
+  }
+})
+
+test("#514 FIX2: после перепробы сердцебиения метка снята -- кусок паузы до вызова пробуждения", async () => {
+  reset514()
+  const T0 = 516_900_000
+  const h = host514("pc", T0)
+  failoverBindSet("ag-514pc", { ladder: ["m514pc"], terminal: "", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const sleepsAtCall: number[] = []
+  const next = next514(h, {
+    "m514pc": (k) => {
+      sleepsAtCall.push(h.sleeps.length)
+      return k >= 2 ? null : "You've hit your session limit · resets 12:35am (UTC)"
+    },
+  })
+  unmarked514(next, (calls) => calls === 2)
+  const out = await step514(h, "ag-514pc", "m514pc", next)
+  expect(out.value && out.value.text, "пробуждение после паузы -- успех").toBe("OK-m514pc")
+  expect(waits514(h, "ag-514pc", "wait-probe").map(r => r.kind)).toEqual(["heartbeat", "wake"])
+  expect(sleepsAtCall, "сердцебиение на 240 с, пробуждение -- через один кусок").toEqual([0, 60, 61])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// CONSTRAINT (#514 FIX2b): страж зуба предела модели -- не предел сценария:
+// цикл зуба сам не останавливается, страж держит конечным прогон под
+// мутацией, снявшей предел стенда.
+const WATCHDOG514 = 5000
+
+test("#514 FIX2b: предел вызовов модели стенда -- цикл без паузы и без своего предела падает броском стенда", async () => {
+  reset514()
+  const h = host514("mc", 517_000_000, { noProc: true })
+  failoverBindSet("ag-514mc", { ladder: [], terminal: "claude-t514mc", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "m514mc": () => null, "claude-t514mc": () => null })
+  const step = hook393(subs393(), "turn.step")
+  let err: any = null
+  let steps = 0
+  try {
+    for (; steps < WATCHDOG514; steps++) {
+      await drainStream(step(h.m.$, { agentId: "ag-514mc", turnId: "t-514mc", index: steps, model: "m514mc", messageCount: 1 }, next))
+    }
+  } catch (x) { err = x }
+  expect(String(err && err.message), "цикл прерван броском стенда").toBe("stand: model call cap 2000")
+  expect({ steps, calls: next.seen.length }).toEqual({ steps: 2000, calls: 2000 })
+  failoverBindReset()
+})
+
+test("#514 FIX2b H1 / FIX3 M2: префикс таблицы решает по началу строки, не по вхождению", () => {
+  const cr = R514.classifyRefusal
+  const cases: Array<[string, string]> = [
+    ["Please run /login · API Error: 429 Request rejected (429) · rate limited", "permanent-model"],
+    ["API Error: 400 Prompt is too long", "temporary-unknown"],
+    ["API Error: 402 Credit balance is too low", "quota"],
+    ["  Prompt is too long", "request"],
+  ]
+  for (const [line, cls] of cases) expect({ line, cls: cr(line, 1_000_000).class }).toEqual({ line, cls })
+})
+
+test("#514 FIX2b H2: ISO без пояса в будущем -- срок неизвестен", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-09-25T20:10:39Z")
+  for (const line of [
+    "API Error: 429 quota held until 2026-09-28T04:00:00",
+    "API Error: 429 limit reset at 2026-09-28 04:00:00",
+  ]) {
+    const got = cr(line, now)
+    expect({ line, cls: got.class, at: got.readyAt }).toEqual({ line, cls: "temporary-unknown", at: 0 })
+  }
+})
+
+test("#514 FIX2b H1: текст отказа в улике попытки урезан до REFUSAL_TEXT_MAX", async () => {
+  reset514()
+  const h = host514("tc", 517_100_000, { noProc: true })
+  failoverBindSet("ag-514tc", { ladder: [], terminal: "claude-t514tc", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const line = "Prompt is too long · the request is ~" + "x".repeat(400)
+  const next = next514(h, { "in514tc": refuseAll514(line), "claude-t514tc": refuseAll514(line) })
+  await step514(h, "ag-514tc", "in514tc", next)
+  const recs = attempts514(h, "ag-514tc")
+  expect(recs.length).toBe(2)
+  for (const r of recs) expect({ len: String(r.refusalText).length, head: r.refusalText === line.slice(0, R514.REFUSAL_TEXT_MAX) }).toEqual({ len: R514.REFUSAL_TEXT_MAX, head: true })
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX2b H3: skipped-dead один раз и через два прохода пробуждения одного шага", async () => {
+  reset514()
+  const T0 = 517_200_000
+  const h = host514("sk", T0)
+  failoverBindSet("ag-514sk", { ladder: ["dead514sk"], terminal: "claude-t514sk", rungEffort: { "dead514sk": "max" }, subagentType: "t", class: "", sticky: null })
+  const soon = "API Error: 503 auth_unavailable; soonest recovery in 8s"
+  const next = next514(h, {
+    "in514sk": (k) => (k >= 2 ? null : soon),
+    "dead514sk": refuseAll514("Credit balance is too low"),
+    "claude-t514sk": refuseAll514(soon),
+  })
+  const out = await step514(h, "ag-514sk", "in514sk", next)
+  expect(out.value && out.value.text).toBe("OK-in514sk")
+  expect(next.seen, "два прохода пробуждения без мёртвой").toEqual(["in514sk", "dead514sk", "claude-t514sk", "in514sk", "claude-t514sk", "in514sk"])
+  expect(waits514(h, "ag-514sk", "wait-probe").map(r => r.kind)).toEqual(["wake", "wake"])
+  const dead = journal514(h).filter(r => r.outcome === "skipped-dead")
+  expect(dead.length, "один раз на (процесс, модель, метка), не на попытку").toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX2b H5: все модели прохода permanent-model -- wait-begin несёт permanentOnly", async () => {
+  reset514()
+  const T0 = 517_300_000
+  let next: any = null
+  const h = host514("pp", T0, { sleepHook: (n) => { if (n === 2) next.signal.aborted = true } })
+  failoverBindSet("ag-514pp", { ladder: [], terminal: "claude-t514pp", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  next = next514(h, {
+    "in514pp": refuseAll514("Credit balance is too low"),
+    "claude-t514pp": refuseAll514("Not logged in · Please run /login"),
+  })
+  await step514(h, "ag-514pp", "in514pp", next)
+  const begin = waits514(h, "ag-514pp", "wait-begin")
+  expect(begin.length).toBe(1)
+  expect({ permanentOnly: begin[0].permanentOnly, wakeAt: begin[0].wakeAt }).toEqual({ permanentOnly: true, wakeAt: new Date(T0 + 3600000).toISOString() })
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX2b s1: проектный слой перекрывает терминал глобального", async () => {
+  const m = mod$393({
+    files: {
+      "/hh-s1-514/.claude/probes/probes.toml": '[failover]\nenabled = true\nterminal = "claude-g514s1"\n',
+      "/work-s1-514/.claude/probes/probes.toml": '[failover]\nterminal = "claude-p514s1"\n',
+    },
+    now: 517_400_000,
+  })
+  const world = await loadWorld(m.$, { PROBES_DIR: "", ROUTING_TABLE: "", CONFIG_DIR: "", HOME: "/hh-s1-514", PWD: "/work-s1-514" }, "/work-s1-514")
+  expect(world.failover.terminal).toBe("claude-p514s1")
+  const m2 = mod$393({
+    files: {
+      "/hh-s1b-514/.claude/probes/probes.toml": '[failover]\nenabled = true\nterminal = "claude-g514s1"\n',
+      "/work-s1b-514/.claude/probes/probes.toml": '[failover]\nenabled = true\n',
+    },
+    now: 517_410_000,
+  })
+  const world2 = await loadWorld(m2.$, { PROBES_DIR: "", ROUTING_TABLE: "", CONFIG_DIR: "", HOME: "/hh-s1b-514", PWD: "/work-s1b-514" }, "/work-s1b-514")
+  expect(world2.failover.terminal, "без ключа в проекте -- глобальный").toBe("claude-g514s1")
+})
+
+test("#509-FIX2b s3 (D-3a): одноимённая ступень лестницы сохраняет свой эффорт против эффорта терминала", async () => {
+  reset514()
+  const h = host514("s3", 517_500_000, {
+    probes: '[failover]\nenabled = true\nterminal = {model = "claude-s3514", effort = "max"}\n\n[failover.class.c514s3]\nmodels = [{model = "claude-s3514", effort = "high"}]\n',
+    noProc: true,
+  })
+  await spawn514(h, "ag-514s3", "c514s3", "in514s3")
+  expect(failoverBindGet("ag-514s3").rungEffort["claude-s3514"]).toBe("high")
+  const h2 = host514("s3b", 517_510_000, {
+    probes: '[failover]\nenabled = true\nterminal = {model = "claude-s3b514", effort = "max"}\n',
+    noProc: true,
+  })
+  await spawn514(h2, "ag-514s3b", "c514s3b", "in514s3b")
+  expect(failoverBindGet("ag-514s3b").rungEffort["claude-s3b514"], "без одноимённой ступени -- эффорт терминала").toBe("max")
+  failoverBindReset()
+})
+
+test("#509-FIX1 A1: мир несёт слитый допуск (база + машинный слой)", async () => {
+  const m = mod$393({
+    files: {
+      [TABLE514]: '[classes.c514w]\nallowed = ["a1", "a2"]\n[classes.c514v]\nallowed = ["v1", "v2"]\n',
+      "/home514w/.claude/catalyst/routing-override.toml": '[classes.c514w]\nallowed = ["a2", "a3"]\n',
+    },
+    now: 515_300_000,
+  })
+  const world = await loadWorld(m.$, { PROBES_DIR: "/probes-514w", HOME: "/home514w", ROUTING_TABLE: TABLE514 }, "")
+  expect(world.allowedByClass, "поле мира живо").toEqual({ c514w: ["a2", "a3"], c514v: ["v1", "v2"] })
+})
+
+test("#509-FIX1 A2: ступень вне допуска не вызывается, rung-not-admitted один раз на процесс", async () => {
+  reset514()
+  const T0 = 515_400_000
+  const h = host514("n", T0, {
+    probes: '[failover]\nenabled = true\nterminal = "claude-opus-5-5"\n\n[failover.class.c514n]\nmodels = [{model = "Grok-X514", effort = "max"}, {model = "bad514", effort = "max"}, {model = "x3514", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c514n]\nallowed = ["grok-x514", "x3514", "in514n"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  await spawn514(h, "ag-514n", "c514n", "in514n")
+  await spawn514(h, "ag-514n2", "c514n", "in514n")
+  expect(failoverBindGet("ag-514n").ladder).toEqual(["Grok-X514", "x3514"])
+  const na = journal514(h).filter(r => r.outcome === "rung-not-admitted")
+  expect(na.length).toBe(1)
+  expect({ class: na[0].class, model: na[0].model }).toEqual({ class: "c514n", model: "bad514" })
+  const next = next514(h, { "in514n": refuseAll514("API Error: 429 x"), "Grok-X514": refuseAll514("API Error: 429 x"), "x3514": refuseAll514("API Error: 429 x"), "claude-opus-5-5": () => null })
+  await step514(h, "ag-514n", "in514n", next)
+  expect(next.seen).toEqual(["in514n", "Grok-X514", "x3514", "claude-opus-5-5"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX1 A3: допуск недоступен -- проход = объявленная + терминал, admission-unavailable один раз", async () => {
+  reset514()
+  const T0 = 515_500_000
+  const h = host514("q", T0, {
+    probes: '[failover]\nenabled = true\nterminal = "claude-opus-5-5"\n\n[failover.class.c514q]\nmodels = [{model = "r514q", effort = "max"}]\n',
+    noProc: true,
+  })
+  await spawn514(h, "ag-514q", "c514q", "in514q")
+  await spawn514(h, "ag-514q2", "c514q", "in514q")
+  expect(failoverBindGet("ag-514q").ladder).toEqual([])
+  expect(journal514(h).filter(r => r.outcome === "admission-unavailable").length).toBe(1)
+  const next = next514(h, { "in514q": refuseAll514("API Error: 429 x"), "claude-opus-5-5": () => null })
+  await step514(h, "ag-514q", "in514q", next)
+  expect(next.seen).toEqual(["in514q", "claude-opus-5-5"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX1 J4: производственная форма -- голый terminal вызван, поле effort удалено", async () => {
+  reset514()
+  const T0 = 515_600_000
+  const h = host514("p", T0, {
+    probes: '[failover]\nenabled = true\nterminal = "claude-opus-5-5"\n\n[failover.class.c514p]\nmodels = [{model = "r514p", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c514p]\nallowed = ["r514p"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    noProc: true,
+  })
+  await spawn514(h, "ag-514p", "c514p", "in514p")
+  const next = next514(h, { "in514p": refuseAll514("API Error: 429 x"), "r514p": refuseAll514("API Error: 429 x"), "claude-opus-5-5": () => null })
+  const out = await step514(h, "ag-514p", "in514p", next, { effort: "max" })
+  expect(next.seen).toEqual(["in514p", "r514p", "claude-opus-5-5"])
+  expect(out.value && out.value.text).toBe("OK-claude-opus-5-5")
+  const req = next.reqs[2]
+  expect(req.model).toBe("claude-opus-5-5")
+  expect(Object.prototype.hasOwnProperty.call(req, "effort"), "запрос терминала без поля effort").toBe(false)
+  expect(next.reqs[1].effort).toBe("max")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX1 B2: негодный эффорт Anthropic-терминала -- отказ с названной причиной", async () => {
+  reset514()
+  const T0 = 515_700_000
+  const h = host514("x", T0, {
+    probes: '[failover]\nenabled = true\nterminal = {model = "claude-opus-5-5", effort = "bogus"}\n',
+    noProc: true,
+  })
+  await spawn514(h, "ag-514x", "c514x", "in514x")
+  const next = next514(h, { "in514x": refuseAll514("Prompt is too long") })
+  await step514(h, "ag-514x", "in514x", next)
+  expect(next.seen).toEqual(["in514x"])
+  const refused = attempts514(h, "ag-514x").filter(r => r.outcome === "rung-effort-refused")
+  expect(refused.length).toBe(1)
+  expect(refused[0].reason).toBe("эффорт негоден: bogus")
+  expect(refused[0]["effortBad_claude-opus-5-5"]).toBe("bogus")
+  failoverBindReset()
+})
+
+test("#509-FIX1 C2 / FIX3 H1: терминал, совпавший со ступенью, -- только последним; объявленная на терминале -- первой и один раз", async () => {
+  reset514()
+  const T0 = 515_800_000
+  const h = host514("c2", T0, { noProc: true })
+  failoverBindSet("ag-514c2", { ladder: ["claude-t514c2", "r514c2"], terminal: "claude-t514c2", rungEffort: { "r514c2": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in514c2": refuseAll514("Prompt is too long"), "r514c2": refuseAll514("Prompt is too long"), "claude-t514c2": refuseAll514("Prompt is too long") })
+  await step514(h, "ag-514c2", "in514c2", next)
+  expect(next.seen).toEqual(["in514c2", "r514c2", "claude-t514c2"])
+  const recs = attempts514(h, "ag-514c2")
+  expect(recs.map(r => r.terminal)).toEqual([undefined, undefined, true])
+  failoverBindSet("ag-514c3", { ladder: ["r514c3"], terminal: "claude-t514c3", rungEffort: { "r514c3": "max" }, subagentType: "t", class: "", sticky: null })
+  const next2 = next514(h, { "r514c3": refuseAll514("Prompt is too long"), "claude-t514c3": refuseAll514("Prompt is too long") })
+  await step514(h, "ag-514c3", "claude-t514c3", next2)
+  expect(next2.seen, "объявленная на терминале -- первой, второй раз не добавлена").toEqual(["claude-t514c3", "r514c3"])
+  const recs2 = attempts514(h, "ag-514c3")
+  expect(recs2.map(r => r.terminal)).toEqual([undefined, undefined])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX1 D: проверяющий -- терминал модели исполнителя снят и при пустой базе", async () => {
+  reset514()
+  sessionExecutorModelAdd("claude-t514dd")
+  const T0 = 515_900_000
+  const h = host514("dd", T0, { noProc: true })
+  failoverBindSet("ag-514dd", { ladder: [], terminal: "claude-t514dd", rungEffort: {}, subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next514(h, { "": () => null, "claude-t514dd": () => null })
+  await step514(h, "ag-514dd", "", next)
+  expect(next.seen, "терминал исполнителя не вызван").toEqual([""])
+  sessionExecutorsReset()
+  failoverBindReset()
+})
+
+test("#509-FIX1 E1/E2 / FIX3 AR-4: терминал сравнивается нормализованным, в запрос уходит как написан; алиасы отвергнуты", async () => {
+  const ft = R514.failoverTerminal
+  expect(ft({ terminal: " Claude-Opus-5-5[1m] " })).toEqual({ model: " Claude-Opus-5-5[1m] ", effort: "", effortBad: "", absent: "" })
+  for (const a of ["opus", " Fable ", "sonnet", "HAIKU"]) {
+    expect({ a, got: ft({ terminal: a }) }).toEqual({ a, got: { model: "", effort: "", effortBad: "", absent: "terminal-alias-refused" } })
+  }
+  reset514()
+  const h = host514("e1", 516_000_000, { probes: '[failover]\nenabled = true\nterminal = " Claude-Opus-5-5[1m] "\n', noProc: true })
+  await spawn514(h, "ag-514e1", "c514e1", "in514e1")
+  expect(failoverBindGet("ag-514e1").terminal).toBe(" Claude-Opus-5-5[1m] ")
+  const next = next514(h, { "in514e1": refuseAll514("Prompt is too long"), " Claude-Opus-5-5[1m] ": () => null })
+  await step514(h, "ag-514e1", "in514e1", next)
+  expect(next.reqs[1].model, "в запрос уходит строка канона как написана").toBe(" Claude-Opus-5-5[1m] ")
+  const h2 = host514("e2", 516_100_000, { probes: '[failover]\nenabled = true\nterminal = "opus"\n', noProc: true })
+  await spawn514(h2, "ag-514e2", "c514e2", "in514e2")
+  expect(failoverBindGet("ag-514e2").terminal).toBe("")
+  const ab = journal514(h2).filter(r => String(r.rec).indexOf("terminal-absent-") === 0)
+  expect(ab.length).toBe(1)
+  expect(ab[0].reason).toBe("terminal-alias-refused")
+  failoverBindReset()
+})
+
+test("#509-FIX1 E3: паритет разбора терминала -- одна таблица, вердикт мода", async () => {
+  const rows: any[] = TERMINAL_PARITY_509
+  expect(Array.isArray(rows) && rows.length >= 10).toBe(true)
+  const ft = R514.failoverTerminal
+  for (const row of rows) {
+    const fo = row.absent ? {} : { terminal: row.raw }
+    const got = ft(fo)
+    const verdict = got.absent || got.effortBad ? "red" : "green"
+    expect({ raw: row.raw, verdict }).toEqual({ raw: row.raw, verdict: row.verdict })
+  }
+})
+
+test("#509-FIX1 G: terminal-absent один раз на процесс; при ключе -- ноль", async () => {
+  reset514()
+  const h = host514("g1", 516_200_000, { noProc: true })
+  for (const aid of ["ag-514g1a", "ag-514g1b", "ag-514g1c"]) await spawn514(h, aid, "c514g", "in514g")
+  expect(journal514(h).filter(r => String(r.rec).indexOf("terminal-absent-") === 0).length).toBe(1)
+  reset514()
+  const h2 = host514("g2", 516_300_000, { probes: '[failover]\nenabled = true\nterminal = "claude-opus-5-5"\n', noProc: true })
+  for (const aid of ["ag-514g2a", "ag-514g2b"]) await spawn514(h2, aid, "c514g", "in514g")
+  expect(journal514(h2).filter(r => String(r.rec).indexOf("terminal-absent-") === 0).length).toBe(0)
+  failoverBindReset()
+})
+
+test("#509-FIX1 I: rungsTried -- только вызванные; отказанные по эффорту отдельным списком", async () => {
+  reset514()
+  const h = host514("ii", 516_400_000, { noProc: true })
+  failoverBindSet("ag-514ii", { ladder: ["bare514ii", "r514ii"], terminal: "claude-t514ii", rungEffort: { "r514ii": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in514ii": refuseAll514("Prompt is too long"), "r514ii": refuseAll514("Prompt is too long"), "claude-t514ii": refuseAll514("Prompt is too long") })
+  await step514(h, "ag-514ii", "in514ii", next)
+  expect(next.seen).toEqual(["in514ii", "r514ii", "claude-t514ii"])
+  const term = attempts514(h, "ag-514ii").filter(r => r.terminal)
+  expect(term.length).toBe(1)
+  expect(term[0].rungsTried).toEqual(["in514ii", "r514ii"])
+  expect(term[0].rungsEffortRefused).toEqual(["bare514ii"])
+  expect(term[0].rungsSkippedDead).toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+async function d2run514(tag: string, table: string): Promise<{ bind: any; seen: string[] }> {
+  reset514()
+  const h = host514(tag, 516_500_000, {
+    probes: '[failover]\nenabled = true\nterminal = "claude-opus-5-5"\n',
+    files: { [TABLE514]: table },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    noProc: true,
+  })
+  await spawn514(h, "ag-514" + tag, "c514d2", "in514d2")
+  const bind = failoverBindGet("ag-514" + tag)
+  const next = next514(h, { "in514d2": refuseAll514("Prompt is too long"), "claude-opus-5-5": () => null })
+  await step514(h, "ag-514" + tag, "in514d2", next)
+  rungCooldownReset()
+  failoverBindReset()
+  return { bind, seen: next.seen }
+}
+
+test("#509 D-2 (J3): клетка без лестницы при непустом допуске -- через spawn и step план [входящая, терминал]", async () => {
+  const r = await d2run514("d2a", '[classes.c514d2]\nallowed = ["x1", "x2", "in514d2"]\n')
+  expect({ ladder: r.bind.ladder, source: r.bind.source }).toEqual({ ladder: [], source: "none" })
+  expect(r.seen).toEqual(["in514d2", "claude-opus-5-5"])
+})
+
+test("#509 D-2 (J3): единственная допущенная -- входящая, ступеней нет", async () => {
+  const r = await d2run514("d2b", '[classes.c514d2]\nallowed = ["in514d2"]\n')
+  expect({ ladder: r.bind.ladder, source: r.bind.source }).toEqual({ ladder: [], source: "none" })
+  expect(r.seen).toEqual(["in514d2", "claude-opus-5-5"])
+})
+
+test("#509 D-2 (J3): пустой допуск -- ступеней нет, терминал последним", async () => {
+  const r = await d2run514("d2c", '[classes.c514d2]\nallowed = []\n')
+  expect({ ladder: r.bind.ladder, source: r.bind.source }).toEqual({ ladder: [], source: "none" })
+  expect(r.seen).toEqual(["in514d2", "claude-opus-5-5"])
+})
+
+test("#509 D-2 (J3): допуск не порождает эффорт -- rungEffort привязки пуст", async () => {
+  const r = await d2run514("d2d", '[classes.c514d2]\nallowed = ["m1", "m2", "m3"]\n')
+  expect({ rungEffort: r.bind.rungEffort, rungsDropped: r.bind.rungsDropped }).toEqual({ rungEffort: {}, rungsDropped: 0 })
+  expect(r.seen).toEqual(["in514d2", "claude-opus-5-5"])
+})
+
+// --- #509/#514 FIX3: объявленная первой, свежая строка отказа, таблица хоста ---
+//
+// CONSTRAINT: часы зубов FIX3 выровнены по минуте UTC: хвост «· resets»
+// хоста несёт время с точностью до минуты.
+
+const RL429 = "API Error: Request rejected (429) · rate limited"
+
+function rungs3(prefix: string, n: number): string[] {
+  const out: string[] = []
+  for (let i = 1; i <= n; i++) out.push(prefix + "-" + String(i))
+  return out
+}
+
+function canon3(cls: string, ladder: string[], terminal: string): string {
+  return '[failover]\nenabled = true\nterminal = "' + terminal + '"\n\n[failover.class.' + cls + ']\nmodels = [' +
+    ladder.map(m => '{model = "' + m + '", effort = "max"}').join(", ") + "]\n"
+}
+
+test("#509-FIX3 H1 (а): спавн на claude-opus-5-5[1m], шесть ступеней, терминал claude-opus-5-5 -- первый вызов на объявленную как написана", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 11, 0, 0)
+  const ladder = rungs3("r3h1a", 6)
+  const h = host514("3h1a", T0, {
+    probes: canon3("c3h1a", ladder, "claude-opus-5-5"),
+    files: { [TABLE514]: '[classes.c3h1a]\nallowed = ["' + ladder.join('", "') + '"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    noProc: true,
+  })
+  await spawn514(h, "ag-3h1a", "c3h1a", "claude-opus-5-5[1m]")
+  expect(failoverBindGet("ag-3h1a").ladder).toEqual(ladder)
+  const script: any = { "claude-opus-5-5[1m]": () => null, "claude-opus-5-5": () => null }
+  for (const r of ladder) script[r] = () => null
+  const next = next514(h, script)
+  const out = await step514(h, "ag-3h1a", "claude-opus-5-5[1m]", next)
+  expect(next.seen, "первый и единственный вызов -- объявленная").toEqual(["claude-opus-5-5[1m]"])
+  expect(next.reqs[0].model, "строка объявления без правки").toBe("claude-opus-5-5[1m]")
+  expect(out.value && out.value.text).toBe("OK-claude-opus-5-5[1m]")
+  expect(journal514(h).filter(r => r.terminal === true || r.reason === "cell-exhausted").length, "метки перехода нет").toBe(0)
+  failoverBindReset()
+})
+
+test("#509-FIX3 H1 (б): объявленная на терминале отказывает временно -- ступени по порядку, терминал второй раз не вызван", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 11, 10, 0)
+  const ladder = rungs3("r3h1b", 6)
+  const h = host514("3h1b", T0, {
+    probes: canon3("c3h1b", ladder, "claude-opus-5-5"),
+    files: { [TABLE514]: '[classes.c3h1b]\nallowed = ["' + ladder.join('", "') + '"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    noProc: true,
+  })
+  await spawn514(h, "ag-3h1b", "c3h1b", "claude-opus-5-5[1m]")
+  const script: any = { "claude-opus-5-5[1m]": refuseAll514("You've hit your session limit · resets 3pm (UTC)"), "claude-opus-5-5": refuseAll514(RL429) }
+  for (const r of ladder) script[r] = refuseAll514(RL429)
+  const next = next514(h, script)
+  await step514(h, "ag-3h1b", "claude-opus-5-5[1m]", next)
+  expect(next.seen, "объявленная, затем шесть ступеней; терминала второй раз нет").toEqual(["claude-opus-5-5[1m]"].concat(ladder))
+  const recs = attempts514(h, "ag-3h1b")
+  expect(recs.map(r => r.modelRequested)).toEqual(["claude-opus-5-5[1m]"].concat(ladder))
+  expect(recs.map(r => r.terminal), "ни одна попытка прохода не несёт метку терминала").toEqual(recs.map(() => undefined))
+  expect(recs[0].laddered, "первая попытка -- не переход").toBe(false)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX3 H1 (в): объявленная не терминал -- объявленная, липкая, ступени, терминал последним", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 11, 20, 0)
+  const h = host514("3h1c", T0, { noProc: true })
+  failoverBindSet("ag-3h1c", { ladder: ["r3h1c-1", "r3h1c-2", "r3h1c-3"], terminal: "claude-t3h1c", rungEffort: effortAll509(["r3h1c-1", "r3h1c-2", "r3h1c-3"]), subagentType: "t", class: "", sticky: "r3h1c-2" })
+  const next = next514(h, { "in3h1c": refuseAll514(RL429), "r3h1c-1": refuseAll514(RL429), "r3h1c-2": refuseAll514(RL429), "r3h1c-3": refuseAll514(RL429), "claude-t3h1c": refuseAll514(RL429) })
+  await step514(h, "ag-3h1c", "in3h1c", next)
+  expect(next.seen).toEqual(["in3h1c", "r3h1c-2", "r3h1c-1", "r3h1c-3", "claude-t3h1c"])
+  expect(attempts514(h, "ag-3h1c").map(r => r.terminal)).toEqual([undefined, undefined, undefined, undefined, true])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 M1 (а): старая строка 402 в истории, бросок без новой строки -- не permanent-model, метки нет, бросок виден", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 11, 30, 0)
+  const h = host514("3m1a", T0, { history: ["API Error: 402 All credentials for model grok-4.7 are parked"] })
+  failoverBindSet("ag-3m1a", { ladder: [], terminal: "claude-t3m1a", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in3m1a": () => ({ throwSilent: "lower hook: boom" }), "claude-t3m1a": () => null })
+  let threw: any = null
+  try { await step514(h, "ag-3m1a", "in3m1a", next) } catch (x) { threw = x }
+  expect(String(threw && threw.message), "бросок нижнего хука виден вызывающему").toBe("lower hook: boom")
+  const recs = attempts514(h, "ag-3m1a")
+  expect(recs.length).toBe(1)
+  expect(recs[0].refusalClass, "без свежей строки -- hook-error, не класс старой строки").toBe("hook-error")
+  expect(isModelCooling("in3m1a", T0 + 1), "метки на модель нет").toBe(false)
+  expect(journal514(h).filter(r => r.agentId === "ag-3m1a" && String(r.outcome).indexOf("wait-") === 0).length).toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 M1 (б): старая строка 402 в истории, отказ без новой строки -- temporary-unknown", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 11, 40, 0)
+  const h = host514("3m1b", T0, { noProc: true, history: ["API Error: 402 All credentials for model grok-4.7 are parked"] })
+  failoverBindSet("ag-3m1b", { ladder: [], terminal: "claude-t3m1b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in3m1b": () => ({ silent: true }), "claude-t3m1b": () => null })
+  await step514(h, "ag-3m1b", "in3m1b", next)
+  const recs = attempts514(h, "ag-3m1b")
+  expect({ cls: recs[0].refusalClass, text: recs[0].refusalText }).toEqual({ cls: "temporary-unknown", text: "" })
+  expect(cooldownSnapshot(T0 + 1).filter(r => r.model === "in3m1b").map(r => r.class)).toEqual(["temporary-unknown"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 M1 (в): отказ чтения session.messages -- temporary-unknown, запись refusal-unread с текстом ошибки, один тост на эпизод", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 11, 50, 0)
+  const h = host514("3m1c", T0, { noProc: true })
+  h.messagesThrow = true
+  failoverBindSet("ag-3m1c", { ladder: [], terminal: "claude-t3m1c", rungEffort: {}, subagentType: "t3m1c", class: "", sticky: null })
+  const next = next514(h, { "in3m1c": refuseAll514(RL429), "claude-t3m1c": refuseAll514(RL429) })
+  let threw: any = null
+  try { await step514(h, "ag-3m1c", "in3m1c", next) } catch (x) { threw = x }
+  expect(threw, "агента не отпускаем броском").toBe(null)
+  expect(attempts514(h, "ag-3m1c").map(r => r.refusalClass)).toEqual(["temporary-unknown", "temporary-unknown"])
+  const un = journal514(h).filter(r => r.agentId === "ag-3m1c" && r.outcome === "refusal-unread")
+  expect(un.length, "запись на каждую непрочитанную попытку").toBe(2)
+  for (const r of un) expect(String(r.reason)).toContain("session.messages: scripted refusal")
+  expect(h.m.toasts.filter((t: string) => t.indexOf("t3m1c") >= 0 && t.indexOf("session.messages") >= 0).length, "один тост на эпизод").toBe(1)
+  expect(waits514(h, "ag-3m1c", "wait-unavailable").length, "шаг ждёт, а не отпускает").toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 M2: свежая строка хоста «Prompt is too long» -- класс request, без ожидания", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 12, 0, 0)
+  const h = host514("3m2", T0)
+  failoverBindSet("ag-3m2", { ladder: [], terminal: "claude-t3m2", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in3m2": refuseAll514("Prompt is too long"), "claude-t3m2": refuseAll514("Prompt is too long") })
+  await step514(h, "ag-3m2", "in3m2", next)
+  expect(attempts514(h, "ag-3m2").map(r => r.refusalClass)).toEqual(["request", "request"])
+  expect(h.sleeps.length).toBe(0)
+  expect(journal514(h).filter(r => r.agentId === "ag-3m2" && String(r.outcome).indexOf("wait-") === 0).map(r => r.outcome), "выход без цикла ожидания").toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 M3: ступени 429, терминал «Prompt is too long» -- ожидание, не выход", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 12, 10, 0)
+  let next: any = null
+  const h = host514("3m3", T0, { sleepHook: (n) => { if (n === 3) next.signal.aborted = true } })
+  failoverBindSet("ag-3m3", { ladder: ["r3m3"], terminal: "claude-t3m3", rungEffort: { "r3m3": "max" }, subagentType: "t", class: "", sticky: null })
+  next = next514(h, { "in3m3": refuseAll514(RL429), "r3m3": refuseAll514(RL429), "claude-t3m3": refuseAll514("Prompt is too long") })
+  await step514(h, "ag-3m3", "in3m3", next)
+  expect(attempts514(h, "ag-3m3").map(r => r.refusalClass)).toEqual(["temporary-unknown", "temporary-unknown", "request"])
+  expect(waits514(h, "ag-3m3", "wait-begin").length, "класс последней модели выход не решает").toBe(1)
+  expect(waits514(h, "ag-3m3", "wait-aborted").length).toBe(1)
+  expect(waits514(h, "ag-3m3", "wait-begin")[0].wakeModel, "request-модель в цель пробуждения не идёт").not.toBe("claude-t3m3")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 M4: исполнитель на claude-opus-5-5[1m] -- терминал claude-opus-5-5 снят у проверяющего", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 12, 20, 0)
+  const h = host514("3m4", T0, { noProc: true })
+  await spawn514(h, "ag-3m4x", "exec-0p", "claude-opus-5-5[1m]")
+  failoverBindSet("ag-3m4", { ladder: [], terminal: "claude-opus-5-5", rungEffort: {}, subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next514(h, { "in3m4": refuseAll514(RL429), "claude-opus-5-5": () => null })
+  await step514(h, "ag-3m4", "in3m4", next)
+  expect(next.seen, "терминал модели исполнителя не вызван").toEqual(["in3m4"])
+  expect(attempts514(h, "ag-3m4")[0].terminalFiltered).toBe(true)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 M5: у всех моделей живые метки temporary-known на час -- за 600 с стенда не меньше двух вызовов next", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 10, 0, 0) + 7 * 86400000
+  let next: any = null
+  const h = host514("3m5", T0, { sleepHook: (n) => { if (n === 160) next.signal.aborted = true } })
+  failoverBindSet("ag-3m5", { ladder: ["r3m5"], terminal: "claude-t3m5", rungEffort: { "r3m5": "max" }, subagentType: "t", class: "", sticky: null })
+  const txt = "You've hit your session limit · resets 11am (UTC)"
+  const at: number[] = []
+  const rec = (_k: number, t: number) => { at.push(t); return txt }
+  next = next514(h, { "in3m5": rec, "r3m5": rec, "claude-t3m5": rec })
+  await step514(h, "ag-3m5", "in3m5", next)
+  expect(at.slice(0, 3), "первый проход").toEqual([T0, T0, T0])
+  const later = at.slice(3).filter(t => t > T0 && t <= T0 + 600000)
+  expect(later.length, "сердцебиение сбрасывает сторож 600 с").toBeGreaterThanOrEqual(2)
+  let prev = T0
+  for (const t of at.slice(3)) { expect(t - prev, "промежуток между вызовами next").toBeLessThanOrEqual(245000); prev = t }
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 AR-3: пробуждение пропускает терминал с живой меткой temporary-known -- запись skipped-known-until", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 10, 0, 0) + 8 * 86400000
+  let next: any = null
+  const h = host514("3ar3", T0, { sleepHook: (n) => { if (n === 10) next.signal.aborted = true } })
+  failoverBindSet("ag-3ar3", { ladder: ["r3ar3"], terminal: "claude-t3ar3", rungEffort: { "r3ar3": "max" }, subagentType: "t", class: "", sticky: null })
+  next = next514(h, { "in3ar3": refuseAll514(RL429), "r3ar3": refuseAll514(RL429), "claude-t3ar3": refuseAll514("You've hit your session limit · resets 11am (UTC)") })
+  await step514(h, "ag-3ar3", "in3ar3", next)
+  expect(waits514(h, "ag-3ar3", "wait-probe").map(r => r.kind)).toEqual(["wake"])
+  expect(next.seen, "на пробуждении терминал не вызван").toEqual(["in3ar3", "r3ar3", "claude-t3ar3", "in3ar3", "r3ar3"])
+  const sk = journal514(h).filter(r => r.agentId === "ag-3ar3" && r.outcome === "skipped-known-until")
+  expect(sk.length).toBe(1)
+  expect({ model: sk[0].model, until: sk[0].until }).toEqual({ model: "claude-t3ar3", until: new Date(T0 + 3600000).toISOString() })
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 L2: сердцебиение тем же классом permanent-model метку не продлевает -- через час стенда полный проход", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 10, 0, 0) + 9 * 86400000
+  const h = host514("3l2", T0)
+  failoverBindSet("ag-3l2", { ladder: [], terminal: "claude-t3l2", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, {
+    "in3l2": (_k, t) => (t >= T0 + 3600000 ? null : "Credit balance is too low"),
+    "claude-t3l2": refuseAll514("Not logged in · Please run /login"),
+  })
+  const out = await step514(h, "ag-3l2", "in3l2", next)
+  expect(out.value && out.value.text).toBe("OK-in3l2")
+  const kinds = waits514(h, "ag-3l2", "wait-probe").map(r => r.kind)
+  expect(kinds[kinds.length - 1], "метка истекла -- пробуждение полным проходом").toBe("wake")
+  expect(kinds.filter(k => k === "heartbeat").length, "сердцебиение не реже 240 с до истечения метки").toBeGreaterThanOrEqual(14)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 AR-5: нижний хук бросает детерминированно, в сессии ничего не добавлено -- бросок виден, ожидания нет", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 12, 30, 0)
+  const h = host514("3ar5", T0)
+  failoverBindSet("ag-3ar5", { ladder: ["r3ar5"], terminal: "claude-t3ar5", rungEffort: { "r3ar5": "max" }, subagentType: "t", class: "", sticky: null })
+  const boom = () => ({ throwSilent: "lower hook: deterministic" })
+  const next = next514(h, { "in3ar5": boom, "r3ar5": boom, "claude-t3ar5": boom })
+  let threw: any = null
+  let out: any = null
+  try { out = await step514(h, "ag-3ar5", "in3ar5", next) } catch (x) { threw = x }
+  expect(String(threw && threw.message), "бросок не превращён в пустой ответ").toBe("lower hook: deterministic")
+  expect(out).toBe(null)
+  expect(next.seen).toEqual(["in3ar5"])
+  expect(h.procCalls, "FIX4 AR-c / FIX5 Р3: одна пауза повторного чтения куском, кусков ожидания нет").toEqual([{ argv: ["/bin/sleep", "4.000"], init: { timeoutMs: 9000 } }])
+  expect(attempts514(h, "ag-3ar5")[0].reread, "повторное чтение названо в записи попытки").toBe(true)
+  expect(journal514(h).filter(r => r.agentId === "ag-3ar5" && String(r.outcome).indexOf("wait-") === 0).length).toBe(0)
+  expect(isModelCooling("in3ar5", T0 + 1)).toBe(false)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 L4: кусок паузы засчитывается только настоящим -- код 1 и мгновенный код 0 дают wait-unavailable без второго вызова", async () => {
+  for (const [mode, res] of [["code1", { exitCode: 1, advanceMs: 4000 }], ["instant", { exitCode: 0, advanceMs: 0 }]] as Array<[string, any]>) {
+    reset514()
+    const T0 = Date.UTC(2026, 8, 26, 12, 40, 0) + (mode === "code1" ? 0 : 60000)
+    const h = host514("3l4" + mode, T0, { procResult: () => res })
+    const aid = "ag-3l4" + mode
+    failoverBindSet(aid, { ladder: [], terminal: "claude-t3l4" + mode, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+    const next = next514(h, { ["in3l4" + mode]: refuseAll514(RL429), ["claude-t3l4" + mode]: refuseAll514(RL429) })
+    await step514(h, aid, "in3l4" + mode, next)
+    expect({ mode, calls: next.seen.length, chunks: h.procCalls.length }).toEqual({ mode, calls: 2, chunks: 1 })
+    const un = waits514(h, aid, "wait-unavailable")
+    expect({ mode, n: un.length }).toEqual({ mode, n: 1 })
+    expect(String(un[0].reason), mode).toContain("код " + String(res.exitCode))
+    expect(String(un[0].reason), mode).toContain("прошло " + String(res.advanceMs) + " мс")
+    rungCooldownReset()
+    failoverBindReset()
+  }
+})
+
+test("#514 FIX3 L5: прерывание во время первого куска -- wait-aborted раньше begin(), журнала и тоста", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 12, 50, 0)
+  let next: any = null
+  const h = host514("3l5", T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
+  failoverBindSet("ag-3l5", { ladder: [], terminal: "claude-t3l5", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  next = next514(h, { "in3l5": refuseAll514(RL429), "claude-t3l5": refuseAll514(RL429) })
+  await step514(h, "ag-3l5", "in3l5", next)
+  expect(waits514(h, "ag-3l5", "wait-aborted").length).toBe(1)
+  expect(waits514(h, "ag-3l5", "wait-begin").length, "begin() после проверки прерывания").toBe(0)
+  expect(h.m.toasts.length, "тоста нет").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 L5: прерывание между последней попыткой прохода и циклом ожидания -- wait-aborted до первого куска", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 12, 55, 0)
+  let next: any = null
+  const h = host514("3l5b", T0, { onMessages: (n) => { if (n === 2) next.signal.aborted = true } })
+  failoverBindSet("ag-3l5b", { ladder: [], terminal: "claude-t3l5b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  next = next514(h, { "claude-t3l5b": refuseAll514(RL429) })
+  await step514(h, "ag-3l5b", "claude-t3l5b", next)
+  expect(next.seen).toEqual(["claude-t3l5b"])
+  expect(waits514(h, "ag-3l5b", "wait-aborted").length).toBe(1)
+  expect(h.procCalls.length, "кусок паузы не начат").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 FIX3 L1: три прохода -- rungsTried терминальной записи = модели одного прохода, запись несёт номер прохода", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 13, 0, 0)
+  let next: any = null
+  const h = host514("3l1", T0, { sleepHook: (n) => { if (n === 24) next.signal.aborted = true } })
+  failoverBindSet("ag-3l1", { ladder: ["r3l1"], terminal: "claude-t3l1", rungEffort: { "r3l1": "max" }, subagentType: "t", class: "", sticky: null })
+  next = next514(h, { "in3l1": refuseAll514(RL429), "r3l1": refuseAll514(RL429), "claude-t3l1": refuseAll514(RL429) })
+  await step514(h, "ag-3l1", "in3l1", next)
+  expect(waits514(h, "ag-3l1", "wait-probe").map(r => r.kind)).toEqual(["wake", "wake"])
+  const term = attempts514(h, "ag-3l1").filter(r => r.terminal)
+  expect(term.map(r => r.pass), "номер прохода").toEqual([1, 2, 3])
+  for (const r of term) expect({ pass: r.pass, tried: r.rungsTried, eff: r.rungsEffortRefused, dead: r.rungsSkippedDead }).toEqual({ pass: r.pass, tried: ["in3l1", "r3l1"], eff: [], dead: [] })
+  for (const r of attempts514(h, "ag-3l1")) expect(typeof r.pass, "каждая запись попытки несёт проход").toBe("number")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX3 AR-4: терминал канона с [1m] уходит на провод как написан; нормализация -- только для сравнений", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 26, 13, 10, 0)
+  const h = host514("3ar4", T0, { probes: '[failover]\nenabled = true\nterminal = "claude-opus-5-5[1m]"\n', noProc: true })
+  await spawn514(h, "ag-3ar4", "c3ar4", "in3ar4")
+  expect(failoverBindGet("ag-3ar4").terminal).toBe("claude-opus-5-5[1m]")
+  const next = next514(h, { "in3ar4": refuseAll514(RL429), "claude-opus-5-5[1m]": () => null })
+  await step514(h, "ag-3ar4", "in3ar4", next)
+  expect(next.reqs[1].model, "суффикс не снят").toBe("claude-opus-5-5[1m]")
+  expect(R514.normModelId(" Claude-Opus-5-5[2M] "), "[2m] снимается для сравнения").toBe("claude-opus-5-5")
+  failoverBindSet("ag-3ar4b", { ladder: [], terminal: "claude-opus-5-5", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next2 = next514(h, { "Claude-Opus-5-5[2m]": refuseAll514(RL429), "claude-opus-5-5": () => null })
+  await step514(h, "ag-3ar4b", "Claude-Opus-5-5[2m]", next2)
+  expect(next2.seen, "объявленная совпала с терминалом при сравнении").toEqual(["Claude-Opus-5-5[2m]"])
+  expect(isModelCooling("claude-opus-5-5", T0 + 1), "метка -- по нормализованному id").toBe(true)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// --- #509/#514 FIX4: окно истории, {deny}, порядок классификации броска, ------
+// выход без ожидания по полному плану, сердцебиение от сторожа хоста, время
+// сброса по всем наступлениям, хвостовая объявленная-терминал.
+
+function hist4(tag: string, n: number): string[] {
+  const out: string[] = []
+  for (let i = 0; i < n; i++) out.push("old answer " + tag + " " + String(i))
+  return out
+}
+
+const LIMIT11 = "You've hit your session limit · resets 11am (UTC)"
+
+test("#509-FIX4 F1 (а): история у предела окна 4096 -- свежая строка отказа видна, класс по ней", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 9, 0, 0)
+  const h = host514("4f1a", T0, { noProc: true, window: 4096, history: hist4("4f1a", 2048) })
+  failoverBindSet("ag-4f1a", { ladder: [], terminal: "claude-t4f1a", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in4f1a": refuseAll514("Prompt is too long"), "claude-t4f1a": refuseAll514("Prompt is too long") })
+  await step514(h, "ag-4f1a", "in4f1a", next)
+  expect(h.history.length, "окно сдвинуто: история длиннее окна").toBe(4098)
+  expect(attempts514(h, "ag-4f1a").map(r => r.refusalClass), "строка за пределом прежнего окна прочитана свежей").toEqual(["request", "request"])
+  expect(journal514(h).filter(r => r.agentId === "ag-4f1a" && (String(r.outcome).indexOf("wait-") === 0 || r.outcome === "refusal-unread")).length).toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F1 (б): выравнивание окна -- наименьший сдвиг; сдвига нет -- unread window-unaligned", async () => {
+  const fh = R514.freshHistory
+  expect(typeof fh, "freshHistory экспортирована").toBe("function")
+  const W = R514.SESSION_MESSAGES_WINDOW
+  expect(W).toBe(4096)
+  const row = (i: number) => ({ role: i % 2 ? "assistant" : "user", text: "r" + String(i) })
+  const win = (from: number) => { const out: any[] = []; for (let i = from; i < from + W; i++) out.push(row(i)); return out }
+  expect(fh(win(0), win(2)).rows, "сдвиг 2 -- две свежие").toEqual([row(W), row(W + 1)])
+  expect(fh(win(0), win(0)).rows, "окно не сдвинулось -- свежих нет").toEqual([])
+  expect(fh(win(0), win(W + 5)), "перекрытия нет").toEqual({ rows: null, why: "window-unaligned" })
+  expect(fh([row(0), row(1)], [row(0), row(1), row(2)]).rows, "ниже окна -- по длине").toEqual([row(2)])
+  expect(fh([row(0), row(1)], [row(0)])).toEqual({ rows: null, why: "history-shrank" })
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 9, 10, 0)
+  let h: any = null
+  h = host514("4f1b", T0, {
+    noProc: true, window: 4096, history: hist4("4f1b", 2047).concat(["Prompt is too long"]),
+    onMessages: (n) => {
+      if (n !== 2) return
+      const rows: any[] = []
+      for (const t of hist4("4f1b-new", 2048)) rows.push({ role: "user", text: "q2" }, { role: "assistant", text: t })
+      h.history.splice(0, h.history.length, ...rows)
+    },
+  })
+  failoverBindSet("ag-4f1b", { ladder: [], terminal: "claude-t4f1b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in4f1b": () => ({ silent: true }), "claude-t4f1b": () => null })
+  await step514(h, "ag-4f1b", "in4f1b", next)
+  const rec = attempts514(h, "ag-4f1b")[0]
+  expect(rec.refusalClass, "старая строка окна свежей не прочитана").toBe("temporary-unknown")
+  const un = journal514(h).filter(r => r.agentId === "ag-4f1b" && r.outcome === "refusal-unread")
+  expect(un.map(r => r.reason)).toEqual(["window-unaligned"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F2 (а): {deny} и не список на чтении «до» -- unread, старые строки свежими не читаются", async () => {
+  const modes: Array<[string, any]> = [["deny", { deny: "no conversation for ag-4f2a-deny" }], ["null", null]]
+  for (const [mode, val] of modes) {
+    reset514()
+    const T0 = Date.UTC(2026, 8, 27, 9, 20, 0) + (mode === "deny" ? 0 : 60000)
+    const aid = "ag-4f2a-" + mode
+    const h = host514("4f2a" + mode, T0, { noProc: true, history: ["Prompt is too long"], reply: (n) => (n === 1 ? val : undefined) })
+    failoverBindSet(aid, { ladder: [], terminal: "claude-t4f2a" + mode, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+    const next = next514(h, { ["in4f2a" + mode]: () => ({ silent: true }), ["claude-t4f2a" + mode]: () => null })
+    const out = await step514(h, aid, "in4f2a" + mode, next)
+    expect({ mode, text: out.value && out.value.text }).toEqual({ mode, text: "OK-claude-t4f2a" + mode })
+    expect({ mode, cls: attempts514(h, aid)[0].refusalClass }, "не request старой строки").toEqual({ mode, cls: "temporary-unknown" })
+    const un = journal514(h).filter(r => r.agentId === aid && r.outcome === "refusal-unread")
+    expect({ mode, n: un.length }).toEqual({ mode, n: 1 })
+    expect({ mode, reason: String(un[0].reason) }).toEqual({ mode, reason: mode === "deny" ? "session.messages deny: no conversation for ag-4f2a-deny" : "session.messages: ответ не список и не {deny}" })
+    rungCooldownReset()
+    failoverBindReset()
+  }
+})
+
+test("#509-FIX4 F2 (б): {deny} на чтении «после» броска -- не hook-error, unread с текстом отказа хоста", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 9, 30, 0)
+  const h = host514("4f2b", T0, { reply: (n) => (n >= 2 ? { deny: "agent ag-4f2b finished, no saved transcript" } : undefined) })
+  failoverBindSet("ag-4f2b", { ladder: [], terminal: "claude-t4f2b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in4f2b": () => ({ throwSilent: "lower hook: boom" }), "claude-t4f2b": () => null })
+  let threw: any = null
+  let out: any = null
+  try { out = await step514(h, "ag-4f2b", "in4f2b", next) } catch (x) { threw = x }
+  expect(threw, "бросок не проброшен как ошибка хука").toBe(null)
+  expect(out.value && out.value.text).toBe("OK-claude-t4f2b")
+  const rec = attempts514(h, "ag-4f2b")[0]
+  expect({ cls: rec.refusalClass, reread: rec.reread }).toEqual({ cls: "temporary-unknown", reread: true })
+  const un = journal514(h).filter(r => r.agentId === "ag-4f2b" && r.outcome === "refusal-unread")
+  expect(un.map(r => r.reason)).toEqual(["session.messages deny: agent ag-4f2b finished, no saved transcript"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 AR-c шаг 2: бросок без свежей строки, известное начало в тексте ошибки -- класс по нему, без паузы", async () => {
+  const cases: Array<[string, string, string]> = [
+    ["4c2k", LIMIT11, "temporary-known"],
+    ["4c2u", "API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.", "temporary-unknown"],
+    ["4c2t", "Request timed out", "temporary-unknown"],
+    ["4c2r", "Prompt is too long", "request"],
+  ]
+  for (const [tag, text, cls] of cases) {
+    reset514()
+    const T0 = Date.UTC(2026, 8, 27, 9, 40, 0)
+    const h = host514(tag, T0, { noProc: true })
+    const aid = "ag-" + tag
+    failoverBindSet(aid, { ladder: [], terminal: "claude-t" + tag, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+    const next = next514(h, { ["in" + tag]: () => ({ throwSilent: text }), ["claude-t" + tag]: () => null })
+    let threw: any = null
+    try { await step514(h, aid, "in" + tag, next) } catch (x) { threw = x }
+    const rec = attempts514(h, aid)[0]
+    expect({ tag, threw: threw && String(threw.message), cls: rec.refusalClass, text: rec.refusalText, reread: rec.reread })
+      .toEqual({ tag, threw: null, cls, text, reread: undefined })
+    rungCooldownReset()
+    failoverBindReset()
+  }
+})
+
+test("#509-FIX4 AR-c шаг 3: запись отказа видна только после паузы -- одна пауза куском, повторное чтение решает класс", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 9, 50, 0)
+  let h: any = null
+  h = host514("4c3", T0, { sleepHook: (n) => { if (n === 1) h.history.push({ role: "assistant", text: LIMIT11 }) } })
+  failoverBindSet("ag-4c3", { ladder: [], terminal: "claude-t4c3", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in4c3": () => ({ throwSilent: "turn.step: stream ended" }), "claude-t4c3": () => null })
+  let threw: any = null
+  let out: any = null
+  try { out = await step514(h, "ag-4c3", "in4c3", next) } catch (x) { threw = x }
+  expect(threw).toBe(null)
+  expect(out.value && out.value.text).toBe("OK-claude-t4c3")
+  expect(h.procCalls).toEqual([{ argv: ["/bin/sleep", "4.000"], init: { timeoutMs: 9000 } }])
+  const rec = attempts514(h, "ag-4c3")[0]
+  expect({ cls: rec.refusalClass, reread: rec.reread, readyAt: rec.readyAt }).toEqual({ cls: "temporary-known", reread: true, readyAt: new Date(Date.UTC(2026, 8, 27, 11, 0, 0)).toISOString() })
+  expect(h.messageArgs.length, "чтения: до, после, повторное; у терминала -- до").toBe(4)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 AR-c: прерывание во время паузы повторного чтения -- wait-aborted, без броска и без второго вызова", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 0, 0)
+  let next: any = null
+  const h = host514("4c3a", T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
+  failoverBindSet("ag-4c3a", { ladder: [], terminal: "claude-t4c3a", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  next = next514(h, { "in4c3a": () => ({ throwSilent: "turn.step: stream ended" }), "claude-t4c3a": () => null })
+  let threw: any = null
+  try { await step514(h, "ag-4c3a", "in4c3a", next) } catch (x) { threw = x }
+  expect(threw).toBe(null)
+  expect(next.seen).toEqual(["in4c3a"])
+  expect(waits514(h, "ag-4c3a", "wait-aborted").length).toBe(1)
+  const rec = attempts514(h, "ag-4c3a")[0]
+  expect({ aborted: rec.aborted, cls: rec.refusalClass }).toEqual({ aborted: true, cls: undefined })
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F-5: строка отказа -- первая с известным началом по свежим сообщениям от новейшего", async () => {
+  const pick = R514.refusalLineOfMessages
+  expect(typeof pick, "refusalLineOfMessages экспортирована").toBe("function")
+  const lim = "You've hit your session limit · resets 9pm (Europe/Volgograd)"
+  expect(pick(["Partial answer…\n" + lim])).toEqual({ line: lim, known: true })
+  expect(pick(["API Error: 500 x", "Partial\n  Prompt is too long  "]), "новейшее первым").toEqual({ line: "Prompt is too long", known: true })
+  expect(pick(["You've hit your session limit", "just text\nmore"]), "в новейшем нет -- старшее").toEqual({ line: "You've hit your session limit", known: true })
+  expect(pick(["first\nsecond", "\n  newest line\nx"]), "нет известной -- первая непустая новейшего").toEqual({ line: "newest line", known: false })
+  expect(pick([])).toEqual({ line: "", known: false })
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 10, 0)
+  const h = host514("4f5", T0, { noProc: true })
+  failoverBindSet("ag-4f5", { ladder: [], terminal: "claude-t4f5", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in4f5": refuseAll514("Partial answer…\n" + lim), "claude-t4f5": () => null })
+  await step514(h, "ag-4f5", "in4f5", next)
+  const rec = attempts514(h, "ag-4f5")[0]
+  expect({ cls: rec.refusalClass, text: rec.refusalText }).toEqual({ cls: "temporary-known", text: lim })
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F3: ступень даёт request, терминал с живой меткой temporary-known пропущен пробуждением -- выхода нет, ожидание до терминала", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 0, 0)
+  const h = host514("4f3", T0)
+  failoverBindSet("ag-4f3", { ladder: ["a4f3"], terminal: "claude-t4f3", rungEffort: { "a4f3": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, {
+    "in4f3": (k) => (k === 0 ? RL429 : "Prompt is too long"),
+    "a4f3": refuseAll514("Prompt is too long"),
+    "claude-t4f3": (_k, t) => (t >= T0 + 600000 ? null : "You've hit your session limit · resets 10:10am (UTC)"),
+  })
+  const out = await step514(h, "ag-4f3", "in4f3", next)
+  expect(out.value && out.value.text, "ожидание дошло до терминала").toBe("OK-claude-t4f3")
+  expect(next.seen.slice(0, 5), "пробуждение без терминала").toEqual(["in4f3", "a4f3", "claude-t4f3", "in4f3", "a4f3"])
+  const sk = journal514(h).filter(r => r.agentId === "ag-4f3" && r.outcome === "skipped-known-until")
+  expect(sk.length >= 1 && sk[0].model === "claude-t4f3", "терминал пропущен проходом пробуждения").toBe(true)
+  expect(waits514(h, "ag-4f3", "wait-probe")[0].kind).toBe("wake")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F3: все дали request, но у модели плана живая метка иного класса -- решение за циклом ожидания", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 30, 0)
+  const h = host514("4f3m", T0, { noProc: true })
+  failoverBindSet("ag-4f3m", { ladder: [], terminal: "claude-t4f3m", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal("claude-t4f3m", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429)
+  const next = next514(h, { "in4f3m": refuseAll514("Prompt is too long"), "claude-t4f3m": refuseAll514("Prompt is too long") })
+  await step514(h, "ag-4f3m", "in4f3m", next)
+  expect(next.seen).toEqual(["in4f3m", "claude-t4f3m"])
+  expect(attempts514(h, "ag-4f3m").map(r => r.refusalClass)).toEqual(["request", "request"])
+  expect(waits514(h, "ag-4f3m", "wait-no-target").length, "выход без ожидания не взят, цикл назвал выход").toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F3: модель без request, чья метка истекла к концу прохода, -- не request, ожидание и пробуждение", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 9, 59, 30)
+  let h: any = null
+  h = host514("4f3x", T0)
+  failoverBindSet("ag-4f3x", { ladder: [], terminal: "claude-t4f3x", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, {
+    "in4f3x": (k) => (k === 0 ? "You've hit your session limit · resets 10am (UTC)" : null),
+    "claude-t4f3x": (_k, t) => { h.m.setNow(t + 60000); return "Prompt is too long" },
+  })
+  const out = await step514(h, "ag-4f3x", "in4f3x", next)
+  const recs = attempts514(h, "ag-4f3x")
+  expect(recs.slice(0, 2).map(r => r.refusalClass)).toEqual(["temporary-known", "request"])
+  expect(out.value && out.value.text, "метка in4f3x истекла, но request она не давала -- выхода без ожидания нет").toBe("OK-in4f3x")
+  expect(next.seen).toEqual(["in4f3x", "claude-t4f3x", "in4f3x"])
+  expect(waits514(h, "ag-4f3x", "wait-probe").map(r => r.kind)).toEqual(["wake"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F4 (а): CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS=120000 -- сердцебиение 105 с, промежуток между началами вызовов меньше S", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 0, 0) + 10 * 86400000
+  let next: any = null
+  const h = host514("4f4a", T0, { env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "120000" }, sleepHook: (n) => { if (n === 150) next.signal.aborted = true } })
+  failoverBindSet("ag-4f4a", { ladder: ["r4f4a"], terminal: "claude-t4f4a", rungEffort: { "r4f4a": "max" }, subagentType: "t", class: "", sticky: null })
+  const at: number[] = []
+  const rec = (_k: number, t: number) => { at.push(t); return LIMIT11 }
+  next = next514(h, { "in4f4a": rec, "r4f4a": rec, "claude-t4f4a": rec })
+  await step514(h, "ag-4f4a", "in4f4a", next)
+  const later = at.slice(3)
+  expect(later.length, "за 600 с стенда -- сердцебиения каждые 105 с").toBeGreaterThanOrEqual(5)
+  let prev = T0
+  const gaps: number[] = []
+  for (const t of later) { gaps.push(t - prev); prev = t }
+  expect(gaps.filter(g => g > 105000 + 4000 || g >= 120000), "промежутки " + gaps.join(",")).toEqual([])
+  // FIX7 А-Р1: сон у D укорочен до D − now − G/2 (18000 − 15000 = 3000 мс).
+  expect(h.procCalls.filter((c: any) => c.argv[1] !== "4.000" && c.argv[1] !== "3.000").length, "кусок 4 с или остаток до D − G/2 -- три знака").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F4 (б): S=1500 ниже пола -- одна запись stall-below-floor, сердцебиение 1000 мс, кусок 0.5 с", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 0, 0) + 11 * 86400000
+  let next: any = null
+  const h = host514("4f4b", T0, { env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "1500" }, sleepHook: (n) => { if (n === 12) next.signal.aborted = true } })
+  failoverBindSet("ag-4f4b", { ladder: [], terminal: "claude-t4f4b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const at: number[] = []
+  const rec = (_k: number, t: number) => { at.push(t); return LIMIT11 }
+  next = next514(h, { "in4f4b": rec, "claude-t4f4b": rec })
+  await step514(h, "ag-4f4b", "in4f4b", next)
+  const fl = waits514(h, "ag-4f4b", "stall-below-floor")
+  expect(fl.map(r => r.stallMs), "одна запись на шаг со значением S").toEqual([1500])
+  expect(h.procCalls.map((c: any) => c.argv[1]).filter((a: string) => a !== "0.500")).toEqual([])
+  const later = at.slice(2)
+  expect(later.length).toBeGreaterThanOrEqual(4)
+  let prev = T0
+  for (const t of later) { expect(t - prev, "сердцебиение 1000 мс + кусок 500 мс").toBeLessThanOrEqual(1500); prev = t }
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F4 (в): разбор S, формула сердцебиения и куска", () => {
+  const pace = R514.waitPaceOf
+  expect(typeof pace, "waitPaceOf экспортирована").toBe("function")
+  const poison = { toString() { throw new Error("poison") } }
+  const cases: Array<[string, any, number, number, boolean]> = [
+    ["undefined", undefined, 240000, 4000, false], ["null", null, 240000, 4000, false], ["пусто", "", 240000, 4000, false],
+    ["abc", "abc", 240000, 4000, false], ["0", "0", 240000, 4000, false], ["-5", "-5", 240000, 4000, false],
+    ["12.5", "12.5", 240000, 4000, false], ["Infinity", "Infinity", 240000, 4000, false], ["poison", poison, 240000, 4000, false],
+    ["600000", "600000", 240000, 4000, false], ["255000", "255000", 240000, 4000, false], ["120000", "120000", 105000, 4000, false],
+    ["30001", "30001", 15001, 4000, false], ["30000", "30000", 15000, 4000, false], ["10000", "10000", 5000, 2500, false],
+    ["2000", "2000", 1000, 500, false], ["1999", "1999", 1000, 500, true], ["1", "1", 1000, 500, true],
+  ]
+  for (const [name, raw, hb, chunk, below] of cases) {
+    const got = pace(raw)
+    expect({ name, hb: got.heartbeat, chunk: got.chunk, below: got.belowFloor }).toEqual({ name, hb, chunk, below })
+  }
+  expect(pace("1500").stall).toBe(1500)
+})
+
+test("#509-FIX4 F4 (г): отказ чтения переменной сторожа -- noteLost failover-stall-env, сердцебиение по умолчанию", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 40, 0)
+  const h = host514("4f4g", T0, { noProc: true, envRefuses: ["CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS"] })
+  failoverBindSet("ag-4f4g", { ladder: [], terminal: "claude-t4f4g", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in4f4g": refuseAll514(RL429), "claude-t4f4g": refuseAll514(RL429) })
+  await step514(h, "ag-4f4g", "in4f4g", next)
+  const lost = journal514(h).filter(r => r.agentId === "ag-4f4g" && r.lost && r.lost["failover-stall-env"])
+  expect(lost.length, "отказ чтения назван").toBe(1)
+  expect(String(lost[0].lost["failover-stall-env"].last)).toContain("CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS")
+  expect(waits514(h, "ag-4f4g", "stall-below-floor").length).toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+  // FIX5 Р8: сердцебиение по умолчанию -- по наблюдаемому моменту пробы.
+  reset514()
+  const T1 = Date.UTC(2026, 8, 27, 10, 50, 0) + 14 * 86400000
+  let next2: any = null
+  const h2 = host514("4f4g2", T1, { envRefuses: ["CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS"], sleepHook: (n) => { if (n === 61) next2.signal.aborted = true } })
+  failoverBindSet("ag-4f4g2", { ladder: [], terminal: "claude-t4f4g2", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const at: number[] = []
+  const rec = (_k: number, t: number) => { at.push(t); return LIMIT11 }
+  next2 = next514(h2, { "in4f4g2": rec, "claude-t4f4g2": rec })
+  await step514(h2, "ag-4f4g2", "in4f4g2", next2)
+  expect(at.map(t => t - T1), "первый проход, затем проба через 240000 мс").toEqual([0, 0, 240000])
+  expect(waits514(h2, "ag-4f4g2", "wait-probe").map(r => r.kind)).toEqual(["heartbeat"])
+  expect(h2.procCalls.map((c: any) => c.argv[1]).filter((a: string) => a !== "4.000"), "кусок по умолчанию").toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F4 (д): S=10000 -- кусок 2.5 с, кусок засчитан от трёх четвертей (1875 мс)", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 0, 0) + 13 * 86400000
+  let next: any = null
+  const h = host514("4f4d", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "10000" },
+    procResult: () => ({ exitCode: 0, advanceMs: 2000 }),
+    sleepHook: (n) => { if (n === 6) next.signal.aborted = true },
+  })
+  failoverBindSet("ag-4f4d", { ladder: [], terminal: "claude-t4f4d", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  next = next514(h, { "in4f4d": refuseAll514(LIMIT11), "claude-t4f4d": refuseAll514(LIMIT11) })
+  await step514(h, "ag-4f4d", "in4f4d", next)
+  expect(waits514(h, "ag-4f4d", "wait-unavailable").length, "кусок 2000 мс при пороге 1875 мс -- настоящий").toBe(0)
+  expect(waits514(h, "ag-4f4d", "wait-aborted").length).toBe(1)
+  // FIX7 А-Р1: третий сон каждого витка -- min(C, D − now − G/2) = 3500 − 1250.
+  expect(h.procCalls.map((c: any) => c.argv[1])).toEqual(["2.500", "2.500", "2.250", "2.500", "2.500", "2.250"])
+  expect(waits514(h, "ag-4f4d", "wait-probe").map(r => r.kind), "сердцебиение после 6000 мс при пороге 5000 мс").toEqual(["heartbeat"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F6: попытка длится 10 с -- промежуток между НАЧАЛАМИ вызовов next не больше heartbeat + кусок", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 10, 0, 0) + 12 * 86400000
+  let next: any = null
+  let h: any = null
+  h = host514("4f6", T0, { sleepHook: (n) => { if (n === 200) next.signal.aborted = true } })
+  failoverBindSet("ag-4f6", { ladder: ["r4f6"], terminal: "claude-t4f6", rungEffort: { "r4f6": "max" }, subagentType: "t", class: "", sticky: null })
+  const starts: number[] = []
+  const slow = (_k: number, t: number) => { starts.push(t); h.m.setNow(t + 10000); return LIMIT11 }
+  next = next514(h, { "in4f6": slow, "r4f6": slow, "claude-t4f6": slow })
+  await step514(h, "ag-4f6", "in4f6", next)
+  expect(starts.slice(0, 3), "первый проход -- попытки по 10 с").toEqual([T0, T0 + 10000, T0 + 20000])
+  expect(starts.length, "сердцебиения были").toBeGreaterThanOrEqual(5)
+  const gaps: number[] = []
+  for (let i = 3; i < starts.length; i++) gaps.push(starts[i] - starts[i - 1])
+  expect(gaps.filter(g => g > 240000 + 4000), "промежутки " + gaps.join(",")).toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX4 F5: все наступления стенного времени в зоне -- ближайшее; пропуск весны сдвигает вперёд", () => {
+  const ra = R514.resetsAtOf
+  const cases: Array<[string, string, string]> = [
+    ["2026-11-01T06:10:00Z", "You've hit your session limit · resets 1:30am (America/New_York)", "2026-11-01T06:30:00Z"],
+    ["2026-03-08T06:00:00Z", "You've hit your session limit · resets 2:30am (America/New_York)", "2026-03-08T07:30:00Z"],
+    ["2026-03-08T06:00:00Z", "You've hit your weekly limit · resets Mar 8, 2:30am (America/New_York)", "2026-03-08T07:30:00Z"],
+    ["2026-09-25T20:10:39Z", "You've hit your session limit · resets 12am (Asia/Kolkata)", "2026-09-26T18:30:00Z"],
+    ["2026-09-25T20:10:39Z", "You've hit your session limit · resets 12pm (Asia/Kolkata)", "2026-09-26T06:30:00Z"],
+    ["2026-12-31T12:00:00Z", "You've hit your weekly limit · resets Jan 5, 9am (Europe/Moscow)", "2027-01-05T06:00:00Z"],
+  ]
+  for (const [at, line, want] of cases) expect({ line, at: ra(line, Date.parse(at)).at }).toEqual({ line, at: Date.parse(want) })
+  expect(ra("You've hit your weekly limit · resets Sep 31, 2028, 2:30am (Australia/Sydney)", Date.parse("2026-09-25T20:10:39Z")).at,
+    "несуществующая дата рядом с переходом -- не пропуск, срок неизвестен").toBe(0)
+})
+
+test("#509-FIX4 F-3 / FIX4-(а): «Request too large for the API» -- request; «<Name> requires usage credits» -- лимитный класс", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-09-25T15:10:39Z")
+  const cases: Array<[string, string, number]> = [
+    ["Request too large for the API's 32 MB request limit: …", "request", 0],
+    ["Opus 5.5 requires usage credits · resets 9pm (Europe/Moscow)", "temporary-known", Date.parse("2026-09-25T18:00:00Z")],
+    ["Opus 5.5 requires usage credits", "temporary-unknown", 0],
+  ]
+  for (const [line, cls, at] of cases) {
+    const got = cr(line, now)
+    expect({ line, cls: got.class, at: got.readyAt }).toEqual({ line, cls, at })
+  }
+  expect(R514.refusalKnown("Opus 5.5 requires usage credits. Turn them on to continue."), "имя непусто -- известное начало").toBe(true)
+  expect(R514.refusalKnown(" requires usage credits"), "пустое имя -- не форма билдера").toBe(false)
+})
+
+test("#509-FIX4 AR-5: остывшая объявленная = терминал в хвосте после ступеней -- терминальная запись, липкость не ставится", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 11, 0, 0)
+  const h = host514("4ar5", T0, { noProc: true })
+  failoverBindSet("ag-4ar5", { ladder: ["r4ar5-1", "r4ar5-2"], terminal: "claude-opus-5-5", rungEffort: effortAll509(["r4ar5-1", "r4ar5-2"]), subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal("claude-opus-5-5", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429)
+  const next = next514(h, { "claude-opus-5-5": () => null, "r4ar5-1": refuseAll514(RL429), "r4ar5-2": refuseAll514(RL429) })
+  const out = await step514(h, "ag-4ar5", "claude-opus-5-5", next)
+  expect(out.value && out.value.text).toBe("OK-claude-opus-5-5")
+  expect(next.seen).toEqual(["r4ar5-1", "r4ar5-2", "claude-opus-5-5"])
+  const recs = attempts514(h, "ag-4ar5")
+  const tail = recs[recs.length - 1]
+  expect({ model: tail.modelRequested, terminal: tail.terminal, reason: tail.reason, tried: tail.rungsTried })
+    .toEqual({ model: "claude-opus-5-5", terminal: true, reason: "cell-exhausted", tried: ["r4ar5-1", "r4ar5-2"] })
+  expect(failoverBindGet("ag-4ar5").sticky, "успех хвостовой попытки липкость не ставит").toBe(null)
+  const marks = new Map<string, any>()
+  const plan = R514.failoverStepPlan
+  expect(plan("claude-opus-5-5", null, ["r1", "r2"], "claude-opus-5-5", T0, marks).termAt, "D-8a: на первой позиции -- не переход").toBe(-1)
+  R514.noteModelRefusal("claude-opus-5-5", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429, marks)
+  const cooled = plan("claude-opus-5-5", null, ["r1", "r2"], "claude-opus-5-5", T0, marks)
+  expect({ plan: cooled.plan, termAt: cooled.termAt }).toEqual({ plan: ["r1", "r2", "claude-opus-5-5"], termAt: 2 })
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// --- #509/#514 FIX5: permanent не держит выход, неоднозначное окно -- unread,
+// пауза перечитывания проверяется, обёртка ошибки хоста решает раньше форм,
+// сердцебиение терминала -- терминальная дисциплина.
+//
+// CONSTRAINT: шов стенда FIX5 -- прежний host514; строки с toolUses/toolResults
+// кладутся прямо в h.history (сессия отдаёт объекты как есть), изменение
+// записи между чтениями -- правкой того же объекта в сценарии попытки.
+
+const NOLOGIN = "Not logged in · Please run /login"
+
+test("#509-FIX5 Р1 (а): план [D(request), R(request), P(живая permanent с прошлого шага)] -- выход без ожидания", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 28, 9, 0, 0)
+  let next: any = null
+  const h = host514("5p1a", T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
+  failoverBindSet("ag-5p1a", { ladder: ["r5p1a", "p5p1a"], terminal: "", rungEffort: effortAll509(["r5p1a", "p5p1a"]), subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal("p5p1a", T0 - 1000, "permanent-model", 0, "carrier-refusal", NOLOGIN)
+  next = next514(h, { "in5p1a": refuseAll514("Prompt is too long"), "r5p1a": refuseAll514("Prompt is too long"), "p5p1a": refuseAll514(NOLOGIN) })
+  await step514(h, "ag-5p1a", "in5p1a", next)
+  expect(next.seen, "permanent-модель не вызвана").toEqual(["in5p1a", "r5p1a"])
+  expect(attempts514(h, "ag-5p1a").map(r => r.refusalClass)).toEqual(["request", "request"])
+  expect(journal514(h).filter(r => r.agentId === "ag-5p1a" && r.outcome === "skipped-dead").map(r => r.model)).toEqual(["p5p1a"])
+  expect(journal514(h).filter(r => r.agentId === "ag-5p1a" && String(r.outcome).indexOf("wait-") === 0).map(r => r.outcome), "wait-begin не пишется, цикла ожидания нет").toEqual([])
+  expect(h.procCalls.length, "кусок паузы не начат").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5 Р1 (б): [P(permanent), Q(permanent)] без request -- ожидание permanentOnly, как прежде", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 28, 9, 10, 0)
+  let next: any = null
+  const h = host514("5p1b", T0, { sleepHook: (n) => { if (n === 2) next.signal.aborted = true } })
+  failoverBindSet("ag-5p1b", { ladder: [], terminal: "claude-q5p1b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal("p5p1b", T0 - 1000, "permanent-model", 0, "carrier-refusal", NOLOGIN)
+  next = next514(h, { "p5p1b": refuseAll514(NOLOGIN), "claude-q5p1b": refuseAll514(NOLOGIN) })
+  await step514(h, "ag-5p1b", "p5p1b", next)
+  expect(next.seen).toEqual(["claude-q5p1b"])
+  expect(attempts514(h, "ag-5p1b").map(r => r.refusalClass)).toEqual(["permanent-model"])
+  const wb = waits514(h, "ag-5p1b", "wait-begin")
+  expect(wb.map(r => r.permanentOnly), "все permanent и ни одного request -- ожидание").toEqual([true])
+  expect(waits514(h, "ag-5p1b", "wait-aborted").length).toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5 Р2 (а): у предела окна содержимое периодично, добавлена ещё такая строка -- window-ambiguous, temporary-unknown, не hook-error", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 28, 9, 20, 0)
+  let h: any = null
+  h = host514("5p2a", T0, { window: 4096 })
+  for (let i = 0; i < 4096; i++) h.history.push({ role: "assistant", text: LIMIT11 })
+  failoverBindSet("ag-5p2a", { ladder: [], terminal: "claude-t5p2a", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, {
+    "in5p2a": () => { h.history.push({ role: "assistant", text: LIMIT11 }); return { throwSilent: "turn.step: stream ended" } },
+    "claude-t5p2a": () => null,
+  })
+  let threw: any = null
+  let out: any = null
+  try { out = await step514(h, "ag-5p2a", "in5p2a", next) } catch (x) { threw = x }
+  expect(threw && String(threw.message), "агент жив: бросок не проброшен").toBe(null)
+  expect(out.value && out.value.text).toBe("OK-claude-t5p2a")
+  expect(attempts514(h, "ag-5p2a")[0].refusalClass, "неоднозначное выравнивание -- не hook-error").toBe("temporary-unknown")
+  const un = journal514(h).filter(r => r.agentId === "ag-5p2a" && r.outcome === "refusal-unread")
+  expect(un.map(r => r.reason)).toEqual(["window-ambiguous"])
+  const fh = R514.freshHistory
+  const same = (n: number) => { const o: any[] = []; for (let i = 0; i < n; i++) o.push({ role: "assistant", text: "x" }); return o }
+  expect(fh(same(4096), same(4096)), "больше одного перекрытия -- unread").toEqual({ rows: null, why: "window-ambiguous" })
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5 Р2 (б): у предела окна одинаковые по role+text строки с разными tool_use_id -- одно перекрытие, свежая строка найдена", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 28, 10, 0, 0)
+  let h: any = null
+  h = host514("5p2b", T0, { window: 4096 })
+  const tu = (i: number) => ({ role: "assistant", text: "", toolUses: [{ tool_use_id: "tu5p2b-" + String(i), tool: "Read", input: {} }] })
+  for (let i = 0; i < 2048; i++) h.history.push(tu(i), { role: "assistant", text: LIMIT11 })
+  failoverBindSet("ag-5p2b", { ladder: [], terminal: "claude-t5p2b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, {
+    "in5p2b": () => { h.history.push(tu(2048)); return LIMIT11 },
+    "claude-t5p2b": () => null,
+  })
+  await step514(h, "ag-5p2b", "in5p2b", next)
+  const rec = attempts514(h, "ag-5p2b")[0]
+  expect({ cls: rec.refusalClass, text: rec.refusalText, readyAt: rec.readyAt }, "свежая строка отказа прочитана")
+    .toEqual({ cls: "temporary-known", text: LIMIT11, readyAt: new Date(Date.UTC(2026, 8, 28, 11, 0, 0)).toISOString() })
+  expect(journal514(h).filter(r => r.agentId === "ag-5p2b" && r.outcome === "refusal-unread").length).toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5 Р2 (в): у записи между чтениями появились result/text tool-записей -- выравнивание не ломается", async () => {
+  const fh = R514.freshHistory
+  const W = R514.SESSION_MESSAGES_WINDOW
+  const call = (i: number) => ({ role: "assistant", text: "call " + String(i), toolUses: [{ tool_use_id: "tu5p2c-" + String(i), tool: "Bash", input: { command: "true" } }] })
+  const res = (i: number) => ({ role: "user", text: "", toolResults: [{ tool_use_id: "tu5p2c-" + String(i), text: "", isError: false }] })
+  const before: any[] = []
+  for (let i = 0; i < W / 2; i++) before.push(call(i), res(i))
+  const lim = { role: "assistant", text: LIMIT11 }
+  const after = before.slice(2)
+  const lastCall = after[after.length - 2]
+  const lastRes = after[after.length - 1]
+  after[after.length - 2] = Object.assign({}, lastCall, { toolUses: [Object.assign({}, lastCall.toolUses[0], { text: "done", result: { stdout: "ok" }, isError: false })] })
+  after[after.length - 1] = Object.assign({}, lastRes, { toolResults: [Object.assign({}, lastRes.toolResults[0], { text: "ok", result: { stdout: "ok" }, isError: false })] })
+  after.push({ role: "assistant", text: "", toolUses: [{ tool_use_id: "tu5p2c-new", tool: "Read", input: {} }] }, lim)
+  expect(fh(before, after), "result/text/isError tool-записей в ключ не входят").toEqual({ rows: [after[after.length - 2], lim], why: "" })
+  reset514()
+  const T0 = Date.UTC(2026, 8, 28, 10, 0, 0)
+  let h: any = null
+  h = host514("5p2c", T0, { window: 4096 })
+  for (const r of before) h.history.push(JSON.parse(JSON.stringify(r)))
+  failoverBindSet("ag-5p2c", { ladder: [], terminal: "claude-t5p2c", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, {
+    "in5p2c": () => {
+      const last = h.history[h.history.length - 2]
+      last.toolUses[0].text = "done"
+      last.toolUses[0].result = { stdout: "ok" }
+      h.history[h.history.length - 1].toolResults[0].result = { stdout: "ok" }
+      return LIMIT11
+    },
+    "claude-t5p2c": () => null,
+  })
+  await step514(h, "ag-5p2c", "in5p2c", next)
+  expect(attempts514(h, "ag-5p2c")[0].refusalClass).toBe("temporary-known")
+  expect(journal514(h).filter(r => r.agentId === "ag-5p2c" && r.outcome === "refusal-unread").length).toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+function pauseFail5(tag: string, T0: number, procResult: (n: number) => { exitCode: number; advanceMs: number }): any {
+  reset514()
+  const h = host514(tag, T0, { procResult })
+  failoverBindSet("ag-" + tag, { ladder: [], terminal: "claude-t" + tag, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { ["in" + tag]: () => ({ throwSilent: "turn.step: stream ended" }), ["claude-t" + tag]: () => null })
+  return { h, next }
+}
+
+async function pauseFailCheck5(tag: string, h: any, next: any): Promise<any> {
+  const aid = "ag-" + tag
+  let threw: any = null
+  let out: any = null
+  try { out = await step514(h, aid, "in" + tag, next) } catch (x) { threw = x }
+  expect({ tag, threw: threw && String(threw.message) }, "несостоявшаяся пауза -- не hook-error").toEqual({ tag, threw: null })
+  expect(out.value && out.value.text).toBe("OK-claude-t" + tag)
+  const recs = attempts514(h, aid)
+  expect({ tag, cls: recs.map(r => r.refusalClass) }).toEqual({ tag, cls: ["temporary-unknown", undefined] })
+  const un = journal514(h).filter(r => r.agentId === aid && r.outcome === "refusal-unread")
+  expect({ tag, reasons: un.map(r => r.reason) }).toEqual({ tag, reasons: ["reread-pause-failed"] })
+  expect({ tag, reads: h.messageArgs.length }, "повторного чтения нет: до и после у первой попытки, до у терминала").toEqual({ tag, reads: 3 })
+  rungCooldownReset()
+  failoverBindReset()
+  return recs
+}
+
+test("#509-FIX5 Р3 (а): пауза перечитывания вернула код 1 -- reread-pause-failed, temporary-unknown, не hook-error", async () => {
+  const { h, next } = pauseFail5("5p3a", Date.UTC(2026, 8, 28, 10, 10, 0), () => ({ exitCode: 1, advanceMs: 4000 }))
+  await pauseFailCheck5("5p3a", h, next)
+})
+
+test("#509-FIX5 Р3 (б): бросок двери паузы перечитывания -- reread-pause-failed, temporary-unknown, не hook-error, бросок учтён", async () => {
+  const { h, next } = pauseFail5("5p3b", Date.UTC(2026, 8, 28, 10, 20, 0), () => { throw new Error("process.run: scripted door refusal") })
+  const recs = await pauseFailCheck5("5p3b", h, next)
+  expect(String(recs[0].lost && recs[0].lost["failover-reread-pause"] && recs[0].lost["failover-reread-pause"].last)).toContain("scripted door refusal")
+  // FIX6 А4: при нечитаемом снимке «до» бросок двери паузы -- одна улика, текст броска.
+  const u = pauseFail5("5p3bu", Date.UTC(2026, 8, 28, 10, 25, 0), () => { throw new Error("process.run: scripted door refusal") })
+  u.h.messagesThrow = true
+  await step514(u.h, "ag-5p3bu", "in5p3bu", u.next)
+  const ur = attempts514(u.h, "ag-5p3bu")[0]
+  const lp = ur.lost && ur.lost["failover-reread-pause"]
+  expect({ cls: ur.refusalClass, n: lp && lp.n, door: String(lp && lp.last).indexOf("scripted door refusal") >= 0 }, "бросок двери -- одна улика с его текстом").toEqual({ cls: "temporary-unknown", n: 1, door: true })
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5 Р3 (в): короткий кусок паузы перечитывания (0 мс по часам мода) -- reread-pause-failed, temporary-unknown, не hook-error", async () => {
+  const { h, next } = pauseFail5("5p3c", Date.UTC(2026, 8, 28, 10, 30, 0), () => ({ exitCode: 0, advanceMs: 0 }))
+  await pauseFailCheck5("5p3c", h, next)
+})
+
+test("#509-FIX5 Р3 (г): argv и timeoutMs паузы перечитывания и куска ожидания по S (FIX7 А-Р1: предел не дальше D)", async () => {
+  const cases: Array<[string, string | undefined, string, number]> = [
+    ["unset", undefined, "4.000", 9000], ["2000", "2000", "0.500", 1500], ["30000", "30000", "4.000", 9000],
+    ["30001", "30001", "4.000", 9000], ["245000", "245000", "4.000", 9000], ["255000", "255000", "4.000", 9000],
+  ]
+  let day = 0
+  for (const [name, S, arg, T] of cases) {
+    reset514()
+    const T0 = Date.UTC(2026, 8, 28, 10, 0, 0) + (++day) * 86400000
+    const tag = "5p3g" + name
+    let next: any = null
+    let h: any = null
+    h = host514(tag, T0, {
+      env: S === undefined ? {} : { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: S },
+      sleepHook: (n) => {
+        if (n === 1) h.history.push({ role: "assistant", text: LIMIT11 })
+        if (n === 2) next.signal.aborted = true
+      },
+    })
+    failoverBindSet("ag-" + tag, { ladder: [], terminal: "claude-t" + tag, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+    next = next514(h, { ["in" + tag]: () => ({ throwSilent: "turn.step: stream ended" }), ["claude-t" + tag]: refuseAll514(LIMIT11) })
+    await step514(h, "ag-" + tag, "in" + tag, next)
+    const want = { argv: ["/bin/sleep", arg], init: { timeoutMs: T } }
+    expect({ name, calls: h.procCalls }, "пауза перечитывания, затем кусок ожидания").toEqual({ name, calls: [want, want] })
+    expect({ name, cls: attempts514(h, "ag-" + tag)[0].refusalClass }).toEqual({ name, cls: "temporary-known" })
+    rungCooldownReset()
+    failoverBindReset()
+  }
+})
+
+test("#509-FIX5 Р3 (д) / FIX6 А2: pauseTimeout -- min(15000, 2·chunk + 1000) при любом S, заданном и нет", () => {
+  const pace = R514.waitPaceOf
+  const cases: Array<[string, any, number]> = [
+    ["1", "1", 2000], ["1999", "1999", 2000], ["2000", "2000", 2000], ["10000", "10000", 6000], ["30000", "30000", 9000], ["30001", "30001", 9000],
+    ["245000", "245000", 9000], ["255000", "255000", 9000], ["10^9", "1000000000", 9000], ["не задано", undefined, 9000], ["abc", "abc", 9000],
+  ]
+  for (const [name, raw, T] of cases) expect({ name, T: pace(raw).pauseTimeout }).toEqual({ name, T })
+  expect(R514.PAUSE_TIMEOUT_MAX_MS).toBe(15000)
+})
+
+test("#509-FIX5 Р4: обёртка API Error / Request timed out решает раньше credits-формы", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-09-25T15:10:39Z")
+  const cases: Array<[string, string, number]> = [
+    ["API Error: 402 Fable 5 requires usage credits", "quota", 0],
+    ["API Error: 402 Fable 5 requires usage credits · resets 9pm (Europe/Moscow)", "quota", 0],
+    ["Fable 5 requires usage credits", "temporary-unknown", 0],
+    ["Fable 5 requires usage credits · resets 9pm (Europe/Moscow)", "temporary-known", Date.parse("2026-09-25T18:00:00Z")],
+    ["Error: Opus 5.5 requires usage credits · resets 9pm (Europe/Moscow)", "temporary-unknown", 0],
+    ["Request timed out · Fable 5 requires usage credits · resets 9pm (Europe/Moscow)", "temporary-unknown", 0],
+  ]
+  for (const [line, cls, at] of cases) {
+    const got = cr(line, now)
+    expect({ line, cls: got.class, at: got.readyAt }).toEqual({ line, cls, at })
+  }
+  expect(R514.refusalKnown("API Error: 402 Fable 5 requires usage credits")).toBe(true)
+  expect(R514.refusalKnown("Fable 5 requires usage credits")).toBe(true)
+  expect(R514.refusalKnown("Error: Opus 5.5 requires usage credits"), "имя с двоеточием -- не форма билдера").toBe(false)
+})
+
+test("#509-FIX5 Р5: сердцебиение объявленной = терминал -- терминальная дисциплина, липкость не ставится", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 28, 10, 0, 0)
+  const h = host514("5p5", T0)
+  failoverBindSet("ag-5p5", { ladder: ["r5p5"], terminal: "claude-t5p5", rungEffort: { "r5p5": "max" }, subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal("claude-t5p5", T0 - 1000, "temporary-known", T0 + 3600000, "carrier-refusal", LIMIT11)
+  const next = next514(h, {
+    "claude-t5p5": (_k, t) => (t >= T0 + 240000 ? null : LIMIT11),
+    "r5p5": refuseAll514("You've hit your session limit · resets 1pm (UTC)"),
+  })
+  const out = await step514(h, "ag-5p5", "claude-t5p5", next)
+  expect(out.value && out.value.text).toBe("OK-claude-t5p5")
+  expect(waits514(h, "ag-5p5", "wait-probe").map(r => r.kind), "успех пришёл на сердцебиении до wakeAt").toEqual(["heartbeat"])
+  const recs = attempts514(h, "ag-5p5")
+  const last = recs[recs.length - 1]
+  expect({ model: last.modelRequested, outcome: last.outcome, terminal: last.terminal, reason: last.reason })
+    .toEqual({ model: "claude-t5p5", outcome: "ok", terminal: true, reason: "cell-exhausted" })
+  expect(failoverBindGet("ag-5p5").sticky, "терминальная проба липкость не ставит").toBe(null)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5 Р7: снимок «до» нечитаем, прерывание во время паузы перечитывания -- ни refusal-unread, ни тоста «не прочитан»", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 28, 10, 40, 0)
+  let next: any = null
+  const h = host514("5p7", T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
+  h.messagesThrow = true
+  failoverBindSet("ag-5p7", { ladder: [], terminal: "claude-t5p7", rungEffort: {}, subagentType: "t5p7", class: "", sticky: null })
+  next = next514(h, { "in5p7": () => ({ throwSilent: "turn.step: stream ended" }), "claude-t5p7": () => null })
+  let threw: any = null
+  try { await step514(h, "ag-5p7", "in5p7", next) } catch (x) { threw = x }
+  expect(threw).toBe(null)
+  expect(next.seen).toEqual(["in5p7"])
+  expect(waits514(h, "ag-5p7", "wait-aborted").length).toBe(1)
+  expect(journal514(h).filter(r => r.agentId === "ag-5p7" && r.outcome === "refusal-unread").length, "прерванная попытка не объявлена непрочитанной").toBe(0)
+  expect(h.m.toasts.filter((t: string) => t.indexOf("не прочитан") >= 0), "тоста нет").toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5 Р10: noteLost failover-refusal-messages -- не больше одного раза на попытку", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 28, 10, 50, 0)
+  const h = host514("5p10", T0)
+  h.messagesThrow = true
+  failoverBindSet("ag-5p10", { ladder: [], terminal: "claude-t5p10", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in5p10": () => ({ throwSilent: "turn.step: stream ended" }), "claude-t5p10": () => null })
+  const site = "failover-refusal-messages"
+  const pre = (R514.lostWritesSnapshot()[site] || { n: 0 }).n
+  await step514(h, "ag-5p10", "in5p10", next)
+  expect({ reread: attempts514(h, "ag-5p10")[0].reread, pauses: h.procCalls.length }, "шаг 3 пройден: пауза была, чтения при нечитаемом снимке нет (FIX5b)").toEqual({ reread: false, pauses: 1 })
+  let n = (R514.lostWritesSnapshot()[site] || { n: 0 }).n - pre
+  for (const r of journal514(h)) if (r.lost && r.lost[site]) n += r.lost[site].n
+  expect(n, "одна непрочитанная попытка -- одна улика").toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5b (а): пауза перечитывания вернула код 1 -- повторного чтения не было, в записи reread: false", async () => {
+  const { h, next } = pauseFail5("5bA", Date.UTC(2026, 8, 29, 9, 0, 0), () => ({ exitCode: 1, advanceMs: 4000 }))
+  await step514(h, "ag-5bA", "in5bA", next)
+  const rec = attempts514(h, "ag-5bA")[0]
+  expect({ cls: rec.refusalClass, reread: rec.reread }).toEqual({ cls: "temporary-unknown", reread: false })
+  expect(h.messageArgs.length, "чтения: до и после у первой попытки, до у терминала").toBe(3)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX5b (б): нечитаемый снимок «до» и пауза с кодом 1 -- причина refusal-unread = ошибка чтения снимка, пауза -- в noteLost", async () => {
+  const { h, next } = pauseFail5("5bB", Date.UTC(2026, 8, 29, 9, 10, 0), () => ({ exitCode: 1, advanceMs: 4000 }))
+  h.messagesThrow = true
+  await step514(h, "ag-5bB", "in5bB", next)
+  const rec = attempts514(h, "ag-5bB")[0]
+  expect({ cls: rec.refusalClass, reread: rec.reread }).toEqual({ cls: "temporary-unknown", reread: false })
+  const un = journal514(h).filter(r => r.agentId === "ag-5bB" && r.outcome === "refusal-unread")
+  expect(un.map(r => r.reason), "причина -- чтение снимка, не reread-pause-failed").toEqual(["session.messages: scripted refusal"])
+  const lp = rec.lost && rec.lost["failover-reread-pause"]
+  expect(String(lp && lp.last), "несостоявшаяся пауза названа в noteLost").toContain("код 1")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// --- #509-FIX6: темп ожидания по сроку, предел двери сна, таблица отказов 2.1.283 ---
+// CONSTRAINT: шов часов -- host514 doorCost; сдвиг часов внутри попытки -- setNow
+// из сценария next514 (длительность вызова).
+
+const NORESP6 = "No response requested."
+
+// CONSTRAINT (#509-FIX7 А-Р4): два витка, у каждого своя держащая ветка. Виток
+// 1: пауза перечитывания 800 мс засчитана, чтение после неё 300 мс -- на входе
+// в ожидание наступило сердцебиение, D ещё не близко: вызов без куска держит
+// только передача паузы. Виток 2: чтение после отказа 1300 мс, паузы нет --
+// остаток до D не больше G/2, вызов держит только ветка срока.
+test("#509-FIX6 А1-срок: S=2000, пауза перечитывания 800 мс, два витка -- каждый next не позже D; сердцебиение, затем срок", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 1, 9, 0, 0)
+  const h = host514("6srok", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "2000" },
+    reply: (n) => (n === 2 || n === 3 ? { deny: "scripted" } : undefined),
+    procResult: (n) => ({ exitCode: 0, advanceMs: n === 1 ? 800 : 500 }),
+    doorCost: (door, n) => (door === "write" ? 3 : door === "messages" && n === 3 ? 300 : door === "messages" && n === 5 ? 1300 : 0),
+  })
+  failoverBindSet("ag-6srok", { ladder: [], terminal: "claude-t6srok", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const starts: number[] = []
+  const next = next514(h, {
+    "claude-t6srok": (k, t) => {
+      starts.push(t)
+      if (k === 0) return { throwSilent: "turn.step: stream ended" }
+      if (k === 1) return NORESP6
+      return null
+    },
+  })
+  const out = await step514(h, "ag-6srok", "claude-t6srok", next)
+  const gaps: number[] = []
+  for (let i = 1; i < starts.length; i++) gaps.push(starts[i] - starts[i - 1])
+  expect({ gaps, inTime: gaps.length === 2 && gaps.every(g => g >= 0 && g <= 2000 - 500) }, "каждый следующий next не позже callEndAt + S − G").toEqual({ gaps, inTime: true })
+  expect(out.value && out.value.text).toBe("OK-claude-t6srok")
+  const rec0 = attempts514(h, "ag-6srok")[0]
+  expect({ cls: rec0.refusalClass, reread: rec0.reread }, "пауза засчитана, повторное чтение {deny}").toEqual({ cls: "temporary-unknown", reread: true })
+  expect(waits514(h, "ag-6srok", "wait-probe").map(r => r.kind), "виток 1 -- сердцебиение, виток 2 -- срок").toEqual(["heartbeat", "deadline"])
+  expect(waits514(h, "ag-6srok", "stall-margin-exceeded"), "перебега нет").toEqual([])
+  expect(h.procCalls.length, "кусок один -- пауза перечитывания").toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX6 А1-пауза: засчитанная пауза перечитывания и наступивший heartbeat -- проба без ещё одного куска", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 1, 9, 10, 0)
+  let h: any = null
+  h = host514("6pause", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "30000" },
+    reply: (n) => (n >= 2 ? { deny: "scripted" } : undefined),
+  })
+  failoverBindSet("ag-6pause", { ladder: [], terminal: "claude-t6pause", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const starts: number[] = []
+  const next = next514(h, {
+    "claude-t6pause": (k, t) => {
+      starts.push(t)
+      if (k === 0) { h.m.setNow(t + 12000); return { throwSilent: "turn.step: stream ended" } }
+      return null
+    },
+  })
+  const out = await step514(h, "ag-6pause", "claude-t6pause", next)
+  expect(h.procCalls.map((c: any) => c.argv[1]), "кусок только паузы перечитывания").toEqual(["4.000"])
+  expect(out.value && out.value.text).toBe("OK-claude-t6pause")
+  expect(waits514(h, "ag-6pause", "wait-probe").map(r => r.kind)).toEqual(["heartbeat"])
+  expect(starts.map(t => t - T0), "вызов 12 с, пауза 4 с, проба сразу").toEqual([0, 16000])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX6 А1-запись: дверь сна ответила через S -- ровно одна запись stall-margin-exceeded, gapMs ≥ S", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 1, 9, 20, 0)
+  const h = host514("6rec", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "2000" },
+    procResult: (n) => ({ exitCode: 0, advanceMs: n === 1 ? 2000 : 500 }),
+  })
+  failoverBindSet("ag-6rec", { ladder: [], terminal: "claude-t6rec", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "claude-t6rec": (k) => (k < 2 ? NORESP6 : null) })
+  const out = await step514(h, "ag-6rec", "claude-t6rec", next)
+  expect(out.value && out.value.text).toBe("OK-claude-t6rec")
+  expect(next.seen.length, "три вызова: проход и две пробы").toBe(3)
+  const recs = waits514(h, "ag-6rec", "stall-margin-exceeded")
+  expect(recs.map(r => ({ atLeastS: r.gapMs >= 2000, stallMs: r.stallMs, marginMs: r.marginMs })), "одна запись на перебег").toEqual([{ atLeastS: true, stallMs: 2000, marginMs: 500 }])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX6 А1-kind: проба по сроку -- kind deadline, проба heartbeat -- heartbeat", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 1, 9, 30, 0)
+  const h = host514("6kind", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "2000" },
+    doorCost: (door, n) => (door === "messages" && n === 2 ? 1300 : 0),
+  })
+  failoverBindSet("ag-6kind",{ ladder: [], terminal: "claude-t6kind", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "claude-t6kind": (k) => (k < 2 ? NORESP6 : null) })
+  const out = await step514(h, "ag-6kind", "claude-t6kind", next)
+  expect(waits514(h, "ag-6kind", "wait-probe").map(r => r.kind), "срок наступил без паузы -- deadline; затем heartbeat").toEqual(["deadline", "heartbeat"])
+  expect(out.value && out.value.text).toBe("OK-claude-t6kind")
+  expect(waits514(h, "ag-6kind", "stall-margin-exceeded")).toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX6 А1-пол: S=1000 ниже пола -- ветки срока нет, между вызовами есть кусок сна", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 1, 9, 40, 0)
+  const h = host514("6floor", T0, { env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "1000" } })
+  failoverBindSet("ag-6floor", { ladder: [], terminal: "claude-t6floor", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const sleepsAt: number[] = []
+  const next = next514(h, { "claude-t6floor": (k) => { sleepsAt.push(h.procCalls.length); return k < 3 ? NORESP6 : null } })
+  const out = await step514(h, "ag-6floor", "claude-t6floor", next)
+  expect(out.value && out.value.text).toBe("OK-claude-t6floor")
+  const hot: number[] = []
+  for (let i = 1; i < sleepsAt.length; i++) if (sleepsAt[i] <= sleepsAt[i - 1]) hot.push(i)
+  expect({ calls: sleepsAt.length, hot }, "вызова без куска между ними нет").toEqual({ calls: 4, hot: [] })
+  expect(waits514(h, "ag-6floor", "stall-below-floor").map(r => r.stallMs)).toEqual([1000])
+  expect(waits514(h, "ag-6floor", "wait-probe").map(r => r.kind).filter((k: string) => k === "deadline")).toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX6 А1: waitPaceOf -- stallEff = S или 600000, margin = min(30000, max(500, floor(stallEff / 4)))", () => {
+  const pace = R514.waitPaceOf
+  expect(R514.STALL_HOST_DEFAULT_MS).toBe(600000)
+  const cases: Array<[string, any, number, number]> = [
+    ["не задано", undefined, 600000, 30000], ["abc", "abc", 600000, 30000], ["0", "0", 600000, 30000], ["12.5", "12.5", 600000, 30000],
+    ["1", "1", 1, 500], ["1999", "1999", 1999, 500], ["2000", "2000", 2000, 500], ["2001", "2001", 2001, 500],
+    ["3000", "3000", 3000, 750], ["30000", "30000", 30000, 7500], ["120000", "120000", 120000, 30000], ["600000", "600000", 600000, 30000],
+  ]
+  for (const [name, raw, stallEff, margin] of cases) {
+    const p = pace(raw)
+    expect({ name, stallEff: p.stallEff, margin: p.margin }).toEqual({ name, stallEff, margin })
+  }
+})
+
+// CONSTRAINT (#509-FIX6b): ветка срока без паузы не зовёт next подряд (#514
+// FIX2) только пока выше пола S_eff - G >= 2C; держат пол, chunk и margin
+// вместе -- смена любой формулы обязана пройти этот зуб.
+test("#509-FIX6b: выше пола S_eff − G ≥ 2·chunk, belowFloor = (S годна и S < 2000)", () => {
+  const pace = R514.waitPaceOf
+  const ss: Array<number | undefined> = []
+  for (let s = 1; s <= 3000; s++) ss.push(s)
+  for (const s of [3001, 16000, 29999, 30000, 30001, 45000, 120000, 255000, 600000, 10000000]) ss.push(s)
+  ss.push(undefined)
+  const bad: string[] = []
+  for (const s of ss) {
+    const p = pace(s === undefined ? undefined : String(s))
+    const ok = s !== undefined
+    const name = s === undefined ? "S не задана" : "S=" + String(s)
+    if (p.belowFloor !== (ok && (s as number) < 2000)) bad.push(name + ": belowFloor=" + String(p.belowFloor))
+    if (!p.belowFloor && !(p.stallEff - p.margin >= 2 * p.chunk)) bad.push(name + ": stallEff " + String(p.stallEff) + " - margin " + String(p.margin) + " < 2 * chunk " + String(p.chunk))
+  }
+  expect(bad, "нарушения по S").toEqual([])
+})
+
+test("#509-FIX6 А2 / FIX7 А-Р1: pauseTimeout = min(15000, 2·chunk + 1000) на S = 2000, 3000, 30000, не задано; обе двери получают min(T, D − now) в timeoutMs", async () => {
+  const pace = R514.waitPaceOf
+  const cases: Array<[string, string | undefined, string, number, number]> = [
+    ["2000", "2000", "0.500", 2000, 1500], ["3000", "3000", "0.750", 2500, 2250], ["30000", "30000", "4.000", 9000, 9000], ["unset", undefined, "4.000", 9000, 9000],
+  ]
+  let day = 0
+  for (const [name, S, arg, T, lim] of cases) {
+    const p = pace(S)
+    expect({ name, T: p.pauseTimeout, formula: Math.min(15000, 2 * p.chunk + 1000), lim: Math.min(p.pauseTimeout, p.stallEff - p.margin) }).toEqual({ name, T, formula: T, lim })
+    reset514()
+    const T0 = Date.UTC(2026, 9, 2, 9, 0, 0) + (++day) * 86400000
+    const tag = "6a2" + name
+    let next: any = null
+    let h: any = null
+    h = host514(tag, T0, {
+      env: S === undefined ? {} : { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: S },
+      sleepHook: (n) => {
+        if (n === 1) h.history.push({ role: "assistant", text: LIMIT11 })
+        if (n === 2) next.signal.aborted = true
+      },
+    })
+    failoverBindSet("ag-" + tag, { ladder: [], terminal: "claude-t" + tag, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+    next = next514(h, { ["in" + tag]: () => ({ throwSilent: "turn.step: stream ended" }), ["claude-t" + tag]: refuseAll514(LIMIT11) })
+    await step514(h, "ag-" + tag, "in" + tag, next)
+    const want = { argv: ["/bin/sleep", arg], init: { timeoutMs: lim } }
+    expect({ name, calls: h.procCalls }, "пауза перечитывания, затем кусок ожидания").toEqual({ name, calls: [want, want] })
+    rungCooldownReset()
+    failoverBindReset()
+  }
+})
+
+// CONSTRAINT: дом литералов -- G/SCOUT-HOST-REFUSAL-TEXTS-283.md (2.1.283,
+// функция yUn, разделы 2 и 3); переход версии сверяет каждую строку.
+test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каждый литерал в своём классе", () => {
+  const cr = R514.classifyRefusal
+  const known = R514.refusalKnown
+  const now = Date.parse("2026-10-01T09:00:00Z")
+  const TAIL = " · resets 11am (UTC)"
+  const at11 = Date.parse("2026-10-01T11:00:00Z")
+  const request = [
+    "Image was too large. Try resizing the image or using a different approach.",
+    "Image was too large. Double press esc to go back and try again with a smaller image.",
+    "PDF too large (max 100 pages, 32 MB). Try reading the file a different way (e.g., extract text with pdftotext).",
+    "PDF too large (max 100 pages, 32 MB). Double press esc to go back and try again, or use pdftotext to convert to text first.",
+    "PDF is password protected. Try using a CLI tool to extract or convert the PDF.",
+    "PDF is password protected. Please double press esc to edit your message and try again.",
+    "The PDF file was not valid. Try converting it to text first (e.g., pdftotext).",
+    "The PDF file was not valid. Double press esc to go back and try again with a different file.",
+    "An image in the conversation exceeds the dimension limit for many-image requests (2000px). Run /compact to remove old images from context, or start a new session.",
+    "An image in the conversation exceeds the dimension limit for many-image requests (2000px). Start a new session with fewer images.",
+    "Auto mode is unavailable for your plan",
+    "Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use /clear to start fresh.",
+  ]
+  const permanent = [
+    "Failed to authenticate: OAuth session expired and could not be refreshed",
+    "Your account does not have access to Claude. Please login again or contact your administrator.",
+    "Invalid API key · Fix external API key",
+    "Invalid auth token · Fix external auth token · 401 token rejected",
+    "Invalid ANTHROPIC_CUSTOM_HEADERS · Fix the environment variable · header rejected",
+    "Invalid request header from the environment · Fix the environment variable · header rejected",
+    "Your ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your subscription instead",
+    "Your ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable",
+    "Your apiKeyHelper script is failing · This usually means you need to re-authenticate with your provider · Run /status to see the script's error output",
+    "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access",
+    "Your organization has disabled API key authentication · Unset ANTHROPIC_API_KEY to use your claude.ai account instead",
+    "Your organization has disabled API key authentication · Unset ANTHROPIC_API_KEY and run /login to sign in with your claude.ai account",
+    "Your organization has disabled API key authentication · Unset the apiKeyHelper setting and run /login to sign in with your claude.ai account",
+    "Your organization has disabled API key authentication · Sign in again with your claude.ai account",
+    "Your organization has disabled API key authentication · Run /login to sign in with your claude.ai account",
+    "Anthropic profile login expired · Re-authenticate your Anthropic profile",
+    "Your account is on hold and can't use Claude Code. View details or appeal: https://claude.ai/account-hold",
+    "This service is disabled for your org",
+    "AWS credentials expired or invalid · run `aws sso login` and retry · API Error: 403 security token expired",
+    "AWS authentication failed · credentials are managed by this environment — retry, or contact your administrator · API Error: 403 denied",
+    "Google Cloud credentials expired or invalid · run `gcloud auth application-default login` and retry · API Error: 401 expired",
+    "Google Cloud authentication failed · refresh your Google Cloud credentials (application default sign-in, or the key file in GOOGLE_APPLICATION_CREDENTIALS) and retry · API Error: 401 denied",
+    "Microsoft Foundry authentication failed · credentials are managed by this environment — retry, or contact your administrator · if credentials are current, check access to the Foundry resource · API Error: 401 denied",
+    "Gateway refused the request · signing in again won't change this — check with your gateway administrator · API Error: 403 denied",
+    "There's an issue with the selected model (claude-opus-5-5[1m]). It may not exist or you may not have access to it. Run /model to pick a different model.",
+    "CLAUDE_CODE_NO_MODEL_FALLBACK is set: model substitution is disabled · unset it to allow the swap",
+    "The model claude-opus-5-5[1m] is not available on your Bedrock deployment. Try /model to switch to claude-sonnet-5, or ask your admin to enable this model.",
+    "The model Opus 5.5 is not available on your Vertex AI deployment. Try switching to Sonnet 5, or ask your admin to enable this model.",
+    "The server routed this response to a model that is not in your organization’s availableModels allowlist; the response was discarded.",
+  ]
+  const limit = [
+    "Fable limit reached · continuing on Opus 5.5 uses usage credits, and the prompt to confirm went unanswered — nothing was sent · answer it where this session is running, or /model to change",
+    "Fable limit reached · continuing on Opus 5.5 uses usage credits, and the prompt to confirm was closed from Remote Control without a choice — nothing was sent · it asks again on your next message, or /model to change",
+    "Opus 5.5 now uses usage credits · the prompt to confirm went unanswered — nothing was sent · answer it where this session is running, or /model to change",
+    "Opus 5.5 now uses usage credits · the prompt to confirm was closed from Remote Control without a choice — nothing was sent · it asks again on your next message, or /model to change",
+  ]
+  const unknown = [
+    "Opus is experiencing high load. Switch to Sonnet.",
+    "Opus is experiencing high load, please use /model to switch to Sonnet",
+    "Fable is experiencing high load. Switch to Sonnet.",
+    "Fable is experiencing high load, please use /model to switch to Sonnet",
+    "No response requested.",
+    "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again",
+    "Could not refresh your login because another Claude Code process is refreshing it (or exited mid-refresh) · Try again in a minute; if it keeps happening, close other Claude Code windows or sign in again with /login",
+    "Opus 5.5 is currently unavailable.",
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const l of request) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "request" }) }
+  for (const l of permanent) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "permanent-model" }) }
+  for (const l of limit) {
+    const k = cr(l + TAIL, now)
+    got.push({ l, known: known(l), c: k.class, at: k.readyAt })
+    want.push({ l, known: true, c: "temporary-known", at: at11 })
+  }
+  for (const l of unknown) {
+    got.push({ l, c: cr(l, now).class, cTail: cr(l + TAIL, now).class })
+    want.push({ l, c: "temporary-unknown", cTail: "temporary-unknown" })
+  }
+  // Ряды, которые новые регулярки ловить не должны: имя с двоеточием; обёртка API Error.
+  // CONSTRAINT (#509-FIX7 Р14): PROVIDER_GONE_RX решает раньше обёртки API Error --
+  // «model <имя> is not available» под обёрткой -- permanent-model.
+  const miss = [
+    ["Error: Opus 5.5 now uses usage credits · the prompt to confirm went unanswered — nothing was sent", false, "temporary-unknown"],
+    ["API Error: Opus 5.5 now uses usage credits · the prompt to confirm went unanswered — nothing was sent", true, "temporary-unknown"],
+    ["API Error: The model claude-opus-5-5[1m] is not available on your Bedrock deployment. Try switching to Sonnet 5, or ask your admin to enable this model.", true, "permanent-model"],
+  ] as Array<[string, boolean, string]>
+  for (const [l, k, c] of miss) {
+    got.push({ l, known: known(l), c: cr(l + TAIL, now).class })
+    want.push({ l, known: k, c })
+  }
+  expect(got).toEqual(want)
+})
+
+test("#509-FIX6 А3: префиксы таблиц не перекрывают чужой класс, каждый решает свой", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-01T09:00:00Z")
+  const groups: Array<[string, string[]]> = [
+    ["other", R514.REFUSAL_OTHER_PREFIXES], ["request", R514.REFUSAL_REQUEST_PREFIXES],
+    ["permanent", R514.REFUSAL_PERMANENT_PREFIXES], ["limit", R514.REFUSAL_LIMIT_PREFIXES],
+  ]
+  const cross: string[] = []
+  for (const [ga, as] of groups) for (const [gb, bs] of groups) {
+    if (ga === gb) continue
+    for (const a of as) for (const b of bs) if (a.indexOf(b) === 0) cross.push(ga + ":" + a + " <- " + gb + ":" + b)
+  }
+  expect(cross, "начало префикса одного класса -- префикс другого").toEqual([])
+  const wantOf: { [g: string]: string } = { other: "temporary-unknown", request: "request", permanent: "permanent-model", limit: "temporary-known" }
+  const bad: string[] = []
+  for (const [g, ps] of groups) for (const p of ps) {
+    const c = cr(p + " · resets 11am (UTC)", now).class
+    if (c !== wantOf[g]) bad.push(g + ":" + p + " -> " + c)
+  }
+  expect(bad).toEqual([])
+})
+
+// --- #509-FIX7: дверь срока D, классы отказов, носитель вердикта, веер судьи ---
+
+test("#509-FIX7 А-Р1 сон: S=2000, дверь сна стоит 1999 мс -- предел двери min(T, D − now), следующий next не позже D", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 9, 0, 0)
+  const h = host514("7r1s", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "2000" },
+    procResult: () => ({ exitCode: 0, advanceMs: 1999 }),
+    procTimeout: true,
+  })
+  failoverBindSet("ag-7r1s", { ladder: [], terminal: "claude-t7r1s", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const starts: number[] = []
+  const next = next514(h, { "claude-t7r1s": (k, t) => { starts.push(t); return k === 0 ? NORESP6 : null } })
+  const out = await step514(h, "ag-7r1s", "claude-t7r1s", next)
+  expect(out.value && out.value.text).toBe("OK-claude-t7r1s")
+  const gap = starts.length > 1 ? starts[1] - starts[0] : -1
+  expect({ gap, inTime: gap >= 0 && gap <= 2000 - 500 }, "следующий next не позже D = callEndAt + S − G").toEqual({ gap, inTime: true })
+  expect(h.procCalls.map((c: any) => c.init.timeoutMs), "предел двери сна -- остаток до D").toEqual([1500])
+  expect(waits514(h, "ag-7r1s", "wait-unavailable"), "сон, оборванный сроком D, -- не отказ двери").toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX7 А-Р1 чтение: S=2000, снимок истории перед next стоит 1100 мс -- next не позже D без свежего снимка, строка history-past-deadline", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 9, 10, 0)
+  const h = host514("7r1h", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "2000" },
+    doorCost: (door, n) => (door === "messages" && n === 3 ? 1100 : 0),
+    afterFire: true,
+  })
+  failoverBindSet("ag-7r1h", { ladder: [], terminal: "claude-t7r1h", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const starts: number[] = []
+  const next = next514(h, { "claude-t7r1h": (k, t) => { starts.push(t); return k === 0 ? NORESP6 : null } })
+  const out = await step514(h, "ag-7r1h", "claude-t7r1h", next)
+  expect(out.value && out.value.text).toBe("OK-claude-t7r1h")
+  const gap = starts.length > 1 ? starts[1] - starts[0] : -1
+  expect({ gap, inTime: gap >= 0 && gap <= 2000 - 500 }, "чтение, не успевшее к D, вызова не держит").toEqual({ gap, inTime: true })
+  expect(waits514(h, "ag-7r1h", "history-past-deadline").map(r => r.forAttempt), "проигрыш гонки назван строкой").toEqual([1])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX7 А-Р2: снимок истории перед next стоит 1100 мс -- stall-margin-exceeded меряется после него, gapMs ≥ S", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 9, 20, 0)
+  const h = host514("7r2", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "2000" },
+    doorCost: (door, n) => (door === "messages" && n === 3 ? 1100 : 0),
+  })
+  failoverBindSet("ag-7r2", { ladder: [], terminal: "claude-t7r2", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const starts: number[] = []
+  const next = next514(h, { "claude-t7r2": (k, t) => { starts.push(t); return k === 0 ? NORESP6 : null } })
+  const out = await step514(h, "ag-7r2", "claude-t7r2", next)
+  expect(out.value && out.value.text).toBe("OK-claude-t7r2")
+  const recs = waits514(h, "ag-7r2", "stall-margin-exceeded")
+  expect(recs.map(r => ({ gapMs: r.gapMs, stallMs: r.stallMs })), "перебег в чтении перед next виден").toEqual([{ gapMs: starts[1] - starts[0], stallMs: 2000 }])
+  expect(starts[1] - starts[0] >= 2000).toBe(true)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX7 А-Р3: стенд doorCost -- бросок двери двигает часы и номер вызова", async () => {
+  const T0 = Date.UTC(2026, 9, 3, 9, 30, 0)
+  const h = host514("7r3", T0, { doorCost: (door, n) => (door === "messages" ? n * 100 : door === "write" ? n * 10 : 0) })
+  h.messagesThrow = true
+  let thrown = 0
+  for (let i = 0; i < 2; i++) { try { await h.m.$.session.messages({ agentId: "a" }) } catch (x) { thrown++ } }
+  h.messagesThrow = false
+  await h.m.$.session.messages({ agentId: "a" })
+  expect({ thrown, spent: h.m.getNow() - T0 }, "100 + 200 + 300: бросок стоит времени и номера").toEqual({ thrown: 2, spent: 600 })
+  h.writeThrow = true
+  try { await h.m.$.fs.write("/w7r3", "a") } catch (x) { thrown++ }
+  h.writeThrow = false
+  await h.m.$.fs.write("/w7r3", "b")
+  expect({ thrown, spent: h.m.getNow() - T0 }, "запись: 10 + 20").toEqual({ thrown: 3, spent: 630 })
+})
+
+test("#509-FIX7 А-Р5: GBn и HBn -- permanent по общему префиксу «Login expired · »", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const rows = [
+    "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile",
+    "Login expired · Please run /login",
+  ]
+  expect(rows.map(l => ({ l, c: cr(l, now).class }))).toEqual(rows.map(l => ({ l, c: "permanent-model" })))
+  expect(R514.REFUSAL_PERMANENT_PREFIXES, "общий префикс в таблице").toContain("Login expired · ")
+  expect(R514.REFUSAL_PERMANENT_PREFIXES.indexOf("Login expired · Please run /login"), "полная форма избыточна").toBe(-1)
+})
+
+test("#509-FIX7 А-Р6: Hdt -- temporary-unknown раньше префиксов permanent; gateway-строка PJt -- permanent", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const got = [
+    "Authentication error · This may be a temporary network issue, please try again",
+    "Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator",
+  ].map(l => cr(l, now).class)
+  expect(got).toEqual(["temporary-unknown", "permanent-model"])
+  expect(R514.refusalKnown("Authentication error · This may be a temporary network issue, please try again"), "строка таблицы хоста").toBe(true)
+})
+
+test("#509-FIX7 А-Р7: allowlist-маршрутизация организации (110688729) -- permanent", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const l = "The server routed this response to a model that is not in your organization’s availableModels allowlist; the response was discarded."
+  expect({ c: cr(l, now).class, known: R514.refusalKnown(l) }).toEqual({ c: "permanent-model", known: true })
+})
+
+test("#509-FIX7 А-Р8: S=1000 ниже пола, 10 проб -- ни одной записи stall-margin-exceeded, одна stall-below-floor", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 9, 40, 0)
+  const h = host514("7r8", T0, { env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "1000" } })
+  failoverBindSet("ag-7r8", { ladder: [], terminal: "claude-t7r8", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "claude-t7r8": (k) => (k < 10 ? NORESP6 : null) })
+  const out = await step514(h, "ag-7r8", "claude-t7r8", next)
+  expect(out.value && out.value.text).toBe("OK-claude-t7r8")
+  expect(next.seen.length, "проход и десять проб").toBe(11)
+  expect(waits514(h, "ag-7r8", "stall-margin-exceeded")).toEqual([])
+  expect(waits514(h, "ag-7r8", "stall-below-floor").map(r => r.stallMs)).toEqual([1000])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// CONSTRAINT: у каждой регулярки классов отказа -- ряд, который она ловит, и
+// ряд, который не ловит; ряд «не ловит» стоит рядом с формой, которую
+// ослабленная регулярка приняла бы.
+test("#509-FIX7 А-Р9: каждая регулярка -- ловит свой ряд и не ловит соседний", () => {
+  const rows: Array<[string, RegExp, string, string]> = [
+    ["MODEL_UNAVAILABLE", R514.REFUSAL_MODEL_UNAVAILABLE_RX, "The model claude-opus-5-5[1m] is not available on your Bedrock deployment.", "Note: The model claude-opus-5-5 is not available on your plan until tomorrow."],
+    ["CREDITS", R514.REFUSAL_CREDITS_RX, "Opus 5.5 requires usage credits.", "Note: this plan requires usage credits"],
+    ["CREDITS_NOW", R514.REFUSAL_CREDITS_NOW_RX, "Opus 5.5 now uses usage credits · the prompt to confirm went unanswered", "Error: Opus 5.5 now uses usage credits · the prompt to confirm went unanswered"],
+    ["PROVIDER_GONE", R514.PROVIDER_GONE_RX, "API Error: 400 {\"error\":\"unknown provider grok-4.6\"}", "The provider field in config.toml is optional; the default provider is used."],
+    ["QUOTA", R514.QUOTA_RX, "402 Payment Required", "Wrote the report to /tmp/p402x/out.md"],
+    ["QUOTA 402 API Error", R514.QUOTA_RX, "API Error: 402 {\"error\":\"Grok Build usage balance exhausted\"}", "error at line 402"],
+    ["QUOTA 402 lead", R514.QUOTA_RX, "402 All credentials for model grok-4.7 are parked: the upstream refused to bill them", "/data/402/file"],
+    ["QUOTA 402 status json", R514.QUOTA_RX, "{\"status\": 402, \"message\":\"x\"}", "retried 402 times"],
+    ["QUOTA 402 status=", R514.QUOTA_RX, "upstream answered status=402", "see issue #402"],
+    ["QUOTA 402 HTTP", R514.QUOTA_RX, "HTTP 402 from upstream", "port 4020 closed at line 402"],
+    ["QUOTA_WINDOW", R514.QUOTA_WINDOW_RX, "[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]", "Usage limit reached for today"],
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const [name, rx, hit, miss] of rows) {
+    got.push({ name, isRx: rx instanceof RegExp, hit: rx instanceof RegExp && rx.test(hit), miss: rx instanceof RegExp && rx.test(miss) })
+    want.push({ name, isRx: true, hit: true, miss: false })
+  }
+  expect(got).toEqual(want)
+})
+
+test("#509-FIX7 А-Р10: литерал Fable в форме 283 «<имя> requires usage credits.»", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  expect(R514.REFUSAL_LIMIT_PREFIXES, "байт в байт из переписи 283").toContain("Fable 5 requires usage credits.")
+  expect(R514.REFUSAL_LIMIT_PREFIXES.indexOf("Fable 5 requires usage credits"), "прежняя форма без точки снята").toBe(-1)
+  const rows: Array<[string, string, number]> = [
+    ["Fable 5 requires usage credits.", "temporary-unknown", 0],
+    ["Fable 5 requires usage credits. · resets 11am (UTC)", "temporary-known", Date.parse("2026-10-03T11:00:00Z")],
+    ["Opus 5.5 requires usage credits. · resets 11am (UTC)", "temporary-known", Date.parse("2026-10-03T11:00:00Z")],
+  ]
+  for (const [l, c, at] of rows) {
+    const g = cr(l, now)
+    expect({ l, known: R514.refusalKnown(l), c: g.class, at: g.readyAt }).toEqual({ l, known: true, c, at })
+  }
+})
+
+test("#509-FIX7 Р11: запись попытки несёт modelServed (usage.model или null) и declared", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 10, 0, 0)
+  const h = host514("7r11", T0, { noProc: true })
+  failoverBindSet("ag-7r11", { ladder: ["r7r11"], terminal: "", rungEffort: { r7r11: "high" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in7r11": refuseAll514(NORESP6), "r7r11": () => ({ usageModel: "served-x7r11" }) })
+  const out = await step514(h, "ag-7r11", "in7r11", next)
+  expect(out.value && out.value.text).toBe("OK-r7r11")
+  const recs = attempts514(h, "ag-7r11")
+  expect(recs.map(r => ({ m: r.modelRequested, served: r.modelServed, declared: r.declared }))).toEqual([
+    { m: "in7r11", served: null, declared: "in7r11" },
+    { m: "r7r11", served: "served-x7r11", declared: "in7r11" },
+  ])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX7 Р12: лестничный успех -- одна подсказка главному лупу на (агент, ступень)", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 10, 10, 0)
+  const h = host514("7r12", T0, { noProc: true })
+  failoverBindSet("ag-7r12", { ladder: ["r7r12a", "r7r12b"], terminal: "", rungEffort: { r7r12a: "high", r7r12b: "high" }, subagentType: "t12", class: "", sticky: null })
+  const next = next514(h, { "in7r12": refuseAll514(NORESP6), "r7r12a": (k) => (k < 2 ? null : NORESP6), "r7r12b": () => null })
+  const text = (m: string) => "агент ag-7r12 (t12): объявлен in7r12, шаг обслужила " + m + " — вердикт этого агента принадлежит " + m
+  await step514(h, "ag-7r12", "in7r12", next, { index: 0 })
+  expect(p5Q(""), "первая подмена -- одна запись").toEqual([text("r7r12a")])
+  await step514(h, "ag-7r12", "in7r12", next, { index: 1 })
+  expect(p5Q(""), "та же ступень -- второй записи нет").toEqual([text("r7r12a")])
+  await step514(h, "ag-7r12", "in7r12", next, { index: 2 })
+  expect(p5Q(""), "другая ступень того же агента -- вторая запись").toEqual([text("r7r12a"), text("r7r12b")])
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX7 Р13: критики A и B одной сессии -- модель, обслуживающая B, из ступеней A вычтена", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 10, 20, 0)
+  const h = host514("7r13", T0, { noProc: true })
+  await spawn514(h, "ag-7r13b", "crit-mech", "gpt-6-sol-t7r13")
+  failoverBindSet("ag-7r13a", { ladder: ["gpt-6-sol-t7r13", "qwen-t7r13"], terminal: "", rungEffort: { "gpt-6-sol-t7r13": "high", "qwen-t7r13": "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next514(h, { "grok-4.7-t7r13": refuseAll514(NORESP6), "gpt-6-sol-t7r13": () => null, "qwen-t7r13": () => null })
+  const out = await step514(h, "ag-7r13a", "grok-4.7-t7r13", next)
+  expect(next.seen, "у A отказал grok-4.7 -- gpt-6-sol B пропущен, идёт следующая ступень").toEqual(["grok-4.7-t7r13", "qwen-t7r13"])
+  expect(out.value && out.value.text).toBe("OK-qwen-t7r13")
+  expect(attempts514(h, "ag-7r13a").map(r => r.rungsFilteredReviewer)).toEqual([1, 1])
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX7 Р14: мёртвый провайдер -- permanent-model, квота -- quota с остыванием 60 мин, соседний API Error: 500 -- temporary-unknown", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 {\"error\":\"unknown provider grok-4.6\"}", "permanent-model"],
+    ["API Error: 404 model not found: grok-4.6", "permanent-model"],
+    ["402 Payment Required", "quota"],
+    ["API Error: 429 credential_quota exhausted for this key", "quota"],
+    ["API Error: 500 Internal server error", "temporary-unknown"],
+    ["The provider field in config.toml is optional; the default provider is used.", "temporary-unknown"],
+    ["Wrote the report to /tmp/p402x/out.md", "temporary-unknown"],
+    ["error at line 402", "temporary-unknown"],
+    ["API Error: 402 {\"error\":\"Grok Build usage balance exhausted\"}", "quota"],
+  ]
+  expect(rows.map(([l]) => ({ l, c: cr(l, now).class }))).toEqual(rows.map(([l, c]) => ({ l, c })))
+  expect(R514.QUOTA_COOLDOWN_MS).toBe(60 * 60 * 1000)
+  const marks = new Map<string, any>()
+  const mk = R514.noteModelRefusal("q-t7r14", now, "quota", 0, "carrier-refusal", "402 Payment Required", marks)
+  expect({ cls: mk && mk.class, left: mk && mk.until - now }, "метка квоты -- час").toEqual({ cls: "quota", left: 3600000 })
+})
+
+// CONSTRAINT (#509-FIX7 ADD1): тела отказов -- из лога прокси CliProxyAPI
+// (handlers_routing.go:168-170) и формы z.ai 1308, как их видит харнес.
+const PROXY_MNF7 = "API Error: 400 {\"error\":{\"type\":\"invalid_request_error\",\"code\":\"model_not_found\",\"param\":\"model\",\"message\":\"x\"}}"
+const ZAI1308_7 = "API Error: 429 {\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1308\",\"message\":\"[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]\"}}"
+const ZAI1308_CODE7 = "API Error: 429 {\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1308\",\"message\":\"x\"}}"
+const ZAI1308_TEXT7 = "[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]"
+
+test("#509-FIX7 Р14a: error.code model_not_found -- permanent-model и там, где регэксп молчит; неразборный JSON -- не отказ классификации", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  expect(R514.PROVIDER_GONE_RX.test(PROXY_MNF7), "сообщение \"x\" регэксп не ловит").toBe(false)
+  const rows: Array<[string, string]> = [
+    [PROXY_MNF7, "permanent-model"],
+    ["{\"error\":{\"code\":\"model_not_found\",\"message\":\"x\"}}", "permanent-model"],
+    ["API Error: 400 {\"error\":{\"code\":\"model_not_found\"", "temporary-unknown"],
+    ["API Error: 400 {\"error\":{\"type\":\"invalid_request_error\",\"code\":\"other\",\"message\":\"x\"}}", "temporary-unknown"],
+    ["API Error: 400 {\"error\":{\"message\":\"unknown provider for model grok-4.6\"}}", "permanent-model"],
+  ]
+  expect(rows.map(([l]) => ({ l, c: cr(l, now).class }))).toEqual(rows.map(([l, c]) => ({ l, c })))
+})
+
+test("#509-FIX7 Р14b (а): z.ai 1308 на ступени не-Anthropic -- quota, переход дальше; код 1308 и окно по тексту -- каждый признак сам", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 11, 0, 0)
+  const h = host514("7r14ba", T0, { noProc: true })
+  failoverBindSet("ag-7r14ba", { ladder: ["qwen-t7r14ba"], terminal: "", rungEffort: { "qwen-t7r14ba": "high" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "glm-5.3-t7r14ba": refuseAll514(ZAI1308_7), "qwen-t7r14ba": () => null })
+  const out = await step514(h, "ag-7r14ba", "glm-5.3-t7r14ba", next)
+  expect(next.seen, "квота glm -- переход на следующую ступень").toEqual(["glm-5.3-t7r14ba", "qwen-t7r14ba"])
+  expect(out.value && out.value.text).toBe("OK-qwen-t7r14ba")
+  expect(attempts514(h, "ag-7r14ba").map(r => r.refusalClass)).toEqual(["quota", undefined])
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  expect([ZAI1308_CODE7, ZAI1308_TEXT7].map(l => cr(l, now, "glm-5.3").class), "код 1308 без текста окна; текст окна без JSON").toEqual(["quota", "quota"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX7 Р14b (б): то же тело 1308 на Anthropic-модели -- класс прежний, не quota; QUOTA_RX тело 1308 не ловит", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 11, 10, 0)
+  const h = host514("7r14bb", T0, { noProc: true })
+  failoverBindSet("ag-7r14bb", { ladder: ["qwen-t7r14bb"], terminal: "", rungEffort: { "qwen-t7r14bb": "high" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "claude-opus-5-5-t7r14bb": refuseAll514(ZAI1308_7), "qwen-t7r14bb": () => null })
+  await step514(h, "ag-7r14bb", "claude-opus-5-5-t7r14bb", next)
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const before = cr(ZAI1308_7, now).class
+  expect(before, "прежний класс тела -- не quota").not.toBe("quota")
+  expect(attempts514(h, "ag-7r14bb").map(r => r.refusalClass)[0], "класс лимита Claude не тронут").toBe(before)
+  expect([ZAI1308_7, ZAI1308_CODE7, ZAI1308_TEXT7].map(l => cr(l, now, "claude-opus-5-5").class)).toEqual([ZAI1308_7, ZAI1308_CODE7, ZAI1308_TEXT7].map(l => cr(l, now).class))
+  expect(R514.QUOTA_RX.test(ZAI1308_7), "QUOTA_RX не решает 1308 раньше фильтра модели").toBe(false)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// --- #509-FIX7 Р16: лента диспатчей судье -------------------------------------
+function judge7(tag: string, msgs: any[]): any {
+  const home = "/probes-7r16" + tag
+  const m = mod$393({
+    files: judgeFiles393(home),
+    env: { CLAUDE_PROBES_DIR: home, PWD: "/work-7r16" + tag, CLAUDE_JUDGE: "enforce", CLAUDE_JUDGE_CARRIER: "mod" },
+    now: 97_700_000,
+    answers: ["OK: 7r16" + tag],
+    messages: () => msgs,
+  })
+  const calls: any[] = []
+  const c0 = m.$.model.complete
+  m.$.model.complete = async (arg: any) => { calls.push(arg); return c0(arg) }
+  return { m, calls }
+}
+
+function dispatches7(prompt: string): any[] {
+  const head = "=== DISPATCHES ===\n"
+  const i = prompt.indexOf(head)
+  if (i < 0) return []
+  const body = prompt.slice(i + head.length).split("\n\n=== ")[0]
+  return body.split("\n").filter(l => l.trim()).map(l => JSON.parse(l))
+}
+
+function agentUse7(id: string, type: string, model: string, description: string): any {
+  return { tool_use_id: id, tool: "Agent", input: { subagent_type: type, model, description, prompt: "p " + id } }
+}
+
+test("#509-FIX7 Р16 (а): три Agent в одной строке -- у судьи два now без self и один now + self; DISPATCH несёт self", async () => {
+  await clear393()
+  const msgs = [
+    { role: "user", text: "go", toolUses: [] },
+    { role: "assistant", text: "", toolUses: [agentUse7("tu-7a1", "crit-a", "m-a", "первый"), agentUse7("tu-7a2", "crit-b", "m-b", "второй"), agentUse7("tu-7a3", "crit-c", "m-c", "третий")] },
+  ]
+  const { m, calls } = judge7("a", msgs)
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p tu-7a2", subagent_type: "crit-b", model: "m-b", tool_use_id: "tu-7a2" }, async (e: any) => e)
+  await settle393()
+  expect(calls.length).toBe(1)
+  const prompt = String(calls[0].prompt)
+  expect(dispatches7(prompt)).toEqual([
+    { tool: "Agent", subagent_type: "crit-a", model: "m-a", description: "первый", now: true },
+    { tool: "Agent", subagent_type: "crit-b", model: "m-b", description: "второй", now: true, self: true },
+    { tool: "Agent", subagent_type: "crit-c", model: "m-c", description: "третий", now: true },
+  ])
+  const di = prompt.indexOf("=== DISPATCH ===\n")
+  const dispatch = JSON.parse(prompt.slice(di + "=== DISPATCH ===\n".length).split("\n")[0])
+  expect(dispatch.self, "объект DISPATCH -- сам предмет консультации").toBe(true)
+})
+
+test("#509-FIX7 Р16 (б): прошлая строка -- записи без now; не больше 20 прошлых", async () => {
+  await clear393()
+  const msgs: any[] = []
+  for (let i = 0; i < 22; i++) {
+    msgs.push({ role: "user", text: "q" + i, toolUses: [] })
+    msgs.push({ role: "assistant", text: "", toolUses: [agentUse7("tu-7b-old" + i, "scout", "m-old", "старый " + i)] })
+  }
+  msgs.push({ role: "assistant", text: "", toolUses: [agentUse7("tu-7b-cur", "crit-x", "m-x", "текущий")] })
+  const { m, calls } = judge7("b", msgs)
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p tu-7b-cur", subagent_type: "crit-x", model: "m-x", tool_use_id: "tu-7b-cur" }, async (e: any) => e)
+  await settle393()
+  const d = dispatches7(String(calls[0].prompt))
+  const past = d.filter((x: any) => !x.now)
+  expect({ past: past.length, first: past[0] && past[0].description, pastNow: past.filter((x: any) => x.self).length }).toEqual({ past: 20, first: "старый 2", pastNow: 0 })
+  expect(d.filter((x: any) => x.now)).toEqual([{ tool: "Agent", subagent_type: "crit-x", model: "m-x", description: "текущий", now: true, self: true }])
+})
+
+test("#509-FIX7 Р16 (в): строки текущего вызова нет -- ноль now и одна запись fan-self-absent", async () => {
+  await clear393()
+  const msgs = [
+    { role: "user", text: "go", toolUses: [] },
+    { role: "assistant", text: "", toolUses: [agentUse7("tu-7c-old", "scout", "m-old", "старый")] },
+  ]
+  const { m, calls } = judge7("c", msgs)
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p tu-7c-cur", subagent_type: "crit-x", model: "m-x", tool_use_id: "tu-7c-cur" }, async (e: any) => e)
+  await settle393()
+  const d = dispatches7(String(calls[0].prompt))
+  expect(d).toEqual([{ tool: "Agent", subagent_type: "scout", model: "m-old", description: "старый" }])
+  const absent = shards393(m.writes, "/judge/journal.jsonl.shard.").filter((r: any) => r.outcome === "fan-self-absent")
+  expect(absent.map((r: any) => r.tool_use_id)).toEqual(["tu-7c-cur"])
+})
+
+// --- #509-FIX7b ---------------------------------------------------------------
+test("#509-FIX7b AR8: next бросил тело отказа без префикса и без строки сессии -- ступень дальше с классом тела", async () => {
+  // throw -- бросок next телом без строки сессии; line -- отказ со строкой
+  // сессии, где тело 1308 стоит второй строкой (выбор строки знает модель ступени).
+  const cases: Array<[string, string, string, string, "throw" | "line"]> = [
+    ["b8a", "grok-4.6-t7b8a", "{\"error\":{\"type\":\"invalid_request_error\",\"code\":\"model_not_found\",\"param\":\"model\",\"message\":\"x\"}}", "permanent-model", "throw"],
+    ["b8b", "glm-5.3-t7b8b", "{\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1308\",\"message\":\"[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]\"}}", "quota", "throw"],
+    ["b8c", "grok-4.7-t7b8c", "402 All credentials for model grok-4.7 are parked: the upstream refused to bill them", "quota", "throw"],
+    ["b8d", "glm-5.3-t7b8d", "Working on it.\n[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]", "quota", "line"],
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const [tag, orig, body, cls, mode] of cases) {
+    reset514()
+    const h = host514("7" + tag, Date.UTC(2026, 9, 3, 12, 0, 0))
+    const aid = "ag-7" + tag
+    const rung = "qwen-t7" + tag
+    failoverBindSet(aid, { ladder: [rung], terminal: "", rungEffort: { [rung]: "high" }, subagentType: "t", class: "", sticky: null })
+    const next = next514(h, { [orig]: mode === "throw" ? () => ({ throwSilent: body }) : refuseAll514(body), [rung]: () => null })
+    let out: any = null
+    let threw = ""
+    try { out = await step514(h, aid, orig, next) } catch (x: any) { threw = String((x && x.message) || x) }
+    const known = mode === "throw" ? R514.refusalKnown(body, orig) : R514.refusalLineOfMessages([body], orig).known
+    got.push({ tag, known, seen: next.seen, cls: attempts514(h, aid).map(r => r.refusalClass)[0], text: out && out.value && out.value.text, threw })
+    want.push({ tag, known: true, seen: [orig, rung], cls, text: "OK-" + rung, threw: "" })
+    rungCooldownReset()
+    failoverBindReset()
+  }
+  const pick = R514.refusalLineOfMessages
+  const z = "[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]"
+  got.push({ tag: "messages", glm: pick(["Working on it.\n" + z], "glm-5.3"), opus: pick(["Working on it.\n" + z], "claude-opus-5-5") })
+  want.push({ tag: "messages", glm: { line: z, known: true }, opus: { line: "Working on it.", known: false } })
+  expect(got).toEqual(want)
+})
+
+test("#509-FIX7b AR11: у вызова нет tool_use_id (таймер, classic, tool.call без id) -- DISPATCHES без now/self, записи fan-self-absent нет", async () => {
+  const T0 = 902_700_000
+  const hist = [
+    { role: "user", text: "go", toolUses: [] },
+    { role: "assistant", text: "", toolUses: [agentUse7("tu-7b11-old", "scout", "m-old", "старый")] },
+  ]
+  const pastOnly = [{ tool: "Agent", subagent_type: "scout", model: "m-old", description: "старый" }]
+  // CONSTRAINT: дедуп fan-self-absent -- на процесс; без сброса ключ "" прежнего
+  // зуба глушил бы запись, и мутант снятой проверки жил бы; сброс -- перед каждым.
+  const rs = (): void => { if (typeof R514.fanSelfAbsentReset === "function") R514.fanSelfAbsentReset() }
+  const tk = p5$("7b11t", T0, '[probe.ticker]\nevery_min = 1\nshow = ["dispatches"]\n', { answers: ["OK: t"], messages: () => hist })
+  await saStart(tk)
+  rs()
+  await saTickAt(tk, T0 + SA_MIN)
+  const cl = p5$("7b11c", T0, '[probe.stopper]\non = ["Stop"]\nshow = ["dispatches"]\n', { answers: ["OK: c"], messages: () => hist })
+  await saStart(cl)
+  rs()
+  await p5Classic(cl, "Stop", {}, T0 + SA_MIN)
+  await clear393()
+  rs()
+  const { m, calls } = judge7("b11", hist)
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: "p none", subagent_type: "crit-x", model: "m-x" }, async (e: any) => e)
+  await settle393()
+  const seen = (c: any[], w: any[], probe: string): any => ({
+    calls: c.length,
+    d: c.length ? dispatches7(String(c[0].prompt)) : null,
+    absent: shards393(w, "/" + probe + "/journal.jsonl.shard.").filter((r: any) => r.outcome === "fan-self-absent").length,
+  })
+  expect({
+    timer: seen(tk.calls, tk.m.writes, "ticker"),
+    classic: seen(cl.calls, cl.m.writes, "stopper"),
+    toolCall: seen(calls, m.writes, "judge"),
+  }).toEqual({
+    timer: { calls: 1, d: pastOnly, absent: 0 },
+    classic: { calls: 1, d: pastOnly, absent: 0 },
+    toolCall: { calls: 1, d: pastOnly, absent: 0 },
+  })
+})
+
+// --- #509-FIX8 -------------------------------------------------------------------
+// CONSTRAINT (#509-FIX8 Р1): тела -- многострочный JSON, как его печатает
+// прокси (error.code своей строкой): ни одна строка по отдельности класса не
+// решает, решает тело целиком.
+const MNF_ML8 = "{\n  \"error\": {\n    \"type\": \"invalid_request_error\",\n    \"code\": \"model_not_found\",\n    \"param\": \"model\",\n    \"message\": \"x\"\n  }\n}"
+const ZAI_ML8 = "{\n  \"error\": {\n    \"type\": \"rate_limit_error\",\n    \"code\": \"1308\",\n    \"message\": \"x\"\n  }\n}"
+
+test("#509-FIX8 Р1: многострочное тело отказа -- класс тела (брошенное и строкой истории), следующая ступень в том же шаге", async () => {
+  const cases: Array<[string, string, string, string, "throw" | "line"]> = [
+    ["r1a", "grok-4.6-t8r1a", MNF_ML8, "permanent-model", "throw"],
+    ["r1b", "glm-5.3-t8r1b", ZAI_ML8, "quota", "throw"],
+    ["r1c", "grok-4.6-t8r1c", MNF_ML8, "permanent-model", "line"],
+    ["r1d", "glm-5.3-t8r1d", ZAI_ML8, "quota", "line"],
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const [tag, orig, body, cls, mode] of cases) {
+    reset514()
+    const h = host514("8" + tag, Date.UTC(2026, 9, 3, 12, 20, 0))
+    const aid = "ag-8" + tag
+    const rung = "qwen-t8" + tag
+    failoverBindSet(aid, { ladder: [rung], terminal: "", rungEffort: { [rung]: "high" }, subagentType: "t", class: "", sticky: null })
+    const next = next514(h, { [orig]: mode === "throw" ? () => ({ throwSilent: body }) : refuseAll514(body), [rung]: () => null })
+    let out: any = null
+    let threw = ""
+    try { out = await step514(h, aid, orig, next) } catch (x: any) { threw = String((x && x.message) || x) }
+    const a0 = attempts514(h, aid)[0] || {}
+    got.push({ tag, seen: next.seen, cls: a0.refusalClass, text: a0.refusalText, value: out && out.value && out.value.text, threw })
+    want.push({ tag, seen: [orig, rung], cls, text: body.replace(/\s+/g, " ").trim(), value: "OK-" + rung, threw: "" })
+    rungCooldownReset()
+    failoverBindReset()
+  }
+  const pick = R514.refusalLineOfMessages
+  got.push({
+    tag: "order",
+    lineFirst: pick(["API Error: 500 upstream\n" + MNF_ML8], "grok-4.6"),
+    older: pick([MNF_ML8, "Working on it.\nstill"], "grok-4.6"),
+    noBody: pick(["Working on it.\nstill"], "grok-4.6"),
+  })
+  want.push({
+    tag: "order",
+    lineFirst: { line: "API Error: 500 upstream", known: true },
+    older: { line: MNF_ML8.replace(/\s+/g, " ").trim(), known: true },
+    noBody: { line: "Working on it.", known: false },
+  })
+  expect(got).toEqual(want)
+})
+
+test("#509-FIX8 Р2: 402 в начале строки -- статус только перед пробелом или концом строки; 402/…, 402., 402- -- не квота", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const miss = [new Error("402/report.json: file not found").message, "402.", "402-retry", "402/"]
+  const hit = ["402 Payment Required", "402", "  402 All credentials for model grok-4.7 are parked", "402\tupstream"]
+  const got = miss.concat(hit).map(l => ({ l, rx: R514.QUOTA_RX.test(l), c: cr(l, now, "grok-4.7").class }))
+  const want = miss.map(l => ({ l, rx: false, c: "temporary-unknown" })).concat(hit.map(l => ({ l, rx: true, c: "quota" })))
+  expect(got).toEqual(want)
+  expect(R514.refusalKnown(miss[0], "grok-4.7"), "не статус -- и не известная строка").toBe(false)
+})
+
+test("#509-FIX8 Р3: липкая проверяющего A -- модель, обслуживающая проверяющего B, -- снята; следующей идёт свободная ступень", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 12, 40, 0)
+  const h = host514("8r3", T0, { noProc: true })
+  await spawn514(h, "ag-8r3b", "crit-mech", "qwen-t8r3")
+  const bindA = { ladder: ["qwen-t8r3", "free-t8r3"], terminal: "", rungEffort: { "qwen-t8r3": "high", "free-t8r3": "high" }, subagentType: "t", class: "crit-mech", sticky: "qwen-t8r3" }
+  failoverBindSet("ag-8r3a", Object.assign({}, bindA))
+  const next = next514(h, { "grok-4.7-t8r3": refuseAll514(NORESP6), "qwen-t8r3": () => null, "free-t8r3": () => null })
+  const out = await step514(h, "ag-8r3a", "grok-4.7-t8r3", next)
+  expect(next.seen, "объявленная отказала -- липкая qwen (её держит B) пропущена планом, идёт свободная").toEqual(["grok-4.7-t8r3", "free-t8r3"])
+  expect(out.value && out.value.text).toBe("OK-free-t8r3")
+  expect(attempts514(h, "ag-8r3a").map(r => r.stickyDroppedReviewer), "снятие названо в каждой записи попытки").toEqual([true, true])
+  expect(waits514(h, "ag-8r3a", "reviewer-taken"), "липкая снята планом шага, а не пропуском попытки").toEqual([])
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// CONSTRAINT (#509-FIX8 Р4): next, чей вызов модели ждёт ворот зуба: шаги двух
+// проверяющих перекрываются в порядке, который задаёт зуб. seen -- модели в
+// порядке вызова next; entered -- модель встала на воротах.
+function gated8(h: any, script: { [model: string]: (k: number, now: number) => any }, holds: string[]): any {
+  const base = next514(h, script)
+  const seen: string[] = []
+  const gates: { [m: string]: { open: () => void; p: Promise<void> } } = {}
+  const entered: string[] = []
+  for (const m of holds) {
+    let open: () => void = () => {}
+    const p = new Promise<void>((r) => { open = r })
+    gates[m] = { open, p }
+  }
+  const next: any = (req: any) => {
+    const m = String(req && req.model)
+    seen.push(m)
+    const g = gates[m]
+    if (!g || entered.indexOf(m) >= 0) return base(req)
+    entered.push(m)
+    return (async function* () { await g.p; return yield* base(req) })()
+  }
+  next.seen = seen
+  next.entered = entered
+  next.open = (m: string) => gates[m].open()
+  next.signal = base.signal
+  next.budget = base.budget
+  return next
+}
+
+test("#509-FIX8 Р4 (а): резерв синхронно с выбором -- второй проверяющий не идёт на модель, взятую первым до его успеха, пока впереди есть свободная; свободных нет -- идёт на неё", async () => {
+  const run = async (tag: string, ladderB: string[]): Promise<any> => {
+    await clear393()
+    reset514()
+    const h = host514("8r4" + tag, Date.UTC(2026, 9, 3, 13, 0, 0), { noProc: true })
+    const free = "free-t8r4" + tag
+    const other = "other-t8r4" + tag
+    const declA = "decla-t8r4" + tag
+    const declB = "declb-t8r4" + tag
+    await spawn514(h, "ag-8r4a" + tag, "crit-mech", declA)
+    await spawn514(h, "ag-8r4b" + tag, "crit-mech", declB)
+    failoverBindSet("ag-8r4a" + tag, { ladder: [free], terminal: "", rungEffort: { [free]: "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+    const effB: any = {}
+    for (const m of ladderB) effB[m.replace("#", tag)] = "high"
+    failoverBindSet("ag-8r4b" + tag, { ladder: ladderB.map(m => m.replace("#", tag)), terminal: "", rungEffort: effB, subagentType: "t", class: "crit-mech", sticky: null })
+    const nextA = gated8(h, { [declA]: refuseAll514(NORESP6), [free]: () => null }, [free])
+    const nextB = gated8(h, { [declB]: refuseAll514(NORESP6), [free]: () => null, [other]: () => null }, [declB])
+    const pB = step514(h, "ag-8r4b" + tag, declB, nextB)
+    await settle393()
+    const pA = step514(h, "ag-8r4a" + tag, declA, nextA)
+    await settle393()
+    const midA = nextA.entered.slice()
+    nextB.open(declB)
+    const outB = await pB
+    await settle393()
+    nextA.open(free)
+    const outA = await pA
+    const res = {
+      midA,
+      seenA: nextA.seen, seenB: nextB.seen,
+      outA: outA.value && outA.value.text, outB: outB.value && outB.value.text,
+      taken: waits514(h, "ag-8r4b" + tag, "reviewer-taken").map(r => r.modelRequested),
+    }
+    await clear393()
+    rungCooldownReset()
+    failoverBindReset()
+    return res
+  }
+  const withFree = await run("f", ["free-t8r4#", "other-t8r4#"])
+  expect(withFree, "A держит free (вызов не окончен) -- B пропускает её и идёт на other").toEqual({
+    midA: ["free-t8r4f"],
+    seenA: ["decla-t8r4f", "free-t8r4f"], seenB: ["declb-t8r4f", "other-t8r4f"],
+    outA: "OK-free-t8r4f", outB: "OK-other-t8r4f",
+    taken: ["free-t8r4f"],
+  })
+  const noFree = await run("n", ["free-t8r4#"])
+  expect(noFree, "свободных нет -- B идёт на занятую и не умирает").toEqual({
+    midA: ["free-t8r4n"],
+    seenA: ["decla-t8r4n", "free-t8r4n"], seenB: ["declb-t8r4n", "free-t8r4n"],
+    outA: "OK-free-t8r4n", outB: "OK-free-t8r4n",
+    taken: [],
+  })
+})
+
+test("#509-FIX8 Р4 (б): отказ попытки возвращает прежнюю запись реестра -- третий проверяющий видит модель свободной", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 13, 20, 0)
+  const h = host514("8r4b", T0, { noProc: true })
+  await spawn514(h, "ag-8r4ba", "crit-mech", "decla-t8r4b")
+  await spawn514(h, "ag-8r4bc", "crit-mech", "declc-t8r4b")
+  failoverBindSet("ag-8r4ba", { ladder: ["free-t8r4b"], terminal: "", rungEffort: { "free-t8r4b": "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const nextA = gated8(h, { "decla-t8r4b": refuseAll514(NORESP6), "free-t8r4b": refuseAll514(NORESP6) }, ["free-t8r4b"])
+  nextA.budget = { ms: 10000, remainingMs: 1000 }
+  const pA = step514(h, "ag-8r4ba", "decla-t8r4b", nextA)
+  await settle393()
+  const during = R514.sessionReviewersServedByOthers("ag-8r4bc", T0)
+  nextA.open("free-t8r4b")
+  await pA
+  await settle393()
+  const after = R514.sessionReviewersServedByOthers("ag-8r4bc", T0)
+  expect({ enteredA: nextA.entered, seenA: nextA.seen, during, after }, "резерв виден во время вызова, после отказа запись A -- снова объявленная").toEqual({
+    enteredA: ["free-t8r4b"], seenA: ["decla-t8r4b", "free-t8r4b"], during: ["free-t8r4b"], after: ["decla-t8r4b"],
+  })
+  // CONSTRAINT: метка остывания free от отказа A откладывала бы её в хвост
+  // плана C; зуб меряет реестр проверяющих, не остывание.
+  rungCooldownReset()
+  failoverBindSet("ag-8r4bc", { ladder: ["free-t8r4b", "other-t8r4b"], terminal: "", rungEffort: { "free-t8r4b": "high", "other-t8r4b": "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const nextC = next514(h, { "declc-t8r4b": refuseAll514(NORESP6), "free-t8r4b": () => null, "other-t8r4b": () => null })
+  const outC = await step514(h, "ag-8r4bc", "declc-t8r4b", nextC)
+  expect({ seen: nextC.seen, out: outC.value && outC.value.text }, "free свободна -- C идёт на неё").toEqual({ seen: ["declc-t8r4b", "free-t8r4b"], out: "OK-free-t8r4b" })
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// CONSTRAINT (#509-FIX8b): шаг проверяющего бросается потребителем `.return()`
+// на первом куске ступени rung; объявленная decl отказывает раньше. Реестр
+// меряется глазами другого проверяющего (sessionReviewersServedByOthers).
+async function abandon8b(tag: string, spawned: boolean, chunk: any): Promise<any> {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 13, 40, 0)
+  const h = host514("8b" + tag, T0, { noProc: true })
+  const aid = "ag-8b" + tag
+  const decl = "decl-t8b" + tag
+  const rung = "rung-t8b" + tag
+  if (spawned) await spawn514(h, aid, "crit-mech", decl)
+  failoverBindSet(aid, { ladder: [rung], terminal: "", rungEffort: { [rung]: "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const base = next514(h, { [decl]: refuseAll514(NORESP6) })
+  const next: any = (req: any) => {
+    const m = String(req && req.model)
+    if (m !== rung) return base(req)
+    base.seen.push(m)
+    return (async function* () { yield chunk; await new Promise<void>(() => {}) })()
+  }
+  next.seen = base.seen
+  next.signal = base.signal
+  next.budget = base.budget
+  const view = async (): Promise<string[]> => R514.sessionReviewersServedByOthers("ag-8b-other", await h.m.$.clock.now())
+  const before = await view()
+  const g = hook393(subs393(), "turn.step")(h.m.$, { agentId: aid, turnId: "t-" + aid, index: 0, model: decl, messageCount: 1 }, next)
+  const first = await g.next()
+  const during = await view()
+  const ret = await g.return(undefined)
+  await settle393()
+  const after = await view()
+  const out = { seen: next.seen.slice(), first: first.value, retDone: ret.done, before, during, after }
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+  return out
+}
+
+test("#509-FIX8b (а): генератор шага проверяющего брошен до первого куска с содержимым -- резерв снят: прежняя запись реестра, без прежней -- записи нет", async () => {
+  const svc = { kind: "progress" }
+  const withPrev = await abandon8b("p", true, svc)
+  expect(withPrev, "прежняя запись -- объявленная со спавна").toEqual({
+    seen: ["decl-t8bp", "rung-t8bp"], first: svc, retDone: true,
+    before: ["decl-t8bp"], during: ["rung-t8bp"], after: ["decl-t8bp"],
+  })
+  const noPrev = await abandon8b("n", false, svc)
+  expect(noPrev, "прежней записи не было -- записи нет").toEqual({
+    seen: ["decl-t8bn", "rung-t8bn"], first: svc, retDone: true,
+    before: [], during: ["rung-t8bn"], after: [],
+  })
+})
+
+test("#509-FIX8b (б): генератор шага проверяющего брошен после куска с содержимым -- ступень состоялась, резерв на месте", async () => {
+  const part = { kind: "text", index: 0, text: "part-8b" }
+  const got = await abandon8b("c", true, part)
+  expect(got).toEqual({
+    seen: ["decl-t8bc", "rung-t8bc"], first: part, retDone: true,
+    before: ["decl-t8bc"], during: ["rung-t8bc"], after: ["rung-t8bc"],
+  })
+})
+
+// CONSTRAINT (#509-FIX8 Р6): потеря места видна полем `lost` записей журнала
+// этого стенда или ещё не слитым lostWrites модуля.
+function lost8(writes: { path: string; text: string }[]): Record<string, { n: number; last: string }> {
+  const out: Record<string, { n: number; last: string }> = {}
+  const add = (lost: any): void => {
+    for (const k of Object.keys(lost || {})) {
+      out[k] = out[k] ? { n: out[k].n + Number(lost[k].n), last: String(lost[k].last) } : { n: Number(lost[k].n), last: String(lost[k].last) }
+    }
+  }
+  for (const w of writes) {
+    let r: any = null
+    try { r = JSON.parse(String(w.text)) } catch (x) { r = null }
+    if (r && typeof r === "object" && r.lost) add(r.lost)
+  }
+  add(registerModule393.lostWritesSnapshot())
+  return out
+}
+
+test("#509-FIX8 Р6: чтение истории проиграло сроку D, потом бросило -- noteLost failover-history-late с причиной", async () => {
+  await drainFold393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 13, 40, 0)
+  let hh: any = null
+  const h = host514("8r6", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "2000" },
+    doorCost: (door, n) => (door === "messages" && n === 3 ? 1100 : 0),
+    afterFire: true,
+    onMessages: (n) => { hh.messagesThrow = n === 3 },
+  })
+  hh = h
+  failoverBindSet("ag-8r6", { ladder: [], terminal: "claude-t8r6", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "claude-t8r6": (k) => (k === 0 ? NORESP6 : null) })
+  const out = await step514(h, "ag-8r6", "claude-t8r6", next)
+  await settle393()
+  expect(out.value && out.value.text).toBe("OK-claude-t8r6")
+  expect(waits514(h, "ag-8r6", "history-past-deadline").map(r => r.forAttempt), "чтение проиграло сроку").toEqual([1])
+  const lost = lost8(h.m.writes)["failover-history-late"]
+  expect(lost && lost.last, "поздний отказ чтения назван сайтом и причиной").toBe("session.messages: scripted refusal")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX8 Р13: мёртвый провайдер и статус 402 в одной строке -- permanent-model: PROVIDER_GONE решает раньше QUOTA", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const l = "API Error: 402 model x is not available on this server"
+  expect({ gone: R514.PROVIDER_GONE_RX.test(l), quota: R514.QUOTA_RX.test(l), c: cr(l, now, "grok-4.7").class }).toEqual({ gone: true, quota: true, c: "permanent-model" })
+})
+
+// --- #509-FIX8c ------------------------------------------------------------------
+// CONSTRAINT (#509-FIX8c Р1): строка message каждого тела по отдельности решает
+// другой класс, чем error.code: класс по коду доказывает, что тело решает раньше строк.
+const MNFQ8C = "{\n  \"error\": {\n    \"code\": \"model_not_found\",\n    \"message\": \"quota exhausted\"\n  }\n}"
+const ZUP8C = "{\n  \"error\": {\n    \"code\": \"1308\",\n    \"message\": \"unknown provider\"\n  }\n}"
+
+test("#509-FIX8c Р1 (а): сообщение целиком JSON -- класс по error.code раньше строки message; бросок next этим текстом -- тот же класс, следующая ступень", async () => {
+  const pick = R514.refusalLineOfMessages
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const cases: Array<[string, string, string, string]> = [
+    ["c1a", "grok-4.6-t8c1a", MNFQ8C, "permanent-model"],
+    ["c1b", "glm-5.3-t8c1b", ZUP8C, "quota"],
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const [tag, orig, body, cls] of cases) {
+    const flat = body.replace(/\s+/g, " ").trim()
+    const p = pick([body], orig)
+    got.push({ tag, pick: p, cls: cr(p.line, now, orig).class })
+    want.push({ tag, pick: { line: flat, known: true }, cls })
+    reset514()
+    const h = host514("8" + tag, Date.UTC(2026, 9, 3, 14, 0, 0))
+    const aid = "ag-8" + tag
+    const rung = "qwen-t8" + tag
+    failoverBindSet(aid, { ladder: [rung], terminal: "", rungEffort: { [rung]: "high" }, subagentType: "t", class: "", sticky: null })
+    const next = next514(h, { [orig]: () => ({ throwSilent: body }), [rung]: () => null })
+    let out: any = null
+    let threw = ""
+    try { out = await step514(h, aid, orig, next) } catch (x: any) { threw = String((x && x.message) || x) }
+    const a0 = attempts514(h, aid)[0] || {}
+    got.push({ tag: tag + "-throw", seen: next.seen, cls: a0.refusalClass, text: a0.refusalText, value: out && out.value && out.value.text, threw })
+    want.push({ tag: tag + "-throw", seen: [orig, rung], cls, text: flat, value: "OK-" + rung, threw: "" })
+    rungCooldownReset()
+    failoverBindReset()
+  }
+  expect(got).toEqual(want)
+})
+
+test("#509-FIX8c Р1 (б): JSON внутри прозы класса тела не получает -- known:false", () => {
+  const swe2 = "Ответ от шлюза:\n{\n  \"error\": { \"code\": \"model_not_found\" }\n}"
+  expect(R514.refusalLineOfMessages([swe2], "grok-4.6")).toEqual({ line: "Ответ от шлюза:", known: false })
+})
+
+test("#509-FIX8c Р2: чтение истории проиграло сроку D, потом отклонено значением null -- noteLost failover-history-late называет отказ без значения", async () => {
+  await drainFold393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 14, 20, 0)
+  const h = host514("8cr2", T0, {
+    env: { CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "2000" },
+    doorCost: (door, n) => (door === "messages" && n === 3 ? 1100 : 0),
+    afterFire: true,
+    onMessages: (n) => { if (n === 3) throw null },
+  })
+  failoverBindSet("ag-8cr2", { ladder: [], terminal: "claude-t8cr2", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "claude-t8cr2": (k) => (k === 0 ? NORESP6 : null) })
+  const out = await step514(h, "ag-8cr2", "claude-t8cr2", next)
+  await settle393()
+  expect(out.value && out.value.text).toBe("OK-claude-t8cr2")
+  expect(waits514(h, "ag-8cr2", "history-past-deadline").map(r => r.forAttempt), "чтение проиграло сроку").toEqual([1])
+  const lost = lost8(h.m.writes)["failover-history-late"]
+  expect(lost && lost.last, "поздний отказ без значения назван").toBe("(отказ без значения: null)")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX8c Р3: поток ступени проверяющего завис до первого куска, потребитель отменил next.signal -- резерв снят без ожидания .next()", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 14, 40, 0)
+  const h = host514("8cr3", T0, { noProc: true })
+  const aid = "ag-8cr3"
+  const decl = "decl-t8cr3"
+  const rung = "rung-t8cr3"
+  await spawn514(h, aid, "crit-mech", decl)
+  failoverBindSet(aid, { ladder: [rung], terminal: "", rungEffort: { [rung]: "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const base = next514(h, { [decl]: refuseAll514(NORESP6) })
+  const ac = new AbortController()
+  const next: any = (req: any) => {
+    const m = String(req && req.model)
+    if (m !== rung) return base(req)
+    base.seen.push(m)
+    return (async function* () { await new Promise<void>(() => {}) })()
+  }
+  next.seen = base.seen
+  next.signal = ac.signal
+  next.budget = base.budget
+  const view = async (): Promise<string[]> => R514.sessionReviewersServedByOthers("ag-8cr3-other", await h.m.$.clock.now())
+  const before = await view()
+  const g = hook393(subs393(), "turn.step")(h.m.$, { agentId: aid, turnId: "t-" + aid, index: 0, model: decl, messageCount: 1 }, next)
+  void g.next()
+  for (let i = 0; i < 40 && next.seen.length < 2; i++) await settle393()
+  await settle393()
+  const during = await view()
+  ac.abort()
+  const after = await view()
+  expect({ seen: next.seen.slice(), before, during, after }, "поток висит -- .next() не вернётся; резерв снимает отмена сигнала").toEqual({
+    seen: [decl, rung], before: [decl], during: [rung], after: [decl],
+  })
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX8c Р4: два резерва одного агента с той же моделью и тем же t -- restore первого не трогает запись второго", () => {
+  sessionExecutorsReset()
+  const T = Date.UTC(2026, 9, 3, 15, 0, 0)
+  R514.sessionReviewerServedSet("ag-8cr4", "m-t8cr4", T)
+  const first = R514.sessionReviewerServedGet("ag-8cr4")
+  R514.sessionReviewerServedSet("ag-8cr4", "m-t8cr4", T)
+  const second = R514.sessionReviewerServedGet("ag-8cr4")
+  R514.sessionReviewerServedRestore("ag-8cr4", first, [])
+  expect({ cur: R514.sessionReviewerServedGet("ag-8cr4"), view: R514.sessionReviewersServedByOthers("ag-8cr4-other", T) }).toEqual({ cur: second, view: ["m-t8cr4"] })
+  sessionExecutorsReset()
+})
+
+test("#509-FIX8c Р7: реестр полон (64), резервы нового проверяющего без прежней записи отказали -- все 64 прежние записи на месте", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 15, 20, 0)
+  const h = host514("8cr7", T0, { noProc: true })
+  for (let k = 0; k < R514.SESSION_REVIEWER_SERVED_CAP; k++) R514.sessionReviewerServedSet("ag-8cr7-" + k, "m" + k + "-t8cr7", T0 - 1000)
+  const before = R514.sessionReviewersServedByOthers("ag-8cr7-view", T0).slice().sort()
+  failoverBindSet("ag-8cr7", { ladder: ["rung-t8cr7"], terminal: "", rungEffort: { "rung-t8cr7": "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next514(h, { "decl-t8cr7": refuseAll514(NORESP6), "rung-t8cr7": refuseAll514(NORESP6) })
+  next.budget = { ms: 10000, remainingMs: 1000 }
+  await step514(h, "ag-8cr7", "decl-t8cr7", next)
+  const after = R514.sessionReviewersServedByOthers("ag-8cr7-view", T0).slice().sort()
+  expect({ seen: next.seen, n: before.length, after }, "каждый резерв вытеснял старейшую чужую запись; отказ возвращает её").toEqual({
+    seen: ["decl-t8cr7", "rung-t8cr7"], n: 64, after: before,
+  })
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// CONSTRAINT (#509-FIX8c Р6, #509-FIX8d Р1): B занимает X между выбором цели и
+// пробой (запись wait-probe на X): занятую заранее X wakeTarget проверяющего не
+// выбирает, и проба X не наступила бы. Запись реестра -- та, что делает спавн B
+// с объявленной X; успешный шаг B на X снял бы метку X (noteModelSuccess), и A
+// ушёл бы в проход пробуждения. Отказ X и Y -- quota (метка 60 мин): метка
+// temporary-unknown истекает раньше сердцебиения 240 с.
+test("#509-FIX8c Р6: проверяющий A ждёт на ступени X, проверяющий B занял X, сердцебиение A -- reviewer-taken, A идёт на следующую свободную ступень", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 12, 0, 0)
+  const X = "x-t8cr6"
+  const Y = "y-t8cr6"
+  const declA = "decla-t8cr6"
+  const h = host514("8cr6", T0)
+  const w0 = h.m.$.fs.write
+  let armed = false
+  h.m.$.fs.write = async (p: string, text: string) => {
+    const s = String(text)
+    if (!armed && s.indexOf('"outcome":"wait-probe"') >= 0 && s.indexOf('"model":"' + X + '"') >= 0) {
+      armed = true
+      R514.sessionReviewerServedSet("ag-8cr6b", X, await h.m.$.clock.now())
+    }
+    return await w0(p, text)
+  }
+  failoverBindSet("ag-8cr6a", { ladder: [X, Y], terminal: "", rungEffort: { [X]: "high", [Y]: "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next514(h, {
+    [declA]: refuseAll514(LIMIT11),
+    [X]: (k) => (k === 0 ? "402 Payment Required" : null),
+    [Y]: (k) => (k === 0 ? "402 Payment Required" : null),
+  })
+  const out = await step514(h, "ag-8cr6a", declA, next)
+  expect({
+    seen: next.seen,
+    out: out.value && out.value.text,
+    probes: waits514(h, "ag-8cr6a", "wait-probe").map(r => r.kind + ":" + r.model),
+    taken: waits514(h, "ag-8cr6a", "reviewer-taken").map(r => r.modelRequested),
+  }).toEqual({ seen: [declA, X, Y, Y], out: "OK-" + Y, probes: ["heartbeat:" + X], taken: [X] })
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// --- #509-FIX8d ------------------------------------------------------------------
+// CONSTRAINT (#509-FIX8d Р1): X уходит из плана по известному сбросу (12:20)
+// только в проходе пробуждения (skipKnown): объявленная сперва отказывает
+// коротко (30 с) и будит проход, затем квотой (60 мин) -- тогда ближайшая цель
+// ожидания -- X вне плана. Окно зуба -- 10 мин, X за него не остывает.
+async function outOfPlan8d(tag: string, take: "spawn" | "race"): Promise<any> {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 12, 0, 0)
+  const X = "x-t8d" + tag
+  const declA = "decla-t8d" + tag
+  const aid = "ag-8d" + tag + "a"
+  const bid = "ag-8d" + tag + "b"
+  let hh: any = null
+  let nx: any = null
+  let spawnB: any = null
+  const h = host514("8d" + tag, T0, {
+    sleepHook: (n, now) => {
+      if (take === "spawn" && n === 1) spawnB = spawn514(hh, bid, "crit-mech", X)
+      if (now >= T0 + 600000) nx.signal.aborted = true
+    },
+  })
+  hh = h
+  if (take === "race") {
+    const w0 = h.m.$.fs.write
+    let armed = false
+    h.m.$.fs.write = async (p: string, text: string) => {
+      const s = String(text)
+      if (!armed && s.indexOf('"outcome":"wait-probe"') >= 0 && s.indexOf('"model":"' + X + '"') >= 0) {
+        armed = true
+        R514.sessionReviewerServedSet(bid, X, await h.m.$.clock.now())
+      }
+      return await w0(p, text)
+    }
+  }
+  failoverBindSet(aid, { ladder: [X], terminal: "", rungEffort: { [X]: "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  nx = next514(h, {
+    [declA]: (k) => (k === 0 ? NORESP6 : "402 Payment Required"),
+    [X]: (k) => (k === 0 ? "You've hit your session limit · resets 12:20pm (UTC)" : null),
+  })
+  const out = await step514(h, aid, declA, nx)
+  if (spawnB) await spawnB
+  const res = {
+    xCalls: nx.seen.filter((m: string) => m === X).length,
+    calls: nx.seen.length,
+    served: out && out.value && out.value.text,
+    skippedKnown: waits514(h, aid, "skipped-known-until").map(r => r.model),
+    probesOnX: waits514(h, aid, "wait-probe").filter(r => r.model === X).map(r => r.kind),
+    taken: waits514(h, aid, "reviewer-taken").map(r => r.modelRequested),
+    aborted: waits514(h, aid, "wait-aborted").length,
+  }
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+  return res
+}
+
+test("#509-FIX8d Р1 (а): единственная цель вне плана -- X с меткой сброса, X держит другой проверяющий -- wakeTarget X не выбирает, шаг на X не обслужен", async () => {
+  const got = await outOfPlan8d("a", "spawn")
+  expect({ xCalls: got.xCalls, served: got.served, skippedKnown: got.skippedKnown.slice(0, 1), probesOnX: got.probesOnX, taken: got.taken, aborted: got.aborted },
+    "X вне плана (skipped-known-until), занята B -- цель ожидания не X, проб на X нет").toEqual({
+    xCalls: 1, served: undefined, skippedKnown: ["x-t8da"], probesOnX: [], taken: [], aborted: 1,
+  })
+})
+
+test("#509-FIX8d Р1 (б): X заняли между выбором цели и пробой -- reviewer-taken, шаг на X не обслужен; дальше без X и без горячего цикла", async () => {
+  const got = await outOfPlan8d("b", "race")
+  expect({ xCalls: got.xCalls, served: got.served, skippedKnown: got.skippedKnown.slice(0, 1), probesOnX: got.probesOnX, taken: got.taken, aborted: got.aborted },
+    "проба X по сердцебиению -- X занята к моменту пробы").toEqual({
+    xCalls: 1, served: undefined, skippedKnown: ["x-t8db"], probesOnX: ["heartbeat"], taken: ["x-t8db"], aborted: 1,
+  })
+  expect(got.calls, "вызовов модели за окно 10 мин -- не больше 6: первый проход (2), пробуждение, продолжение плана после reviewer-taken, два сердцебиения").toBeLessThanOrEqual(6)
+})
+
+// CONSTRAINT (#509-FIX8e): объявленная отказывает дефектом запроса (stepRequest)
+// и из кандидатов цели выходит; единственный кандидат -- терминал, который держит
+// другой проверяющий. Терминал свободен (AR-1 FIX8d): вычитание его дало бы
+// wait-no-target вместо ожидания.
+test("#509-FIX8e: единственный кандидат цели ожидания -- терминал, его держит другой проверяющий -- цель терминал, wait-no-target нет, сердцебиение обслужено терминалом", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 16, 0, 0)
+  const h = host514("8e", T0)
+  const aid = "ag-8ea"
+  const declA = "decla-t8e"
+  const term = "claude-t8e"
+  await spawn514(h, "ag-8eb", "crit-mech", term)
+  failoverBindSet(aid, { ladder: [], terminal: term, rungEffort: {}, subagentType: "t", class: "crit-mech", sticky: null })
+  const held = R514.sessionReviewersServedByOthers(aid, T0)
+  const next = next514(h, {
+    [declA]: refuseAll514("Prompt is too long"),
+    [term]: (k) => (k === 0 ? "402 Payment Required" : null),
+  })
+  const out = await step514(h, aid, declA, next)
+  expect({
+    held: held.indexOf(term) >= 0,
+    seen: next.seen,
+    out: out && out.value && out.value.text,
+    noTarget: waits514(h, aid, "wait-no-target").length,
+    probes: waits514(h, aid, "wait-probe").map(r => r.kind + ":" + r.model),
+    taken: waits514(h, aid, "reviewer-taken").length,
+  }, "терминал, занятый B, остаётся целью ожидания A").toEqual({
+    held: true, seen: [declA, term, term], out: "OK-" + term, noTarget: 0, probes: ["heartbeat:" + term], taken: 0,
+  })
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// --- #509-FIX8f ------------------------------------------------------------------
+// CONSTRAINT (#509-FIX8f Р1): P -- запись агента до резервов; резервы A и B
+// одного агента на одной модели в один момент, restore -- в порядке order.
+function chain8f(tag: string, order: "ab" | "ba"): any {
+  sessionExecutorsReset()
+  const T = Date.UTC(2026, 9, 3, 16, 0, 0)
+  const aid = "ag-8f" + tag
+  R514.sessionReviewerServedSet(aid, "p-t8f" + tag, T - 1000)
+  const P = R514.sessionReviewerServedGet(aid)
+  const evA = R514.sessionReviewerServedSet(aid, "x-t8f" + tag, T, { reserve: true })
+  const A = R514.sessionReviewerServedGet(aid)
+  const evB = R514.sessionReviewerServedSet(aid, "x-t8f" + tag, T, { reserve: true })
+  const B = R514.sessionReviewerServedGet(aid)
+  if (order === "ab") {
+    R514.sessionReviewerServedRestore(aid, A, evA)
+    R514.sessionReviewerServedRestore(aid, B, evB)
+  } else {
+    R514.sessionReviewerServedRestore(aid, B, evB)
+    R514.sessionReviewerServedRestore(aid, A, evA)
+  }
+  const cur = R514.sessionReviewerServedGet(aid)
+  const out = { isP: cur === P, model: cur && cur.model, view: R514.sessionReviewersServedByOthers(aid + "-other", T) }
+  sessionExecutorsReset()
+  return out
+}
+
+test("#509-FIX8f Р1 (а): P, резерв A, резерв B, restore A, restore B -- запись агента P", () => {
+  expect(chain8f("a", "ab")).toEqual({ isP: true, model: "p-t8fa", view: ["p-t8fa"] })
+})
+
+test("#509-FIX8f Р1 (б): P, резерв A, резерв B, restore B, restore A -- запись агента P", () => {
+  expect(chain8f("b", "ba")).toEqual({ isP: true, model: "p-t8fb", view: ["p-t8fb"] })
+})
+
+test("#509-FIX8f Р1 (в): P, резерв A, успех A, резерв B, restore B -- запись агента -- успех A", () => {
+  sessionExecutorsReset()
+  const T = Date.UTC(2026, 9, 3, 16, 10, 0)
+  const aid = "ag-8fc"
+  R514.sessionReviewerServedSet(aid, "p-t8fc", T - 1000)
+  R514.sessionReviewerServedSet(aid, "x-t8fc", T, { reserve: true })
+  R514.sessionReviewerServedSet(aid, "x-t8fc", T + 500)
+  const S = R514.sessionReviewerServedGet(aid)
+  const evB = R514.sessionReviewerServedSet(aid, "y-t8fc", T + 1000, { reserve: true })
+  const B = R514.sessionReviewerServedGet(aid)
+  R514.sessionReviewerServedRestore(aid, B, evB)
+  const cur = R514.sessionReviewerServedGet(aid)
+  expect({ isS: cur === S, model: cur && cur.model, t: cur && cur.t }).toEqual({ isS: true, model: "x-t8fc", t: T + 500 })
+  sessionExecutorsReset()
+})
+
+// CONSTRAINT (#509-FIX8f Р1 (г)): поток abandon8b, но запись читается до
+// clear393 -- /clear сбрасывает реестр.
+test("#509-FIX8f Р1 (г): ступень проверяющего выдала содержимое, резерв остался -- связь резерва с прежней записью снята", async () => {
+  await clear393()
+  reset514()
+  const h = host514("8fg", Date.UTC(2026, 9, 3, 16, 30, 0), { noProc: true })
+  const aid = "ag-8fg"
+  const decl = "decl-t8fg"
+  const rung = "rung-t8fg"
+  await spawn514(h, aid, "crit-mech", decl)
+  failoverBindSet(aid, { ladder: [rung], terminal: "", rungEffort: { [rung]: "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const base = next514(h, { [decl]: refuseAll514(NORESP6) })
+  const part = { kind: "text", index: 0, text: "part-8fg" }
+  const next: any = (req: any) => {
+    const m = String(req && req.model)
+    if (m !== rung) return base(req)
+    base.seen.push(m)
+    return (async function* () { yield part; await new Promise<void>(() => {}) })()
+  }
+  next.seen = base.seen
+  next.signal = base.signal
+  next.budget = base.budget
+  const g = hook393(subs393(), "turn.step")(h.m.$, { agentId: aid, turnId: "t-" + aid, index: 0, model: decl, messageCount: 1 }, next)
+  const first = await g.next()
+  const during = R514.sessionReviewerServedGet(aid)
+  const linkedDuring = !!(during && during.prevRec)
+  await g.return(undefined)
+  await settle393()
+  const rec = R514.sessionReviewerServedGet(aid)
+  const got = { seen: next.seen.slice(), first: first.value, linkedDuring, same: rec === during, model: rec && rec.model, linked: !!(rec && rec.prevRec) }
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+  expect(got).toEqual({ seen: [decl, rung], first: part, linkedDuring: true, same: true, model: rung, linked: false })
+})
+
+test("#509-FIX8f Р1 (е): ступень проверяющего успешна -- связь её резерва с прежней записью снята, в реестре новая запись успеха", async () => {
+  await clear393()
+  reset514()
+  const h = host514("8fe", Date.UTC(2026, 9, 3, 16, 35, 0), { noProc: true })
+  const aid = "ag-8fe"
+  const decl = "decl-t8fe"
+  const rung = "rung-t8fe"
+  await spawn514(h, aid, "crit-mech", decl)
+  failoverBindSet(aid, { ladder: [rung], terminal: "", rungEffort: { [rung]: "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const base = next514(h, { [decl]: refuseAll514(NORESP6) })
+  let during: any = null
+  let linkedDuring = false
+  const next: any = (req: any) => {
+    const m = String(req && req.model)
+    if (m !== rung) return base(req)
+    base.seen.push(m)
+    return (async function* () {
+      during = R514.sessionReviewerServedGet(aid)
+      linkedDuring = !!(during && during.prevRec)
+      return { usage: { out: 1 }, stopReason: "end_turn", text: "OK-" + rung }
+    })()
+  }
+  next.seen = base.seen
+  next.signal = base.signal
+  next.budget = base.budget
+  const out = await step514(h, aid, decl, next)
+  const rec = R514.sessionReviewerServedGet(aid)
+  const got = { seen: next.seen.slice(), out: out && out.value && out.value.text, linkedDuring, reserveLinked: !!(during && during.prevRec), fresh: !!rec && rec !== during, model: rec && rec.model, linked: !!(rec && rec.prevRec) }
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+  expect(got).toEqual({ seen: [decl, rung], out: "OK-" + rung, linkedDuring: true, reserveLinked: false, fresh: true, model: rung, linked: false })
+})
+
+test("#509-FIX8f Р1 (д): вытесненная запись -- отменённый резерв другого агента -- возврат ставит его прежнюю запись, не отменённый резерв", () => {
+  sessionExecutorsReset()
+  const T0 = Date.UTC(2026, 9, 3, 16, 20, 0)
+  const x = "ag-8fdx"
+  R514.sessionReviewerServedSet(x, "px-t8fd", T0 - 100000)
+  const PX = R514.sessionReviewerServedGet(x)
+  for (let k = 1; k < R514.SESSION_REVIEWER_SERVED_CAP; k++) R514.sessionReviewerServedSet("ag-8fd-" + k, "m" + k + "-t8fd", T0 - 50000 + k)
+  const evX = R514.sessionReviewerServedSet(x, "rx-t8fd", T0 - 90000, { reserve: true })
+  const RX = R514.sessionReviewerServedGet(x)
+  const evA = R514.sessionReviewerServedSet("ag-8fda", "a-t8fd", T0, { reserve: true })
+  const RA = R514.sessionReviewerServedGet("ag-8fda")
+  R514.sessionReviewerServedRestore(x, RX, evX)
+  R514.sessionReviewerServedRestore("ag-8fda", RA, evA)
+  const cur = R514.sessionReviewerServedGet(x)
+  expect({ evX: evX.length, evA: evA.map((e: any) => e[0]), isPX: cur === PX, model: cur && cur.model, a: R514.sessionReviewerServedGet("ag-8fda") === undefined }).toEqual({
+    evX: 0, evA: [x], isPX: true, model: "px-t8fd", a: true,
+  })
+  sessionExecutorsReset()
+})
+
+test("#509-FIX8f Р2 (а): сообщение -- JSON-документ без класса тела -- его строки не проверяются: {\"samples\":[402]} -- known:false", () => {
+  expect(R514.refusalLineOfMessages(["{\"samples\":[\n402\n]}"], "grok-4.7-t8f2").known).toBe(false)
+})
+
+test("#509-FIX8f Р2 (б): многострочный JSON-массив с объектом ошибки model_not_found -- permanent-model", () => {
+  const body = "[{\n \"error\": { \"code\": \"model_not_found\" }\n}]"
+  const p = R514.refusalLineOfMessages([body], "grok-4.7-t8f2")
+  const c = R514.classifyRefusal(p.line, Date.parse("2026-10-03T09:00:00Z"), "grok-4.7-t8f2").class
+  expect({ known: p.known, c }).toEqual({ known: true, c: "permanent-model" })
+})
+
+test("#509-FIX8f Р2 (в): однострочный JSON-массив с объектом ошибки model_not_found -- permanent-model", () => {
+  const body = "[{\"error\":{\"code\":\"model_not_found\"}}]"
+  const p = R514.refusalLineOfMessages([body], "grok-4.7-t8f2")
+  const c = R514.classifyRefusal(p.line, Date.parse("2026-10-03T09:00:00Z"), "grok-4.7-t8f2").class
+  expect({ known: p.known, c }).toEqual({ known: true, c: "permanent-model" })
+})
+
+test("#509-FIX8f Р5 (а): реестр R1…R64 по возрастанию t, резерв нового A без прежней записи, restore -- постановка C вытесняет R1, а не R2", () => {
+  sessionExecutorsReset()
+  const T0 = Date.UTC(2026, 9, 3, 16, 40, 0)
+  const cap = R514.SESSION_REVIEWER_SERVED_CAP
+  for (let k = 1; k <= cap; k++) R514.sessionReviewerServedSet("ag-8f5a-" + k, "m" + k + "-t8f5a", T0 - (cap + 1 - k) * 1000)
+  const evA = R514.sessionReviewerServedSet("ag-8f5a-a", "a-t8f5a", T0, { reserve: true })
+  const A = R514.sessionReviewerServedGet("ag-8f5a-a")
+  R514.sessionReviewerServedRestore("ag-8f5a-a", A, evA)
+  const evC = R514.sessionReviewerServedSet("ag-8f5a-c", "c-t8f5a", T0 + 1000)
+  expect({
+    evA: evA.map((e: any) => e[0]), evC: evC.map((e: any) => e[0]),
+    r1: R514.sessionReviewerServedGet("ag-8f5a-1") !== undefined, r2: R514.sessionReviewerServedGet("ag-8f5a-2") !== undefined,
+    a: R514.sessionReviewerServedGet("ag-8f5a-a") !== undefined,
+  }).toEqual({ evA: ["ag-8f5a-1"], evC: ["ag-8f5a-1"], r1: false, r2: true, a: false })
+  sessionExecutorsReset()
+})
+
+test("#509-FIX8f Р5 (б): restore при чужом seq возвращает запись, вытесненную этим резервом", () => {
+  sessionExecutorsReset()
+  const T0 = Date.UTC(2026, 9, 3, 17, 0, 0)
+  const cap = R514.SESSION_REVIEWER_SERVED_CAP
+  for (let k = 1; k < cap; k++) R514.sessionReviewerServedSet("ag-8f5b-" + k, "m" + k + "-t8f5b", T0 - (cap - k) * 1000)
+  const evB = R514.sessionReviewerServedSet("ag-8f5b-b", "b-t8f5b", T0, { reserve: true })
+  const B = R514.sessionReviewerServedGet("ag-8f5b-b")
+  const evA = R514.sessionReviewerServedSet("ag-8f5b-a", "a-t8f5b", T0, { reserve: true })
+  const A = R514.sessionReviewerServedGet("ag-8f5b-a")
+  R514.sessionReviewerServedSet("ag-8f5b-a", "a2-t8f5b", T0, { reserve: true })
+  const A2 = R514.sessionReviewerServedGet("ag-8f5b-a")
+  R514.sessionReviewerServedRestore("ag-8f5b-b", B, evB)
+  R514.sessionReviewerServedRestore("ag-8f5b-a", A, evA)
+  expect({
+    evB: evB.length, evA: evA.map((e: any) => e[0]),
+    r1: R514.sessionReviewerServedGet("ag-8f5b-1") !== undefined, isA2: R514.sessionReviewerServedGet("ag-8f5b-a") === A2,
+    n: R514.sessionReviewersServedByOthers("ag-8f5b-view", T0).length,
+  }).toEqual({ evB: 0, evA: ["ag-8f5b-1"], r1: true, isA2: true, n: cap })
+  sessionExecutorsReset()
+})
+
+test("#509-FIX8g: полный реестр, резерв A вытесняет R1, сброс реестра новой сессией, restore A -- реестр новой сессии пуст, R1 не вернулась", () => {
+  sessionExecutorsReset()
+  const T0 = Date.UTC(2026, 9, 3, 17, 20, 0)
+  const cap = R514.SESSION_REVIEWER_SERVED_CAP
+  for (let k = 1; k <= cap; k++) R514.sessionReviewerServedSet("ag-8g-" + k, "m" + k + "-t8g", T0 - (cap + 1 - k) * 1000)
+  const evA = R514.sessionReviewerServedSet("ag-8g-a", "a-t8g", T0, { reserve: true })
+  const A = R514.sessionReviewerServedGet("ag-8g-a")
+  sessionExecutorsReset()
+  R514.sessionReviewerServedRestore("ag-8g-a", A, evA)
+  expect({
+    evA: evA.map((e: any) => e[0]), cancelled: !!(A && A.cancelled),
+    r1: R514.sessionReviewerServedGet("ag-8g-1") !== undefined,
+    view: R514.sessionReviewersServedByOthers("ag-8g-view", T0),
+  }).toEqual({ evA: ["ag-8g-1"], cancelled: true, r1: false, view: [] })
+  sessionExecutorsReset()
+})
+
+// --- #509-FIX8h ------------------------------------------------------------------
+test("#509-FIX8h Р2 (а): шаги проверяющего и исполнителя начаты до сброса реестров, успех после -- реестр проверяющих и модели исполнителей новой сессии пусты", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 17, 40, 0)
+  const h = host514("8h2a", T0, { noProc: true })
+  let open: () => void = () => {}
+  const gate = new Promise<void>(r => { open = r })
+  const seen: string[] = []
+  const mk = (model: string): any => {
+    const next: any = (req: any) => {
+      const m = String(req && req.model)
+      seen.push(m)
+      return (async function* () {
+        await gate
+        return { usage: { out: 1 }, stopReason: "end_turn", text: "OK-" + m }
+      })()
+    }
+    next.signal = { aborted: false }
+    next.budget = { ms: 10000, remainingMs: Infinity }
+    return next
+  }
+  failoverBindSet("ag-8h2ar", { ladder: ["rung-t8h2ar"], terminal: "", rungEffort: { "rung-t8h2ar": "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  failoverBindSet("ag-8h2ae", { ladder: ["rung-t8h2ae"], terminal: "", rungEffort: { "rung-t8h2ae": "high" }, subagentType: "t", class: "exec-0n", sticky: null })
+  const pr = step514(h, "ag-8h2ar", "decl-t8h2ar", mk("decl-t8h2ar"))
+  const pe = step514(h, "ag-8h2ae", "decl-t8h2ae", mk("decl-t8h2ae"))
+  for (let i = 0; i < 40 && seen.length < 2; i++) await settle393()
+  const heldBefore = R514.sessionReviewerServedGet("ag-8h2ar") !== undefined
+  sessionExecutorsReset()
+  open()
+  const outR = await pr
+  const outE = await pe
+  const got = {
+    seen: seen.slice().sort(), heldBefore,
+    outR: outR && outR.value && outR.value.text, outE: outE && outE.value && outE.value.text,
+    reviewer: R514.sessionReviewerServedGet("ag-8h2ar") === undefined,
+    view: R514.sessionReviewersServedByOthers("ag-8h2a-view", T0 + 60000),
+    executor: sessionExecutorHas("decl-t8h2ae"),
+  }
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+  expect(got).toEqual({
+    seen: ["decl-t8h2ae", "decl-t8h2ar"], heldBefore: true,
+    outR: "OK-decl-t8h2ar", outE: "OK-decl-t8h2ae", reviewer: true, view: [], executor: false,
+  })
+})
+
+test("#509-FIX8h Р2 (б): спавны проверяющего и исполнителя, next разрешается после сброса реестров -- реестр проверяющих и модели исполнителей новой сессии пусты", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 3, 17, 50, 0)
+  const h = host514("8h2b", T0, { noProc: true })
+  let open: () => void = () => {}
+  const gate = new Promise<void>(r => { open = r })
+  let called = 0
+  const spawnGated = (aid: string, cls: string, model: string): Promise<any> => hook393(subs393(), "agent.spawn")(h.m.$, {
+    subagentType: "any-agent", prompt: "[dispatch-class:" + cls + "] x", model,
+  }, async () => { called++; await gate; return { agentId: aid } })
+  const pr = spawnGated("ag-8h2br", "crit-mech", "decl-t8h2br")
+  const pe = spawnGated("ag-8h2be", "exec-0n", "decl-t8h2be")
+  for (let i = 0; i < 40 && called < 2; i++) await settle393()
+  sessionExecutorsReset()
+  open()
+  const outR = await pr
+  const outE = await pe
+  const got = {
+    called, idR: outR && outR.agentId, idE: outE && outE.agentId,
+    reviewer: R514.sessionReviewerServedGet("ag-8h2br") === undefined,
+    view: R514.sessionReviewersServedByOthers("ag-8h2b-view", T0 + 60000),
+    executor: sessionExecutorHas("decl-t8h2be"),
+  }
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+  expect(got).toEqual({ called: 2, idR: "ag-8h2br", idE: "ag-8h2be", reviewer: true, view: [], executor: false })
+})
+
+test("#509-FIX8h Р4: 64 записи с t 1000…1063, резерв нового агента с t 0 -- резерв в реестре, вытеснена запись t 1000, restore её возвращает", () => {
+  sessionExecutorsReset()
+  const cap = R514.SESSION_REVIEWER_SERVED_CAP
+  for (let k = 0; k < cap; k++) R514.sessionReviewerServedSet("ag-8h4-" + (1000 + k), "m" + k + "-t8h4", 1000 + k)
+  const ev = R514.sessionReviewerServedSet("ag-8h4-a", "a-t8h4", 0, { reserve: true })
+  const A = R514.sessionReviewerServedGet("ag-8h4-a")
+  const inReg = A !== undefined && A.t === 0 && A.model === "a-t8h4" && R514.sessionReviewerServedGet("ag-8h4-a") === A
+  const evicted = ev.map((e: any) => e[0])
+  let back = false
+  if (A) {
+    R514.sessionReviewerServedRestore("ag-8h4-a", A, ev)
+    back = R514.sessionReviewerServedGet("ag-8h4-1000") !== undefined
+  }
+  expect({ inReg, evicted, back, a: R514.sessionReviewerServedGet("ag-8h4-a") === undefined }).toEqual({
+    inReg: true, evicted: ["ag-8h4-1000"], back: true, a: true,
+  })
+  sessionExecutorsReset()
+})
+
+test("#509-FIX8h Р5: JSON-массив с BOM в начале -- permanent-model", () => {
+  const body = "﻿[{\"error\":{\"code\":\"model_not_found\"}}]"
+  const p = R514.refusalLineOfMessages([body], "grok-4.7-t8h5")
+  const c = R514.classifyRefusal(p.line, Date.parse("2026-10-03T09:00:00Z"), "grok-4.7-t8h5").class
+  expect({ known: p.known, c }).toEqual({ known: true, c: "permanent-model" })
+})
+
+// --- stale-agents: idle-watch говорит сессии о висящих агентах; счёт флота ----
+// CONSTRAINT: новые имена мода берутся через namespace-импорт: на дереве до
+// волны их нет, и именованный импорт ронял бы весь файл вместо поимённых красных.
+const SA: any = registerModule393 as any
+const SA_MIN = 60_000
+const SA_KINDS_OBSERVABLE = 'live_kinds = ["local_agent", "in_process_teammate"]\n'
+const SA_TOOL = "mcp__catalyst-probes__fleet_status"
+
+function sa$(tag: string, now: number, o: {
+  cfg?: string
+  idle?: string
+  list?: () => any
+  submitThrows?: boolean
+  submitHang?: boolean
+  submitDefer?: boolean
+  env?: Record<string, string>
+  files?: Record<string, string>
+  extraNames?: string[]
+  fsListThrows?: () => boolean
+  onFsList?: () => Promise<void>
+  onList?: () => Promise<void>
+  fsWriteFail?: (p: string) => boolean
+  proc?: boolean
+  sidFails?: boolean
+  fail?: Fail393
+  statErr?: string[]
+  procFn?: (argv: string[], init: any, setNow: (n: number) => void, getNow: () => number) => Promise<any>
+  messages?: (arg: any) => any
+  answers?: any[]
+} = {}): any {
+  const home = "/probes-sa-" + tag
+  const sid = "sid-sa-" + tag
+  const files: Record<string, string> = Object.assign({ [home + "/probes.toml"]: "[probe.idle-watch]\n" + (o.cfg ?? "") }, o.files || {})
+  const st: any = { home, sid, cwd: "/work-sa-" + tag, fleetDir: home + "/idle-watch/fleet", files, agents: [] as any[], submits: [] as any[], listCalls: 0, fsListCalls: 0, tools: [] as any[], commands: [] as any[], cancels: 0, procArgv: [] as string[][], clockReads: 0 }
+  st.env = Object.assign({ CLAUDE_PROBES_DIR: home, PWD: st.cwd, CLAUDE_IDLE: o.idle ?? "1" }, o.env || {})
+  const m = mod$393({
+    files,
+    env: st.env,
+    now,
+    sid,
+    fail: o.fail,
+    proc: o.procFn ? o.procFn : o.proc ? async (argv: string[]) => { st.procArgv.push(argv.slice()); return { exitCode: 0, stdout: "", stderr: "" } } : undefined,
+    messages: o.messages,
+    answers: o.answers,
+  })
+  st.m = m
+  const clockNow0 = m.$.clock.now
+  m.$.clock.now = async () => { st.clockReads++; return clockNow0() }
+  if (o.sidFails) m.$.session.id = async () => { throw new Error("session.id: scripted refusal") }
+  m.$.fs.stat = async (p: string) => {
+    if ((o.statErr || []).indexOf(String(p)) >= 0) throw new Error("EACCES: scripted stat refusal " + String(p))
+    if (files[String(p)] === undefined) { const x: any = new Error("ENOENT: no such file " + String(p)); x.code = "ENOENT"; throw x }
+    return { kind: "file", size: files[String(p)].length, mtimeMs: 0, isLink: false }
+  }
+  const write0 = m.$.fs.write
+  m.$.fs.write = async (p: string, text: string) => {
+    if (o.fsWriteFail && o.fsWriteFail(String(p))) throw new Error("fs.write: scripted refusal " + String(p))
+    await write0(p, text)
+    files[String(p)] = String(text)
+  }
+  m.$.fs.list = async (dir: string) => {
+    st.fsListCalls++
+    if (o.onFsList) await o.onFsList()
+    if (o.fsListThrows && o.fsListThrows()) throw new Error("fs.list: scripted refusal")
+    const pre = String(dir) + "/"
+    const out: any[] = []
+    for (const p of Object.keys(files)) {
+      if (p.indexOf(pre) === 0 && p.slice(pre.length).indexOf("/") < 0) out.push({ name: p.slice(pre.length), kind: "file", size: files[p].length, isLink: false })
+    }
+    for (const n of o.extraNames || []) out.push({ name: n, kind: "file", size: 1, isLink: false })
+    return out
+  }
+  m.$.agent.list = async () => {
+    st.listCalls++
+    if (o.onList) await o.onList()
+    return o.list ? o.list() : st.agents
+  }
+  st.submitDefers = [] as Array<{ resolve: (v: any) => void; reject: (x: any) => void }>
+  m.$.prompt = { submit: async (arg: any) => {
+    st.submits.push(arg)
+    if (o.submitDefer) return new Promise((resolve, reject) => { st.submitDefers.push({ resolve, reject }) })
+    if (o.submitHang) return new Promise(() => {})
+    if (o.submitThrows) throw new Error("prompt.submit: scripted refusal")
+    return { text: String(arg && arg.text) }
+  } }
+  m.$.tool = { register: async (spec: any) => { st.tools.push(spec) } }
+  m.$.command = { register: async (spec: any) => { st.commands.push(spec) } }
+  const every0 = m.$.clock.every
+  m.$.clock.every = (ms: number, cb: any) => {
+    const h = every0(ms, cb)
+    return { cancel: () => { st.cancels++; return h.cancel() } }
+  }
+  return st
+}
+
+function saStartEv(st: any, extra: any = {}): any {
+  return Object.assign({ cwd: st.cwd, surface: "terminal", isInteractive: true }, extra)
+}
+
+async function saStart(st: any, extra: any = {}): Promise<void> {
+  await clear393()
+  st.cb = st.m.everyCbs.length
+  await hook393(subs393(), "session.start")(st.m.$, saStartEv(st, extra), async () => ({}))
+  st.tick = st.m.everyCbs[st.cb]
+}
+
+function saHead(thr: number): string {
+  return "[catalyst-probes idle-watch] В этой сессии висят незакрытые агенты (без шагов модели и без новых вызовов инструментов ≥ " + thr + " мин):"
+}
+
+async function saTickAt(st: any, t: number): Promise<void> {
+  st.m.setNow(t)
+  if (typeof st.tick !== "function") throw new Error("таймер висящих агентов не взведён session.start")
+  await st.tick()
+  await settle393()
+}
+
+function saRun(id: string, extra: any = {}): any {
+  return Object.assign({ id, description: "desc " + id, type: "general-purpose", status: "running" }, extra)
+}
+
+function saSnap(): any {
+  return typeof SA.staleAgentsSnapshot === "function" ? SA.staleAgentsSnapshot() : {}
+}
+
+function saJournal(st: any): any[] {
+  return shards393(st.m.writes, "/idle-watch/journal.jsonl.shard.").filter(r => r.kind === "STALE_AGENTS")
+}
+
+function saFleetRec(st: any): any {
+  const t = st.files[st.fleetDir + "/" + st.sid + ".json"]
+  return t === undefined ? undefined : JSON.parse(t)
+}
+
+test("stale-agents T1: running, активность 31 мин назад -- ровно один submit со всеми висящими, тост, строка флота", async () => {
+  const T0 = 600_000_000
+  const st = sa$("t1", T0)
+  st.agents = [saRun("ag-sa1"), saRun("ag-sa1b", { type: "Explore" })]
+  await saStart(st)
+  await saTickAt(st, T0)
+  expect(st.submits.length, "первый тик заводит записи и молчит").toBe(0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length, "ровно один submit на тик").toBe(1)
+  const text = String(st.submits[0].text)
+  expect(text).toContain(saHead(30))
+  expect(text).toContain("- ag-sa1 «desc ag-sa1» (general-purpose): без активности 31 мин, живёт 31 мин")
+  expect(text).toContain("- ag-sa1b «desc ag-sa1b» (Explore): без активности 31 мин, живёт 31 мин")
+  expect(text).toContain("TaskStop ag-sa1")
+  expect(text).toContain("TaskStop ag-sa1b")
+  expect(text).toContain("Если отчёта нет — проверь его вывод и сними его фоновые процессы и циклы ожидания. Не держи законченных агентов открытыми.")
+  expect(text).toContain("Флот сейчас: агентов 2, сессий 1 (в этой 2); без счёта 0, нечитаемых 0.")
+  expect(st.m.toasts.filter((x: string) => x.indexOf("idle-watch: незакрытых агентов 2: ag-sa1, ag-sa1b") === 0).length, "тост короткой строкой").toBe(1)
+})
+
+test("stale-agents T2: 29 мин без активности -- submit нет", async () => {
+  const T0 = 610_000_000
+  const st = sa$("t2", T0)
+  st.agents = [saRun("ag-sa2")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 29 * SA_MIN)
+  expect(st.submits.length, "29 мин -- submit нет").toBe(0)
+  expect(saSnap()["ag-sa2"] && saSnap()["ag-sa2"].lastAt, "запись заведена первым тиком").toBe(T0)
+})
+
+test("stale-agents T3: completed / failed / killed -- в тексте нет, записи удалены", async () => {
+  const T0 = 620_000_000
+  const st = sa$("t3", T0)
+  st.agents = [saRun("ag-sa3-live"), saRun("ag-sa3-c"), saRun("ag-sa3-f"), saRun("ag-sa3-k")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  expect(Object.keys(saSnap()).filter(k => k.indexOf("ag-sa3-") === 0).sort()).toEqual(["ag-sa3-c", "ag-sa3-f", "ag-sa3-k", "ag-sa3-live"])
+  st.agents = [saRun("ag-sa3-live"), saRun("ag-sa3-c", { status: "completed" }), saRun("ag-sa3-f", { status: "failed" }), saRun("ag-sa3-k", { status: "killed" })]
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  const text = String(st.submits[0].text)
+  expect(text).toContain("ag-sa3-live")
+  expect(text).not.toContain("ag-sa3-c")
+  expect(text).not.toContain("ag-sa3-f")
+  expect(text).not.toContain("ag-sa3-k")
+  expect(Object.keys(saSnap()).filter(k => k.indexOf("ag-sa3-") === 0)).toEqual(["ag-sa3-live"])
+})
+
+test("stale-agents T4: второй тик внутри cooldown молчит, после cooldown -- снова", async () => {
+  const T0 = 630_000_000
+  const st = sa$("t4", T0)
+  st.agents = [saRun("ag-sa4")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  await saTickAt(st, T0 + 60 * SA_MIN)
+  expect(st.submits.length, "внутри cooldown 30 мин повтора нет").toBe(1)
+  await saTickAt(st, T0 + 61 * SA_MIN)
+  expect(st.submits.length, "после cooldown -- повтор").toBe(2)
+  expect(String(st.submits[1].text)).toContain("без активности 61 мин")
+})
+
+test("stale-agents T5: agent.list бросает / не массив -- submit нет, место потери названо", async () => {
+  const T0 = 640_000_000
+  let mode = "ok"
+  // CONSTRAINT (#531): оценка idle-watch на тике пишет свою строку журнала и
+  // уносит в неё счёт потерь; зуб меряет место потери тика висящих агентов,
+  // поэтому оценка отодвинута за окно зуба.
+  const st = sa$("t5", T0, { cfg: "live_recheck_ms = 3600000\n", list: () => {
+    if (mode === "throw") throw new Error("agent.list: scripted refusal t5")
+    if (mode === "shape") return { not: "array" }
+    return [saRun("ag-sa5")]
+  } })
+  await saStart(st)
+  await saTickAt(st, T0)
+  const l0 = lostN393("stale-agents-list")
+  const s0 = lostN393("stale-agents-list-shape")
+  mode = "throw"
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(lostN393("stale-agents-list") - l0, "бросок назван stale-agents-list").toBe(1)
+  mode = "shape"
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(lostN393("stale-agents-list-shape") - s0, "не-массив назван stale-agents-list-shape").toBe(1)
+  expect(st.submits.length).toBe(0)
+})
+
+test("stale-agents T6: idle-watch off -- submit нет, agent.list не вызван", async () => {
+  const T0 = 650_000_000
+  const st = sa$("t6", T0, { idle: "0" })
+  st.agents = [saRun("ag-sa6")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.listCalls).toBe(0)
+  expect(st.submits.length).toBe(0)
+})
+
+test("stale-agents T6b: тик при idle-watch не armed очищает учёт активности и отметки сигнала", async () => {
+  const T0 = 655_000_000
+  const st = sa$("t6b", T0, { cfg: "cooldown_min = 60\n" })
+  st.agents = [saRun("ag-sa6b")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  st.env.CLAUDE_IDLE = "0"
+  await hook393(subs393(), "tool.call")(st.m.$, { agentId: "ag-sa6b-x", tool: "Read", tool_use_id: "tu-sa6b" }, async () => ({ result: "r" }))
+  const l0 = st.listCalls
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(Object.keys(saSnap()), "учёт активности очищен").toEqual([])
+  expect(st.listCalls - l0, "и больше ничего: agent.list не вызван").toBe(0)
+  st.env.CLAUDE_IDLE = "1"
+  await saTickAt(st, T0 + 33 * SA_MIN)
+  expect(saSnap()["ag-sa6b"].nudgedAt, "отметка агента очищена").toBeNull()
+  await saTickAt(st, T0 + 63 * SA_MIN)
+  expect(st.submits.length, "отметка сигнала очищена: cooldown 60 от +31 не держит").toBe(2)
+})
+
+test("stale-agents T7: вызов инструмента агента -- в хуке только touched без часов, время ставит тик; хвост «ждёт инструмент ≥ K мин»", async () => {
+  const T0 = 660_000_000
+  const st = sa$("t7", T0)
+  st.agents = [saRun("ag-sa7")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  const rel: any = {}
+  const nextOf = (k: string) => (e: any) => new Promise((r) => { rel[k] = () => r({ result: "done-" + k }) })
+  st.m.setNow(T0 + 5 * SA_MIN)
+  const c0 = st.clockReads
+  const callA = hook393(subs393(), "tool.call")(st.m.$, { agentId: "ag-sa7", tool: "Bash", tool_use_id: "tu-sa7a", command: "sleep 9999" }, nextOf("a"))
+  await settle393()
+  expect(st.clockReads - c0, "учёт вызова агента часов хоста не читает").toBe(0)
+  expect(saSnap()["ag-sa7"].touched, "вход вызова ставит touched").toBe(true)
+  expect(saSnap()["ag-sa7"].lastAt, "время ставит не хук").toBe(T0)
+  await saTickAt(st, T0 + 6 * SA_MIN)
+  expect(saSnap()["ag-sa7"].lastAt, "тик переносит touched в lastAt").toBe(T0 + 6 * SA_MIN)
+  expect(saSnap()["ag-sa7"].touched, "и снимает touched").toBe(false)
+  st.m.setNow(T0 + 10 * SA_MIN)
+  const callB = hook393(subs393(), "tool.call")(st.m.$, { agentId: "ag-sa7", tool: "Read", tool_use_id: "tu-sa7b", file_path: "/x" }, nextOf("b"))
+  await settle393()
+  expect(typeof rel.a === "function" && typeof rel.b === "function", "next вызван у обоих").toBe(true)
+  await saTickAt(st, T0 + 11 * SA_MIN)
+  await saTickAt(st, T0 + 41 * SA_MIN + 30_000)
+  expect(st.submits.length).toBe(1)
+  expect(String(st.submits[0].text)).toContain("- ag-sa7 «desc ag-sa7» (general-purpose): без активности 30 мин, живёт 41 мин; ждёт инструмент Bash ≥ 35 мин")
+  const rec = saJournal(st)
+  expect(rec.length).toBe(1)
+  expect(rec[0].agents).toEqual([{ id: "ag-sa7", type: "general-purpose", idleMin: 30, ageMin: 41, inFlightTool: "Bash" }])
+  expect(saSnap()["ag-sa7"].inFlight, "вызовы в полёте").toBe(2)
+  st.m.setNow(T0 + 46 * SA_MIN)
+  const c1 = st.clockReads
+  rel.a()
+  expect(await callA).toEqual({ result: "done-a" })
+  expect(st.clockReads - c1, "завершение вызова часов хоста не читает").toBe(0)
+  expect(saSnap()["ag-sa7"].touched, "завершение вызова ставит touched").toBe(true)
+  expect(saSnap()["ag-sa7"].lastAt, "до тика lastAt прежний").toBe(T0 + 11 * SA_MIN)
+  expect(saSnap()["ag-sa7"].inFlight, "завершённый вызов снят с полёта").toBe(1)
+  await saTickAt(st, T0 + 47 * SA_MIN)
+  expect(saSnap()["ag-sa7"].lastAt, "завершение учтено тиком").toBe(T0 + 47 * SA_MIN)
+  rel.b()
+  expect(await callB).toEqual({ result: "done-b" })
+  expect(saSnap()["ag-sa7"].inFlight).toBe(0)
+})
+
+test("stale-agents T8: агент впервые увиден тиком -- в этом тике не назван; назван через thr от firstSeen", async () => {
+  const T0 = 670_000_000
+  const st = sa$("t8", T0)
+  st.agents = [saRun("ag-sa8")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  expect(st.submits.length).toBe(0)
+  expect(saSnap()["ag-sa8"].firstSeen).toBe(T0)
+  await saTickAt(st, T0 + 30 * SA_MIN - 1)
+  expect(st.submits.length).toBe(0)
+  await saTickAt(st, T0 + 30 * SA_MIN)
+  expect(st.submits.length, "ровно thr от firstSeen -- назван").toBe(1)
+  expect(String(st.submits[0].text)).toContain("ag-sa8")
+})
+
+test("stale-agents T9: submit бросает -- noteLost, отдельная запись STALE_AGENTS_SUBMIT_ERR, внутри cooldown повтора нет", async () => {
+  const T0 = 680_000_000
+  const st = sa$("t9", T0, { submitThrows: true })
+  st.agents = [saRun("ag-sa9")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  const l0 = lostN393("stale-agents-submit")
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  const recs = saJournal(st)
+  expect(recs.length).toBe(1)
+  expect(recs[0].submitErr, "запись тика не ждёт submit").toBeUndefined()
+  expect(recs[0].agents).toEqual([{ id: "ag-sa9", type: "general-purpose", idleMin: 31, ageMin: 31 }])
+  const errs = shards393(st.m.writes, "/idle-watch/journal.jsonl.shard.").filter(r => r.kind === "STALE_AGENTS_SUBMIT_ERR")
+  expect(errs.length).toBe(1)
+  expect(String(errs[0].err)).toContain("prompt.submit: scripted refusal")
+  expect(typeof errs[0].t).toBe("string")
+  const shardPaths = st.m.writes.map((w: any) => String(w.path)).filter((p: string) => p.indexOf("/idle-watch/journal.jsonl.shard.") >= 0)
+  expect(new Set(shardPaths).size, "записи тика и отказа submit -- разные шарды").toBe(shardPaths.length)
+  // CONSTRAINT: запись журнала уносит lostWrites полем lost; какая из двух записей унесёт потерю submit, решает порядок микрозадач.
+  let lostN = lostN393("stale-agents-submit") - l0
+  for (const r of recs.concat(errs)) if (r.lost && r.lost["stale-agents-submit"]) lostN += r.lost["stale-agents-submit"].n
+  expect(lostN, "потеря submit названа ровно один раз").toBe(1)
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(st.submits.length, "бросок submit не даёт шторма повторов").toBe(1)
+})
+
+test("stale-agents T9b: submit, который не резолвится, не блокирует тик и следующий тик", async () => {
+  const T0 = 685_000_000
+  const st = sa$("t9b", T0, { submitHang: true, cfg: "cooldown_min = 1\n" })
+  st.agents = [saRun("ag-sa9b")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  const run = async (t: number): Promise<boolean> => {
+    st.m.setNow(t)
+    let done = false
+    st.tick().then(() => { done = true })
+    for (let i = 0; i < 20000 && !done; i++) await Promise.resolve()
+    return done
+  }
+  expect(await run(T0 + 31 * SA_MIN), "тик с висящим submit завершился").toBe(true)
+  expect(st.submits.length).toBe(1)
+  expect(saJournal(st).length, "запись тика написана, не дожидаясь submit").toBe(1)
+  expect(await run(T0 + 32 * SA_MIN), "следующий тик завершился").toBe(true)
+  expect(st.submits.length, "сигнал в полёте -- следующий тик после cooldown второго не шлёт (#531 FIX1b)").toBe(1)
+})
+
+test("stale-agents T10: turn.step агента на 20-й минуте -- touched без часов; тик на 21-й ставит время; на 50-й не назван, на 51-й назван", async () => {
+  const T0 = 690_000_000
+  const st = sa$("t10", T0)
+  st.agents = [saRun("ag-sa10")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  st.m.setNow(T0 + 20 * SA_MIN)
+  const okNext: any = () => (async function* () { return { usage: { out: 1 }, stopReason: "end_turn", text: "ok" } })()
+  const c0 = st.clockReads
+  await drainStream(hook393(subs393(), "turn.step")(st.m.$, { agentId: "ag-sa10", turnId: "t-sa10", index: 0, model: "m-sa10", messageCount: 1 }, okNext))
+  expect(st.clockReads - c0, "учёт шага агента часов хоста не читает").toBe(0)
+  expect(saSnap()["ag-sa10"].touched, "шаг ставит touched").toBe(true)
+  await saTickAt(st, T0 + 21 * SA_MIN)
+  expect(saSnap()["ag-sa10"].lastAt).toBe(T0 + 21 * SA_MIN)
+  await saTickAt(st, T0 + 50 * SA_MIN)
+  expect(st.submits.length).toBe(0)
+  await saTickAt(st, T0 + 51 * SA_MIN)
+  expect(st.submits.length, "30 мин от тика, увидевшего шаг, -- назван").toBe(1)
+})
+
+test("stale-agents T11: агент пропал из list -- запись удалена", async () => {
+  const T0 = 700_000_000
+  const st = sa$("t11", T0)
+  st.agents = [saRun("ag-sa11")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  expect(saSnap()["ag-sa11"] !== undefined).toBe(true)
+  st.agents = []
+  await saTickAt(st, T0 + SA_MIN)
+  expect(saSnap()["ag-sa11"]).toBeUndefined()
+})
+
+test("stale-agents T12: stale_agent_min = 5 из cfg соблюдается", async () => {
+  const T0 = 710_000_000
+  const st = sa$("t12", T0, { cfg: "stale_agent_min = 5\ncooldown_min = 2\n" })
+  st.agents = [saRun("ag-sa12")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 4 * SA_MIN)
+  expect(st.submits.length).toBe(0)
+  await saTickAt(st, T0 + 5 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  expect(String(st.submits[0].text)).toContain(saHead(5))
+  await saTickAt(st, T0 + 6 * SA_MIN)
+  expect(st.submits.length, "cooldown_min = 2 из cfg держит").toBe(1)
+  await saTickAt(st, T0 + 7 * SA_MIN)
+  expect(st.submits.length, "cooldown_min = 2 из cfg истёк").toBe(2)
+})
+
+test("stale-agents T13: события главного лупа (agentId пуст) записей не создают", async () => {
+  const T0 = 720_000_000
+  const st = sa$("t13", T0, { idle: "0" })
+  await saStart(st)
+  const before = Object.keys(saSnap()).sort()
+  await hook393(subs393(), "tool.call")(st.m.$, { tool: "Read", tool_use_id: "tu-sa13", file_path: "/x" }, async (e: any) => ({ result: "r" }))
+  await hook393(subs393(), "tool.call")(st.m.$, { agentId: "", tool: "Read", tool_use_id: "tu-sa13b", file_path: "/x" }, async (e: any) => ({ result: "r" }))
+  const okNext: any = () => (async function* () { return { usage: { out: 1 }, stopReason: "end_turn", text: "ok" } })()
+  await drainStream(hook393(subs393(), "turn.step")(st.m.$, { turnId: "t-sa13", index: 0, model: "m-sa13", messageCount: 1 }, okNext))
+  await drainStream(hook393(subs393(), "turn.step")(st.m.$, { agentId: "", turnId: "t-sa13b", index: 0, model: "m-sa13", messageCount: 1 }, okNext))
+  await settle393()
+  expect(Object.keys(saSnap()).sort()).toEqual(before)
+  await hook393(subs393(), "tool.call")(st.m.$, { agentId: "ag-sa13", tool: "Read", tool_use_id: "tu-sa13c", file_path: "/x" }, async (e: any) => ({ result: "r" }))
+  expect(Object.keys(saSnap()).filter(k => before.indexOf(k) < 0), "контроль: событие агента запись заводит").toEqual(["ag-sa13"])
+})
+
+test("stale-agents T14: два session.start -- живой таймер один, прежний отменён и инертен", async () => {
+  const T0 = 730_000_000
+  const st = sa$("t14", T0)
+  st.agents = [saRun("ag-sa14")]
+  await saStart(st)
+  const firstTick = st.tick
+  const c0 = st.cancels
+  const idx = st.m.everyCbs.length
+  await hook393(subs393(), "session.start")(st.m.$, saStartEv(st), async () => ({}))
+  expect(st.m.everyCbs.length, "второй старт взвёл новый таймер").toBe(idx + 1)
+  expect(st.cancels - c0, "прежняя ручка отменена").toBe(1)
+  st.m.setNow(T0)
+  await firstTick()
+  await settle393()
+  expect(st.listCalls, "колбэк прежнего поколения инертен").toBe(0)
+  st.tick = st.m.everyCbs[idx]
+  await saTickAt(st, T0 + SA_MIN)
+  expect(st.listCalls, "живой таймер работает").toBe(1)
+})
+
+test("stale-agents T14b: отказ вооружения и ручка без cancel -- таймера нет, пустышки нет; ленивое вооружение не чаще раза в период после отказа; исправный таймер не перевзводится", async () => {
+  const T0 = 735_000_000
+  const st = sa$("t14b", T0, { idle: "0" })
+  await clear393()
+  st.m.$.clock.every = () => { throw new Error("clock.every: scripted refusal t14b") }
+  const a0 = lostN393("stale-agents-timer-arm")
+  await hook393(subs393(), "session.start")(st.m.$, saStartEv(st), async () => ({}))
+  expect(lostN393("stale-agents-timer-arm") - a0, "отказ вооружения назван").toBe(1)
+  let armed = 0
+  st.m.$.clock.every = (ms: number, cb: any) => { if (ms === SA.STALE_AGENTS_PERIOD_MS) armed++; return {} }
+  const h0 = lostN393("stale-agents-timer-handle")
+  let seq = 0
+  const call = async (t: number) => {
+    st.m.setNow(t)
+    await hook393(subs393(), "tool.call")(st.m.$, { tool: "Read", tool_use_id: "tu-sa14b-" + String(++seq), file_path: "/x" }, async (e: any) => ({ result: "r" }))
+  }
+  await call(T0 + 30_000)
+  expect(armed, "внутри периода после отказа -- не вооружает").toBe(0)
+  await call(T0 + 60_000)
+  expect(armed, "через период после отказа -- вооружает").toBe(1)
+  expect(lostN393("stale-agents-timer-handle") - h0, "ручка без cancel названа").toBe(1)
+  await call(T0 + 61_000)
+  expect(armed, "ручка без cancel -- отказ: повтор не раньше периода").toBe(1)
+  await call(T0 + 120_000)
+  expect(armed, "ручка без cancel не держится пустышкой: через период -- снова").toBe(2)
+  st.m.$.clock.every = (ms: number, cb: any) => { if (ms === SA.STALE_AGENTS_PERIOD_MS) armed++; return { cancel() {} } }
+  await call(T0 + 180_000)
+  expect(armed, "исправная ручка").toBe(3)
+  await call(T0 + 181_000)
+  expect(armed, "вооружённый таймер не перевзводится").toBe(3)
+  expect(SA.STALE_AGENTS_PERIOD_MS).toBe(60000)
+})
+
+test("stale-agents T14c: перевооружение таймера (новое поколение) во время agent.list или сбора флота снимает сигнал тика", async () => {
+  const T0 = 737_000_000
+  let onFs: any = null
+  let onAg: any = null
+  const fire = async (k: string) => {
+    const f = k === "fs" ? onFs : onAg
+    if (k === "fs") onFs = null
+    else onAg = null
+    if (f) await f()
+  }
+  const st = sa$("t14c", T0, { onFsList: () => fire("fs"), onList: () => fire("ag") })
+  st.agents = [saRun("ag-sa14c")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  const t0rec = saFleetRec(st)
+  const restart = async () => {
+    const idx = st.m.everyCbs.length
+    await hook393(subs393(), "session.start")(st.m.$, saStartEv(st), async () => ({}))
+    st.nextTick = st.m.everyCbs[idx]
+  }
+  onAg = restart
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(onAg, "перевооружение прошло через дверь agent.list").toBeNull()
+  expect(st.submits.length, "тик, сменивший поколение на agent.list, не сигналит").toBe(0)
+  expect(saFleetRec(st), "и не публикует флот").toEqual(t0rec)
+  st.tick = st.nextTick
+  onFs = restart
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(onFs, "перевооружение прошло через дверь fs.list").toBeNull()
+  expect(st.submits.length, "тик, сменивший поколение на сборе флота, не сигналит").toBe(0)
+})
+
+test("stale-agents T15: отказ учёта не ломает tool.call и turn.step", async () => {
+  const T0 = 740_000_000
+  const st = sa$("t15", T0, { idle: "0" })
+  await saStart(st)
+  const l0 = lostN393("stale-agents-track")
+  let nextArg: any = null
+  const poison = { toString() { throw new Error("poison agentId t15") } }
+  const out = await hook393(subs393(), "tool.call")(st.m.$, { agentId: poison, tool: "Read", tool_use_id: "tu-sa15" }, async (e: any) => { nextArg = e; return { result: "r15" } })
+  expect(out).toEqual({ result: "r15" })
+  expect(nextArg !== null, "next(e) вызван").toBe(true)
+  expect(lostN393("stale-agents-track") - l0, "отказ учёта tool.call назван").toBe(1)
+  let n = 0
+  const once = { toString() { if (n++ === 0) throw new Error("poison once t15"); return "ag-sa15" } }
+  const okNext: any = () => (async function* () { return { usage: { out: 1 }, stopReason: "end_turn", text: "ok15" } })()
+  const res = await drainStream(hook393(subs393(), "turn.step")(st.m.$, { agentId: once, turnId: "t-sa15", index: 0, model: "m-sa15", messageCount: 1 }, okNext))
+  expect(res.value && res.value.text).toBe("ok15")
+  expect(lostN393("stale-agents-track") - l0, "отказ учёта turn.step назван").toBe(2)
+})
+
+test("stale-agents T16: тик пишет запись флота со своими running и без description", async () => {
+  const T0 = 750_000_000
+  const st = sa$("t16", T0)
+  st.agents = [saRun("ag-sa16a"), saRun("ag-sa16b", { type: "Explore" }), saRun("ag-sa16c", { status: "completed" })]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 3 * SA_MIN)
+  const rec = saFleetRec(st)
+  expect(rec).toEqual({
+    v: 1, sid: st.sid, cwd: st.cwd, t: T0 + 3 * SA_MIN, running: 2,
+    agents: [{ id: "ag-sa16a", type: "general-purpose", idleMin: 3 }, { id: "ag-sa16b", type: "Explore", idleMin: 3 }],
+  })
+  expect(st.files[st.fleetDir + "/" + st.sid + ".json"]).not.toContain("desc ")
+})
+
+test("stale-agents T16b: отказ записи флота назван fleet-publish, тик продолжается до сигнала", async () => {
+  const T0 = 755_000_000
+  // CONSTRAINT: live_kinds без remote_agent -- строка live_kinds_unobservable
+  // (одна на сессию) иначе уносила бы потерю полем lost раньше записи тика.
+  const st = sa$("t16b", T0, { fsWriteFail: (p) => p.indexOf("/idle-watch/fleet/") >= 0, cfg: SA_KINDS_OBSERVABLE })
+  st.agents = [saRun("ag-sa16x")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(saFleetRec(st), "записи флота нет").toBeUndefined()
+  expect(st.submits.length, "тик дошёл до сигнала").toBe(1)
+  const recs = saJournal(st)
+  expect(recs.length).toBe(1)
+  expect(recs[0].lost && recs[0].lost["fleet-publish"] && recs[0].lost["fleet-publish"].n >= 2, "отказ записи флота назван").toBe(true)
+})
+
+test("stale-agents T17: отказ agent.list -- запись running: null; сбор считает её в unknown, не в agents", async () => {
+  const T0 = 760_000_000
+  const st = sa$("t17", T0, { list: () => { throw new Error("agent.list: scripted refusal t17") } })
+  await saStart(st)
+  await saTickAt(st, T0)
+  const rec = saFleetRec(st)
+  expect(rec && rec.running).toBeNull()
+  expect(rec && rec.t).toBe(T0)
+  const c = await SA.fleetCensus(st.m.$, { globalHome: st.home })
+  expect(c.unknown).toBe(1)
+  expect(c.agents).toBe(0)
+  expect(c.sessions).toBe(1)
+  expect(c.mine).toBeNull()
+})
+
+function saFleetFiles(dir: string, T: number): Record<string, string> {
+  return {
+    [dir + "/aaaa1111.json"]: JSON.stringify({ v: 1, sid: "aaaa1111-x", cwd: "/w/a", t: T - 10_000, running: 2, agents: [{ id: "a1", type: "t", idleMin: 4 }, { id: "a2", type: "t", idleMin: 9 }] }),
+    [dir + "/bbbb2222.json"]: JSON.stringify({ v: 1, sid: "bbbb2222-y", cwd: "/w/b", t: T - 20_000, running: 3, agents: [] }),
+    [dir + "/cccc3333.json"]: JSON.stringify({ v: 1, sid: "cccc3333-z", cwd: "/w/c", t: T - 200_000, running: 7, agents: [] }),
+    [dir + "/dddd4444.json"]: JSON.stringify({ v: 1, sid: "dddd4444-q", cwd: "/w/d", t: T - 5_000, running: 0, agents: [], ended: true }),
+  }
+}
+
+test("stale-agents T18: две свежие (2 и 3) + старая + ended -- agents 5, sessions 2", async () => {
+  const T0 = 770_000_000
+  const dir = "/probes-sa-t18/idle-watch/fleet"
+  const st = sa$("t18", T0, { files: saFleetFiles(dir, T0) })
+  await clear393()
+  const c = await SA.fleetCensus(st.m.$, { globalHome: st.home })
+  expect(c.agents).toBe(5)
+  expect(c.sessions).toBe(2)
+  expect(c.unknown).toBe(0)
+  expect(c.unreadable).toBe(0)
+})
+
+test("stale-agents T19: нечитаемые файлы (не JSON; t не число) -- unreadable 2, остальные посчитаны", async () => {
+  const T0 = 780_000_000
+  const dir = "/probes-sa-t19/idle-watch/fleet"
+  const files = saFleetFiles(dir, T0)
+  files[dir + "/eeee5555.json"] = "{not json"
+  files[dir + "/ffff6666.json"] = JSON.stringify({ v: 1, t: "late", running: 4 })
+  files[dir + "/zzzz9999.txt"] = JSON.stringify({ v: 1, sid: "zzzz9999", cwd: "/w/z", t: T0 - 1000, running: 9, agents: [] })
+  const st = sa$("t19", T0, { files })
+  await clear393()
+  const c = await SA.fleetCensus(st.m.$, { globalHome: st.home })
+  expect(c.unreadable).toBe(2)
+  expect(c.agents).toBe(5)
+  expect(c.sessions).toBe(2)
+})
+
+test("stale-agents T20: прополка -- старше 24 ч удаляется rm -f, свежая нет, имя с / или .. -- пропуск; внутри часа не зовётся", async () => {
+  const T0 = 800_000_000
+  const dir = "/probes-sa-t20/idle-watch/fleet"
+  const old = JSON.stringify({ v: 1, sid: "old", cwd: "/w/o", t: T0 - 25 * 3600_000, running: 1, agents: [] })
+  const files: Record<string, string> = {
+    [dir + "/old1.json"]: old,
+    [dir + "/fresh1.json"]: JSON.stringify({ v: 1, sid: "fresh", cwd: "/w/f", t: T0 - 1000, running: 1, agents: [] }),
+    [dir + "/a/b.json"]: old,
+    [dir + "/..old.json"]: old,
+    ["/probes-sa-t20/idle-watch/x.json"]: old,
+  }
+  const st = sa$("t20", T0, { files, proc: true, extraNames: ["a/b.json", "../x.json"] })
+  await clear393()
+  const c = await SA.fleetCensus(st.m.$, { globalHome: st.home })
+  expect(st.procArgv).toEqual([["/bin/rm", "-f", dir + "/old1.json"]])
+  expect(c.sessions).toBe(1)
+  st.m.setNow(T0 + 3600_000 - 1)
+  await SA.fleetCensus(st.m.$, { globalHome: st.home })
+  expect(st.procArgv.length, "второй раз внутри часа -- не зовётся").toBe(1)
+  st.m.setNow(T0 + 3600_000)
+  await SA.fleetCensus(st.m.$, { globalHome: st.home })
+  expect(st.procArgv.length, "через час -- снова").toBe(2)
+})
+
+test("stale-agents T21: fleet_status отвечает числами сбора; при отказе list -- текст отказа, не 0; /catalyst-fleet -- тот же текст", async () => {
+  const T0 = 810_000_000
+  const dir = "/probes-sa-t21/idle-watch/fleet"
+  let listFails = false
+  const files = saFleetFiles(dir, T0)
+  files[dir + "/sid-sa-t21.json"] = JSON.stringify({ v: 1, sid: "sid-sa-t21", cwd: "/work-sa-t21", t: T0 - 1000, running: 1, agents: [{ id: "m1", type: "t", idleMin: 12 }] })
+  files[dir + "/gggg7777.json"] = JSON.stringify({ v: 1, sid: "gggg7777-u", cwd: "/w/g", t: T0 - 1000, running: null, agents: [] })
+  const st = sa$("t21", T0, {
+    files, fsListThrows: () => listFails,
+    cfg: "[probe.judge]\nmodels = [\"m1\"]\n",
+    env: { CLAUDE_JUDGE: "1", CLAUDE_JUDGE_CARRIER: "patch-t21" },
+  })
+  await saStart(st)
+  expect(st.tools).toEqual([{ name: "fleet_status", description: "Сколько субагентов сейчас запущено во всех сессиях Claude Code на этой машине и в этой сессии", inputSchema: { type: "object", properties: {} } }])
+  expect(st.commands.filter((c: any) => c.name === "catalyst-fleet").length).toBe(1)
+  const subs = subs393()
+  expect(subs.filter(s => s.ev === "tool.call").length, "у плагина ровно одна подписка tool.call").toBe(1)
+  const cmd = subs.filter(s => s.ev === "command.run" && s.matcher && Array.isArray(s.matcher.command) && s.matcher.command.indexOf("catalyst-fleet") >= 0)
+  expect(cmd.length).toBe(1)
+  const call = hook393(subs, "tool.call")
+  let nextN = 0
+  const nextNo = async () => { nextN++; return { result: "НЕ ДОЛЖЕН" } }
+  const l0 = st.listCalls
+  const out = await call(st.m.$, { tool: SA_TOOL, tool_use_id: "tu-sa21" }, nextNo)
+  const text = String(out && out.result)
+  const aout = await call(st.m.$, { agentId: "ag-sa21", tool: SA_TOOL, tool_use_id: "tu-sa21a" }, nextNo)
+  expect(String(aout && aout.result), "вызов из агента обслужен той же веткой").toBe(text)
+  expect(nextN, "next не зовётся").toBe(0)
+  expect(st.listCalls - l0, "ветка флота первой: путь проб не пройден").toBe(0)
+  const judged = await call(st.m.$, { tool: "Agent", prompt: "[dispatch-class:exec-0p] t21", subagent_type: "x", tool_use_id: "tu-sa21j" }, async (e: any) => ({ result: "ran" }))
+  expect(String(judged && judged.deny), "Agent-вызов проходит путь судьи в том же дереве").toContain("patch-t21")
+  expect(text.split("\n")[0]).toBe("Флот: агентов 6, сессий 4 (в этой 1); без счёта 1, нечитаемых 0")
+  expect(text).toContain("sid-sa-t | /work-sa-t21 | 1 | 12")
+  expect(text).toContain("aaaa1111 | /w/a | 2 | 9")
+  expect(text).toContain("gggg7777 | /w/g | ? | 0")
+  const cout = await cmd[0].fn(st.m.$, { command: "catalyst-fleet", args: "" }, async () => ({ text: "НЕ ДОЛЖЕН" }))
+  expect(cout).toEqual({ text })
+  listFails = true
+  const bad = await call(st.m.$, { tool: SA_TOOL, tool_use_id: "tu-sa21b" }, nextNo)
+  const btext = String(bad && bad.result)
+  expect(btext).toContain("Флот: счёт недоступен (")
+  expect(btext).toContain("fs.list: scripted refusal")
+  expect(btext).not.toContain("Флот: 0")
+})
+
+test("stale-agents T21b: сбор флота отказал -- сообщение о висящих несёт строку отказа, не ноль", async () => {
+  const T0 = 815_000_000
+  const st = sa$("t21b", T0, { fsListThrows: () => true })
+  st.agents = [saRun("ag-sa21b")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  const text = String(st.submits[0].text)
+  expect(text.split("\n").pop(), "причина отказа сбора без двойного префикса").toBe("Флот: счёт недоступен (fs.list: scripted refusal).")
+  expect(text).not.toContain("Флот сейчас: 0")
+})
+
+test("stale-agents T22: session.end пишет ended: true", async () => {
+  const T0 = 820_000_000
+  const st = sa$("t22", T0)
+  await saStart(st)
+  const r = await hook393(subs393(), "session.end")(st.m.$, { reason: "other", sessionId: "sid-sa-t22-end", resume: {} }, async (e: any) => ({ sessionId: "sid-sa-t22-end" }))
+  expect(r).toEqual({ sessionId: "sid-sa-t22-end" })
+  const t = st.files[st.fleetDir + "/sid-sa-t22-end.json"]
+  expect(t !== undefined, "запись конца сессии под её id").toBe(true)
+  const rec = JSON.parse(String(t))
+  expect(rec.ended).toBe(true)
+  expect(rec.running).toBe(0)
+  expect(rec.t).toBe(T0)
+  expect(rec.sid).toBe("sid-sa-t22-end")
+})
+
+test("stale-agents T23: idle-watch off -- не публикует и не собирает", async () => {
+  const T0 = 830_000_000
+  const st = sa$("t23", T0, { idle: "0" })
+  st.agents = [saRun("ag-sa23")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  await hook393(subs393(), "session.end")(st.m.$, { reason: "other", sessionId: st.sid, resume: {} }, async (e: any) => ({ sessionId: st.sid }))
+  const out = await hook393(subs393(), "tool.call")(st.m.$, { tool: SA_TOOL, tool_use_id: "tu-sa23" }, async () => ({ result: "НЕ ДОЛЖЕН" }))
+  expect(String(out && out.result)).toContain("Флот: счёт недоступен (idle-watch не вооружён: off)")
+  expect(Object.keys(st.files).filter(p => p.indexOf(st.fleetDir + "/") === 0)).toEqual([])
+  expect(st.fsListCalls).toBe(0)
+})
+
+function saGate(): { set: (f: any) => void; fire: () => Promise<void>; pending: () => boolean } {
+  let f: any = null
+  return {
+    set: (g: any) => { f = g },
+    fire: async () => { const g = f; f = null; if (g) await g() },
+    pending: () => f !== null,
+  }
+}
+
+test("stale-agents T24: /clear во время agent.list или сбора флота -- ни записи флота, ни сигнала прежней сессии; newSession чистит учёт, отметки и окно", async () => {
+  const T0 = 840_000_000
+  const ag = saGate()
+  const fs = saGate()
+  const st = sa$("t24", T0, { cfg: "cooldown_min = 60\n", onList: () => ag.fire(), onFsList: () => fs.fire() })
+  st.agents = [saRun("ag-sa24")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  const t0rec = saFleetRec(st)
+  ag.set(() => clear393())
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(ag.pending(), "/clear прошёл через дверь agent.list").toBe(false)
+  expect(st.submits.length, "/clear на agent.list -- сигнала нет").toBe(0)
+  expect(saFleetRec(st), "/clear на agent.list -- записи флота прежней сессии нет").toEqual(t0rec)
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(saSnap()["ag-sa24"].firstSeen, "учёт после /clear -- заново").toBe(T0 + 32 * SA_MIN)
+  fs.set(() => clear393())
+  await saTickAt(st, T0 + 62 * SA_MIN)
+  expect(fs.pending(), "/clear прошёл через дверь fs.list").toBe(false)
+  expect(st.submits.length, "/clear на сборе флота -- сигнала нет").toBe(0)
+  await saTickAt(st, T0 + 63 * SA_MIN)
+  await saTickAt(st, T0 + 93 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  expect(saSnap()["ag-sa24"].nudgedAt).toBe(T0 + 93 * SA_MIN)
+  await clear393()
+  expect(Object.keys(saSnap()).filter(k => k === "ag-sa24"), "/clear очистил учёт активности").toEqual([])
+  await saTickAt(st, T0 + 94 * SA_MIN)
+  expect(saSnap()["ag-sa24"].nudgedAt, "/clear очистил отметку агента").toBeNull()
+  await saTickAt(st, T0 + 124 * SA_MIN)
+  expect(st.submits.length, "/clear очистил окно сигнала: cooldown 60 от +93 не держит").toBe(2)
+  const j = saJournal(st)
+  expect(j[j.length - 1].agents[0].prevNudgedAt, "отметка прежней сессии не едет в журнал").toBeUndefined()
+})
+
+test("stale-agents T25: сигнал только при isInteractive === true; false -- журнал delivered not-interactive; session.start не наблюдался -- interactive-unknown; флот в любом режиме", async () => {
+  const modes: Array<[string, any]> = [["true", { isInteractive: true }], ["false", { isInteractive: false, surface: null }], ["unknown", { isInteractive: true }]]
+  for (let i = 0; i < modes.length; i++) {
+    const mode = modes[i][0]
+    const T0 = 850_000_000 + i * 50 * SA_MIN
+    const st = sa$("t25" + mode, T0)
+    st.agents = [saRun("ag-sa25" + mode)]
+    await saStart(st, modes[i][1])
+    if (mode === "unknown") SA.staleInteractiveReset()
+    await saTickAt(st, T0)
+    await saTickAt(st, T0 + 31 * SA_MIN)
+    const rec = saFleetRec(st)
+    expect(rec && rec.t, mode + ": запись флота в любом режиме").toBe(T0 + 31 * SA_MIN)
+    const j = saJournal(st)
+    expect(j.length, mode + ": запись журнала").toBe(1)
+    expect(j[0].agents.map((a: any) => a.id), mode).toEqual(["ag-sa25" + mode])
+    const toasts = st.m.toasts.filter((x: string) => x.indexOf("idle-watch: незакрытых агентов") === 0).length
+    if (mode === "true") {
+      expect(st.submits.length, "interactive: submit").toBe(1)
+      expect(toasts, "interactive: тост").toBe(1)
+      expect(j[0].delivered, "interactive: поля delivered нет").toBeUndefined()
+    } else {
+      expect(st.submits.length, mode + ": submit нет").toBe(0)
+      expect(toasts, mode + ": тоста нет").toBe(0)
+      expect(j[0].delivered).toBe(mode === "false" ? "not-interactive" : "interactive-unknown")
+    }
+    const out = await hook393(subs393(), "tool.call")(st.m.$, { tool: SA_TOOL, tool_use_id: "tu-sa25" + mode }, async () => ({ result: "НЕ ДОЛЖЕН" }))
+    expect(String(out && out.result).split("\n")[0], mode + ": fleet_status в любом режиме").toBe("Флот: агентов 1, сессий 1 (в этой 1); без счёта 0, нечитаемых 0")
+  }
+})
+
+test("stale-agents T26: две сессии без sid -- ни одной записи флота, сентинел-файл не сессия, mine неизвестно", async () => {
+  const T0 = 860_000_000
+  const dir = "/probes-sa-t26/idle-watch/fleet"
+  const files: Record<string, string> = {
+    [dir + "/sid-unavailable.json"]: JSON.stringify({ v: 1, sid: "sid-unavailable", cwd: "/w/old", t: T0 - 1000, running: 3, agents: [] }),
+    [dir + "/hhhh8888.json"]: JSON.stringify({ v: 1, sid: "hhhh8888-a", cwd: "/w/h", t: T0 - 1000, running: 2, agents: [] }),
+  }
+  // CONSTRAINT: live_kinds без remote_agent -- строка live_kinds_unobservable
+  // иначе сливала бы снапшот потерь до замера.
+  const st = sa$("t26", T0, { files, sidFails: true, cfg: SA_KINDS_OBSERVABLE })
+  st.agents = [saRun("ag-sa26a"), saRun("ag-sa26b")]
+  await saStart(st)
+  const l0 = lostN393("fleet-sid-unavailable")
+  await saTickAt(st, T0)
+  expect(lostN393("fleet-sid-unavailable") - l0, "первая сессия: отказ sid назван").toBe(1)
+  const st2 = sa$("t26", T0, { files: st.files, sidFails: true, cfg: SA_KINDS_OBSERVABLE })
+  st2.agents = [saRun("ag-sa26c"), saRun("ag-sa26d"), saRun("ag-sa26e")]
+  await saStart(st2)
+  const l1 = lostN393("fleet-sid-unavailable")
+  await saTickAt(st2, T0)
+  expect(lostN393("fleet-sid-unavailable") - l1, "вторая сессия: отказ sid назван").toBe(1)
+  const own = st.m.writes.concat(st2.m.writes).filter((w: any) => String(w.path).indexOf("/idle-watch/fleet/") >= 0)
+  expect(own.map((w: any) => w.path), "ни одна сессия без sid не пишет запись флота").toEqual([])
+  const c = await SA.fleetCensus(st2.m.$, { globalHome: st2.home })
+  expect(c.sessions, "сентинел-файл не сессия").toBe(1)
+  expect(c.agents).toBe(2)
+  expect(c.unreadable, "сентинел-файл -- нечитаемый").toBe(1)
+  expect(c.mine, "своя запись неизвестна").toBeNull()
+})
+
+test("stale-agents T27b: поток шага без кусков 31 мин -- агент назван; учёт шага часов хоста не читает", async () => {
+  const T0 = 875_000_000
+  const st = sa$("t27b", T0)
+  st.agents = [saRun("ag-sa27b")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  st.m.setNow(T0 + 1 * SA_MIN)
+  const src = { [Symbol.asyncIterator]() { return { next: () => new Promise(() => {}) } } }
+  const c0 = st.clockReads
+  void drainStream(hook393(subs393(), "turn.step")(st.m.$, { agentId: "ag-sa27b", turnId: "t-27b", index: 0, model: "m-27b", messageCount: 1 }, () => src))
+  await settle393()
+  expect(st.clockReads - c0, "вход шага часов хоста не читает").toBe(0)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(saSnap()["ag-sa27b"].lastAt, "вход шага -- активность, время тика").toBe(T0 + 2 * SA_MIN)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length, "29 мин без кусков -- рано").toBe(0)
+  await saTickAt(st, T0 + 33 * SA_MIN)
+  expect(st.submits.length, "31 мин без кусков -- назван").toBe(1)
+  expect(String(st.submits[0].text)).toContain("- ag-sa27b «desc ag-sa27b» (general-purpose): без активности 31 мин")
+})
+
+function saChan(): { src: any; push: (c: any) => void; end: (v: any) => void } {
+  const waiters: Array<(r: any) => void> = []
+  const buf: any[] = []
+  const put = (r: any) => { const w = waiters.shift(); if (w) w(r); else buf.push(r) }
+  const it = { next: () => (buf.length ? Promise.resolve(buf.shift()) : new Promise((res) => { waiters.push(res) })) }
+  return { src: { [Symbol.asyncIterator]: () => it }, push: (c: any) => put({ done: false, value: c }), end: (v: any) => put({ done: true, value: v }) }
+}
+
+// CONSTRAINT: шаг открыт на 1-й минуте, кусок каждые 10 мин до 60-й, тик каждую минуту; поток кончается после тика 60-й минуты.
+async function saChunkRun(st: any, T0: number, start: (next: any) => any, result: any): Promise<{ out: any; clockOnChunks: number; calls: number }> {
+  const ch = saChan()
+  let calls = 0
+  st.m.setNow(T0 + SA_MIN)
+  const drained = drainStream(start(() => { calls++; return ch.src }))
+  await settle393()
+  let clockOnChunks = 0
+  for (let k = 2; k <= 60; k++) {
+    if (k % 10 === 0) {
+      st.m.setNow(T0 + k * SA_MIN)
+      const c0 = st.clockReads
+      ch.push({ kind: "text", text: "c" + k })
+      await settle393()
+      clockOnChunks += st.clockReads - c0
+    }
+    await saTickAt(st, T0 + k * SA_MIN)
+  }
+  ch.end(result)
+  const out = await drained
+  return { out, clockOnChunks, calls }
+}
+
+function saStepEv(aid: string, model: string, k: string = "0"): any {
+  return { agentId: aid, turnId: "t-" + aid + "-" + k, index: 0, model, messageCount: 1 }
+}
+
+function saAttempts(st: any, aid: string): any[] {
+  return shards393(st.m.writes, "/failover/journal.jsonl.shard.").filter((r: any) => r.agentId === aid && r.attempt !== undefined)
+}
+
+test("stale-agents T27a: поток шага с кусками каждые 10 мин 60 мин -- агент не назван; кусок часов не читает; значение шага доходит; конец потока -- не кусок", async () => {
+  const T0 = 872_000_000
+  const st = sa$("t27a", T0)
+  st.agents = [saRun("ag-sa27a")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  const R = { usage: { out: 1 }, stopReason: "end_turn", text: "R27a" }
+  const run = await saChunkRun(st, T0, (next) => hook393(subs393(), "turn.step")(st.m.$, saStepEv("ag-sa27a", "m-27a"), next), R)
+  expect(st.submits.length, "куски каждые 10 мин -- агент жив").toBe(0)
+  expect(run.clockOnChunks, "кусок часов хоста не читает").toBe(0)
+  expect(run.out.chunks.length).toBe(6)
+  expect(run.out.value, "значение шага доходит").toBe(R)
+  await saTickAt(st, T0 + 89 * SA_MIN)
+  expect(st.submits.length, "конец потока пометки не ставит").toBe(0)
+  await saTickAt(st, T0 + 90 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  expect(String(st.submits[0].text)).toContain("- ag-sa27a «desc ag-sa27a» (general-purpose): без активности 30 мин")
+})
+
+test("stale-agents T27c: лестница -- куски попытки держат агента живым и считаются (emitted); попытка без кусков дольше порога -- агент назван", async () => {
+  const T0 = 873_000_000
+  const st = sa$("t27c", T0)
+  st.agents = [saRun("ag-sa27c")]
+  await saStart(st)
+  failoverBindSet("ag-sa27c", { ladder: ["r-27c"], rungEffort: { "r-27c": "max" }, subagentType: "t", class: "", sticky: null })
+  await saTickAt(st, T0)
+  const R = { usage: { out: 1 }, stopReason: "end_turn", text: "R27c" }
+  const run = await saChunkRun(st, T0, (next) => hook393(subs393(), "turn.step")(st.m.$, saStepEv("ag-sa27c", "m-27c"), next), R)
+  expect(st.submits.length, "куски попытки -- агент жив").toBe(0)
+  expect(run.out.value).toBe(R)
+  const at = saAttempts(st, "ag-sa27c")
+  expect(at.length, "шаг шёл попыткой лестницы").toBe(1)
+  expect({ outcome: at[0].outcome, emitted: at[0].emitted, emittedContent: at[0].emittedContent }, "счёт кусков работает вместе с пометкой").toEqual({ outcome: "ok", emitted: 6, emittedContent: 6 })
+  const src = { [Symbol.asyncIterator]() { return { next: () => new Promise(() => {}) } } }
+  st.m.setNow(T0 + 61 * SA_MIN)
+  void drainStream(hook393(subs393(), "turn.step")(st.m.$, saStepEv("ag-sa27c", "m-27c", "1"), () => src))
+  await settle393()
+  await saTickAt(st, T0 + 61 * SA_MIN)
+  await saTickAt(st, T0 + 90 * SA_MIN)
+  expect(st.submits.length, "29 мин без кусков -- рано").toBe(0)
+  await saTickAt(st, T0 + 91 * SA_MIN)
+  expect(st.submits.length, "30 мин без кусков -- назван").toBe(1)
+  expect(String(st.submits[0].text)).toContain("- ag-sa27c «desc ag-sa27c» (general-purpose): без активности 30 мин")
+  failoverBindReset()
+})
+
+test("stale-agents T27d: лестница выключена в мире; пустой план проверяющего -- поток мимо попыток, куски держат агента живым", async () => {
+  const T0 = 874_000_000
+  const st = sa$("t27d", T0, { files: { "/probes-sa-t27d/probes.toml": "[probe.idle-watch]\n[failover]\nenabled = false\n" } })
+  st.agents = [saRun("ag-sa27d")]
+  await saStart(st)
+  failoverBindSet("ag-sa27d", { ladder: ["r-27d"], rungEffort: { "r-27d": "max" }, subagentType: "t", class: "", sticky: null })
+  await saTickAt(st, T0)
+  const R = { usage: { out: 1 }, stopReason: "end_turn", text: "R27d" }
+  const run = await saChunkRun(st, T0, (next) => hook393(subs393(), "turn.step")(st.m.$, saStepEv("ag-sa27d", "m-27d"), next), R)
+  expect(st.submits.length, "лестница выключена: куски -- агент жив").toBe(0)
+  expect(run.out.value).toBe(R)
+  expect(saAttempts(st, "ag-sa27d").length, "выключенная лестница попыток не пишет").toBe(0)
+  const st2 = sa$("t27d2", T0)
+  st2.agents = [saRun("ag-sa27d2")]
+  await saStart(st2)
+  failoverBindSet("ag-sa27d2", { ladder: [], terminal: "t-27d2", rungEffort: {}, subagentType: "t", class: "crit-mech", sticky: null })
+  sessionExecutorModelAdd("t-27d2")
+  await saTickAt(st2, T0)
+  const run2 = await saChunkRun(st2, T0, (next) => hook393(subs393(), "turn.step")(st2.m.$, saStepEv("ag-sa27d2", ""), next), R)
+  expect(st2.submits.length, "пустой план: куски -- агент жив").toBe(0)
+  expect(run2.out.value).toBe(R)
+  expect(run2.calls).toBe(1)
+  expect(saAttempts(st2, "ag-sa27d2").length, "пустой план попыток не пишет").toBe(0)
+  sessionExecutorsReset()
+  failoverBindReset()
+})
+
+test("stale-agents T27e: обработчик отказа turn.step -- куски потока ставят пометку агента; отказ чтения agentId назван, поток идёт", async () => {
+  const T0 = 876_000_000
+  const st = sa$("t27e", T0)
+  st.agents = [saRun("ag-sa27e")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  const caught = catchOfRegister()
+  const R = { usage: { out: 1 }, stopReason: "end_turn", text: "R27e" }
+  const run = await saChunkRun(st, T0, (next) => caught["turn.step"](Dollar, saStepEv("ag-sa27e", "m-27e"), next), R)
+  expect(st.submits.length, "куски дороги отказа -- агент жив").toBe(0)
+  expect(run.out.value).toBe(R)
+  const l0 = lostN393("stale-agents-track")
+  const bad = { get agentId() { throw new Error("poison agentId t27e") } }
+  const out = await drainStream(caught["turn.step"](Dollar, bad, () => (async function* () { yield "c1"; return "V27e" })()))
+  expect(out, "отказ чтения agentId поток не ломает").toEqual({ chunks: ["c1"], value: "V27e" })
+  expect(lostN393("stale-agents-track") - l0, "отказ чтения agentId назван").toBe(1)
+  const outE = await drainStream(caught["turn.step"](Dollar, { agentId: "" }, () => (async function* () { yield "c1"; return "V27e0" })()))
+  expect(outE.value).toBe("V27e0")
+  expect(saSnap()[""], "пустой agentId -- не агент").toBeUndefined()
+})
+
+test("stale-agents T27f: пометка кусков сохраняет yield* -- значение, бросок потока, return()/throw() потребителя доходят до потока, finally потока при обрыве", async () => {
+  const T0 = 877_000_000
+  const st = sa$("t27f", T0)
+  await saStart(st)
+  const step = hook393(subs393(), "turn.step")
+  let fin = 0
+  const g1 = step(st.m.$, saStepEv("ag-sa27f", "m-27f", "ret"), () => (async function* () { try { yield "c1"; yield "c2"; return "NEVER" } finally { fin++ } })())
+  expect((await g1.next()).value).toBe("c1")
+  expect(await g1.return("STOP"), "return() потребителя").toEqual({ done: true, value: "STOP" })
+  expect(fin, "finally потока сработал при обрыве").toBe(1)
+  let caughtX: any = null
+  const g2 = step(st.m.$, saStepEv("ag-sa27f", "m-27f", "thr"), () => (async function* () { try { yield "c1"; return "NEVER" } catch (x) { caughtX = x; return "RECOVERED" } })())
+  expect((await g2.next()).value).toBe("c1")
+  const boom = new Error("boom t27f")
+  expect(await g2.throw(boom), "throw() потребителя доходит до потока").toEqual({ done: true, value: "RECOVERED" })
+  expect(caughtX).toBe(boom)
+  const inner = new Error("inner t27f")
+  let got: any = null
+  try { await drainStream(step(st.m.$, saStepEv("ag-sa27f", "m-27f", "in"), () => (async function* () { yield "c1"; throw inner })())) } catch (x) { got = x }
+  expect(got, "бросок потока доходит до потребителя").toBe(inner)
+  const out = await drainStream(step(st.m.$, saStepEv("ag-sa27f", "m-27f", "val"), () => (async function* () { yield "c1"; return "V27f" })()))
+  expect(out).toEqual({ chunks: ["c1"], value: "V27f" })
+  let nextReads = 0
+  let k = 0
+  const itN: any = {}
+  Object.defineProperty(itN, "next", { get() { nextReads++; return async () => (k++ < 2 ? { done: false, value: "n" + k } : { done: true, value: "VN" }) } })
+  const outN = await drainStream(step(st.m.$, saStepEv("ag-sa27f", "m-27f", "nx"), () => ({ [Symbol.asyncIterator]: () => itN })))
+  expect(outN).toEqual({ chunks: ["n1", "n2"], value: "VN" })
+  expect(nextReads, "свойство next потока читается один раз").toBe(1)
+})
+
+test("stale-agents T28: строка флота в сообщении -- все поля; та же форма в fleet_status", async () => {
+  const T0 = 880_000_000
+  const dir = "/probes-sa-t28/idle-watch/fleet"
+  const files: Record<string, string> = {
+    [dir + "/iiii9999.json"]: JSON.stringify({ v: 1, sid: "iiii9999-u", cwd: "/w/i", t: T0 + 31 * SA_MIN - 1000, running: null, agents: [] }),
+    [dir + "/jjjj0000.json"]: "{bad",
+  }
+  const st = sa$("t28", T0, { files })
+  st.agents = [saRun("ag-sa28")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  expect(String(st.submits[0].text).split("\n").pop()).toBe("Флот сейчас: агентов 1, сессий 2 (в этой 1); без счёта 1, нечитаемых 1.")
+  const out = await hook393(subs393(), "tool.call")(st.m.$, { tool: SA_TOOL, tool_use_id: "tu-sa28" }, async () => ({ result: "НЕ ДОЛЖЕН" }))
+  expect(String(out && out.result).split("\n")[0]).toBe("Флот: агентов 1, сессий 2 (в этой 1); без счёта 1, нечитаемых 1")
+})
+
+test("stale-agents T29: незакрытый -- любой статус, кроме completed / failed / killed; статус ≠ running выводится; флот считает так же", async () => {
+  const T0 = 890_000_000
+  const st = sa$("t29", T0)
+  st.agents = [saRun("ag-sa29p", { status: "pending" }), saRun("ag-sa29w", { status: "weird" }), saRun("ag-sa29r"), saRun("ag-sa29c", { status: "completed" }), saRun("ag-sa29f", { status: "failed" }), saRun("ag-sa29k", { status: "killed" })]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  const text = String(st.submits[0].text)
+  expect(text).toContain("- ag-sa29p «desc ag-sa29p» (general-purpose, статус pending): без активности 31 мин")
+  expect(text).toContain("- ag-sa29w «desc ag-sa29w» (general-purpose, статус weird): без активности 31 мин")
+  expect(text).toContain("- ag-sa29r «desc ag-sa29r» (general-purpose): без активности 31 мин")
+  expect(text).not.toContain("ag-sa29c")
+  expect(text).not.toContain("ag-sa29f")
+  expect(text).not.toContain("ag-sa29k")
+  const rec = saFleetRec(st)
+  expect(rec.running, "флот считает незакрытых").toBe(3)
+  expect(rec.agents.map((a: any) => a.id).sort()).toEqual(["ag-sa29p", "ag-sa29r", "ag-sa29w"])
+})
+
+test("stale-agents T30: tool.call агента читает ровно tool, agentId, tool_use_id и один раз `agentId in`", async () => {
+  const T0 = 900_000_000
+  const st = sa$("t30", T0, { idle: "0" })
+  await saStart(st)
+  const probe = (raw: any) => {
+    const seen = { gets: [] as string[], has: 0 }
+    const ev = new Proxy(raw, {
+      get(t: any, k: any, r: any) { seen.gets.push(String(k)); return Reflect.get(t, k, r) },
+      has(t: any, k: any) { if (k === "agentId") seen.has++; return Reflect.has(t, k) },
+    })
+    return { ev, seen }
+  }
+  const a = probe({ agentId: "ag-sa30", tool: "Read", tool_use_id: "tu-sa30", file_path: "/x", extra: 1 })
+  const out = await hook393(subs393(), "tool.call")(st.m.$, a.ev, async () => ({ result: "r30" }))
+  expect(out).toEqual({ result: "r30" })
+  expect(a.seen.has, "`agentId in` -- один раз").toBe(1)
+  expect(a.seen.gets.slice().sort(), "агентский путь читает три ключа по разу").toEqual(["agentId", "tool", "tool_use_id"])
+  const f = probe({ agentId: "ag-sa30", tool: SA_TOOL, tool_use_id: "tu-sa30f", extra: 1 })
+  const fout = await hook393(subs393(), "tool.call")(st.m.$, f.ev, async () => ({ result: "НЕ ДОЛЖЕН" }))
+  expect(String(fout && fout.result)).toContain("Флот: ")
+  expect(f.seen.has).toBe(1)
+  expect(f.seen.gets.slice().sort(), "ветка флота агента -- по прочитанному tool").toEqual(["agentId", "tool", "tool_use_id"])
+  const l0 = lostN393("stale-agents-track")
+  const bad = new Proxy({ agentId: "ag-sa30b", tool: "Read", tool_use_id: "tu-sa30b" }, {
+    get(t: any, k: any, r: any) { if (k === "tool") throw new Error("poison getter t30"); return Reflect.get(t, k, r) },
+  })
+  let called = false
+  const bout = await hook393(subs393(), "tool.call")(st.m.$, bad, async () => { called = true; return { result: "r30b" } })
+  expect(bout, "отказ чтения ключа не ломает вызов").toEqual({ result: "r30b" })
+  expect(called).toBe(true)
+  expect(lostN393("stale-agents-track") - l0, "отказ чтения ключа назван").toBe(1)
+})
+
+test("stale-agents T31: новый висящий агент каждую минуту 30 минут подряд -- один submit за окно; следующее окно перечисляет всех", async () => {
+  const T0 = 910_000_000
+  const st = sa$("t31", T0)
+  await saStart(st)
+  for (let k = 0; k < 30; k++) {
+    st.agents.push(saRun("ag-sa31-" + k))
+    await saTickAt(st, T0 + k * SA_MIN)
+  }
+  for (let m = 30; m < 60; m++) await saTickAt(st, T0 + m * SA_MIN)
+  expect(st.submits.length, "окно cooldown_min -- один submit").toBe(1)
+  expect(String(st.submits[0].text)).toContain("- ag-sa31-0 «")
+  expect(String(st.submits[0].text)).not.toContain("- ag-sa31-1 «")
+  await saTickAt(st, T0 + 60 * SA_MIN)
+  expect(st.submits.length, "следующее окно -- снова").toBe(2)
+  const text = String(st.submits[1].text)
+  for (let k = 0; k < 30; k++) expect(text, "окно перечисляет всех висящих: " + k).toContain("- ag-sa31-" + k + " «")
+  const j = saJournal(st)
+  expect(j.length).toBe(2)
+  const a0 = j[1].agents.filter((a: any) => a.id === "ag-sa31-0")[0]
+  const a1 = j[1].agents.filter((a: any) => a.id === "ag-sa31-1")[0]
+  expect(a0.prevNudgedAt, "отметка агента -- в журнале").toBe(new Date(T0 + 30 * SA_MIN).toISOString())
+  expect(a1.prevNudgedAt).toBeUndefined()
+})
+
+test("stale-agents T32: перед submit -- агент с touched или терминальный за время await тика выбрасывается; пусто -- submit нет и окно не занято", async () => {
+  const T0 = 920_000_000
+  const gate = saGate()
+  const st = sa$("t32", T0, { onFsList: () => gate.fire() })
+  st.agents = [saRun("ag-sa32a"), saRun("ag-sa32b"), saRun("ag-sa32c")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  gate.set(async () => {
+    await hook393(subs393(), "tool.call")(st.m.$, { agentId: "ag-sa32a", tool: "Read", tool_use_id: "tu-sa32a" }, async () => ({ result: "r" }))
+    st.agents = [saRun("ag-sa32a"), saRun("ag-sa32b", { status: "completed" }), saRun("ag-sa32c")]
+  })
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(gate.pending()).toBe(false)
+  expect(st.submits.length).toBe(1)
+  const text = String(st.submits[0].text)
+  expect(text).toContain("- ag-sa32c «")
+  expect(text, "touched за время await -- выброшен").not.toContain("ag-sa32a")
+  expect(text, "терминальный за время await -- выброшен").not.toContain("ag-sa32b")
+  const gate2 = saGate()
+  const st2 = sa$("t32b", T0, { onFsList: () => gate2.fire() })
+  st2.agents = [saRun("ag-sa32d")]
+  await saStart(st2)
+  await saTickAt(st2, T0)
+  st2.agents = [saRun("ag-sa32d"), saRun("ag-sa32e")]
+  await saTickAt(st2, T0 + 2 * SA_MIN)
+  gate2.set(async () => { st2.agents = [saRun("ag-sa32d", { status: "killed" }), saRun("ag-sa32e")] })
+  await saTickAt(st2, T0 + 31 * SA_MIN)
+  expect(gate2.pending()).toBe(false)
+  expect(st2.submits.length, "все выброшены -- submit нет").toBe(0)
+  await saTickAt(st2, T0 + 32 * SA_MIN)
+  expect(st2.submits.length, "окно не занято пустым тиком").toBe(1)
+  expect(String(st2.submits[0].text)).toContain("- ag-sa32e «")
+  let failRe = ""
+  const gate3 = saGate()
+  const st3: any = sa$("t32c", T0, { cfg: "cooldown_min = 1\n", onFsList: () => gate3.fire(), list: () => {
+    if (failRe === "throw") { failRe = ""; throw new Error("agent.list: scripted recheck refusal t32") }
+    if (failRe === "shape") { failRe = ""; return { not: "array" } }
+    return st3.agents
+  } })
+  st3.agents = [saRun("ag-sa32f")]
+  await saStart(st3)
+  await saTickAt(st3, T0)
+  gate3.set(async () => { failRe = "throw" })
+  await saTickAt(st3, T0 + 31 * SA_MIN)
+  expect(st3.submits.length, "отказ повторного list -- сигнал не гаснет").toBe(1)
+  const j3 = saJournal(st3)
+  expect(j3[0].lost && j3[0].lost["stale-agents-recheck"] && j3[0].lost["stale-agents-recheck"].n, "отказ повторного list назван").toBe(1)
+  gate3.set(async () => { failRe = "shape" })
+  await saTickAt(st3, T0 + 32 * SA_MIN)
+  expect(st3.submits.length, "не-массив повторного list -- сигнал не гаснет").toBe(2)
+  const j3b = saJournal(st3)
+  expect(j3b[1].lost && j3b[1].lost["stale-agents-recheck-shape"] && j3b[1].lost["stale-agents-recheck-shape"].n, "не-массив повторного list назван").toBe(1)
+})
+
+test("stale-agents T33: файл, пропавший между list и чтением, -- vanished, не нечитаемый; catch session.end различает мир и публикацию", async () => {
+  const T0 = 930_000_000
+  const dir = "/probes-sa-t33/idle-watch/fleet"
+  const files: Record<string, string> = {
+    [dir + "/kkkk1111.json"]: JSON.stringify({ v: 1, sid: "kkkk1111-a", cwd: "/w/k", t: T0 - 1000, running: 1, agents: [] }),
+    [dir + "/llll2222.json"]: JSON.stringify({ v: 1, sid: "llll2222-a", cwd: "/w/l", t: T0 - 1000, running: 1, agents: [] }),
+  }
+  const st = sa$("t33", T0, { files, extraNames: ["gone3333.json", "mmmm4444.json"], statErr: [dir + "/mmmm4444.json"], fail: { fsReadErr: [dir + "/llll2222.json"] } })
+  await clear393()
+  const c = await SA.fleetCensus(st.m.$, { globalHome: st.home })
+  expect(c.vanished, "пропавший файл -- vanished").toBe(1)
+  expect(c.unreadable, "отказ чтения живого файла и отказ stat не ENOENT -- нечитаемые").toBe(2)
+  expect(c.sessions).toBe(1)
+  await saStart(st)
+  const out = await hook393(subs393(), "tool.call")(st.m.$, { tool: SA_TOOL, tool_use_id: "tu-sa33" }, async () => ({ result: "НЕ ДОЛЖЕН" }))
+  expect(String(out && out.result).split("\n")[0], "vanished в тексте не выводится").toBe("Флот: агентов 1, сессий 1 (в этой ?); без счёта 0, нечитаемых 2")
+  const w0 = lostN393("fleet-end-world")
+  const p0 = lostN393("fleet-end-publish")
+  const mW = mod$393({ env: { PWD: "/work-sa-t33-w", HOME: "/hh-sa-t33" }, now: T0, fail: { envPoison: ["HOME"] } })
+  const rW = await hook393(subs393(), "session.end")(mW.$, { reason: "other", sessionId: "sid-sa-t33-w", resume: {} }, async () => ({ sessionId: "sid-sa-t33-w" }))
+  expect(rW).toEqual({ sessionId: "sid-sa-t33-w" })
+  expect(lostN393("fleet-end-world") - w0, "отказ мира назван fleet-end-world").toBe(1)
+  expect(lostN393("fleet-end-publish") - p0).toBe(0)
+  const stP = sa$("t33p", T0, { fsWriteFail: (p) => p.indexOf("/idle-watch/fleet/") >= 0 })
+  await saStart(stP)
+  const p1 = lostN393("fleet-end-publish")
+  const w1 = lostN393("fleet-end-world")
+  await hook393(subs393(), "session.end")(stP.m.$, { reason: "other", sessionId: "sid-sa-t33-p", resume: {} }, async () => ({ sessionId: "sid-sa-t33-p" }))
+  expect(lostN393("fleet-end-publish") - p1, "отказ публикации назван fleet-end-publish").toBe(1)
+  expect(lostN393("fleet-end-world") - w1).toBe(0)
+})
+
+test("stale-agents T34: запись журнала несёт поле перепроверки -- ok, отказ повторного list с текстом, не-массив", async () => {
+  const T0 = 940_000_000
+  let failRe = ""
+  const gate = saGate()
+  const st: any = sa$("t34", T0, { cfg: "cooldown_min = 1\n", onFsList: () => gate.fire(), list: () => {
+    if (failRe === "throw") { failRe = ""; throw new Error("agent.list: scripted recheck refusal t34") }
+    if (failRe === "shape") { failRe = ""; return { not: "array" } }
+    return st.agents
+  } })
+  st.agents = [saRun("ag-sa34")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  gate.set(async () => { failRe = "throw" })
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  gate.set(async () => { failRe = "shape" })
+  await saTickAt(st, T0 + 33 * SA_MIN)
+  expect(st.submits.length).toBe(3)
+  expect(saJournal(st).map((r: any) => r.recheck)).toEqual(["ok", "failed: agent.list: scripted recheck refusal t34", "not-array: object"])
+})
+
+test("stale-agents T35a: агент ждёт на лестнице 45 мин засчитанными паузами -- не назван; ответ после срока доходит", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 23, 0, 0)
+  const h: any = { history: [] as any[] }
+  let pauses = 0
+  let lastMin = -1
+  const st: any = sa$("t35a", T0, { messages: () => h.history.slice(), procFn: async (argv: string[], _init: any, setNow: (n: number) => void, getNow: () => number) => {
+    pauses++
+    setNow(getNow() + Number(argv[1]) * 1000)
+    const min = Math.floor((getNow() - T0) / SA_MIN)
+    if (min !== lastMin) { lastMin = min; await st.tick() }
+    return { exitCode: 0, stdout: "", stderr: "" }
+  } })
+  h.m = st.m
+  st.agents = [saRun("ag-sa35a")]
+  await saStart(st)
+  failoverBindSet("ag-sa35a", { ladder: ["r-35a"], rungEffort: { "r-35a": "max" }, subagentType: "t35", class: "", sticky: null })
+  await saTickAt(st, T0)
+  const text = "You've hit your session limit · resets 11:45pm (UTC)"
+  const next = next514(h, {
+    "m-35a": (_k: number, t: number) => (t >= T0 + 45 * SA_MIN ? null : text),
+    "r-35a": (_k: number, t: number) => (t >= T0 + 45 * SA_MIN ? null : text),
+  })
+  const out = await drainStream(hook393(subs393(), "turn.step")(st.m.$, saStepEv("ag-sa35a", "m-35a"), next))
+  await settle393()
+  expect(out.value && out.value.text, "ответ после срока").toBe("OK-m-35a")
+  expect(waits514(h, "ag-sa35a", "wait-begin").length, "агент ждал на лестнице").toBe(1)
+  expect(pauses, "ожидание шло засчитанными паузами").toBeGreaterThan(600)
+  expect(st.submits.length, "ждущий на лестнице -- жив, не назван").toBe(0)
+  failoverBindReset()
+})
+
+test("stale-agents T35b: досрочное пробуждение паузы лестницы (не засчитано) пометки не ставит", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 8, 27, 20, 0, 0)
+  const h: any = { history: [] as any[] }
+  let n = 0
+  const st: any = sa$("t35b", T0, { messages: () => h.history.slice(), procFn: async (_argv: string[], _init: any, setNow: (n: number) => void, getNow: () => number) => {
+    n++
+    await st.tick()
+    setNow(getNow() + 1000)
+    return { exitCode: 0, stdout: "", stderr: "" }
+  } })
+  h.m = st.m
+  st.agents = [saRun("ag-sa35b")]
+  await saStart(st)
+  failoverBindSet("ag-sa35b", { ladder: ["r-35b"], rungEffort: { "r-35b": "max" }, subagentType: "t35", class: "", sticky: null })
+  await saTickAt(st, T0)
+  const text = "You've hit your session limit · resets 9:45pm (UTC)"
+  const next = next514(h, { "m-35b": refuseAll514(text), "r-35b": refuseAll514(text) })
+  st.m.setNow(T0 + SA_MIN)
+  await drainStream(hook393(subs393(), "turn.step")(st.m.$, saStepEv("ag-sa35b", "m-35b"), next))
+  await settle393()
+  expect(n, "одна пауза").toBe(1)
+  const un = waits514(h, "ag-sa35b", "wait-unavailable")
+  expect(un.length).toBe(1)
+  expect(un[0].elapsedMs, "пауза не засчитана: досрочное пробуждение").toBe(1000)
+  expect(saSnap()["ag-sa35b"].lastAt, "тик внутри паузы -- время тика").toBe(T0 + SA_MIN)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(saSnap()["ag-sa35b"].lastAt, "незасчитанная пауза активностью не стала").toBe(T0 + SA_MIN)
+  await saTickAt(st, T0 + 30 * SA_MIN)
+  expect(st.submits.length).toBe(0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length, "30 мин от шага -- назван").toBe(1)
+  failoverBindReset()
+})
+
+// --- #531: триггеры проб (on / every_min), idle-watch по README, доставка nudge ---
+const P5_IDLE = 'act = "nudge"\nwindow_min = 30\nthreshold = 1\ncooldown_min = 30\nlive_threshold = 1\n'
+
+function p5$(tag: string, now: number, toml: string, o: any = {}): any {
+  const home = "/probes-sa-p531-" + tag
+  const st = sa$("p531-" + tag, now, Object.assign({ idle: "0" }, o, { files: Object.assign({ [home + "/probes.toml"]: toml }, o.files || {}) }))
+  st.calls = [] as any[]
+  const c0 = st.m.$.model.complete
+  st.m.$.model.complete = async (arg: any) => { st.calls.push(arg); return c0(arg) }
+  return st
+}
+
+function p5J(st: any, probe: string): any[] {
+  return shards393(st.m.writes, "/" + probe + "/journal.jsonl.shard.")
+}
+
+function p5Out(st: any, probe: string, oc: string): any[] {
+  return p5J(st, probe).filter((r: any) => r.outcome === oc)
+}
+
+async function p5Call(st: any, ev: any, res: any = { result: "r" }, t?: number): Promise<any> {
+  if (t !== undefined) st.m.setNow(t)
+  const r = await hook393(subs393(), "tool.call")(st.m.$, ev, async (_e: any) => (typeof res === "function" ? res() : res))
+  await settle393()
+  return r
+}
+
+async function p5Classic(st: any, name: string, ev: any, t?: number): Promise<any> {
+  if (t !== undefined) st.m.setNow(t)
+  const r = await hook393(subs393(), "classic." + name)(st.m.$, Object.assign({ hook_event_name: name, session_id: st.sid }, ev), async (_e: any) => ({ ok: name }))
+  await settle393()
+  return r
+}
+
+function p5Q(key: string): string[] {
+  const s = SA.probeQueueSnapshot()
+  return (s[key] || []).map((i: any) => i.text)
+}
+
+test("p531 T1: on = [\"Stop\"] -- classic.Stop консультирует, чужое событие нет; ctx несёт event и плоские поля; show event кладёт вход", async () => {
+  const T0 = 900_000_000
+  const st = p5$("t1", T0, '[probe.stopper]\non = ["Stop"]\nshow = ["event"]\n\n[probe.stopper.when]\nfield = "stop_hook_active"\nequals = "true"\n', { answers: ["OK: fine"] })
+  await saStart(st)
+  await p5Classic(st, "Stop", { stop_hook_active: false }, T0 + SA_MIN)
+  expect(st.calls.length, "предикат по плоскому полю ложен -- консультации нет").toBe(0)
+  await p5Classic(st, "SubagentStop", { stop_hook_active: true, agent_id: "ag-p1" }, T0 + 2 * SA_MIN)
+  expect(st.calls.length, "SubagentStop пробой не слушается").toBe(0)
+  const r = await p5Classic(st, "Stop", { stop_hook_active: true, marker_p1: "M-P1" }, T0 + 3 * SA_MIN)
+  expect(r, "next(e) отдан как есть").toEqual({ ok: "Stop" })
+  expect(st.calls.length, "classic.Stop с истинным предикатом -- одна консультация").toBe(1)
+  const prompt = String(st.calls[0].prompt)
+  expect(prompt).toContain("=== EVENT ===")
+  expect(prompt).toContain("\"marker_p1\":\"M-P1\"")
+  expect(p5Out(st, "stopper", "ok").length).toBe(1)
+})
+
+test("p531 T1b: ctx события -- event и agent_id видны предикату", async () => {
+  const T0 = 900_100_000
+  const st = p5$("t1b", T0, '[probe.evt]\nsubagents = true\non = ["SubagentStop", "Stop"]\n\n[probe.evt.when]\nall = [{ field = "event", equals = "SubagentStop" }, { field = "agent_id", equals = "ag-p1b" }]\n', { answers: ["OK: fine"] })
+  await saStart(st)
+  await p5Classic(st, "Stop", {}, T0 + SA_MIN)
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-other" }, T0 + 2 * SA_MIN)
+  expect(st.calls.length).toBe(0)
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-p1b" }, T0 + 3 * SA_MIN)
+  expect(st.calls.length, "event и agent_id дошли до предиката").toBe(1)
+})
+
+test("p531 T2: PostToolUse -- проба после next(e), результат виден через show tool", async () => {
+  const T0 = 900_200_000
+  const st = p5$("t2", T0, '[probe.post]\non = ["PostToolUse"]\nshow = ["tool"]\n', { answers: ["OK: fine"] })
+  await saStart(st)
+  const order: string[] = []
+  const c1 = st.m.$.model.complete
+  st.m.$.model.complete = async (arg: any) => { order.push("model"); return c1(arg) }
+  const r = await p5Call(st, { tool: "Read", tool_use_id: "tu-p2" }, () => { order.push("next"); return { result: "RESULT-P2" } }, T0 + SA_MIN)
+  expect(r).toEqual({ result: "RESULT-P2" })
+  expect(order, "консультация после next(e)").toEqual(["next", "model"])
+  expect(String(st.calls[0].prompt)).toContain("RESULT-P2")
+})
+
+test("p531 T2b: PreToolUse-проба без when консультирует на своём событии", async () => {
+  const T0 = 900_250_000
+  const st = p5$("t2b", T0, '[probe.pre]\non = ["PreToolUse"]\n', { answers: ["OK: fine"] })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p2b" }, { result: "r" }, T0 + SA_MIN)
+  expect(st.calls.length).toBe(1)
+  expect(p5Out(st, "pre", "ok").length).toBe(1)
+})
+
+test("p531 T3: неизвестное имя и MessageDisplay -- on_bad по строке на загрузку, валидное имя работает", async () => {
+  const T0 = 900_300_000
+  const st = p5$("t3", T0, '[probe.mixed]\non = ["Stopp", "Stop", "MessageDisplay"]\n', { answers: ["OK: fine"] })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p3a" }, { result: "r" }, T0 + SA_MIN)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p3b" }, { result: "r" }, T0 + 2 * SA_MIN)
+  const bad = p5Out(st, "mixed", "on_bad").map((r: any) => r.by).sort()
+  expect(bad, "по одной строке на имя").toEqual(["MessageDisplay:per-delta", "Stopp"])
+  expect(st.calls.length, "PreToolUse не в on -- tool.call не консультирует").toBe(0)
+  await p5Classic(st, "Stop", {}, T0 + 3 * SA_MIN)
+  expect(st.calls.length, "валидное Stop работает").toBe(1)
+})
+
+test("p531 T3b: пользовательская проба без on и every_min -- skip_degraded no-trigger, консультаций нет", async () => {
+  const T0 = 900_400_000
+  const st = p5$("t3b", T0, '[probe.bare]\nact = "log_only"\n\n[probe.bare.when]\nfield = "tool"\nequals = "Read"\n', { answers: ["OK: fine", "OK: fine"] })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p3c" }, { result: "r" }, T0 + SA_MIN)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p3d" }, { result: "r" }, T0 + 2 * SA_MIN)
+  await saTickAt(st, T0 + 3 * SA_MIN)
+  expect(st.calls.length).toBe(0)
+  const sd = p5Out(st, "bare", "skip_degraded")
+  expect(sd.length, "одна строка на загрузку").toBe(1)
+  expect(sd[0].by).toBe("no-trigger")
+})
+
+test("p531 T3c: cancel-проба на имени кроме PreToolUse -- on_bad cancel-needs-PreToolUse, PreToolUse остаётся", async () => {
+  const T0 = 900_450_000
+  const st = p5$("t3c", T0, '[probe.canc]\nact = "cancel"\non = ["Stop", "PreToolUse"]\nevery_min = 1\n\n[probe.canc.when]\nfield = "tool"\nequals = "Nope"\n')
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p3e" }, { result: "r" }, T0 + SA_MIN)
+  const bad = p5Out(st, "canc", "on_bad").map((r: any) => r.by).sort()
+  expect(bad).toEqual(["Stop:cancel-needs-PreToolUse", "every_min:cancel-needs-PreToolUse"])
+  await p5Classic(st, "Stop", {}, T0 + 2 * SA_MIN)
+  await saTickAt(st, T0 + 3 * SA_MIN)
+  expect(st.calls.length).toBe(0)
+})
+
+test("p531 T4: every_min -- оценка на тике не чаще раза в N мин, ctx event = timer", async () => {
+  const T0 = 900_500_000
+  const st = p5$("t4", T0, '[probe.ticker]\nevery_min = 2\n\n[probe.ticker.when]\nfield = "event"\nequals = "timer"\n', { answers: ["OK: a", "OK: b", "OK: c"] })
+  await saStart(st)
+  await saTickAt(st, T0 + SA_MIN)
+  expect(st.calls.length, "1 мин < every_min").toBe(0)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(st.calls.length, "2 мин -- первая оценка").toBe(1)
+  await saTickAt(st, T0 + 3 * SA_MIN)
+  expect(st.calls.length, "через минуту -- нет").toBe(1)
+  await saTickAt(st, T0 + 4 * SA_MIN)
+  expect(st.calls.length, "ещё через две -- вторая").toBe(2)
+  const lines = p5Out(st, "ticker", "ok")
+  expect(lines.length).toBe(2)
+  expect(String(lines[0].rec)).toContain("mod-timer-")
+})
+
+test("p531 T4b: смена эпохи во время тика -- консультации нет", async () => {
+  const T0 = 900_600_000
+  let clearing = false
+  const st = p5$("t4b", T0, '[probe.ticker]\nevery_min = 1\n', {
+    answers: ["OK: a"],
+    onList: async () => { if (clearing) { clearing = false; await clear393() } },
+  })
+  await saStart(st)
+  clearing = true
+  await saTickAt(st, T0 + SA_MIN)
+  expect(clearing, "смена эпохи случилась внутри тика").toBe(false)
+  expect(st.calls.length, "консультация прежней эпохи не пошла").toBe(0)
+})
+
+test("p531 T5a: idle live-work -- живая работа live_kinds блокирует, чужой вид и терминальный статус нет", async () => {
+  const T0 = 901_000_000
+  const st = p5$("t5a", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"] })
+  st.agents = [saRun("ag-p5a")]
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p5a" }, { result: "r" }, T0 + 31 * SA_MIN)
+  expect(st.calls.length).toBe(0)
+  const f = p5Out(st, "idle-watch", "filtered")
+  expect(f.map((r: any) => r.by)).toEqual(["live-work:1"])
+  const st2 = p5$("t5a2", T0, "[probe.idle-watch]\n" + P5_IDLE + 'live_kinds = ["in_process_teammate"]\n', { idle: "1", answers: ["NUDGE: go"] })
+  st2.agents = [saRun("ag-p5a2"), saRun("ag-p5a3", { type: "teammate", status: "completed" })]
+  await saStart(st2)
+  await p5Call(st2, { tool: "Read", tool_use_id: "tu-p5a2" }, { result: "r" }, T0 + 31 * SA_MIN)
+  expect(st2.calls.length, "local_agent вне live_kinds, teammate терминален -- живой работы нет").toBe(1)
+})
+
+test("p531 T5b: idle window-count -- запуск Agent главного лупа в окне блокирует", async () => {
+  const T0 = 901_100_000
+  const st = p5$("t5b", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"] })
+  await saStart(st)
+  await p5Call(st, { tool: "Agent", tool_use_id: "tu-p5b1", subagent_type: "x", prompt: "p" }, { result: "r" }, T0 + SA_MIN)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p5b2" }, { result: "r" }, T0 + 30 * SA_MIN + 30_000)
+  expect(st.calls.length).toBe(0)
+  expect(p5Out(st, "idle-watch", "filtered").map((r: any) => r.by)).toEqual(["window-count:1"])
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p5b3" }, { result: "r" }, T0 + 31 * SA_MIN + 1)
+  expect(st.calls.length, "запуск вышел из окна -- консультация").toBe(1)
+})
+
+test("p531 T5c: idle window-not-filled -- сессия моложе window_min", async () => {
+  const T0 = 901_200_000
+  const st = p5$("t5c", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"] })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p5c1" }, { result: "r" }, T0 + 10 * SA_MIN)
+  expect(st.calls.length).toBe(0)
+  expect(p5Out(st, "idle-watch", "filtered").map((r: any) => r.by)).toEqual(["window-not-filled"])
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p5c2" }, { result: "r" }, T0 + 30 * SA_MIN)
+  expect(st.calls.length, "ровно window_min -- окно заполнено").toBe(1)
+})
+
+test("p531 T5d: idle cooldown -- вторая оценка внутри cooldown_min фильтруется", async () => {
+  const T0 = 901_300_000
+  const st = p5$("t5d", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go", "NUDGE: again"] })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p5d1" }, { result: "r" }, T0 + 31 * SA_MIN)
+  expect(st.calls.length, "все четыре условия проходят -- консультация").toBe(1)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p5d2" }, { result: "r" }, T0 + 40 * SA_MIN)
+  expect(st.calls.length).toBe(1)
+  expect(p5Out(st, "idle-watch", "filtered").map((r: any) => r.by)).toEqual(["cooldown"])
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p5d3" }, { result: "r" }, T0 + 61 * SA_MIN)
+  expect(st.calls.length, "cooldown истёк").toBe(2)
+})
+
+test("p531 T5e: idle на таймере -- оценка каждые live_recheck_ms, консультация без вызова инструмента", async () => {
+  const T0 = 901_400_000
+  const st = p5$("t5e", T0, "[probe.idle-watch]\n" + P5_IDLE.replace("cooldown_min = 30", "cooldown_min = 0") + "live_recheck_ms = 180000\nstale_agent_min = 1000\n", { idle: "1", answers: ["NUDGE: timer-go"] })
+  st.agents = [saRun("ag-p5e")]
+  await saStart(st)
+  for (let k = 31; k <= 34; k++) await saTickAt(st, T0 + k * SA_MIN)
+  expect(p5Out(st, "idle-watch", "filtered").map((r: any) => r.by), "оценки на +31 и +34").toEqual(["live-work:1", "live-work:1"])
+  st.agents = []
+  await saTickAt(st, T0 + 37 * SA_MIN)
+  expect(st.calls.length, "флот пуст -- таймер консультирует главный луп").toBe(1)
+  expect(p5Q(""), "в очередь главного лупа").toEqual(["[idle-watch] timer-go"])
+})
+
+test("p531 T6: доставка (а) -- очередь главного лупа уходит полем context ближайшего вызова, свой context сохранён, тост -- полем", async () => {
+  const T0 = 901_500_000
+  const st = p5$("t6", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"] })
+  await saStart(st)
+  const r1 = await p5Call(st, { tool: "Read", tool_use_id: "tu-p6a" }, { result: "r1" }, T0 + 31 * SA_MIN)
+  expect(r1.context, "консультация фоновая -- этот вызов без текста").toBe(undefined)
+  expect(p5Q("")).toEqual(["[idle-watch] go"])
+  const consult = p5J(st, "idle-watch").filter((r: any) => String(r.verdict || "").indexOf("NUDGE") === 0)
+  expect(consult.length).toBe(1)
+  expect(consult[0].toast, "тост -- полем toast").toBe(true)
+  expect(consult[0].outcome, "тост не метит nudge_delivered").not.toBe("nudge_delivered")
+  expect(st.m.toasts.length).toBe(1)
+  const r2 = await p5Call(st, { tool: "Read", tool_use_id: "tu-p6b" }, { result: "r2", context: ["own"] }, T0 + 32 * SA_MIN)
+  expect(r2).toEqual({ result: "r2", context: ["own", "[idle-watch] go"] })
+  const d = p5Out(st, "idle-watch", "nudge_delivered")
+  expect(d.length).toBe(1)
+  expect(d[0].channel).toBe("context")
+  expect(d[0].agent).toBe("main")
+  const r3 = await p5Call(st, { tool: "Read", tool_use_id: "tu-p6c" }, { result: "r3" }, T0 + 33 * SA_MIN)
+  expect(r3, "текст снят -- дубля нет").toEqual({ result: "r3" })
+})
+
+test("p531 T7: доставка (б) -- на тике текст старше 60 с уходит submit, дубля в context нет", async () => {
+  const T0 = 901_600_000
+  const st = p5$("t7", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"] })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p7a" }, { result: "r" }, T0 + 31 * SA_MIN)
+  await saTickAt(st, T0 + 31 * SA_MIN + 30_000)
+  expect(st.submits.length, "30 с -- рано").toBe(0)
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(st.submits).toEqual([{ text: "[idle-watch] go" }])
+  const d = p5Out(st, "idle-watch", "nudge_delivered")
+  expect(d.map((r: any) => r.channel)).toEqual(["submit"])
+  expect(p5Q("")).toEqual([])
+  const r = await p5Call(st, { tool: "Read", tool_use_id: "tu-p7b" }, { result: "r" }, T0 + 33 * SA_MIN)
+  expect(r).toEqual({ result: "r" })
+  await saTickAt(st, T0 + 34 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+})
+
+test("p531 T8: не-интерактив и неизвестный режим -- nudge_undelivered раз на запись, текст остаётся для (а)", async () => {
+  const T0 = 901_700_000
+  const st = p5$("t8", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"] })
+  await saStart(st, { isInteractive: false })
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p8a" }, { result: "r" }, T0 + 31 * SA_MIN)
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  await saTickAt(st, T0 + 33 * SA_MIN)
+  expect(st.submits.length).toBe(0)
+  const u = p5Out(st, "idle-watch", "nudge_undelivered")
+  expect(u.map((r: any) => r.by), "одна строка на запись").toEqual(["not-interactive"])
+  SA.staleInteractiveReset()
+  await saTickAt(st, T0 + 34 * SA_MIN)
+  expect(p5Out(st, "idle-watch", "nudge_undelivered").map((r: any) => r.by)).toEqual(["not-interactive", "interactive-unknown"])
+  const r = await p5Call(st, { tool: "Read", tool_use_id: "tu-p8b" }, { result: "r" }, T0 + 35 * SA_MIN)
+  expect(r.context).toEqual(["[idle-watch] go"])
+})
+
+test("p531 T9: deny -- очередь не доставляется и ждёт следующего вызова", async () => {
+  const T0 = 901_800_000
+  const st = p5$("t9", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"] })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p9a" }, { result: "r" }, T0 + 31 * SA_MIN)
+  const d = await p5Call(st, { tool: "Read", tool_use_id: "tu-p9b" }, { deny: "downstream" }, T0 + 32 * SA_MIN)
+  expect(d).toEqual({ deny: "downstream" })
+  expect(p5Q("")).toEqual(["[idle-watch] go"])
+  const r = await p5Call(st, { tool: "Read", tool_use_id: "tu-p9c" }, { result: "r" }, T0 + 33 * SA_MIN)
+  expect(r.context).toEqual(["[idle-watch] go"])
+})
+
+test("p531 T10: очередь агента -- его tool.call получает context; ушедший агент -- agent-gone и очередь снята", async () => {
+  const T0 = 901_900_000
+  const toml = '[probe.sub]\nsubagents = true\non = ["SubagentStop"]\nact = "nudge"\n'
+  const st = p5$("t10", T0, toml, { answers: ["BLOCK: wrap up", "BLOCK: gone"] })
+  st.agents = [saRun("ag-p10a"), saRun("ag-p10b")]
+  await saStart(st)
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-p10a" }, T0 + SA_MIN)
+  expect(p5Q("ag-p10a")).toEqual(["[sub] wrap up"])
+  const r = await p5Call(st, { agentId: "ag-p10a", tool: "Read", tool_use_id: "tu-p10a" }, { result: "r" }, T0 + 2 * SA_MIN)
+  expect(r).toEqual({ result: "r", context: ["[sub] wrap up"] })
+  expect(p5Out(st, "sub", "nudge_delivered").map((x: any) => x.agent)).toEqual(["ag-p10a"])
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-p10b" }, T0 + 3 * SA_MIN)
+  expect(p5Q("ag-p10b")).toEqual(["[sub] gone"])
+  st.agents = [saRun("ag-p10a"), saRun("ag-p10b", { status: "completed" })]
+  await saTickAt(st, T0 + 4 * SA_MIN)
+  const u = p5Out(st, "sub", "nudge_undelivered")
+  expect(u.map((x: any) => x.by), "терминальный статус -- ушёл на ближайшем тике").toEqual(["agent-gone"])
+  expect(SA.probeQueueSnapshot()["ag-p10b"], "очередь снята").toBe(undefined)
+})
+
+test("p531 T11: вытеснение -- не больше 5 на агента, старейшая запись nudge_dropped", async () => {
+  const T0 = 902_000_000
+  const st = p5$("t11", T0, '[probe.note]\non = ["Notification"]\nact = "nudge"\n', { answers: ["BLOCK: n1", "BLOCK: n2", "BLOCK: n3", "BLOCK: n4", "BLOCK: n5", "BLOCK: n6"] })
+  await saStart(st)
+  for (let k = 1; k <= 6; k++) await p5Classic(st, "Notification", { message: "m" + k }, T0 + k * 1000)
+  expect(SA.NUDGE_QUEUE_MAX).toBe(5)
+  expect(p5Q("")).toEqual(["[note] n2", "[note] n3", "[note] n4", "[note] n5", "[note] n6"])
+  const dr = p5Out(st, "note", "nudge_dropped")
+  expect(dr.length).toBe(1)
+  expect(dr[0].text).toBe("[note] n1")
+})
+
+test("p531 T12: частота filtered -- одна строка на (проба, класс by) за cooldown_min", async () => {
+  const T0 = 902_100_000
+  const st = p5$("t12", T0, "[probe.idle-watch]\n" + P5_IDLE.replace("window_min = 30", "window_min = 60"), { idle: "1" })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p12a" }, { result: "r" }, T0 + SA_MIN)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p12b" }, { result: "r" }, T0 + 2 * SA_MIN)
+  expect(p5Out(st, "idle-watch", "filtered").length, "внутри окна -- одна").toBe(1)
+  await p5Call(st, { tool: "Agent", tool_use_id: "tu-p12c", subagent_type: "x", prompt: "p" }, { result: "r" }, T0 + 3 * SA_MIN)
+  expect(p5Out(st, "idle-watch", "filtered").map((r: any) => r.by), "другой класс by -- своя строка").toEqual(["window-not-filled", "window-count:1"])
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p12d" }, { result: "r" }, T0 + 32 * SA_MIN)
+  expect(p5Out(st, "idle-watch", "filtered").length, "класс window-count сказан 29 мин назад -- молчит").toBe(2)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-p12e" }, { result: "r" }, T0 + 34 * SA_MIN)
+  expect(p5Out(st, "idle-watch", "filtered").map((r: any) => r.by), "cooldown_min прошёл -- вторая строка класса").toEqual(["window-not-filled", "window-count:1", "window-count:1"])
+})
+
+test("p531 T13: быстрый путь classic -- без слушателя next(e) синхронно, $ не тронут; подписки = константа без трёх", async () => {
+  const T0 = 902_200_000
+  const st = p5$("t13", T0, '[probe.other]\non = ["Stop"]\n')
+  await saStart(st)
+  const subs = subs393()
+  const reg = subs.filter(s => String(s.ev).indexOf("classic.") === 0).map(s => String(s.ev).slice(8)).sort()
+  const all: string[] = Array.from(SA.CLASSIC_EVENTS as string[])
+  expect(all.length).toBe(33)
+  expect(reg).toEqual(all.filter(n => n !== "PreToolUse" && n !== "PostToolUse" && n !== "MessageDisplay").sort())
+  const trap = new Proxy({}, { get(_t: any, k: any) { throw new Error("$ touched: " + String(k)) } })
+  const sentinel = { sentinel: true }
+  const out = hook393(subs, "classic.SubagentStop")(trap, { hook_event_name: "SubagentStop" }, (_e: any) => sentinel)
+  expect(out, "синхронно, без await").toBe(sentinel)
+})
+
+test("p531 T14a: main-only проба на событии агента -- filtered not-main, консультации нет", async () => {
+  const T0 = 902_300_000
+  const st = p5$("t14a", T0, '[probe.mainonly]\non = ["SubagentStop", "Stop"]\n', { answers: ["OK: fine"] })
+  await saStart(st)
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-p14" }, T0 + SA_MIN)
+  expect(st.calls.length).toBe(0)
+  expect(p5Out(st, "mainonly", "filtered").map((r: any) => r.by)).toEqual(["not-main"])
+})
+
+test("p531 T14b: main-only проба на tool.call агента -- счёт без часов, строка not-main на тике", async () => {
+  const T0 = 902_400_000
+  const st = p5$("t14b", T0, '[probe.mainpre]\non = ["PreToolUse"]\n\n[probe.mainpre.when]\nfield = "tool"\nequals = "Nope"\n')
+  await saStart(st)
+  const c0 = st.clockReads
+  await p5Call(st, { agentId: "ag-p14b", tool: "Read", tool_use_id: "tu-p14b" }, { result: "r" }, T0 + SA_MIN)
+  expect(st.clockReads - c0, "путь агента часов не читает").toBe(0)
+  expect(p5Out(st, "mainpre", "filtered").length).toBe(0)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  const f = p5Out(st, "mainpre", "filtered")
+  expect(f.map((r: any) => r.by)).toEqual(["not-main"])
+  expect(f[0].n).toBe(1)
+})
+
+test("p531 T15: проба subagents = true на tool.call агента консультирует с agent_id", async () => {
+  const T0 = 902_500_000
+  const st = p5$("t15", T0, '[probe.subtool]\nsubagents = true\non = ["PreToolUse"]\n\n[probe.subtool.when]\nfield = "agent_id"\nequals = "ag-p15"\n', { answers: ["OK: fine"] })
+  st.agents = [saRun("ag-p15")]
+  await saStart(st)
+  const r = await p5Call(st, { agentId: "ag-p15", tool: "Read", tool_use_id: "tu-p15" }, { result: "r" }, T0 + SA_MIN)
+  expect(r).toEqual({ result: "r" })
+  expect(st.calls.length).toBe(1)
+  expect(saSnap()["ag-p15"], "учёт активности агента сохранён").toBeDefined()
+})
+
+// --- #531 FIX1: окно кэпа, cooldown всех проб, remote_agent, индекс до сборки, предел очередей, срок submit ---
+function p5Ok(n: number, v: string = "OK: fine"): string[] {
+  return Array.from({ length: n }, () => v)
+}
+
+function p5By(st: any, probe: string): string[] {
+  return p5Out(st, probe, "filtered").map((r: any) => String(r.by))
+}
+
+test("p531 F1 T16a: кэп -- девятая консультация внутри часа -- filtered consult-cap на обоих путях, кэп общий", async () => {
+  const T0 = 903_000_000
+  const st = p5$("f16a", T0, '[probe.capa]\non = ["PreToolUse"]\n\n[probe.capb]\non = ["Notification"]\n', { answers: p5Ok(9) })
+  await saStart(st)
+  for (let k = 1; k <= 8; k++) await p5Call(st, { tool: "Read", tool_use_id: "tu-f16a-" + k }, { result: "r" }, T0 + k * SA_MIN)
+  expect(st.calls.length, "восемь консультаций").toBe(8)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f16a-9" }, { result: "r" }, T0 + 9 * SA_MIN)
+  expect(st.calls.length, "девятая внутри часа -- нет").toBe(8)
+  expect(p5By(st, "capa")).toEqual(["consult-cap"])
+  await p5Classic(st, "Notification", { message: "m" }, T0 + 10 * SA_MIN)
+  expect(st.calls.length, "кэп общий -- classic-путь тоже упирается").toBe(8)
+  expect(p5By(st, "capb")).toEqual(["consult-cap"])
+})
+
+test("p531 F1 T16b: окно кэпа скользит -- отметки старше 60 мин выходят, консультация снова идёт", async () => {
+  const T0 = 903_100_000
+  const st = p5$("f16b", T0, '[probe.capa]\non = ["PreToolUse"]\n\n[probe.capb]\non = ["Notification"]\n', { answers: p5Ok(10) })
+  await saStart(st)
+  for (let k = 1; k <= 8; k++) await p5Call(st, { tool: "Read", tool_use_id: "tu-f16b-" + k }, { result: "r" }, T0 + k * SA_MIN)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f16b-9" }, { result: "r" }, T0 + 61 * SA_MIN - 1)
+  expect(st.calls.length, "первая отметка ещё в окне").toBe(8)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f16b-10" }, { result: "r" }, T0 + 61 * SA_MIN)
+  expect(st.calls.length, "первая отметка вышла -- консультация").toBe(9)
+  await p5Classic(st, "Notification", { message: "m" }, T0 + 62 * SA_MIN)
+  expect(st.calls.length, "вторая вышла -- classic-путь консультирует").toBe(10)
+})
+
+test("p531 F1 T16c: idle-watch на таймере -- 20 консультаций раз в 30 мин за 10 часов, все прошли", async () => {
+  const T0 = 903_200_000
+  const st = p5$("f16c", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: p5Ok(20, "SILENT: quiet") })
+  await saStart(st)
+  for (let k = 1; k <= 20; k++) await saTickAt(st, T0 + k * 30 * SA_MIN)
+  expect(st.calls.length, "пожизненной немоты нет").toBe(20)
+  expect(p5By(st, "idle-watch").filter((b) => b === "consult-cap")).toEqual([])
+})
+
+test("p531 F1 T16d: число в сторе кэпа (прежняя форма) -- отметки времени чтения, выходят через 60 мин", async () => {
+  const T0 = 903_300_000
+  const st = p5$("f16d", T0, '[probe.capa]\non = ["PreToolUse"]\n', { answers: p5Ok(1) })
+  await saStart(st)
+  st.m.store.set("catalyst-probes:sesscap:" + st.sid, 8)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f16d-1" }, { result: "r" }, T0 + SA_MIN)
+  expect(st.calls.length, "восемь прежних консультаций -- окно полно").toBe(0)
+  expect(p5By(st, "capa")).toEqual(["consult-cap"])
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f16d-2" }, { result: "r" }, T0 + 61 * SA_MIN)
+  expect(st.calls.length, "час от чтения -- окно свободно").toBe(1)
+})
+
+test("p531 F1 T17a: cooldown_min таблицы -- пользовательская проба на PreToolUse фильтруется cooldown", async () => {
+  const T0 = 903_400_000
+  const st = p5$("f17a", T0, '[probe.cool]\non = ["PreToolUse"]\ncooldown_min = 10\n', { answers: p5Ok(2) })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f17a-1" }, { result: "r" }, T0 + SA_MIN)
+  expect(st.calls.length).toBe(1)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f17a-2" }, { result: "r" }, T0 + 5 * SA_MIN)
+  expect(st.calls.length, "внутри cooldown_min").toBe(1)
+  expect(p5By(st, "cool")).toEqual(["cooldown"])
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f17a-3" }, { result: "r" }, T0 + 11 * SA_MIN)
+  expect(st.calls.length, "cooldown_min прошёл").toBe(2)
+})
+
+test("p531 F1 T17b: cooldown_min из [defaults] -- classic-путь фильтруется; 0 в таблице выключает", async () => {
+  const T0 = 903_500_000
+  const st = p5$("f17b", T0, '[defaults]\ncooldown_min = 10\n\n[probe.dcool]\non = ["Notification"]\n\n[probe.zcool]\non = ["Stop"]\ncooldown_min = 0\n', { answers: p5Ok(4) })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + SA_MIN)
+  expect(st.calls.length).toBe(1)
+  await p5Classic(st, "Notification", { message: "b" }, T0 + 5 * SA_MIN)
+  expect(st.calls.length, "cooldown из [defaults]").toBe(1)
+  expect(p5By(st, "dcool")).toEqual(["cooldown"])
+  await p5Classic(st, "Stop", {}, T0 + 6 * SA_MIN)
+  await p5Classic(st, "Stop", {}, T0 + 7 * SA_MIN)
+  expect(st.calls.length, "cooldown_min = 0 -- без паузы").toBe(3)
+})
+
+test("p531 F1 T3d: cancel-проба с every_min -- every_min снят отметкой cancel-needs-PreToolUse, таймер не оценивает", async () => {
+  const T0 = 903_600_000
+  const st = p5$("f3d", T0, '[probe.cev]\nact = "cancel"\non = ["PreToolUse"]\nevery_min = 1\n\n[probe.cev.when]\nfield = "tool"\nequals = "Nope"\n')
+  await saStart(st)
+  const w = await worldFor(st.m.$)
+  const p = w.world.probes.find((x: any) => x && x.id === "cev")
+  expect(p.everyMs, "таймера у cancel-пробы нет").toBe(0)
+  expect(p.on).toEqual(["PreToolUse"])
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f3d" }, { result: "r" }, T0 + SA_MIN)
+  expect(p5Out(st, "cev", "on_bad").map((r: any) => r.by)).toEqual(["every_min:cancel-needs-PreToolUse"])
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  await saTickAt(st, T0 + 3 * SA_MIN)
+  expect(st.calls.length).toBe(0)
+})
+
+test("p531 F1 T18: live_kinds с remote_agent -- строка live_kinds_unobservable раз на сессию, вид не считается", async () => {
+  const T0 = 903_700_000
+  const unobs = (s: any) => p5Out(s, "idle-watch", "skip_degraded").filter((r: any) => r.by === "live_kinds_unobservable:remote_agent")
+  const st = p5$("f18", T0, "[probe.idle-watch]\n" + P5_IDLE + 'live_kinds = ["local_agent", "remote_agent"]\n', { idle: "1" })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f18a" }, { result: "r" }, T0 + SA_MIN)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f18b" }, { result: "r" }, T0 + 2 * SA_MIN)
+  expect(unobs(st).length, "одна строка на сессию").toBe(1)
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f18c" }, { result: "r" }, T0 + 3 * SA_MIN)
+  expect(unobs(st).length, "новая сессия -- своя строка").toBe(2)
+  const st2 = p5$("f18b", T0, "[probe.idle-watch]\n" + P5_IDLE + 'live_kinds = ["local_agent"]\n', { idle: "1" })
+  await saStart(st2)
+  await p5Call(st2, { tool: "Read", tool_use_id: "tu-f18d" }, { result: "r" }, T0 + SA_MIN)
+  expect(unobs(st2).length, "remote_agent не объявлен -- строки нет").toBe(0)
+  const st3 = p5$("f18c", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1" })
+  await saStart(st3)
+  await p5Call(st3, { tool: "Read", tool_use_id: "tu-f18e" }, { result: "r" }, T0 + SA_MIN)
+  expect(unobs(st3).length, "умолчание live_kinds несёт remote_agent").toBe(1)
+})
+
+test("p531 F1 T19a: индекс не построен -- classic.SessionStart раньше session.start идёт медленным путём, консультация прошла", async () => {
+  const T0 = 903_800_000
+  const st = p5$("f19a", T0, '[probe.starter]\non = ["SessionStart"]\n', { answers: p5Ok(2) })
+  await clear393()
+  expect(typeof SA.probeIndexReset, "дверь сброса индекса").toBe("function")
+  SA.probeIndexReset()
+  const r = await p5Classic(st, "SessionStart", { source: "startup" }, T0 + 1000)
+  expect(r).toEqual({ ok: "SessionStart" })
+  expect(st.calls.length, "первое событие не потеряно").toBe(1)
+  SA.probeIndexReset()
+  await p5Classic(st, "SessionStart", { source: "resume" }, T0 + 2000)
+  expect(st.calls.length, "мир из мемо -- индекс достроен из него").toBe(2)
+  const trap = new Proxy({}, { get(_t: any, k: any) { throw new Error("$ touched: " + String(k)) } })
+  const sentinel = { sentinel: true }
+  const out = hook393(subs393(), "classic.SubagentStop")(trap, { hook_event_name: "SubagentStop" }, (_e: any) => sentinel)
+  expect(out, "индекс построен -- быстрый путь вернулся").toBe(sentinel)
+})
+
+test("p531 F1 T19b: индекс не построен -- tool.call агента идёт медленным путём, проба subagents = true консультирует", async () => {
+  const T0 = 903_900_000
+  const st = p5$("f19b", T0, '[probe.subpre]\nsubagents = true\non = ["PreToolUse"]\n', { answers: p5Ok(1) })
+  st.agents = [saRun("ag-f19b")]
+  await clear393()
+  expect(typeof SA.probeIndexReset).toBe("function")
+  SA.probeIndexReset()
+  const r = await p5Call(st, { agentId: "ag-f19b", tool: "Read", tool_use_id: "tu-f19b" }, { result: "r" }, T0 + 1000)
+  expect(r).toEqual({ result: "r" })
+  expect(st.calls.length).toBe(1)
+})
+
+test("p531 F1 T20a: предел очередей агентов -- не больше 64, вытесняется самая старая с nudge_dropped queue-cap", async () => {
+  const T0 = 904_000_000
+  const st = p5$("f20a", T0, '[probe.sub]\nsubagents = true\non = ["SubagentStop"]\nact = "nudge"\n', { answers: p5Ok(65, "BLOCK: w") })
+  await saStart(st)
+  for (let k = 0; k <= 64; k++) await p5Classic(st, "SubagentStop", { agent_id: "ag-f20-" + k }, T0 + (k + 1) * 8 * SA_MIN)
+  expect(SA.NUDGE_AGENT_QUEUES_MAX).toBe(64)
+  const snap = SA.probeQueueSnapshot()
+  const keys = Object.keys(snap).filter((k) => k)
+  expect(keys.length).toBe(64)
+  expect(snap["ag-f20-0"], "самая старая снята").toBe(undefined)
+  expect(snap["ag-f20-64"].map((i: any) => i.text)).toEqual(["[sub] w"])
+  const dr = p5Out(st, "sub", "nudge_dropped")
+  expect(dr.map((r: any) => [r.by, r.agent])).toEqual([["queue-cap", "ag-f20-0"]])
+})
+
+test("p531 F1 T20b: агент вне agent.list меньше 10 мин -- очередь жива; 10 мин подряд -- agent-gone", async () => {
+  const T0 = 904_100_000
+  const st = p5$("f20b", T0, '[probe.sub]\nsubagents = true\non = ["SubagentStop"]\nact = "nudge"\n', { answers: p5Ok(1, "BLOCK: w") })
+  st.agents = [saRun("ag-f20b")]
+  await saStart(st)
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-f20b" }, T0 + SA_MIN)
+  st.agents = []
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  await saTickAt(st, T0 + 11 * SA_MIN)
+  expect(p5Out(st, "sub", "nudge_undelivered").length, "9 мин вне списка -- не ушёл").toBe(0)
+  st.agents = [saRun("ag-f20b")]
+  await saTickAt(st, T0 + 12 * SA_MIN)
+  st.agents = []
+  await saTickAt(st, T0 + 13 * SA_MIN)
+  await saTickAt(st, T0 + 23 * SA_MIN - 1)
+  expect(p5Out(st, "sub", "nudge_undelivered").length, "появление сбросило отсчёт").toBe(0)
+  expect(p5Q("ag-f20b")).toEqual(["[sub] w"])
+  await saTickAt(st, T0 + 23 * SA_MIN)
+  expect(p5Out(st, "sub", "nudge_undelivered").map((r: any) => r.by)).toEqual(["agent-gone"])
+  expect(SA.probeQueueSnapshot()["ag-f20b"]).toBe(undefined)
+})
+
+function p5After(st: any): any[] {
+  return st.m.afterCbs.filter((a: any) => a.ms === 60_000 && !a.cancelled)
+}
+
+test("p531 F1b T21a: submit в полёте -- за 3 тика ровно один submit, context текст не несёт, submit-timeout одной строкой", async () => {
+  const T0 = 904_200_000
+  const st = p5$("f21a", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"], submitDefer: true })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f21a1" }, { result: "r" }, T0 + 31 * SA_MIN)
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  const h = p5After(st)
+  expect(h.length, "submit ограничен сроком 60 с").toBe(1)
+  h[0].cb()
+  await settle393()
+  expect(p5Out(st, "idle-watch", "nudge_undelivered").map((r: any) => r.by)).toEqual(["submit-timeout"])
+  for (let k = 33; k <= 35; k++) await saTickAt(st, T0 + k * SA_MIN)
+  expect(st.submits.length, "запись в полёте -- повторного submit нет").toBe(1)
+  const r = await p5Call(st, { tool: "Read", tool_use_id: "tu-f21a2" }, { result: "r" }, T0 + 36 * SA_MIN)
+  expect(r, "канал (а) запись в полёте не отдаёт").toEqual({ result: "r" })
+  expect(p5Q(""), "запись в полёте занимает место в очереди").toEqual(["[idle-watch] go"])
+  expect(p5Out(st, "idle-watch", "nudge_undelivered").length, "submit-timeout -- одна строка на запись").toBe(1)
+  expect(p5Out(st, "idle-watch", "nudge_delivered").length).toBe(0)
+})
+
+test("p531 F1b T21b: поздний успех submit -- одна строка nudge_delivered, текст больше нигде не всплывает", async () => {
+  const T0 = 904_300_000
+  const st = p5$("f21b", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"], submitDefer: true })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f21b1" }, { result: "r" }, T0 + 31 * SA_MIN)
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  const h = p5After(st)
+  expect(h.length).toBe(1)
+  h[0].cb()
+  await settle393()
+  await saTickAt(st, T0 + 33 * SA_MIN)
+  st.submitDefers[0].resolve({})
+  await settle393()
+  expect(p5Q(""), "поздний успех -- запись снята").toEqual([])
+  expect(p5Out(st, "idle-watch", "nudge_delivered").map((r: any) => [r.channel, r.late])).toEqual([["submit", true]])
+  for (let k = 34; k <= 35; k++) await saTickAt(st, T0 + k * SA_MIN)
+  expect(st.submits.length, "повтора нет").toBe(1)
+  const r = await p5Call(st, { tool: "Read", tool_use_id: "tu-f21b2" }, { result: "r" }, T0 + 36 * SA_MIN)
+  expect(r, "канал (а) дубля не несёт").toEqual({ result: "r" })
+  expect(p5Out(st, "idle-watch", "nudge_delivered").length).toBe(1)
+})
+
+test("p531 F1b T21c: поздний отказ submit -- запись снята с полёта, следующий tool.call отдаёт её через context ровно один раз", async () => {
+  const T0 = 904_320_000
+  const st = p5$("f21c", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", answers: ["NUDGE: go"], submitDefer: true })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f21c1" }, { result: "r" }, T0 + 31 * SA_MIN)
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  const h = p5After(st)
+  expect(h.length).toBe(1)
+  h[0].cb()
+  await settle393()
+  st.submitDefers[0].reject(new Error("prompt.submit: late refusal"))
+  await settle393()
+  expect(p5Out(st, "idle-watch", "nudge_undelivered").map((r: any) => r.by)).toEqual(["submit-timeout", "submit-failed"])
+  const r1 = await p5Call(st, { tool: "Read", tool_use_id: "tu-f21c2" }, { result: "r" }, T0 + 32 * SA_MIN + 30_000)
+  expect(r1.context, "поздний отказ -- текст ушёл через context").toEqual(["[idle-watch] go"])
+  const r2 = await p5Call(st, { tool: "Read", tool_use_id: "tu-f21c3" }, { result: "r" }, T0 + 32 * SA_MIN + 40_000)
+  expect(r2, "ровно один раз").toEqual({ result: "r" })
+  await saTickAt(st, T0 + 34 * SA_MIN)
+  expect(st.submits.length, "канал (б) дубля не шлёт").toBe(1)
+  expect(p5Out(st, "idle-watch", "nudge_delivered").map((r: any) => r.channel)).toEqual(["context"])
+})
+
+test("p531 F1b T21d: отказ submit -- запись возвращается в голову очереди, запись в полёте остаётся и каналом (а) не отдаётся", async () => {
+  const T0 = 904_350_000
+  const st = p5$("f21d", T0, '[probe.note]\non = ["Notification"]\nact = "nudge"\n', { answers: ["BLOCK: a", "BLOCK: b"], submitDefer: true })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + 1000)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(st.submits.map((s: any) => s.text)).toEqual(["[note] a"])
+  await p5Classic(st, "Notification", { message: "b" }, T0 + 3 * SA_MIN)
+  await saTickAt(st, T0 + 5 * SA_MIN)
+  expect(st.submits.map((s: any) => s.text), "a в полёте -- уходит только b").toEqual(["[note] a", "[note] b"])
+  st.submitDefers[1].reject(new Error("prompt.submit: scripted refusal"))
+  await settle393()
+  expect(p5Q(""), "отказ b -- в голову, a в полёте на месте").toEqual(["[note] b", "[note] a"])
+  const r = await p5Call(st, { tool: "Read", tool_use_id: "tu-f21d" }, { result: "r" }, T0 + 5 * SA_MIN + 1000)
+  expect(r.context, "канал (а) отдаёт только запись не в полёте").toEqual(["[note] b"])
+  expect(p5Q("")).toEqual(["[note] a"])
+})
+
+test("p531 F1b T22a: сигнал #530 в полёте -- за 3 тика после cooldown один submit, TIMEOUT одной строкой", async () => {
+  const T0 = 904_400_000
+  const st = sa$("f22a", T0, { submitDefer: true, cfg: "cooldown_min = 1\n" })
+  st.agents = [saRun("ag-f22a")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  const h = p5After(st)
+  expect(h.length, "submit ограничен сроком 60 с").toBe(1)
+  h[0].cb()
+  await settle393()
+  for (let k = 32; k <= 34; k++) await saTickAt(st, T0 + k * SA_MIN)
+  expect(st.submits.length, "сигнал в полёте -- второго нет").toBe(1)
+  const to = shards393(st.m.writes, "/idle-watch/journal.jsonl.shard.").filter((r: any) => r.kind === "STALE_AGENTS_SUBMIT_TIMEOUT")
+  expect(to.length).toBe(1)
+})
+
+test("p531 F1b T22c: поздний отказ сигнала #530 -- повтор на следующем тике", async () => {
+  const T0 = 904_550_000
+  const st = sa$("f22c", T0, { submitDefer: true })
+  st.agents = [saRun("ag-f22c")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  const h = p5After(st)
+  expect(h.length).toBe(1)
+  h[0].cb()
+  await settle393()
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(st.submits.length, "в полёте -- повтора нет").toBe(1)
+  st.submitDefers[0].reject(new Error("prompt.submit: late refusal"))
+  await settle393()
+  await saTickAt(st, T0 + 33 * SA_MIN)
+  expect(st.submits.length, "поздний отказ -- повтор на следующем тике").toBe(2)
+})
+
+test("p531 F1 T22b: срок submit #530 -- поздний ответ после истечения возвращает окно, повтора нет", async () => {
+  const T0 = 904_500_000
+  const st = sa$("f22b", T0, { submitDefer: true })
+  st.agents = [saRun("ag-f22b")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  const h = p5After(st)
+  expect(h.length).toBe(1)
+  h[0].cb()
+  await settle393()
+  st.submitDefers[0].resolve({})
+  await settle393()
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(st.submits.length, "поздний ответ -- повтора нет").toBe(1)
+  await saTickAt(st, T0 + 62 * SA_MIN)
+  expect(st.submits.length, "окно cooldown_min от сигнала истекло -- следующий сигнал").toBe(2)
+})
+
+test("p531 F1 T23: idle-watch -- every_min перекрывает live_recheck_ms", async () => {
+  const T0 = 904_600_000
+  const st = p5$("f23", T0, "[probe.idle-watch]\n" + P5_IDLE.replace("cooldown_min = 30", "cooldown_min = 0") + "every_min = 5\nlive_recheck_ms = 60000\nstale_agent_min = 1000\n", { idle: "1", answers: ["NUDGE: every-go"] })
+  st.agents = [saRun("ag-f23")]
+  await saStart(st)
+  for (let k = 31; k <= 35; k++) await saTickAt(st, T0 + k * SA_MIN)
+  expect(p5By(st, "idle-watch"), "оценка на +31, минутный live_recheck_ms не действует").toEqual(["live-work:1"])
+  await saTickAt(st, T0 + 36 * SA_MIN)
+  expect(p5By(st, "idle-watch"), "через every_min -- вторая оценка").toEqual(["live-work:1", "live-work:1"])
+  st.agents = []
+  for (let k = 37; k <= 40; k++) await saTickAt(st, T0 + k * SA_MIN)
+  expect(st.calls.length, "до every_min от прошлой оценки -- нет").toBe(0)
+  await saTickAt(st, T0 + 41 * SA_MIN)
+  expect(st.calls.length, "every_min прошёл -- таймер консультирует").toBe(1)
+})
+
+test("p531 F1b T24: пять записей в полёте + новая -- queue-cap без вытеснения летящей; иначе вытесняется старейшая не в полёте", async () => {
+  const T0 = 904_700_000
+  const st = p5$("f24", T0, '[probe.note]\non = ["Notification"]\nact = "nudge"\n', { answers: ["BLOCK: n1", "BLOCK: n2", "BLOCK: n3", "BLOCK: n4", "BLOCK: n5", "BLOCK: n6", "BLOCK: n7"], submitDefer: true })
+  await saStart(st)
+  for (let k = 1; k <= 4; k++) await p5Classic(st, "Notification", { message: "m" + k }, T0 + k * 1000)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(st.submits.length, "четыре записи в полёте").toBe(4)
+  await p5Classic(st, "Notification", { message: "m5" }, T0 + 3 * SA_MIN)
+  await p5Classic(st, "Notification", { message: "m6" }, T0 + 3 * SA_MIN + 1000)
+  expect(p5Q(""), "вытеснена старейшая не в полёте").toEqual(["[note] n1", "[note] n2", "[note] n3", "[note] n4", "[note] n6"])
+  expect(p5Out(st, "note", "nudge_dropped").map((r: any) => [r.by, r.text])).toEqual([["queue-max", "[note] n5"]])
+  await saTickAt(st, T0 + 5 * SA_MIN)
+  expect(st.submits.length, "пятая в полёте").toBe(5)
+  await p5Classic(st, "Notification", { message: "m7" }, T0 + 6 * SA_MIN)
+  expect(p5Q(""), "все пять в полёте -- новая не встала").toEqual(["[note] n1", "[note] n2", "[note] n3", "[note] n4", "[note] n6"])
+  expect(p5Out(st, "note", "nudge_dropped").map((r: any) => [r.by, r.text])).toEqual([["queue-max", "[note] n5"], ["queue-cap", "[note] n7"]])
+})
+
+test("p531 F1b T25: терминальный агент -- agent-gone на ближайшем тике; отсутствующий в списке ждёт 10 мин", async () => {
+  const T0 = 904_800_000
+  const st = p5$("f25", T0, '[probe.sub]\nsubagents = true\non = ["SubagentStop"]\nact = "nudge"\n', { answers: ["BLOCK: t", "BLOCK: a"] })
+  st.agents = [saRun("ag-f25t"), saRun("ag-f25a")]
+  await saStart(st)
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-f25t" }, T0 + SA_MIN)
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-f25a" }, T0 + SA_MIN + 1000)
+  st.agents = [saRun("ag-f25t", { status: "completed" })]
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(p5Out(st, "sub", "nudge_undelivered").map((r: any) => [r.by, r.agent]), "терминальный -- сразу, отсутствующий -- ещё нет").toEqual([["agent-gone", "ag-f25t"]])
+  expect(p5Q("ag-f25t")).toEqual([])
+  expect(p5Q("ag-f25a")).toEqual(["[sub] a"])
+  await saTickAt(st, T0 + 12 * SA_MIN)
+  expect(p5Out(st, "sub", "nudge_undelivered").map((r: any) => r.agent)).toEqual(["ag-f25t", "ag-f25a"])
+})
+
+// --- #530 + #531 FIX2: drop, эпоха после next, поздняя перепроверка cooldown, память, частота строк ---
+const P5_NOTE = '[probe.note]\non = ["Notification"]\nact = "nudge"\n'
+
+// CONSTRAINT: /clear зовётся с $ зуба: строки, которые сброс эпохи пишет в
+// журнал, ложатся в записи этого стенда (clear393 держит свой стенд).
+async function p5Clear(st: any): Promise<void> {
+  const cl = subs393().filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("clear") >= 0)
+  expect(cl.length).toBe(1)
+  await cl[0].fn(st.m.$, { command: "clear", args: "" }, async (e: any) => e)
+  await settle393()
+}
+
+function p5Stale(st: any, kind: string): any[] {
+  return shards393(st.m.writes, "/idle-watch/journal.jsonl.shard.").filter((r: any) => r.kind === kind)
+}
+
+test("p531 F2 T26a: submit разрешился { drop } в срок -- запись снята, nudge_undelivered by drop с reason, повтора нет", async () => {
+  const T0 = 905_000_000
+  const st = p5$("f26a", T0, P5_NOTE, { answers: ["BLOCK: a"], submitDefer: true })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + 1000)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  st.submitDefers[0].resolve({ drop: "hook refused f26a" })
+  await settle393()
+  expect(p5Out(st, "note", "nudge_delivered"), "drop -- не доставка").toEqual([])
+  expect(p5Out(st, "note", "nudge_undelivered").map((r: any) => [r.by, r.reason, r.late === true])).toEqual([["drop", "hook refused f26a", false]])
+  expect(p5Q(""), "drop -- запись снята").toEqual([])
+  await saTickAt(st, T0 + 4 * SA_MIN)
+  expect(st.submits.length, "отказ хука -- решение, повтора нет").toBe(1)
+})
+
+test("p531 F2 T26b: поздний { drop } после submit-timeout -- та же строка с late, запись снята", async () => {
+  const T0 = 905_100_000
+  const st = p5$("f26b", T0, P5_NOTE, { answers: ["BLOCK: a"], submitDefer: true })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + 1000)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  const h = p5After(st)
+  expect(h.length).toBe(1)
+  h[0].cb()
+  await settle393()
+  st.submitDefers[0].resolve({ drop: "late f26b" })
+  await settle393()
+  expect(p5Out(st, "note", "nudge_delivered"), "поздний drop -- не доставка").toEqual([])
+  expect(p5Out(st, "note", "nudge_undelivered").map((r: any) => [r.by, r.reason, r.late === true])).toEqual([["submit-timeout", undefined, false], ["drop", "late f26b", true]])
+  expect(p5Q("")).toEqual([])
+  await saTickAt(st, T0 + 4 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+})
+
+test("p531 F2 T26c: сигнал #530 разрешился { drop } в срок -- строка отказа с reason, полёт снят, окно -- как у отказа", async () => {
+  const T0 = 905_200_000
+  const st = sa$("f26c", T0, { submitDefer: true })
+  st.agents = [saRun("ag-f26c")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  st.submitDefers[0].resolve({ drop: "hook refused f26c" })
+  await settle393()
+  expect(p5Stale(st, "STALE_AGENTS_SUBMIT_ERR").map((r: any) => [r.by, r.reason, r.late === true])).toEqual([["drop", "hook refused f26c", false]])
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(st.submits.length, "внутри cooldown повтора нет").toBe(1)
+  await saTickAt(st, T0 + 62 * SA_MIN)
+  expect(st.submits.length, "полёт снят -- после cooldown сигнал снова").toBe(2)
+})
+
+test("p531 F2 T26d: поздний { drop } сигнала #530 -- строка отказа late с reason, окно открыто, повтор на следующем тике", async () => {
+  const T0 = 905_300_000
+  const st = sa$("f26d", T0, { submitDefer: true })
+  st.agents = [saRun("ag-f26d")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  const h = p5After(st)
+  expect(h.length).toBe(1)
+  h[0].cb()
+  await settle393()
+  st.submitDefers[0].resolve({ drop: "late f26d" })
+  await settle393()
+  expect(p5Stale(st, "STALE_AGENTS_SUBMIT_ERR").map((r: any) => [r.by, r.reason, r.late === true])).toEqual([["drop", "late f26d", true]])
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  expect(st.submits.length, "поздний drop -- повтор на следующем тике").toBe(2)
+})
+
+test("p531 F2 T27a: инструмент A висит на next, /clear, подсказка B -- завершение A очередь B не трогает", async () => {
+  const T0 = 905_400_000
+  const st = p5$("f27a", T0, P5_NOTE, { answers: ["BLOCK: a", "BLOCK: b"] })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + 1000)
+  expect(p5Q("")).toEqual(["[note] a"])
+  let rel: any = null
+  st.m.setNow(T0 + 2000)
+  const call = hook393(subs393(), "tool.call")(st.m.$, { tool: "Read", tool_use_id: "tu-f27a" }, () => new Promise((r) => { rel = r }))
+  await settle393()
+  expect(typeof rel, "вызов A дошёл до next").toBe("function")
+  await p5Clear(st)
+  await p5Classic(st, "Notification", { message: "b" }, T0 + 3000)
+  expect(p5Q("")).toEqual(["[note] b"])
+  rel({ result: "r-a" })
+  const res = await call
+  await settle393()
+  expect(res, "результат A без текста B").toEqual({ result: "r-a" })
+  expect(p5Q(""), "очередь B цела").toEqual(["[note] b"])
+  expect(p5Out(st, "note", "nudge_delivered").filter((r: any) => r.channel === "context")).toEqual([])
+})
+
+test("p531 F2 T27b: tool.call агента быстрым путём висит на next, /clear, подсказка агенту в B -- завершение очередь B не трогает", async () => {
+  const T0 = 905_500_000
+  const st = p5$("f27b", T0, '[probe.sub]\nsubagents = true\non = ["SubagentStop"]\nact = "nudge"\n', { answers: ["BLOCK: w"] })
+  st.agents = [saRun("ag-f27b")]
+  await saStart(st)
+  let rel: any = null
+  st.m.setNow(T0 + 1000)
+  const call = hook393(subs393(), "tool.call")(st.m.$, { agentId: "ag-f27b", tool: "Read", tool_use_id: "tu-f27b" }, () => new Promise((r) => { rel = r }))
+  await settle393()
+  expect(typeof rel, "вызов агента дошёл до next").toBe("function")
+  await p5Clear(st)
+  await p5Classic(st, "SubagentStop", { agent_id: "ag-f27b" }, T0 + 2000)
+  expect(p5Q("ag-f27b")).toEqual(["[sub] w"])
+  rel({ result: "r-ag" })
+  const res = await call
+  await settle393()
+  expect(res, "результат прежней эпохи без текста B").toEqual({ result: "r-ag" })
+  expect(p5Q("ag-f27b"), "очередь агента в B цела").toEqual(["[sub] w"])
+  expect(p5Out(st, "sub", "nudge_delivered")).toEqual([])
+})
+
+test("p531 F2 T28a: два classic.Notification одновременно прошли раннюю проверку cooldown -- консультация одна, вторая filtered cooldown", async () => {
+  const T0 = 905_600_000
+  const st = p5$("f28a", T0, '[probe.cool]\non = ["Notification"]\ncooldown_min = 10\n', { answers: p5Ok(2) })
+  await saStart(st)
+  const g0 = st.m.$.store.get
+  const held: Array<() => void> = []
+  let hold = true
+  st.m.$.store.get = async (k: string) => {
+    if (hold && String(k).indexOf("catalyst-probes:sesscap:") === 0) await new Promise<void>((r) => { held.push(r) })
+    return g0(k)
+  }
+  st.m.setNow(T0 + SA_MIN)
+  const ev = { hook_event_name: "Notification", session_id: st.sid, message: "m" }
+  const h = hook393(subs393(), "classic.Notification")
+  const a = h(st.m.$, ev, async () => ({ ok: "a" }))
+  const b = h(st.m.$, ev, async () => ({ ok: "b" }))
+  for (let i = 0; i < 50 && held.length < 2; i++) await settle393()
+  expect(held.length, "обе оценки прошли раннюю проверку").toBe(2)
+  hold = false
+  for (const r of held) r()
+  await a
+  await b
+  await settle393()
+  expect(st.calls.length, "консультация одна").toBe(1)
+  expect(p5By(st, "cool")).toEqual(["cooldown"])
+})
+
+test("p531 F2 T28b: таймер idle-watch и tool.call пересеклись после ранней проверки -- консультация одна", async () => {
+  const T0 = 905_700_000
+  const st = p5$("f28b", T0, "[probe.idle-watch]\n" + P5_IDLE + "live_recheck_ms = 60000\nstale_agent_min = 1000\n", { idle: "1", answers: ["NUDGE: t", "NUDGE: c"] })
+  await saStart(st)
+  const g0 = st.m.$.store.get
+  const held: Array<() => void> = []
+  let hold = true
+  st.m.$.store.get = async (k: string) => {
+    if (hold && String(k).indexOf("catalyst-probes:sesscap:") === 0) await new Promise<void>((r) => { held.push(r) })
+    return g0(k)
+  }
+  st.m.setNow(T0 + 31 * SA_MIN)
+  const tk = st.tick()
+  for (let i = 0; i < 50 && held.length < 1; i++) await settle393()
+  expect(held.length, "таймер прошёл idleGate и ждёт чтения кэпа").toBe(1)
+  hold = false
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f28b" }, { result: "r" })
+  expect(st.calls.length, "tool.call консультировал").toBe(1)
+  for (const r of held) r()
+  await tk
+  await settle393()
+  expect(st.calls.length, "таймер второй консультации не дал").toBe(1)
+  expect(p5By(st, "idle-watch")).toEqual(["cooldown"])
+})
+
+test("p531 F2 T29: сигнал #530 в полёте, тик при выключенной пробе, включение -- второго submit нет", async () => {
+  const T0 = 905_800_000
+  const st = sa$("f29", T0, { submitDefer: true, cfg: "cooldown_min = 1\n" })
+  st.agents = [saRun("ag-f29")]
+  await saStart(st)
+  await saTickAt(st, T0)
+  await saTickAt(st, T0 + 31 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  st.env.CLAUDE_IDLE = "0"
+  await saTickAt(st, T0 + 32 * SA_MIN)
+  st.env.CLAUDE_IDLE = "1"
+  await saTickAt(st, T0 + 33 * SA_MIN)
+  await saTickAt(st, T0 + 64 * SA_MIN)
+  expect(st.submits.length, "сигнал в полёте -- второго нет").toBe(1)
+  st.submitDefers[0].resolve({})
+  await settle393()
+  await saTickAt(st, T0 + 65 * SA_MIN)
+  expect(st.submits.length, "ответ снял полёт -- следующий сигнал").toBe(2)
+})
+
+test("p531 F2 T30: /clear -- каждая снятая запись очереди пишет nudge_dropped session-reset, запись в полёте с fly", async () => {
+  const T0 = 905_900_000
+  const st = p5$("f30", T0, P5_NOTE, { answers: ["BLOCK: a", "BLOCK: b"], submitDefer: true })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + 1000)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  await p5Classic(st, "Notification", { message: "b" }, T0 + 3 * SA_MIN)
+  expect(SA.probeQueueSnapshot()[""].map((i: any) => [i.text, i.fly])).toEqual([["[note] a", true], ["[note] b", false]])
+  await p5Clear(st)
+  const dr = p5Out(st, "note", "nudge_dropped")
+  expect(dr.map((r: any) => [r.by, r.text, r.fly === true, r.agent, r.sid])).toEqual([
+    ["session-reset", "[note] a", true, "main", st.sid],
+    ["session-reset", "[note] b", false, "main", st.sid],
+  ])
+  expect(SA.probeQueueSnapshot()[""]).toBe(undefined)
+})
+
+test("p531 F2 T31: число в сторе кэпа -- при первом чтении в стор пишется массив; перезагрузка через 61 мин консультирует", async () => {
+  const T0 = 906_000_000
+  const st = p5$("f31", T0, '[probe.capa]\non = ["PreToolUse"]\n', { answers: p5Ok(1) })
+  await saStart(st)
+  const key = "catalyst-probes:sesscap:" + st.sid
+  st.m.store.set(key, 8)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f31-1" }, { result: "r" }, T0 + SA_MIN)
+  expect(st.calls.length, "восемь прежних консультаций -- окно полно").toBe(0)
+  expect(st.m.store.get(key), "число переведено в массив и записано сразу").toEqual(new Array(8).fill(T0 + SA_MIN))
+  expect(typeof SA.probeCapStateReset, "дверь перезагрузки состояния кэпа").toBe("function")
+  SA.probeCapStateReset()
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f31-2" }, { result: "r" }, T0 + 30 * SA_MIN)
+  expect(st.calls.length, "перезагрузка внутри часа -- окно полно по массиву").toBe(0)
+  SA.probeCapStateReset()
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f31-3" }, { result: "r" }, T0 + 62 * SA_MIN)
+  expect(st.calls.length, "перезагрузка через 61 мин от чтения -- консультация").toBe(1)
+})
+
+test("p531 F2 T32: threshold = 300, 300 запусков в окне -- window-count:300, консультации нет", async () => {
+  const T0 = 906_100_000
+  const st = p5$("f32", T0, '[probe.idle-watch]\nact = "nudge"\nwindow_min = 30\nthreshold = 300\ncooldown_min = 30\nlive_threshold = 1\n', { idle: "1", answers: ["NUDGE: go"] })
+  await saStart(st)
+  const h = hook393(subs393(), "tool.call")
+  for (let k = 0; k < 300; k++) {
+    st.m.setNow(T0 + 20 * SA_MIN + k * 1000)
+    await h(st.m.$, { tool: "Agent", tool_use_id: "tu-f32-" + k, subagent_type: "x", prompt: "p" }, async () => ({ result: "r" }))
+  }
+  await settle393()
+  expect(st.calls.length).toBe(0)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f32-r" }, { result: "r" }, T0 + 30 * SA_MIN + 1000)
+  expect(st.calls.length, "300 запусков в окне -- условие launches < threshold ложно").toBe(0)
+  expect(p5By(st, "idle-watch")).toEqual(["window-not-filled", "window-count:300"])
+})
+
+test("p531 F2 T33: newSession сбрасывает индекс -- первое classic.SessionStart новой эпохи с новой пробой консультирует", async () => {
+  const T0 = 906_200_000
+  const st = p5$("f33", T0, '[probe.stopper]\non = ["Stop"]\n', { answers: p5Ok(1) })
+  await saStart(st)
+  const trap = new Proxy({}, { get(_t: any, k: any) { throw new Error("$ touched: " + String(k)) } })
+  const sentinel = { sentinel: true }
+  const out = hook393(subs393(), "classic.SessionStart")(trap, { hook_event_name: "SessionStart" }, (_e: any) => sentinel)
+  expect(out, "индекс эпохи A без SessionStart -- быстрый путь").toBe(sentinel)
+  st.files[st.home + "/probes.toml"] = '[probe.starter]\non = ["SessionStart"]\n'
+  await p5Clear(st)
+  const r = await p5Classic(st, "SessionStart", { source: "clear" }, T0 + 2000)
+  expect(r).toEqual({ ok: "SessionStart" })
+  expect(st.calls.length, "первое событие новой эпохи идёт медленным путём").toBe(1)
+})
+
+test("p531 F2 T34: filtered live-work:1, затем live-work:2 внутри cooldown -- одна строка класса", async () => {
+  const T0 = 906_300_000
+  const st = p5$("f34", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1" })
+  st.agents = [saRun("ag-f34a")]
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f34a" }, { result: "r" }, T0 + 31 * SA_MIN)
+  st.agents = [saRun("ag-f34a"), saRun("ag-f34b")]
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f34b" }, { result: "r" }, T0 + 35 * SA_MIN)
+  expect(p5By(st, "idle-watch"), "класс by без числа -- одна строка").toEqual(["live-work:1"])
+})
+
+test("p531 F2 T35a: постоянный отказ agent.list, 10 тиков по 60 с, cooldown_min = 30 -- одна строка when_bad", async () => {
+  const T0 = 906_400_000
+  const st = p5$("f35a", T0, "[probe.idle-watch]\n" + P5_IDLE + "stale_agent_min = 1000\n", { idle: "1", list: () => { throw new Error("agent.list: scripted refusal f35a") } })
+  await saStart(st)
+  for (let k = 31; k <= 40; k++) await saTickAt(st, T0 + k * SA_MIN)
+  expect(p5Out(st, "idle-watch", "when_bad").length).toBe(1)
+})
+
+test("p531 F2 T35b: cooldown_min = 0, пять оценок за 10 с -- одна строка filtered и одна when_bad", async () => {
+  const T0 = 906_500_000
+  const toml = '[probe.wf]\non = ["Notification"]\ncooldown_min = 0\n\n[probe.wf.when]\nfield = "message"\nequals = "never"\n\n' +
+    '[probe.wb]\non = ["Notification"]\ncooldown_min = 0\n\n[probe.wb.when]\nfield = "live_works"\nequals = "1"\n'
+  const st = p5$("f35b", T0, toml, { list: () => { throw new Error("agent.list: scripted refusal f35b") } })
+  await saStart(st)
+  for (let k = 0; k < 5; k++) await p5Classic(st, "Notification", { message: "m" + k }, T0 + SA_MIN + k * 2000)
+  expect(p5Out(st, "wf", "filtered").map((r: any) => r.by)).toEqual(["when-false"])
+  expect(p5Out(st, "wb", "when_bad").length).toBe(1)
+})
+
+test("p531 F2 T35c: when_bad на tool.call -- внутри cooldown_min одна строка", async () => {
+  const T0 = 906_600_000
+  const st = p5$("f35c", T0, "[probe.idle-watch]\n" + P5_IDLE + "live_recheck_ms = 3600000\nstale_agent_min = 1000\n", { idle: "1", list: () => { throw new Error("agent.list: scripted refusal f35c") } })
+  await saStart(st)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f35c-1" }, { result: "r" }, T0 + 31 * SA_MIN)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f35c-2" }, { result: "r" }, T0 + 33 * SA_MIN)
+  expect(p5Out(st, "idle-watch", "when_bad").length).toBe(1)
+})
+
+test("p531 F2 T36: submit-failed несёт late для позднего отказа, в срок -- без late", async () => {
+  const T0 = 906_700_000
+  const st = p5$("f36", T0, P5_NOTE, { answers: ["BLOCK: a", "BLOCK: b"], submitDefer: true })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + 1000)
+  await p5Classic(st, "Notification", { message: "b" }, T0 + 1500)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(st.submits.map((s: any) => s.text)).toEqual(["[note] a", "[note] b"])
+  const h = p5After(st)
+  expect(h.length).toBe(2)
+  h[0].cb()
+  await settle393()
+  st.submitDefers[0].reject(new Error("prompt.submit: late refusal f36"))
+  st.submitDefers[1].reject(new Error("prompt.submit: refusal f36"))
+  await settle393()
+  const f = p5Out(st, "note", "nudge_undelivered").filter((r: any) => r.by === "submit-failed")
+  expect(f.map((r: any) => [r.text, r.late === true]).sort()).toEqual([["[note] a", true], ["[note] b", false]])
+})
+
+test("p531 F2 T37: submit всегда бросает -- после третьего отказа запись снята одной строкой с числом попыток", async () => {
+  const T0 = 906_800_000
+  const st = p5$("f37", T0, P5_NOTE, { answers: ["BLOCK: a"], submitThrows: true })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + 1000)
+  for (let k = 2; k <= 4; k++) await saTickAt(st, T0 + k * SA_MIN)
+  expect(st.submits.length).toBe(3)
+  expect(p5Q(""), "три отказа подряд -- запись снята").toEqual([])
+  const gone = p5Out(st, "note", "nudge_undelivered").filter((r: any) => r.attempts !== undefined)
+  expect(gone.map((r: any) => [r.by, r.attempts])).toEqual([["submit-failed", 3]])
+  await saTickAt(st, T0 + 5 * SA_MIN)
+  expect(st.submits.length, "четвёртого submit нет").toBe(3)
+})
+
+test("p531 F2 T38a: зеркало кэпа -- смена эпохи снимает ключи прошлой эпохи", async () => {
+  const T0 = 906_900_000
+  const stA = p5$("f38a1", T0, '[probe.capa]\non = ["PreToolUse"]\n', { answers: p5Ok(1) })
+  await saStart(stA)
+  await p5Call(stA, { tool: "Read", tool_use_id: "tu-f38a-1" }, { result: "r" }, T0 + SA_MIN)
+  const stB = p5$("f38a2", T0, '[probe.capa]\non = ["PreToolUse"]\n', { answers: p5Ok(1) })
+  await saStart(stB)
+  await p5Call(stB, { tool: "Read", tool_use_id: "tu-f38a-2" }, { result: "r" }, T0 + 2 * SA_MIN)
+  expect(stA.calls.length + stB.calls.length).toBe(2)
+  await p5Clear(stB)
+  expect(typeof SA.probeCapSids, "дверь ключей зеркала кэпа").toBe("function")
+  expect(SA.probeCapSids(), "очередь записей дренирована -- ключей прошлой эпохи нет").toEqual([])
+})
+
+test("p531 F2 T38b: отказ agent.list -- запись без пометки активности дольше 2× порога снимается", async () => {
+  const T0 = 907_000_000
+  let mode = "ok"
+  const st = sa$("f38b", T0, { cfg: "stale_agent_min = 30\nlive_recheck_ms = 3600000\n", list: () => {
+    if (mode === "throw") throw new Error("agent.list: scripted refusal f38b")
+    return [saRun("ag-f38b")]
+  } })
+  await saStart(st)
+  await saTickAt(st, T0)
+  expect(saSnap()["ag-f38b"]).toBeDefined()
+  mode = "throw"
+  await saTickAt(st, T0 + 60 * SA_MIN)
+  expect(saSnap()["ag-f38b"], "ровно 2× порога -- жива").toBeDefined()
+  await saTickAt(st, T0 + 61 * SA_MIN)
+  expect(saSnap()["ag-f38b"], "дольше 2× порога без пометки -- снята").toBe(undefined)
+})
+
+test("p531 F2 T38c: учёт висящих агентов -- не больше 256 записей, вытесняется самая старая", async () => {
+  const T0 = 907_100_000
+  const st = sa$("f38c", T0, { idle: "0" })
+  await saStart(st)
+  const h = hook393(subs393(), "tool.call")
+  st.m.setNow(T0 + SA_MIN)
+  for (let k = 0; k <= 256; k++) await h(st.m.$, { agentId: "ag-f38c-" + k, tool: "Read", tool_use_id: "tu-f38c-" + k }, async () => ({ result: "r" }))
+  const snap = saSnap()
+  expect(Object.keys(snap).length).toBe(256)
+  expect(snap["ag-f38c-0"], "самая старая вытеснена").toBe(undefined)
+  expect(snap["ag-f38c-256"]).toBeDefined()
+})
+
+test("p531 F2 T39: две записи кэпа, стор завершает их в обратном порядке -- в сторе обе отметки", async () => {
+  const T0 = 907_200_000
+  const st = p5$("f39", T0, '[probe.capw]\non = ["PreToolUse"]\n', { answers: p5Ok(2) })
+  await saStart(st)
+  const key = "catalyst-probes:sesscap:" + st.sid
+  const s0 = st.m.$.store.set
+  const gate: Array<() => void> = []
+  let first = true
+  st.m.$.store.set = async (k: string, v: any) => {
+    if (String(k) === key && first) {
+      first = false
+      await new Promise<void>((r) => { gate.push(r) })
+    }
+    return s0(k, v)
+  }
+  const h = hook393(subs393(), "tool.call")
+  st.m.setNow(T0 + SA_MIN)
+  const c1 = h(st.m.$, { tool: "Read", tool_use_id: "tu-f39-1" }, async () => ({ result: "r" }))
+  await settle393()
+  st.m.setNow(T0 + 2 * SA_MIN)
+  const c2 = h(st.m.$, { tool: "Read", tool_use_id: "tu-f39-2" }, async () => ({ result: "r" }))
+  await settle393()
+  expect(gate.length, "первая запись кэпа ждёт стор").toBe(1)
+  gate[0]()
+  await c1
+  await c2
+  await settle393()
+  expect(st.m.store.get(key), "итог стора -- обе отметки").toEqual([T0 + SA_MIN, T0 + 2 * SA_MIN])
+})
+
+// CONSTRAINT: запись массива кэпа отказана -- в сторе остаётся число; только
+// так второе чтение числа в процессе достижимо после записи сразу (Р6).
+test("p531 F2 T40: запись кэпа отказана, число осталось в сторе -- второе чтение не датирует его заново", async () => {
+  const T0 = 907_300_000
+  const pre = "catalyst-probes:sesscap:"
+  const st = p5$("f40", T0, '[probe.capl]\non = ["PreToolUse"]\n', { answers: p5Ok(1), fail: { storeSet: (k: string) => k.indexOf(pre) === 0 } })
+  await saStart(st)
+  const key = pre + st.sid
+  st.m.store.set(key, 8)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f40-1" }, { result: "r" }, T0 + SA_MIN)
+  expect(st.calls.length, "восемь прежних консультаций -- окно полно").toBe(0)
+  expect(st.m.store.get(key), "запись отказана -- в сторе число").toBe(8)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f40-2" }, { result: "r" }, T0 + 62 * SA_MIN)
+  expect(st.calls.length, "число прочитано второй раз -- отметки первого чтения вышли, консультация").toBe(1)
+})
+
+// CONSTRAINT (#335): отказ носителя живёт после триггера; cooldown -- часть
+// триггера (fire = false). Позиционный контроль -- тот же вызов после cooldown.
+test("p531 F2 T41: idle-watch с чужим носителем внутри cooldown -- вызов не гасится; после cooldown гасится", async () => {
+  const T0 = 907_400_000
+  const st = p5$("f41", T0, "[probe.idle-watch]\n" + P5_IDLE, { idle: "1", env: { CLAUDE_IDLE_CARRIER: "patch-f41" } })
+  await saStart(st)
+  st.m.store.set("catalyst-probes:last:idle-watch:" + st.cwd, T0 + 20 * SA_MIN)
+  const refused = (): any[] => shards393(st.m.writes, "/failover/journal.jsonl.shard.").filter((r: any) => r.rec === "carrier-foreign-refused" && r.value === "patch-f41")
+  const r1 = await p5Call(st, { tool: "Read", tool_use_id: "tu-f41-1" }, { result: "r" }, T0 + 31 * SA_MIN)
+  expect(r1, "внутри cooldown -- вызов проходит").toEqual({ result: "r" })
+  expect(refused().length).toBe(0)
+  const r2 = await p5Call(st, { tool: "Read", tool_use_id: "tu-f41-2" }, { result: "r" }, T0 + 51 * SA_MIN)
+  expect(String(r2 && r2.deny), "cooldown прошёл -- отказ носителя").toContain("CLAUDE_IDLE_CARRIER")
+  expect(refused().length).toBe(1)
+})
+
+test("p531 F2 T42: пользовательская проба при нечитаемом CLAUDE_PROBES внутри cooldown -- вызов не гасится; после cooldown гасится", async () => {
+  const T0 = 907_500_000
+  const st = p5$("f42", T0, '[probe.coolu]\non = ["PreToolUse"]\ncooldown_min = 10\n')
+  const g0 = st.m.$.env.get
+  st.m.$.env.get = async (k: string) => {
+    if (k === "CLAUDE_PROBES") throw new Error("env.get: scripted read refusal for " + k)
+    return g0(k)
+  }
+  await saStart(st)
+  st.m.store.set("catalyst-probes:last:coolu:" + st.cwd, T0 + SA_MIN)
+  const refused = (): any[] => shards393(st.m.writes, "/failover/journal.jsonl.shard.").filter((r: any) => r.rec === "carrier-env-unreadable-refused" && r.probe === "coolu")
+  const r1 = await p5Call(st, { tool: "Read", tool_use_id: "tu-f42-1" }, { result: "r" }, T0 + 5 * SA_MIN)
+  expect(r1, "внутри cooldown -- вызов проходит").toEqual({ result: "r" })
+  expect(refused().length).toBe(0)
+  const r2 = await p5Call(st, { tool: "Read", tool_use_id: "tu-f42-2" }, { result: "r" }, T0 + 12 * SA_MIN)
+  expect(String(r2 && r2.deny), "cooldown прошёл -- отказ нечитаемой ручки").toContain("CLAUDE_PROBES")
+  expect(refused().length).toBe(1)
+})
+
+// --- #530 + #531 FIX2b: ранний cooldown без стора кэпа, память кэпа прошлой эпохи, индекс эпохи ---
+function p5CapReads(st: any): { n: number } {
+  const c = { n: 0 }
+  const g0 = st.m.$.store.get
+  st.m.$.store.get = async (k: string) => {
+    if (String(k).indexOf("catalyst-probes:sesscap:") === 0) c.n++
+    return g0(k)
+  }
+  return c
+}
+
+function p5CapGate(st: any, key: string): Array<() => void> {
+  const s0 = st.m.$.store.set
+  const gate: Array<() => void> = []
+  let first = true
+  st.m.$.store.set = async (k: string, v: any) => {
+    if (String(k) === key && first) {
+      first = false
+      await new Promise<void>((r) => { gate.push(r) })
+    }
+    return s0(k, v)
+  }
+  return gate
+}
+
+test("p531 F2b T43: classic-путь внутри cooldown -- стор кэпа не читается", async () => {
+  const T0 = 907_600_000
+  const st = p5$("f43", T0, '[probe.cev43]\non = ["Notification"]\ncooldown_min = 10\n', { answers: p5Ok(1) })
+  await saStart(st)
+  const reads = p5CapReads(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + SA_MIN)
+  expect(st.calls.length).toBe(1)
+  const r1 = reads.n
+  expect(r1, "консультация читает стор кэпа").toBeGreaterThan(0)
+  await p5Classic(st, "Notification", { message: "b" }, T0 + 5 * SA_MIN)
+  expect(st.calls.length).toBe(1)
+  expect(p5By(st, "cev43")).toEqual(["cooldown"])
+  expect(reads.n, "ранний cooldown -- стор кэпа не тронут").toBe(r1)
+})
+
+test("p531 F2b T44: смена эпохи -- отметка прежнего числа кэпа старого sid снята", async () => {
+  const T0 = 907_700_000
+  const st = p5$("f44", T0, '[probe.capl44]\non = ["PreToolUse"]\n', { answers: p5Ok(1) })
+  await saStart(st)
+  st.m.store.set("catalyst-probes:sesscap:" + st.sid, 3)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f44-1" }, { result: "r" }, T0 + SA_MIN)
+  expect(typeof SA.probeCapLegacySids, "дверь отметок прежнего числа").toBe("function")
+  expect(SA.probeCapLegacySids()).toContain(st.sid)
+  expect(SA.probeCapSids()).toContain(st.sid)
+  st.m.$.session.id = async () => "sid-f44-new"
+  await p5Clear(st)
+  expect(SA.probeCapSids(), "ключ зеркала старого sid снят").not.toContain(st.sid)
+  expect(SA.probeCapLegacySids(), "отметка прежнего числа старого sid снята").not.toContain(st.sid)
+})
+
+test("p531 F2b T45: запись кэпа в очереди, смена эпохи, очередь дренируется -- в сторе итог старого sid, в памяти его нет", async () => {
+  const T0 = 907_800_000
+  const st = p5$("f45", T0, '[probe.capw45]\non = ["PreToolUse"]\n', { answers: p5Ok(2) })
+  await saStart(st)
+  const key = "catalyst-probes:sesscap:" + st.sid
+  const gate = p5CapGate(st, key)
+  const h = hook393(subs393(), "tool.call")
+  st.m.setNow(T0 + SA_MIN)
+  const c1 = h(st.m.$, { tool: "Read", tool_use_id: "tu-f45-1" }, async () => ({ result: "r" }))
+  await settle393()
+  st.m.setNow(T0 + 2 * SA_MIN)
+  const c2 = h(st.m.$, { tool: "Read", tool_use_id: "tu-f45-2" }, async () => ({ result: "r" }))
+  await settle393()
+  expect(gate.length, "первая запись кэпа ждёт стор, вторая в очереди").toBe(1)
+  st.m.$.session.id = async () => "sid-f45-new"
+  await p5Clear(st)
+  gate[0]()
+  await c1
+  await c2
+  await settle393()
+  expect(st.m.store.get(key), "запись из очереди дошла до стора").toEqual([T0 + SA_MIN, T0 + 2 * SA_MIN])
+  expect(SA.probeCapSids(), "после дренажа ключа старого sid нет").not.toContain(st.sid)
+})
+
+test("p531 F2b T46: /resume того же sid, новая эпоха взяла кэп до дренажа -- её ключ и запись остаются", async () => {
+  const T0 = 907_900_000
+  const st = p5$("f46", T0, '[probe.capw46]\non = ["PreToolUse"]\n', { answers: p5Ok(2) })
+  await saStart(st)
+  const key = "catalyst-probes:sesscap:" + st.sid
+  const gate = p5CapGate(st, key)
+  const h = hook393(subs393(), "tool.call")
+  st.m.setNow(T0 + SA_MIN)
+  const c1 = h(st.m.$, { tool: "Read", tool_use_id: "tu-f46-1" }, async () => ({ result: "r" }))
+  await settle393()
+  expect(gate.length).toBe(1)
+  await p5Clear(st)
+  st.m.setNow(T0 + 2 * SA_MIN)
+  const c2 = h(st.m.$, { tool: "Read", tool_use_id: "tu-f46-2" }, async () => ({ result: "r" }))
+  await settle393()
+  expect(st.calls.length, "новая эпоха консультирует").toBe(2)
+  gate[0]()
+  await c1
+  await c2
+  await settle393()
+  expect(st.m.store.get(key), "запись новой эпохи дошла до стора").toEqual([T0 + SA_MIN, T0 + 2 * SA_MIN])
+  expect(SA.probeCapSids(), "ключ, тронутый новой эпохой, остаётся").toContain(st.sid)
+})
+
+test("p531 F2b T47: /clear, проба стала subagents = true -- вызов агента до сборки мира не считается not-main", async () => {
+  const T0 = 908_000_000
+  const st = p5$("f47", T0, '[probe.mp47]\non = ["PreToolUse"]\n\n[probe.mp47.when]\nfield = "tool"\nequals = "Nope"\n')
+  await saStart(st)
+  st.files[st.home + "/probes.toml"] = '[probe.mp47]\nsubagents = true\non = ["PreToolUse"]\n\n[probe.mp47.when]\nfield = "tool"\nequals = "Nope"\n'
+  await p5Clear(st)
+  await p5Call(st, { agentId: "ag-f47", tool: "Read", tool_use_id: "tu-f47" }, { result: "r" }, T0 + SA_MIN)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(p5By(st, "mp47").filter((b) => b === "not-main"), "список main-only прошлой эпохи не считает").toEqual([])
+})
+
+// --- #509-FIX7 Р17/Р18: остатки #531 FIX2b ----------------------------------------
+test("p531 F7 T48: новая эпоха, первый вызов агента до сборки индекса -- одна строка not-main; тот же tool_use_id быстрым путём второй не даёт", async () => {
+  const T0 = 908_100_000
+  const st = p5$("f48", T0, '[probe.mp48]\non = ["PreToolUse"]\n\n[probe.mp48.when]\nfield = "tool"\nequals = "Nope"\n')
+  await saStart(st)
+  await p5Clear(st)
+  await p5Call(st, { agentId: "ag-f48", tool: "Read", tool_use_id: "tu-f48" }, { result: "r" }, T0 + SA_MIN)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  const nm = (): any[] => p5Out(st, "mp48", "filtered").filter((r: any) => r.by === "not-main")
+  expect(nm().map((r: any) => r.n), "медленный путь новой эпохи считает not-main").toEqual([1])
+  await p5Call(st, { agentId: "ag-f48", tool: "Read", tool_use_id: "tu-f48" }, { result: "r" }, T0 + 3 * SA_MIN)
+  await saTickAt(st, T0 + 40 * SA_MIN)
+  expect(nm().map((r: any) => r.n), "тот же вызов быстрым путём -- второй строки нет").toEqual([1])
+})
+
+test("p531 F7 T49: отказ записи кэпа старого sid, смена эпохи, /resume того же sid -- прежнее число не датируется заново, отметки на месте", async () => {
+  const T0 = 908_200_000
+  const pre = "catalyst-probes:sesscap:"
+  const st = p5$("f49", T0, '[probe.capu49]\non = ["PreToolUse"]\n', { answers: p5Ok(1), fail: { storeSet: (k: string) => k.indexOf(pre) === 0 } })
+  await saStart(st)
+  const key = pre + st.sid
+  st.m.store.set(key, 8)
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f49-1" }, { result: "r" }, T0 + SA_MIN)
+  expect(st.calls.length, "восемь прежних консультаций -- окно полно").toBe(0)
+  const rs = subs393().filter(s =>
+    s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
+    s.matcher.command.indexOf("resume") >= 0)
+  expect(rs.length).toBe(1)
+  await rs[0].fn(st.m.$, { command: "resume", args: "" }, async (e: any) => e)
+  await settle393()
+  expect({ mirror: SA.probeCapSids().indexOf(st.sid) >= 0, legacy: SA.probeCapLegacySids().indexOf(st.sid) >= 0 }, "неприземлённый ключ прополка не снимает").toEqual({ mirror: true, legacy: true })
+  await p5Call(st, { tool: "Read", tool_use_id: "tu-f49-2" }, { result: "r" }, T0 + 62 * SA_MIN)
+  expect(st.calls.length, "отметки первого чтения вышли из окна -- консультация; число заново не датировано").toBe(1)
+})
+
+test("p531 FIX8 Р5: загрузка мира эпохи A висит, /clear, загрузка A завершилась -- SessionStart эпохи B строит мир B и консультирует", async () => {
+  const T0 = 908_300_000
+  const st = p5$("f8r5", T0, '[probe.stopper]\non = ["Stop"]\n', { answers: p5Ok(1) })
+  await clear393()
+  const path = st.home + "/probes.toml"
+  const read0 = st.m.$.fs.read
+  let hold = true
+  let blocked = false
+  let open: () => void = () => {}
+  const gate = new Promise<void>((r) => { open = r })
+  st.m.$.fs.read = async (p: string) => {
+    const v = await read0(p)
+    if (hold && String(p) === path) { hold = false; blocked = true; await gate }
+    return v
+  }
+  const hA = hook393(subs393(), "classic.Stop")(st.m.$, { hook_event_name: "Stop", session_id: st.sid }, async () => ({ ok: "Stop" }))
+  await settle393()
+  expect(blocked, "загрузка мира эпохи A встала на чтении probes.toml").toBe(true)
+  st.files[path] = '[probe.starter]\non = ["SessionStart"]\n'
+  await p5Clear(st)
+  open()
+  await hA
+  await settle393()
+  const r = await p5Classic(st, "SessionStart", { source: "clear" }, T0 + 2000)
+  expect(r).toEqual({ ok: "SessionStart" })
+  expect(st.calls.length, "мир эпохи B загружен, слушатель SessionStart конфигурации B сработал").toBe(1)
+})
+
+test("p531 FIX8 Р8: submit разрешился { drop: \"\" } -- не доставка, nudge_undelivered by drop с причиной «(пустая причина)»", async () => {
+  const T0 = 908_400_000
+  const st = p5$("f8r8", T0, P5_NOTE, { answers: ["BLOCK: a"], submitDefer: true })
+  await saStart(st)
+  await p5Classic(st, "Notification", { message: "a" }, T0 + 1000)
+  await saTickAt(st, T0 + 2 * SA_MIN)
+  expect(st.submits.length).toBe(1)
+  st.submitDefers[0].resolve({ drop: "" })
+  await settle393()
+  expect(p5Out(st, "note", "nudge_delivered"), "пустой drop -- текст не вошёл").toEqual([])
+  expect(p5Out(st, "note", "nudge_undelivered").map((r: any) => [r.by, r.reason])).toEqual([["drop", "(пустая причина)"]])
+  expect(p5Q(""), "drop -- запись снята").toEqual([])
+})
+
+test("p531 FIX8 Р9: 65 sid подряд с отказом записи кэпа -- неприземлённых 64, старейший вытеснен строкой session-cap-unlanded-evicted", async () => {
+  const T0 = 908_500_000
+  const pre = "catalyst-probes:sesscap:"
+  const N = 65
+  const st = p5$("f8r9", T0, '[probe.capu8]\non = ["PreToolUse"]\n', { answers: p5Ok(N), fail: { storeSet: (k: string) => k.indexOf(pre) === 0 } })
+  SA.probeCapStateReset()
+  await saStart(st)
+  expect(typeof SA.probeCapUnlandedSids, "дверь неприземлённых ключей").toBe("function")
+  for (let i = 0; i < N; i++) {
+    st.m.$.session.id = async () => "sid-f8r9-" + i
+    await p5Clear(st)
+    await p5Call(st, { tool: "Read", tool_use_id: "tu-f8r9-" + i }, { result: "r" }, T0 + (i + 1) * 1000)
+  }
+  await settle393()
+  expect(st.calls.length, "каждый sid консультировал и отметил кэп").toBe(N)
+  const un = SA.probeCapUnlandedSids()
+  expect({ n: un.length, first: un[0], last: un[un.length - 1], evicted: un.indexOf("sid-f8r9-0") }).toEqual({ n: 64, first: "sid-f8r9-1", last: "sid-f8r9-64", evicted: -1 })
+  expect(SA.probeCapSids().indexOf("sid-f8r9-0"), "зеркало вытесненного, не тронутое после смены эпохи, снято").toBe(-1)
+  const lost = lost8(st.m.writes)["session-cap-unlanded-evicted"]
+  expect(lost && { n: lost.n, last: lost.last }, "вытеснение названо").toEqual({ n: 1, last: "sid-f8r9-0" })
+  SA.probeCapStateReset()
+})

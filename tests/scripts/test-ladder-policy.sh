@@ -3,8 +3,10 @@
 # на БОЕВЫХ данных. Реестр проб берётся по порядку (описан в самом
 # инструменте): env CATALYST_PROBES_REGISTRY -> соседний канон
 # ../Catalyst-CC-Patch/probes/probes.toml -> боевой ~/.claude/probes/probes.toml;
-# таблица допуска -- hooks/routing-table.toml. ТРИ правила (допуск клетки,
-# запрет Anthropic-носителей, пин эффорта по [pins]), разбор элемента ступени
+# допуск -- hooks/routing-table.toml со слоями машинного и проектного
+# routing-override.toml (слитый, как у гварда). Правила (допуск клетки,
+# запрет Anthropic-носителей в лестницах, пин эффорта по [pins], запас клетки,
+# терминал исчерпанной клетки), разбор элемента ступени
 # и коды возврата описаны в инструменте; стенд транслирует его исход дословно,
 # не пересказывая.
 #
@@ -27,7 +29,7 @@
 # сторону это rc=3, а не зелёный (форма test-judge-bridge.sh).
 set -u
 
-EXPECTED_TEETH=37
+EXPECTED_TEETH=72
 EXPECTED_SHELL_TEETH=10
 
 shell_self_check() {

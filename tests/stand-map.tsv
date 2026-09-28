@@ -11,6 +11,7 @@ tests/scripts/ladder-policy.py	ladder-policy
 tests/scripts/effort-layers.py	effort-layers
 tests/scripts/render-tree.py	render-tree
 tests/fixtures/	mod-units
+.claude/types/	mod-units
 tests/data/	mod-event-names
 tests/pressure/	lint,scripts
 tests/run-all.sh	run-all

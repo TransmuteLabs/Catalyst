@@ -68,6 +68,7 @@ kind = "consult"          # default
 act = "log_only"          # default for a new id; voice is granted later
 rx = "SILENT|NUDGE"
 cooldown_min = 60
+on = ["PreToolUse"]       # and/or every_min = N; see «Триггеры и доставка»
 
   [probe.model-coverage.when]
   field = "live_works"
@@ -82,9 +83,12 @@ rebuild the binary, do not add a plugin.
 `rx`: first-line vocabulary, same parser as the judge.
 `when`: closed predicate vocabulary (`equals`, `in`, `matches`,
 `count_below`, `count_at_least`, `older_than_min`, `newer_than_min`,
-`absent`, `present`, `all`, `any`, `not`). A missing `when` on a new id
-does not fire (`skip_no_when`). Built-in ids have implicit triggers so the
-live toml does not need the new keys.
+`absent`, `present`, `all`, `any`, `not`). `when` filters a trigger; a
+new id without `on` and without `every_min` never consults and writes
+`skip_degraded` / `by:"no-trigger"`. A new id with a trigger and no `when`
+consults on every firing of its trigger, within its `cooldown_min` and the
+session cap (see «Триггеры и доставка»). Built-in ids carry default
+triggers, so the live toml does not need the new keys.
 
 `kind = "form"` is the deterministic rule probe (id `form` today). It is
 not a consultation.
@@ -152,12 +156,359 @@ and absent from the pristine twin). There was never anything to port.
 
 | id | trigger | act | rx |
 |---|---|---|---|
-| `judge` | main-loop Agent/Task | cancel (await, then run or deny) | OK\|WARN\|BLOCK\|STOP\|DENY |
-| `idle-watch` | main-loop, no live work, cooldown | nudge | SILENT\|NUDGE |
+| `judge` | `on = ["PreToolUse"]`, main-loop Agent/Task | cancel (await, then run or deny) | OK\|WARN\|BLOCK\|STOP\|DENY |
+| `idle-watch` | `on = ["PreToolUse"]` plus timer every `live_recheck_ms`; README «Thresholds» gate | nudge | SILENT\|NUDGE |
 | `form` | main-loop Write/Edit/Bash/Agent/Task/SendMessage | per-class `[probe.form.act]` | rules |
 
 A project layer may disable one (`enabled = false`), override keys, or
 add a new id. `CLAUDE_PROBES_DIR` disables layering.
+
+## Триггеры и доставка
+
+**`on = ["<Имя>", …]`** — hook-event names of the contract
+(`hook_event_name` in `.claude/types/claude-code.d.ts`, 33 names), held in
+ONE constant `CLASSIC_EVENTS`; `tests/scripts/test-mod-units.sh`
+(step classic-events) recounts it against the d.ts and against the
+`classic.*` subscriptions.
+
+- `PreToolUse` — the single `tool.call` subscription, before `next(e)`.
+  `PostToolUse` — the same subscription, after `await next(e)`; `show =
+  ["tool"]` puts the result into the payload. A second `tool.call`
+  subscription is forbidden (it silently replaces the first, #447).
+- Every other name — one `on("classic.<Имя>")` each. The event name is a
+  literal: the loader rejects a computed name. With no listening probe the
+  hook returns `next(e)` synchronously, with no `$` and no await.
+- `MessageDisplay` is not subscribed: it fires on every render delta. In
+  `on` it gives `on_bad` with `by:"MessageDisplay:per-delta"`.
+- An unknown name gives `on_bad` with `by:"<имя>"`; the probe's valid names
+  still work.
+- `act = "cancel"` (and the judge) waits for a verdict before `next(e)`,
+  which exists only on `PreToolUse`. Any other name or `every_min` on such a
+  probe gives `on_bad` with `by:"<имя>:cancel-needs-PreToolUse"` and is
+  dropped.
+- `on_bad` and `skip_degraded`/`no-trigger` are written once per (probe,
+  mark) per session, by armed probes only.
+- The listener index is rebuilt on every world build (session start,
+  `tool.call`, timer tick). A `probes.toml` edit takes effect no later than
+  the next build. `/clear` and `/resume` empty the index together with the
+  world, so the first event of the new session takes the slow path. The
+  list of main-only probes that an agent's `tool.call` counts as
+  `not-main` is emptied too. An agent call that entered while the index
+  was empty is counted on the slow path, after the world build that
+  rebuilds the list, the same way as on the fast path. A `tool_use_id`
+  counted by one path is not counted again by the other (a set of at most
+  256 ids, the oldest dropped, emptied on `/clear` and `/resume`).
+
+**`every_min = N`** — evaluation on the 60 s tick of the stale-agents
+timer. There is no second timer. An evaluation runs when `now − lastEval ≥
+N min`; the first one runs N min after the session start. The context has
+`event = "timer"` and no tool fields. The consultation targets the main
+loop. The epoch and the timer generation are re-checked after every await,
+before consultation and before delivery.
+
+**Context of the predicate.** The context has `event`, `agent_id`, and the
+flat (string / number / boolean) top-level fields of the event input.
+`show = ["event"]` puts the input JSON into the payload, clipped by
+`dispatch_chars`. The judge, and any probe with `show ∋ "dispatches"`, gets
+`=== DISPATCHES ===`: one JSON line `{tool, subagent_type, model,
+description, now?, self?}` per `Agent`/`Task` call in the assistant rows of
+`$.session.messages()`. `now` marks the calls of the row that holds the
+current `tool_use_id`, and `self` marks the current call. At most 20 past
+calls are listed, without `now`. When no row holds the current id, no line
+has `now`, and the probe journal gets one `fan-self-absent` line per id.
+A call without a `tool_use_id` has no current call: no line has `now` or
+`self`, and no `fan-self-absent` line is written. The ids the mod makes up
+for a timer tick and for a classic event without its own id count as no
+id. The `=== DISPATCH ===` object carries `self: true`.
+
+**Defaults of the built-in ids.**
+
+- `judge`: `on = ["PreToolUse"]`, fires on main-loop Agent/Task.
+- `idle-watch`: `on = ["PreToolUse"]` plus the timer every `live_recheck_ms`
+  (default 60000; `every_min` overrides it).
+- `form`: unchanged, not a trigger probe.
+
+**idle-watch gate** (README «Thresholds»; the first failing condition is
+the `by`). The current Agent/Task call is counted before the count.
+
+1. Live works of `live_kinds` with status `running` / `pending` must be
+   `< live_threshold`, else `live-work:N`. `AgentInfo` has no kind:
+   `type = "teammate"` maps to `in_process_teammate`, every other type to
+   `local_agent`. `$.agent.list` does not return remote works.
+2. Main-loop Agent/Task launches in the last `window_min` must be
+   `< threshold`, else `window-count:N`.
+3. The session age must be `≥ window_min`, else `window-not-filled`.
+4. `now − last_consultation` must be `≥ cooldown_min`, else `cooldown`.
+
+A failed `$.agent.list` gives `when_bad` `unknown=live_works`. Launch marks
+and the session start reset on `/clear` and `/resume`. The launch history
+drops marks older than the largest `window_min` of the armed probes and
+keeps at most max(256, largest `threshold` + 1) marks, so the count never
+falls below a configured threshold.
+
+**Filtered.** An evaluation that does not reach a consultation writes
+`outcome:"filtered"`, with `by` one of `live-work:N`, `window-not-filled`,
+`window-count:N`, `cooldown`, `when-false`, `not-main` or `consult-cap`.
+At most one line is written per (probe, `by` class) per `cooldown_min`.
+`when_bad` lines have the same limit, with their own class. The limit is
+never shorter than 60 s: `cooldown_min = 0` removes the pause between
+consultations, not the limit on journal lines.
+
+`not-main` covers a main-only probe on an agent's event. On an agent's
+`tool.call` the path reads no clock and calls no `$`: it only counts, and
+the tick writes the line with `n`.
+
+**Delivery of `act = "nudge"`.** The text `[<probe>] <verdict rest>` is
+queued per (session, agent). The main loop's queue has key `""`. Any other
+queue has the id of the agent whose event caused the consultation. Timer
+probes queue for the main loop.
+
+- (a) The next `tool.call` of the same agent returns the whole queue in its
+  result's `context`, after the result's own `context`. On `deny` nothing is
+  delivered and the queue waits.
+- (b) On the tick, main-loop text at least 60 s old goes to
+  `$.prompt.submit({text})`, but only in an interactive session. If the
+  session is not interactive or its mode is unknown, the journal gets
+  `nudge_undelivered` with `by:"not-interactive"` / `"interactive-unknown"`,
+  once per entry, and the text stays for (a).
+- One text, one delivery. An entry whose submit was sent and has not
+  answered is in flight: it stays in the queue, but no channel hands it out
+  — neither (b) on later ticks nor (a) in `context`. An entry in flight
+  waits for the host's answer to its submit. If the host never answers,
+  the model does not get the text until the session changes, and the
+  journal has `submit-timeout`.
+- The submit has a 60 s deadline, a race with `$.clock.after`. When it
+  expires, the journal gets `nudge_undelivered` with `by:"submit-timeout"`,
+  once per entry. The entry stays in flight and does not go back to the
+  head of the queue; the tick no longer waits for that submit.
+- A submit that succeeds, on time or late, removes the entry and writes
+  `nudge_delivered` with `channel:"submit"` (`late: true` after the
+  deadline). A submit that resolves to `{ drop: reason }` did not enter
+  (a hook refused it): the entry is removed without a retry, with
+  `nudge_undelivered` `by:"drop"` and `reason` (`late: true` after the
+  deadline). An empty `drop` string is a drop too, here and for the #530
+  signal below; its `reason` is `(пустая причина)`. A submit that fails, on time or late, clears the in-flight
+  mark and moves the entry to the head of the queue for (a) and (b), with
+  `nudge_undelivered` `by:"submit-failed"`, once per entry (`late: true`
+  after the deadline). The third failure of the same entry removes it,
+  with `nudge_undelivered` `by:"submit-failed"` and `attempts`.
+- (c) The toast is additional. It is written as the field `toast` on the
+  consultation line and never marks `nudge_delivered`.
+
+Delivery by one channel removes the text. A delivery line is
+`nudge_delivered` with `channel: "context" | "submit"`.
+
+`/clear` and `/resume` remove every queue: the text of one session does
+not reach the next. Each removed entry is written as `nudge_dropped` with
+`by:"session-reset"` (`fly: true` for an entry in flight). A `tool.call`
+that began before the change does not take the new session's queue into
+its result.
+
+The queue holds at most 5 entries per agent, entries in flight included.
+The oldest entry not in flight is evicted as `nudge_dropped` with
+`by:"queue-max"`. An entry in flight is never evicted: when all five are
+in flight, the new entry itself is `nudge_dropped` with `by:"queue-cap"`.
+There are at most 64 agent queues (the main loop's queue is not counted).
+A new queue beyond that evicts the agent queue with the oldest last entry;
+each of its entries is `nudge_dropped` with `by:"queue-cap"`. Only the main
+loop's queue can hold entries in flight. An agent whose status in
+`$.agent.list` is terminal is gone at once. An agent absent from the list
+on every tick for 10 minutes (counted from the first such tick; seeing it
+again resets the count) is gone too. A gone agent's queue is written as
+`nudge_undelivered` with `by:"agent-gone"` and removed. That applies only to
+entries queued before the list was requested.
+
+The stale-agents signal (#530) has the same 60 s deadline on its submit,
+and the same in-flight rule. While a signal's submit has not answered, no
+tick of the same session sends a second signal. On expiry, the journal gets
+`kind:"STALE_AGENTS_SUBMIT_TIMEOUT"`, and the signal stays in flight. A late
+success ends the flight, and the signal window stays closed from that
+signal. A late failure ends the flight, writes `STALE_AGENTS_SUBMIT_ERR`
+with `late: true` and reopens the window, so the next tick signals again.
+A submit that resolves to `{ drop: reason }` is a failure too: the line is
+`STALE_AGENTS_SUBMIT_ERR` with `by:"drop"` and `reason` instead of `err`,
+and the window moves as for a failure on time or late. A tick that finds
+idle-watch not armed does not end a flight; only the submit's answer or
+`/clear` / `/resume` does.
+
+The activity records hold at most 256 agents; a new one evicts the record
+without an activity mark that has the oldest `lastAt`, else the oldest
+inserted. While `$.agent.list` fails, a record without an activity mark
+for longer than twice `stale_agent_min` is removed.
+
+**Consultation cap.** At most 8 consultations of `act = "nudge"` /
+`"log_only"` per session in the last 60 minutes. The cap is shared by
+every trigger: `PreToolUse`, the other hook events, and the timer. The store
+key holds consultation times. A plain number from an older build is read
+once per process as that many consultations at the time of reading, and
+the times are written back to the store at once, so a reload of the mod
+reads times and the window does not move. All writes of the times go
+through one chain, and each writes the times current when it runs. On
+`/clear` or `/resume` the in-process copy (times and the once-per-process
+mark of an old number) drops the keys of the sessions before the change.
+The drop is the last link of the chain: the writes already queued reach
+the store first, and `/resume` of that session reads its times. A key the
+new session has already used is kept. A key whose last write to the store
+failed is kept too, until a later write of that key succeeds: the store
+does not hold its times, and dropping the copy would let `/resume` read the
+old number and date it again. Such unlanded keys are bounded by
+`CAP_UNLANDED_MAX` (64): one more evicts the oldest unlanded key other than
+the current session's, drops its in-process times if no session touched
+them since the last change, and writes `lost` `session-cap-unlanded-evicted`
+with the session id. The last-consultation marks (`lastMirror`, used by
+`cooldown_min`) are bounded by the number of (probe × cwd) pairs over the
+life of the process and are never evicted: a mark carries a live cooldown.
+A full window writes `filtered` with `by:"consult-cap"`,
+subject to the same per-class frequency as every `filtered` line. An
+idle-watch that consults every 30 minutes is never silenced for good.
+
+**Cooldown of every probe.** `cooldown_min` from `[defaults]` or from the
+probe's table applies to every non-cancel probe on any trigger. No key
+means no pause, and `0` turns it off. A pause writes `filtered` with
+`by:"cooldown"`. The built-in probes keep their own thresholds. The
+cooldown (idle-watch's too) is checked again in the same synchronous step
+that takes the cap and marks the consultation: two evaluations that both
+passed the early check (two events, or the timer and a `tool.call`) give
+one consultation, and the other writes `filtered` `by:"cooldown"`.
+
+**`remote_agent`.** `$.agent.list` does not return remote works, so this
+kind cannot be observed. If idle-watch's `live_kinds` names it (the default
+does), the journal gets one line per session: `skip_degraded` with
+`by:"live_kinds_unobservable:remote_agent"`. The kind is never inferred
+into the count.
+
+**Before the first world build**, and after `/clear` / `/resume`, the
+listener index is empty (null). A `classic.*` hook and an agent's
+`tool.call` then take the slow path: they build the world and decide from
+it. An event that arrives before `session.start`, or before the new
+session's first world build, is not lost.
+
+## Failover ladder: who answered, and where it stops
+
+**A refusal is the carrier's, not the model's.** The ladder moves to the
+next rung only on a carrier refusal: a step with no usage and no stop
+reason (`isCarrierRefusal`), or a throw before any content. A model that
+answered with the text of a refusal, with live usage, gave an answer. The
+ladder does not read the content of an answer, and it does not change the
+model on it.
+
+**Who answered.** Every attempt record carries `modelServed`, which is
+`usage.model` of the step result, or `null` without usage. It also carries
+`declared`, the agent's declared model. A matching name is not taken as
+success. A step answered with `ok` by a rung that is not the declared model
+queues a hint for the main loop at most once per (agent, rung model) per
+session: `агент <agentId> (<subagent_type>): объявлен <declared>, шаг
+обслужила <model> — вердикт этого агента принадлежит <model>`. That bounds
+the queuing, not the delivery. The hint goes through the main loop's common
+queue: in `context` of the next main-loop `tool.call`, or by `submit` on the
+tick once the text is at least 60 s old. An eviction from the queue is
+written as `nudge_dropped`; a failed enqueue is `lost`
+`failover-served-nudge`.
+
+**Reviewers stay apart.** A reviewer's spawn registers its declared model,
+and every `ok` step registers its rung model (at most 64 agents). A
+reviewer's plan drops the rungs that serve another reviewer of the session
+within the last 2 h, and counts them in `rungsFilteredReviewer`. Its own
+declared model is not dropped. When every rung is taken, the plan keeps the
+rungs left after the executor filter and marks `ladderFullTaken`. The
+reviewer's sticky model is dropped by the same rule, also under
+`ladderFullTaken`, and the records carry `stickyDroppedReviewer`.
+
+Each reviewer attempt registers its model at the start, in the same
+synchronous step that checks it, so two reviewers do not pick one free
+model in parallel. A rung that is not the declared model and not the
+terminal, taken by another reviewer, is skipped with a `reviewer-taken`
+record while a later element of the plan is not taken (the terminal counts
+as free); with none left, the taken model is tried. The probe of the wait
+(heartbeat or deadline) makes the same check at the target's position in
+the step plan: a `reviewer-taken` probe goes on to the later elements of
+the plan in order, as a pass does, and the taken model is not probed again
+in that turn of the wait. A target that is not in the plan (dead, or skipped
+for a known reset) makes the check with the whole plan ahead of it. Such a
+probe follows the general rule: the taken model is allowed when no free
+element is ahead of it. The
+target itself is chosen only among models that serve no other reviewer of
+the session (the reviewer's own declared model and the terminal stay
+candidates); with no candidate left, the wait ends as `wait-no-target`.
+
+Each reservation keeps the entry it replaced. An attempt that ends in a
+refusal or a throw before any content first marks its reservation
+cancelled, whether or not the entry is still its own. If the entry is still
+this attempt's own, the agent gets back the first entry in the chain of
+replaced entries that is not a cancelled reservation, or no entry. So when
+two overlapping steps of one agent reserve in turn and both fail, in either
+order, the entry from before both comes back, not the reservation of the
+other step. A success writes a new entry, and an attempt that emitted
+content keeps its reservation; both drop the link to the replaced entry. A
+cancelled link is held while a newer unsettled reservation of the same
+agent refers to it; settling the newest reservation frees the chain. Every entry carries a sequence number of its own, so "this attempt's
+own" is decided by that number, not by the model and time: two overlapping
+steps of one agent on one model at one instant stay apart.
+The registry keeps the 64 entries with the latest time: a new entry evicts
+the entry with the oldest time among the others, not the one inserted
+first, and never the entry it has just put, however old its time is.
+Putting a reservation back, whether or not the entry is still its own,
+returns every entry that the reservation evicted whose agent has none by
+then. The entry that comes back is the first entry of the evicted entry's
+chain that is not a cancelled reservation, and the 2 h window
+(`REVIEWER_LIVE_MS`, counted from the time of the reservation) is measured
+on that entry. The registry is then ordered by time and cut to 64, keeping
+the agent's own entry if it came back, so a returned entry can be evicted
+again as the oldest. Every entry also carries the generation of the
+registry it was put into; the generation grows each time the registry is
+reset for a new session. A reservation of an earlier generation, put back
+after the reset, only marks itself cancelled: it returns neither its own
+previous entry nor the entries it evicted. A success of a step and a spawn
+write their entries (and the executor models) only when the generation has
+not changed since the step's reservation, or since the start of the step
+or of the spawn when there is no reservation; otherwise both writes are
+skipped. So nothing of the old session enters the new one. Two paths put the entry back when no content
+was emitted: the `finally` of the attempt, reached after a `yield` (the
+consumer calls `.return()` while the attempt waits for the next chunk); and
+the `abort` of `next.signal`, for a stream that hangs before its first chunk,
+where `.return()` is queued behind the pending `.next()` and never reaches
+`finally`. The subscription to `abort` is made once per reservation and is
+removed in `finally`.
+
+**Refusal classes.** A JSON body in the refusal line whose `error.code` is
+`model_not_found` is `permanent-model`. On a rung with a non-Anthropic
+model, `error.code` `1308` or the text `Usage limit reached for <N> hour`
+(the z.ai quota window) is `quota`. The same body on an Anthropic model
+keeps its previous class. A dead provider named in the text
+(`PROVIDER_GONE_RX`) is `permanent-model`, the fallback when no JSON code
+is read. A quota refusal (`QUOTA_RX`) is `quota`. In `QUOTA_RX`, 402 counts
+only as an HTTP status: at the start of the line followed by a space or
+the end of the line (`402 <body>`), `API Error: 402`, `"status": 402`,
+`status=402` or `HTTP 402`. A bare number, such as `line 402`, a `/402/`
+path or `402/…`, `402.`, `402-` at the start, is not a quota. A line that
+names a dead provider and carries a 402 status, such as `API Error: 402
+model x is not available on this server`, is `permanent-model`: the dead
+provider is checked before the quota. `quota` has a 60 min
+cooldown. All of these are checked before the prefix tables, so they also
+win over the `API Error` wrapper, and a body that names a dead provider or
+model wins over a request prefix: a change of model cures it. The request
+class decides when the tail names no model. A body that does not parse as JSON has
+no code, and the text rules still apply. These classes are also known
+lines. So when `next` throws with only such a body, with no `API Error`
+prefix and no fresh session line, the step moves to the next rung with
+that class. It does not end as `hook-error`. A message (or thrown text)
+that is one JSON document as a whole (after trimming, an object `{…}` or
+an array `[…]` that parses) is decided by its body, and its lines are not
+checked. With a body class, its `error.code` wins over the text of its
+`message` line, and the refusal line is the whole text with every run of
+whitespace folded into one space. With no body class, the message gives no
+known line (a bare `402` line inside it is not a quota), and the older
+messages are checked. Any other message is decided by its lines; a line
+that carries JSON inside it (the host form `API Error: 404 {…}`) is decided
+by its body.
+
+**The hook budget and `$.clock.after`.** Measured on 2026-09-28 with the
+`claude plugin test` kit of 2.1.283, probe
+`tests/probes/clock-after-budget.probe.ts`. A `turn.step` hook that waits
+12 000 ms for a `$.clock.after` callback is cut at the 10 000 ms budget.
+This holds when the timer fires in real time, and when the timer has no
+implementation. The step result then comes from beneath. A wait on
+`$.clock.after` spends the hook budget.
 
 ## What the core does not do
 

@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """Статический прибор политики лестниц замены модели (failover).
 
-Предмет: таблицы [failover.class.<id>] в реестре проб probes.toml против
-допуска клеток [classes.<id>].allowed в hooks/routing-table.toml. Мод
-(plugins/catalyst-probes/hooks/register.ts) routing-table.toml ЧИТАЕТ --
-допуск клеток без явной лестницы строится из [classes.<id>].allowed той же
-таблицы (loadAllowedByClass, allowed-ветка failoverLadderBind). Гейт
-диспатча срабатывает на вызове инструмента, тогда как лестница меняет
-модель уже ПОСЛЕ него и вторым вызовом не проверяется -- поэтому проверка
+Предмет: таблицы [failover.class.<id>] и ключ [failover].terminal реестра
+проб probes.toml против допуска клеток [classes.<id>].allowed и [pins] в
+hooks/routing-table.toml. Мод (plugins/catalyst-probes/hooks/register.ts)
+переходит только по явной лестнице (agent/class/default), после неё -- на
+терминал; допуск клетки ступеней не порождает, и клетка без явной лестницы
+получает один терминал. Гейт диспатча срабатывает на вызове инструмента,
+тогда как лестница меняет модель уже ПОСЛЕ него и вторым вызовом не
+проверяется -- поэтому проверка
 обязана быть внешней и статической. Пять правил и разбор элемента
 (брифы #225 и #230 -- адъюдикация контроллера 2026-09-16; #261 -- 2026-09-18;
 #274/#275 -- 2026-09-19):
 
   правило-1-допуск: каждая ступень каждой [failover.class.<id>] обязана быть
-    в [classes.<id>].allowed. Класса нет в таблице -- нарушение с названной
-    клеткой, не тихий пропуск. Предикат -- гварда: str(x).strip().lower()
-    с обеих сторон (check_class_admits, hooks/dispatch-gate.py).
+    в [classes.<id>].allowed СЛИТОГО допуска -- база hooks/routing-table.toml,
+    поверх машинный ~/.claude/catalyst/routing-override.toml (только чтение),
+    поверх проектный <dir>/.claude/catalyst/routing-override.toml (ближайший
+    вверх от cwd или от --project <dir>); запись клетки слоя ЗАМЕНЯЕТ базовую
+    целиком -- семантика load_table, hooks/dispatch-gate.py. Класса нет в
+    таблице -- нарушение с названной клеткой, не тихий пропуск. Имена
+    сравниваются одной нормализацией с модом (norm_model_id: strip, lower,
+    снятие суффикса "[1m]").
   правило-2-антропик: ни одна ступень не смеет быть Anthropic-носителем:
     автоматический переход на него обошёл бы маркер [anthropic-exception:…]
     молча. Признак -- по объявленным ниже семействам; имя, не опознанное НИ
@@ -25,23 +31,28 @@
     модели (hooks/routing-table.toml). Нет записи в [pins] -- отдельная
     причина «пин-эффорта-не-объявлен» (пусто ≠ ноль), не молчаливый допуск.
     Ступень без effort правило 3 не задевает.
-  правило-4-запас: каждый класс таблицы с НЕПУСТЫМ допуском обязан нести
-    минимум две модели (после той же нормализации, что у гварда: str.lower).
-    Иначе ни лестница, ни дефолт не дают переход: правило-1 требует
-    ladder ⊆ allowed. Класс с пустым допуском правило-4 не задевает:
-    он не делегируется, диспатчей у него нет. Сканируются ВСЕ классы
+  правило-4-запас: каждый класс БАЗОВОЙ таблицы с непустым допуском обязан
+    нести минимум две модели (после той же нормализации, что у гварда:
+    str.lower). Иначе перехода внутри клетки нет: правило-1 требует
+    ladder ⊆ слитого allowed, и отказ единственной модели сразу уводит
+    клетку на терминал. Класс с пустым допуском правило-4 не задевает: он
+    не делегируется, диспатчей у него нет. Сканируются ВСЕ классы базовой
     таблицы, не только те, у кого есть лестница.
-  правило-5-веер: клетка БЕЗ явной лестницы получает веер из allowed-ветки
-    -- её допуск обязан быть ПОДМНОЖЕСТВОМ оверрайд-допуска той же клетки
-    (гвард меряет допуск слоями: база → машинный ~/.claude/catalyst/
-    routing-override.toml → проектный, запись клетки заменяет базовую
-    ЦЕЛИКОМ -- load_table/override_paths, hooks/dispatch-gate.py). Мод,
-    читающий только базу, строит веер шире допуска гварда -- переход на
-    ступень, которую гвард отверг бы (#274). Источник веера мода прибор
-    выводит из исходника register.ts: чтение слоёв опознаётся по литералу
-    routing-override; мод без слоёв меряется базовым allowed. Туда же
-    распространён антропик-фильтр правила-2: Anthropic-имя в allowed-ветке
-    клетки без лестницы -- то же молчаливое обходание маркера.
+  правило-6-терминал: [failover].terminal (присутствует, когда есть секция
+    [failover]; проектный реестр перекрывает канон) -- ровно одна модель:
+    строка или таблица с model. Имя нормализуется norm_model_id; алиасы
+    opus/fable/sonnet/haiku отвергаются (версионно-зависимы); модель --
+    Anthropic-носитель с id "claude-…" (признак мода isAnthropicModelId:
+    ему пин клетки не нужен, эффорт нативный). Объявленный effort судит
+    только словарь эффорта мода (EFFORTS в
+    plugins/catalyst-probes/hooks/register.ts, читается из исходника, не
+    копируется); запись [pins] терминал не сужает -- мод её не читает. Это ЕДИНСТВЕННОЕ законное место Anthropic-носителя в
+    [failover]: мод переходит на терминал, когда все ступени клетки
+    исчерпаны (#509, слово юзера 2026-09-25). Вердикт на входах таблицы
+    plugins/catalyst-probes/tests/terminal-parity-509.ts совпадает с модом.
+  правило-6-канон: принятый правилом-6 терминал записан канонически -- без
+    пробелов по краям и без верхнего регистра ("[1m]" в нижнем каноничен);
+    правило только прибора (мод такую строку принимает), вне паритета.
   Разбор элемента -- до правил, контракт поведения parseRungItem
     (plugins/catalyst-probes/hooks/register.ts): неразобранная ступень
     (пустая строка, число, объект без model) -- «ступень-не-разобрана»;
@@ -64,6 +75,7 @@
 import contextlib
 import io
 import os
+import re
 import sys
 import tempfile
 
@@ -86,10 +98,10 @@ ANTHROPIC_PREFIXES = ("claude",)
 # Вендорские семейства -- префиксы id из допуска сетки
 # (hooks/routing-table.toml [classes.*].allowed, ценз 2026-09-16) и флота:
 # glm-5.3/5.3-flash, grok-4.6, qwen3.8-flash, gpt-6-astra, gpt-6-sol/luna,
-# deepseek-flash/v4-pro, kimi-k3 -- там же; MiniMax-M3 --
+# deepseek-flash/v4-pro, kimi-k3, devin/swe-2 -- там же; MiniMax-M3 --
 # tests/scripts/test-dispatch-stats.sh (модель флота).
 VENDOR_FAMILY_PREFIXES = (
-    "glm-", "grok-", "qwen", "gpt-", "deepseek-", "kimi-", "minimax",
+    "glm-", "grok-", "qwen", "gpt-", "deepseek-", "kimi-", "minimax", "devin/",
 )
 
 # --- где брать реестр (порядок фиксирован брифом #225) ---------------------
@@ -152,99 +164,6 @@ def load_toml(path):
         return None, f"не читается как TOML: {path}: {e}"
 
 
-# --- правило-5-веер: слои допуска, как их меряет гвард ------------------------
-# CONSTRAINT: порядок и семантика слоёв -- ДОСЛОВНО dispatch-gate.py
-# (override_paths + load_table): машинный затем проектный, запись клетки
-# ЗАМЕНЯЕТ базовую целиком, дубликат по абspath в слой не попадает.
-# Второй дом этих правил расходился бы с гвардом молча -- паритет и есть
-# предмет правила.
-PROJECT_OVERRIDE_REL = os.path.join(".claude", "catalyst", "routing-override.toml")
-
-
-def find_project_override(start_dir):
-    """Ближайший .claude/catalyst/routing-override.toml от start_dir вверх -- как гвард."""
-    d = os.path.abspath(start_dir or os.getcwd())
-    while True:
-        cand = os.path.join(d, PROJECT_OVERRIDE_REL)
-        if os.path.isfile(cand):
-            return cand
-        parent = os.path.dirname(d)
-        if parent == d:
-            return None
-        d = parent
-
-
-def resolve_override_layers(root, env=None, home=None):
-    """Пути слоёв допуска (машина, затем проект), наименьший первым.
-
-    env-ручки -- те же, что у гварда: CATALYST_ROUTING_OVERRIDE задаёт машинный
-    слой ЦЕЛИКОМ (включая пустое значение), CATALYST_ROUTING_PROJECT_OVERRIDE --
-    проектный; без ручек машинный -- <home>/.claude/catalyst/routing-override.toml,
-    проектный ищется от корня репо вверх.
-    """
-    envd = os.environ if env is None else env
-    if home is None:
-        home = os.path.expanduser("~")
-    layers = []
-    env_home = envd.get("CATALYST_ROUTING_OVERRIDE")
-    machine = env_home if env_home is not None else os.path.join(
-        str(home), ".claude", "catalyst", "routing-override.toml")
-    layers.append(machine)
-    env_proj = envd.get("CATALYST_ROUTING_PROJECT_OVERRIDE")
-    project = env_proj if env_proj is not None else find_project_override(root)
-    if project and os.path.abspath(project) not in {os.path.abspath(l) for l in layers}:
-        layers.append(project)
-    return layers
-
-
-def merge_admission(grid, override_paths):
-    """(cell -> set(strip().lower() имён), None) или (None, причина).
-
-    База -- [classes.*].allowed поданной таблицы; каждый существующий слой
-    заменяет названную клетку ЦЕЛИКОМ (без allowed -- допуск пуст: так же
-    отказывает гвард). Несуществующий слой пропускается; битый слой --
-    отказ прибора: молчаливый откат к базе и есть чинимый дефект (#274).
-    """
-    merged = {}
-    for cell, entry in grid.items():
-        if not isinstance(entry, dict):
-            continue
-        allowed = entry.get("allowed")
-        merged[cell] = [str(a) for a in allowed] if isinstance(allowed, list) else []
-    for path in override_paths or []:
-        if not path or not os.path.isfile(path):
-            continue
-        data, err = load_toml(path)
-        if err is not None:
-            return None, f"слой допуска не читается: {err}"
-        ov_classes = data.get("classes")
-        if ov_classes is None:
-            continue
-        if not isinstance(ov_classes, dict):
-            return None, (f"слой допуска {path}: секция [classes] не таблица -- "
-                          "форма замены клеток не разобрана")
-        for cell, entry in ov_classes.items():
-            allowed = entry.get("allowed") if isinstance(entry, dict) else None
-            merged[cell] = [str(a) for a in allowed] if isinstance(allowed, list) else []
-    return {cell: {str(a).strip().lower() for a in models}
-            for cell, models in merged.items()}, None
-
-
-def mod_reads_layers(mod_source_path):
-    """(True/False, None) или (None, причина): мод строит веер по слоям?
-
-    CONSTRAINT: признак -- литерал routing-override в исходнике мода: это
-    имя файла слоя, который мод обязан читать при слоёном допуске. Греп по
-    имени -- не парсер: вторая копия логики слоёв в приборе разошлась бы с
-    модом молча, а исходник мода -- единственный дом его правды.
-    """
-    try:
-        with open(mod_source_path, "r", encoding="utf-8") as f:
-            return ("routing-override" in f.read()), None
-    except OSError as e:
-        return None, f"исходник мода не читается: {mod_source_path}: {e}"
-
-
 _ANTHROPIC_LOW = frozenset(a.lower() for a in ANTHROPIC_EXACT_IDS)
 
 
@@ -252,6 +171,130 @@ def _is_anthropic_name(name):
     """Признак правила-2 для ЛЮБОГО имени модели (не только ступени)."""
     low = str(name).strip().lower()
     return low in _ANTHROPIC_LOW or low.startswith(ANTHROPIC_PREFIXES)
+
+
+def norm_model_id(name):
+    """Нормализация имени модели -- ДОСЛОВНО normModelId мода (register.ts).
+
+    CONSTRAINT (#509-FIX1 E1): один дом правила на обе стороны паритета --
+    strip, lower, снятие суффикса окна "[1m]"/"[2m]"; второй вариант развёл
+    бы вердикты.
+    """
+    low = str(name).strip().lower()
+    return low[:-4].strip() if re.search(r"\[[12]m\]$", low) else low
+
+
+# CONSTRAINT (#509-FIX1 E2): алиасы -- ДОСЛОВНО TERMINAL_ALIASES мода.
+TERMINAL_ALIASES = ("opus", "fable", "sonnet", "haiku")
+
+MOD_REGISTER_REL = os.path.join("plugins", "catalyst-probes", "hooks", "register.ts")
+PARITY_TABLE_REL = os.path.join("plugins", "catalyst-probes", "tests",
+                                "terminal-parity-509.ts")
+
+
+def load_mod_efforts(root=None):
+    """(список, None) или (None, причина): словарь EFFORTS из исходника мода.
+
+    CONSTRAINT: словарь в прибор не копируется -- читается строка
+    `export const EFFORTS = [...]` дома мода; нет строки -- причина, не
+    молчаливый пустой словарь.
+    """
+    import json
+    import re
+    path = os.path.join(root or tool_root(), MOD_REGISTER_REL)
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        return None, f"словарь эффорта мода не прочитан: {path}: {e}"
+    m = re.search(r'^export const EFFORTS = (\[[^\]\n]*\])', text, re.M)
+    if not m:
+        return None, f"словарь эффорта мода не найден: {path}"
+    try:
+        vals = json.loads(m.group(1))
+    except ValueError as e:
+        return None, f"словарь эффорта мода не разобран: {path}: {e}"
+    if not isinstance(vals, list) or not vals:
+        return None, f"словарь эффорта мода пуст: {path}"
+    return [str(v) for v in vals], None
+
+
+def load_parity_table(root=None):
+    """(строки, None) или (None, причина): таблица паритета терминала."""
+    import json
+    path = os.path.join(root or tool_root(), PARITY_TABLE_REL)
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        return None, f"таблица паритета не прочитана: {path}: {e}"
+    try:
+        a = text.index("// BEGIN-JSON\n") + len("// BEGIN-JSON\n")
+        b = text.index("// END-JSON", a)
+        rows = json.loads(text[a:b])
+    except ValueError as e:
+        return None, f"таблица паритета не разобрана: {path}: {e}"
+    if not isinstance(rows, list) or not rows:
+        return None, f"таблица паритета пуста: {path}"
+    return rows, None
+
+
+def merge_layer(base, over):
+    """Слой поверх таблицы -- ДОСЛОВНО load_table (hooks/dispatch-gate.py):
+    таблица-значение сливается по ключам, запись слоя заменяет одноимённую
+    целиком; прочее заменяется."""
+    out = dict(base)
+    for k, v in over.items():
+        if k == "schema_version":
+            continue
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            merged = dict(out[k])
+            merged.update(v)
+            out[k] = merged
+        else:
+            out[k] = v
+    return out
+
+
+PROJECT_OVERRIDE_REL = os.path.join(".claude", "catalyst", "routing-override.toml")
+PROJECT_PROBES_REL = os.path.join(".claude", "probes", "probes.toml")
+
+
+def find_upward(start, rel, exclude=()):
+    """Ближайший <dir>/rel вверх от start, кроме путей exclude, или None."""
+    if not start:
+        return None
+    ex = {os.path.abspath(x) for x in exclude if x}
+    d = os.path.abspath(start)
+    while True:
+        cand = os.path.join(d, rel)
+        if os.path.abspath(cand) not in ex and os.path.isfile(cand):
+            return cand
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def merge_failover(canon, project):
+    """Проектный [failover] поверх канона -- семантика failoverOf мода:
+    enabled/terminal проекта перекрывают, default/class/agent сливаются по
+    ключам с заменой записи целиком."""
+    g = canon if isinstance(canon, dict) else {}
+    p = project if isinstance(project, dict) else {}
+    out = dict(g)
+    for k in ("enabled", "terminal"):
+        if k in p:
+            out[k] = p[k]
+    for k in ("default", "class", "agent"):
+        gv, pv = g.get(k), p.get(k)
+        if isinstance(pv, dict):
+            merged = dict(gv) if isinstance(gv, dict) else {}
+            merged.update(pv)
+            out[k] = merged
+        elif k in p:
+            out[k] = pv
+    return out
 
 # CONSTRAINT: известные ключи -- поля parseRungItem (register.ts:464-484).
 # Любой другой ключ мод молча игнорирует, поэтому опечатка обязана быть
@@ -331,12 +374,13 @@ def rung_violation(cell, rung, allowed, pins=None, index=0):
         return (f"НАРУШЕНИЕ семейство-не-определено: клетка {cell}, ступень {name} — "
                 "семейство не определено: имя не опознано ни одним объявленным "
                 "семейством прибора")
-    # CONSTRAINT: обе стороны сравнения -- предикат гварда (strip().lower()),
-    # не точное сравнение: "Glm-5.3" против allowed ["glm-5.3"] гвард пускает.
-    if low not in {str(a).strip().lower() for a in allowed}:
+    # CONSTRAINT (#509-FIX1 A2/E1): обе стороны сравнения -- norm_model_id,
+    # та же функция, что у мода: "Glm-5.3" против allowed ["glm-5.3"] мод
+    # пускает, и прибор обязан пускать.
+    if norm_model_id(name) not in {norm_model_id(a) for a in allowed}:
         return (f"НАРУШЕНИЕ правило-1-допуск: клетка {cell}, ступень {name} — "
                 f"вне допуска клетки: нет в [classes.{cell}].allowed "
-                "(hooks/routing-table.toml)")
+                "(слитый допуск: база + машинный + проектный)")
     if unknown:
         return (f"НАРУШЕНИЕ ключ-ступени-неизвестен: клетка {cell}, ключ {unknown[0]}")
     effort = parsed.get("effort")
@@ -360,8 +404,80 @@ def rung_violation(cell, rung, allowed, pins=None, index=0):
     return None
 
 
+# CONSTRAINT: Anthropic-носитель в ЛЕСТНИЦЕ запрещён правилом-2, а здесь ОБЯЗАТЕЛЕН: терминал -- единственное законное место (слово юзера 2026-09-25: «если в клетке у всех все закончилось переходил на дефолтовый (у нас сейчас это будет opus 5.5)»); журнал мода метит такой переход cell-exhausted.
+# CONSTRAINT: запрет не-Anthropic идёт ПЕРЕД неизвестным ключом -- тот же порядок, что у rung_violation: опечатка в ключе не скрывает неверный носитель.
+# CONSTRAINT (#509-FIX1 B2/E3): вердикт на входах таблицы паритета ОБЯЗАН совпадать с модом (failoverTerminal + отказ негодного эффорта); признак носителя -- id "claude-…" после norm_model_id, как isAnthropicModelId мода.
+def terminal_violation(failover, pins, efforts=None):
+    """(строка-нарушение или None, имя терминала или None) для [failover].terminal.
+
+    efforts -- словарь эффорта мода (load_mod_efforts); None -- словарь не
+    загружен, и эффорт без записи в [pins] неизмерим (причина называется).
+    """
+    if "terminal" not in failover:
+        return ("НАРУШЕНИЕ правило-6-терминал: ключ [failover].terminal не "
+                "объявлен — клетка, исчерпавшая лестницу, останется без "
+                "дефолта"), None
+    raw = failover["terminal"]
+    if isinstance(raw, str) and not raw.strip():
+        return "НАРУШЕНИЕ правило-6-терминал: ключ [failover].terminal пуст", None
+    if isinstance(raw, list):
+        return ("НАРУШЕНИЕ правило-6-терминал: [failover].terminal — список; "
+                "допустима ровно одна модель (строка или таблица с model)"), None
+    if not isinstance(raw, (str, dict)):
+        return ("НАРУШЕНИЕ правило-6-терминал: форма [failover].terminal "
+                f"негодна ({type(raw).__name__})"), None
+    parsed, unknown = parse_rung_item(raw)
+    if parsed is None or not norm_model_id(parsed["model"]):
+        return ("НАРУШЕНИЕ правило-6-терминал: таблица [failover].terminal "
+                "без model"), None
+    name = norm_model_id(parsed["model"])
+    if name in TERMINAL_ALIASES:
+        return ("НАРУШЕНИЕ правило-6-терминал: терминал "
+                f"{name} — алиас отвергнут (версионно-зависим); нужен полный "
+                "id claude-…"), None
+    if not name.startswith("claude-"):
+        return ("НАРУШЕНИЕ правило-6-терминал: терминал "
+                f"{name} — не Anthropic-носитель; дефолт исчерпанной клетки — "
+                "claude-opus-5-5 (слово юзера 2026-09-25)"), None
+    if unknown:
+        return ("НАРУШЕНИЕ ключ-терминала-неизвестен: [failover].terminal, "
+                f"ключ {unknown[0]}"), None
+    effort = parsed.get("effort")
+    # CONSTRAINT (#509-FIX1 B1/B2): терминал claude-… освобождён от [pins];
+    # его эффорт судит только словарь мода -- та же граница, что effortBad
+    # мода, иначе вердикты мода и прибора на одном входе разошлись бы.
+    if effort:
+        if efforts is None:
+            return ("НАРУШЕНИЕ правило-6-терминал: эффорт терминала "
+                    f"{name} {effort} неизмерим — словарь эффорта мода не "
+                    "загружен"), None
+        elif effort not in efforts:
+            shown = ", ".join(efforts)
+            return ("НАРУШЕНИЕ правило-6-терминал: эффорт терминала "
+                    f"{name} {effort} негоден — словарь мода [{shown}]"), None
+    return None, name
+
+
+# CONSTRAINT (#509-FIX4 (б), #509-FIX5 Р6): канон пишет терминал в канонической
+# форме -- без пробельных символов где угодно и без верхнего регистра (суффикс
+# "[1m]" в нижнем регистре каноничен). Правило только прибора и вне
+# terminal_violation: мод такую строку принимает и шлёт как написана
+# (register.ts failoverTerminal), а вердикт terminal_violation на таблице
+# паритета обязан совпадать с модом.
+def terminal_form_violation(failover):
+    raw = failover.get("terminal")
+    model = raw.get("model") if isinstance(raw, dict) else raw
+    if not isinstance(model, str):
+        return None
+    if re.search(r"\s", model) or model != model.lower():
+        return ("НАРУШЕНИЕ правило-6-канон: [failover].terminal = "
+                f"{model!r} — неканоничная форма (пробельные символы или "
+                "верхний регистр); канон пишет id без пробелов в нижнем регистре")
+    return None
+
+
 def verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked,
-                 fan_checked=None):
+                 terminal=None, layers="база"):
     """Итоговая строка зелёного исхода. Один дом текста вердикта.
 
     CONSTRAINT: при НУЛЕ ступеней с объявленным эффортом правило-3 назвать
@@ -369,38 +485,67 @@ def verdict_line(registry_path, ladders, rungs, effort_rungs, classes_checked,
     закон, по которому реестр без [failover.*] даёт НЕ ИЗМЕРЕНО, а не
     зелёное). Знаменатели каждого правила печатаются числом рядом, иначе
     читатель принимает молчание прибора за проверенность.
-    CONSTRAINT: правило-5 печатается только когда прибор его МЕРЯЛ
-    (fan_checked is not None): без исходника мода предмет правила отсутствует,
-    и молчание здесь -- не проверенность, а неизмеренность (вызывающий
-    обязан был отказаться раньше).
+    CONSTRAINT: правило-6 печатается только когда прибор разобрал терминал (terminal is not None); реестр без [failover] терминала не несёт, и молчание здесь -- неизмеренность, не проверенность.
+    CONSTRAINT (#509-FIX1 K): вердикт называет СЛИТЫЙ допуск и его слои --
+    правило-1 сверялось с ним, а не с базой.
     """
     head = (f"лестниц {ladders} (ступеней {rungs}, с эффортом {effort_rungs}), "
             f"файл {registry_path}: ")
+    adm = f"слитый допуск: {layers}"
     rule4 = f"правило-4-запас — на всех {classes_checked} классах таблицы"
-    if fan_checked is not None:
-        rule4 += f"; правило-5-веер — на всех {fan_checked} клетках без лестницы"
+    if terminal is not None:
+        rule4 += f"; правило-6-терминал — {terminal}"
     if effort_rungs == 0:
-        return (head + f"правило-1-допуск и правило-2-антропик соблюдены на "
-                f"всех {rungs} ступенях; правило-3-эффорт НЕ ИЗМЕРЕНО — "
-                f"ступеней с объявленным эффортом 0; {rule4}")
-    return (head + f"правило-1-допуск и правило-2-антропик соблюдены на всех "
-            f"{rungs} ступенях, правило-3-эффорт — на всех {effort_rungs} "
-            f"с объявленным эффортом, {rule4}")
+        return (head + f"правило-1-допуск ({adm}) и "
+                f"правило-2-антропик соблюдены на всех {rungs} ступенях; "
+                f"правило-3-эффорт НЕ ИЗМЕРЕНО — ступеней с объявленным "
+                f"эффортом 0; {rule4}")
+    return (head + f"правило-1-допуск ({adm}) и "
+            f"правило-2-антропик соблюдены на всех {rungs} ступенях, "
+            f"правило-3-эффорт — на всех {effort_rungs} с объявленным "
+            f"эффортом, {rule4}")
 
 
-def check_ladders(registry_path, table_path, mod_source_path=None,
-                  override_paths=None, home=None, env=None):
+def load_layers(table_path, machine_path=None, project_override=None):
+    """(таблица, слои, None) или (None, None, причина): база + слои допуска.
+
+    CONSTRAINT: машинный слой читается ТОЛЬКО на чтение; отсутствующий слой
+    пропускается, нечитаемый -- отказ прибора (тот же громкий отказ, что у
+    гварда: тихий откат к базе и есть дефект #274).
+    """
+    tab, err = load_toml(table_path)
+    if err is not None:
+        return None, None, f"таблица маршрутизации: {err}"
+    names = ["база"]
+    seen = set()
+    for label, path in (("машинный", machine_path), ("проектный", project_override)):
+        if not path or not os.path.isfile(path):
+            continue
+        if os.path.abspath(path) in seen:
+            continue
+        seen.add(os.path.abspath(path))
+        over, err = load_toml(path)
+        if err is not None:
+            return None, None, f"слой допуска {label}: {err}"
+        tab = merge_layer(tab, over)
+        names.append(label)
+    return tab, "+".join(names), None
+
+
+def check_ladders(registry_path, table_path, machine_path=None,
+                  project_override=None, project_registry=None, efforts=None):
     """(reason, violations, ladders, rungs, effort_rungs, classes_checked,
-    fan_checked).
+    terminal).
 
     reason None -- предмет измерим: violations -- список строк-нарушений
     (пустой = правила соблюдены), ladders -- число разобранных таблиц
     [failover.class.*], rungs -- число ступеней в них, effort_rungs --
     сколько из них с объявленным effort, classes_checked -- сколько
-    классов таблицы просмотрело правило-4-запас, fan_checked -- сколько
-    клеток без явной лестницы просмотрело правило-5-веер (None -- правило
-    не мерялось: исходник мода не подан). reason не None -- прибор не в
-    состоянии мерить (код 2).
+    классов базовой таблицы просмотрело правило-4-запас, terminal -- имя
+    терминальной модели, если правило-6 его разобрало, иначе None. reason
+    не None -- прибор не в состоянии мерить (код 2). Слои допуска
+    (machine_path, project_override) и проектный реестр (project_registry)
+    сливаются поверх базы и канона до правил (#509-FIX1 A4, F).
     """
     _ua = (None, None, None, None, None, None)
 
@@ -410,11 +555,27 @@ def check_ladders(registry_path, table_path, mod_source_path=None,
     reg, err = load_toml(registry_path)
     if err is not None:
         return unavail(f"реестр: {err}")
-    tab, err = load_toml(table_path)
+    base_tab, err = load_toml(table_path)
     if err is not None:
         return unavail(f"таблица маршрутизации: {err}")
+    tab, _layers, err = load_layers(table_path, machine_path, project_override)
+    if err is not None:
+        return unavail(err)
 
     failover = reg.get("failover")
+    if project_registry and os.path.isfile(project_registry):
+        preg, err = load_toml(project_registry)
+        if err is not None:
+            return unavail(f"проектный реестр: {err}")
+        pf = preg.get("failover")
+        if pf is not None:
+            if not isinstance(pf, dict):
+                return unavail(f"проектный реестр {project_registry}: секция "
+                               "[failover] не таблица -- форма лестниц не разобрана")
+            if failover is not None and not isinstance(failover, dict):
+                return unavail(f"реестр {registry_path}: секция [failover] не "
+                               "таблица -- форма лестниц не разобрана")
+            failover = merge_failover(failover, pf)
     if failover is None:
         classes_map = {}
     elif not isinstance(failover, dict):
@@ -474,8 +635,12 @@ def check_ladders(registry_path, table_path, mod_source_path=None,
             if v is not None:
                 violations.append(v)
 
+    base_grid = base_tab.get("classes", {})
+    if not isinstance(base_grid, dict):
+        return unavail(f"таблица {table_path}: секция [classes] не таблица -- "
+                       "допуск клеток не разобран")
     classes_checked = 0
-    for cell, entry in grid.items():
+    for cell, entry in base_grid.items():
         classes_checked += 1
         if not isinstance(entry, dict):
             return unavail(
@@ -496,59 +661,143 @@ def check_ladders(registry_path, table_path, mod_source_path=None,
                 f"запасного пути нет ни из одного источника"
             )
 
-    # правило-5-веер: клетки БЕЗ явной лестницы (источник веера мода).
-    fan_checked = None
-    if mod_source_path is not None:
-        mod_layers, err = mod_reads_layers(mod_source_path)
-        if err is not None:
-            return unavail(err)
-        if override_paths is None:
-            override_paths = resolve_override_layers(
-                table_path, env=env, home=home)
-        layered, err = merge_admission(grid, override_paths)
-        if err is not None:
-            return unavail(err)
-        fan_checked = 0
-        for cell, entry in grid.items():
-            if cell in classes_map:
-                continue
-            allowed = entry.get("allowed") or []
-            if not allowed:
-                continue
-            fan_checked += 1
-            # CONSTRAINT: источник веера -- тот же, у которого его берёт мод:
-            # мод со слоями строит веер из слоёного допуска, мод без слоёв --
-            # из базы. Сравнение с допуском ГВАРДА (всегда слоёным) ловит
-            # расхождение ровно в состоянии мода, не в данных.
-            fan = (layered.get(cell, set()) if mod_layers
-                   else {str(a).strip().lower() for a in allowed})
-            admit = layered.get(cell, set())
-            extra = sorted(fan - admit)
-            if extra:
-                violations.append(
-                    f"НАРУШЕНИЕ правило-5-веер: клетка {cell} — allowed-ветка "
-                    f"шире оверрайд-допуска клетки: {', '.join(extra)} "
-                    f"(мод {'со слоями' if mod_layers else 'без слоёв'} строит "
-                    "веер, который гвард по слоям допуска не пропустит)"
-                )
-            anthropic = sorted(a for a in fan if _is_anthropic_name(a))
-            if anthropic:
-                violations.append(
-                    f"НАРУШЕНИЕ правило-5-антропик: клетка {cell} — "
-                    f"Anthropic-носители {', '.join(anthropic)} в allowed-ветке "
-                    "без явной лестницы: автоматический переход обошёл бы "
-                    "маркер [anthropic-exception:…] молча"
-                )
+    terminal = None
+    if isinstance(failover, dict):
+        v, terminal = terminal_violation(failover, pins, efforts)
+        if v is None and terminal is not None:
+            v = terminal_form_violation(failover)
+            if v is not None:
+                terminal = None
+        if v is not None:
+            violations.append(v)
     return (None, violations, ladders, rungs, effort_rungs, classes_checked,
-            fan_checked)
+            terminal)
+
+
+class ToothBook:
+    """Книга зубов самопроверки: вызовы предмета под обёрткой и их зубы.
+
+    CONSTRAINT (#509-FIX2c): вызов предмета в самопроверке не роняет её
+    целиком -- бросок запоминается, вызывающему уходит безвредная заглушка
+    формы результата, и итог считает все зубы.
+    """
+
+    def __init__(self):
+        self.teeth = []
+        self.calls = []
+
+    def guarded(self, fn, dummy):
+        name = getattr(fn, "__name__", "?")
+
+        def call(*a, **k):
+            try:
+                r = fn(*a, **k)
+            except Exception as x:
+                self.calls.append((name, x))
+                return dummy
+            self.calls.append((name, None))
+            return r
+        return call
+
+    def tooth(self, name, ok, detail="", calls=1):
+        # CONSTRAINT (#509-FIX3 L6): зуб объявляет число СВОИХ вызовов предмета;
+        # лишний или недостающий вызов -- красный зуб, а не бросок чужого
+        # вызова, приписанный соседу.
+        got, self.calls = self.calls, []
+        thrown = [x for _, x in got if x is not None]
+        if thrown:
+            self.teeth.append((name, False, "; ".join(
+                f"бросок {type(x).__name__}: {x}" for x in thrown)))
+            return
+        if len(got) != calls:
+            self.teeth.append((name, False, f"привязка: вызовов предмета {len(got)} "
+                               f"({', '.join(n for n, _ in got)}), зуб объявил {calls}"))
+            return
+        self.teeth.append((name, bool(ok), detail))
+
+    def close(self):
+        # CONSTRAINT (#509-FIX3 L6): вызов после последнего зуба входит в итог
+        # красным -- иначе его бросок терялся бы вне счёта.
+        if self.calls:
+            got, self.calls = self.calls, []
+            thrown = [x for _, x in got if x is not None]
+            detail = "; ".join(f"бросок {type(x).__name__}: {x}" for x in thrown) or \
+                "без броска"
+            self.teeth.append(("вызовы предмета после последнего зуба", False,
+                               f"вызовов {len(got)} ({', '.join(n for n, _ in got)}): {detail}"))
+        return self.teeth
 
 
 def self_check():
     """Зубы прибора на синтетических входах, офлайн. 0 -- все зелёны."""
-    teeth = []
+    book = ToothBook()
+    teeth = book.teeth
+    tooth = book.tooth
+    guarded = book.guarded
 
-    def tooth(name, ok, detail=""):
-        teeth.append((name, bool(ok), detail))
+    resolve_registry_s = guarded(resolve_registry, (None, [], None))
+    verdict_line_s = guarded(verdict_line, "")
+    terminal_violation_s = guarded(terminal_violation, (None, None))
+    load_parity_table_s = guarded(load_parity_table, (None, None))
+    load_mod_efforts_s = guarded(load_mod_efforts, (None, None))
+
+    def guard_probe():
+        raise ValueError("зонд самопроверки")
+
+    def bind_probe():
+        return 1
+
+    guard_detail = ""
+    guard_ok = False
+    try:
+        probe_book = ToothBook()
+        probe_book.guarded(guard_probe, None)()
+        probe_book.tooth("зонд-приёмник", True)
+        got = probe_book.teeth[-1]
+        guard_ok = (got[1] is False and "ValueError" in got[2]
+                    and "зонд самопроверки" in got[2] and not probe_book.calls)
+        guard_detail = f"приёмник={got!r}"
+    except Exception as x:
+        guard_detail = f"обёртка пропустила бросок {type(x).__name__}: {x}"
+    tooth("обёртка самопроверки: бросок предмета -- красный зуб с именем ошибки, прогон продолжается",
+          guard_ok, guard_detail, calls=0)
+
+    # L6 (#509-FIX3): вызов предмета привязан к СВОЕМУ зубу -- зуб объявляет
+    # число своих вызовов, лишний или недостающий вызов красит его.
+    bind_detail = ""
+    bind_ok = False
+    try:
+        b = ToothBook()
+        f = b.guarded(bind_probe, None)
+        f()
+        b.tooth("один вызов -- один зуб", True, calls=1)
+        f()
+        f()
+        b.tooth("два вызова при объявленном одном", True, calls=1)
+        b.tooth("ноль вызовов при объявленном одном", True, calls=1)
+        got = b.close()
+        bind_ok = (len(got) == 3 and got[0][1] is True
+                   and got[1][1] is False and "привязка" in got[1][2]
+                   and got[2][1] is False and "привязка" in got[2][2])
+        bind_detail = f"книга={got!r}"
+    except Exception as x:
+        bind_detail = f"бросок {type(x).__name__}: {x}"
+    tooth("L6: вызов предмета привязан к своему зубу -- лишний и недостающий вызов красят зуб",
+          bind_ok, bind_detail, calls=0)
+    tail_detail = ""
+    tail_ok = False
+    try:
+        b = ToothBook()
+        b.tooth("последний зуб", True, calls=0)
+        b.guarded(guard_probe, None)()
+        got = b.close()
+        tail_ok = (len(got) == 2 and got[1][1] is False
+                   and "ValueError" in got[1][2] and "зонд самопроверки" in got[1][2])
+        tail_detail = f"книга={got!r}"
+    except Exception as x:
+        tail_detail = f"бросок {type(x).__name__}: {x}"
+    tooth("L6: бросок после последнего зуба входит в итог красным",
+          tail_ok, tail_detail, calls=0)
 
     with tempfile.TemporaryDirectory(prefix="ladder-policy-selfcheck-") as work:
         def reg(text):
@@ -558,16 +807,16 @@ def self_check():
             return p
 
         table_valid = os.path.join(work, "table.toml")
-        # CONSTRAINT: allowed клетки БЕЗ Anthropic-имён: правило-5-антропик
-        # краснеет на allowed-ветке бесклеточника, и стол #231 с opus в
-        # allowed делал бы ветви 7-8 (НЕ ИЗМЕРЕНО / зелёный итог) красными
-        # без отношения к их предмету.
         with open(table_valid, "w", encoding="utf-8") as f:
             f.write('[classes.exec-0n]\nlabel = "t"\n'
-                    'allowed = ["glm-5.3", "grok-4.6", "madeup-9"]\n'
+                    'allowed = ["glm-5.3", "grok-4.6"]\n'
                     '[pins]\n'
                     '"glm-5.3" = ["max"]\n'
                     '"grok-4.6" = ["medium", "max"]\n')
+        mod_efforts, _mod_eff_err = load_mod_efforts_s()
+        tooth("словарь эффортов мода загружен для зубов лестниц",
+              mod_efforts is not None and _mod_eff_err is None,
+              f"err={_mod_eff_err}")
 
         def table_with(text):
             p = os.path.join(work, f"tab-{len(teeth)}-{abs(hash(text)) % 9999}.toml")
@@ -575,10 +824,23 @@ def self_check():
                 f.write(text)
             return p
 
-        def check(registry_text=None, registry_path=None, table_path=None):
+        def check_raw(registry_text=None, registry_path=None, table_path=None,
+                      terminal=True, machine_path=None, efforts="mod"):
+            if (terminal and registry_text is not None
+                    and "[failover" in registry_text):
+                if "[failover]\n" in registry_text:
+                    registry_text = registry_text.replace(
+                        "[failover]\n",
+                        '[failover]\nterminal = "claude-opus-5-5"\n', 1)
+                else:
+                    registry_text = ('[failover]\nterminal = "claude-opus-5-5"\n'
+                                     + registry_text)
             r = registry_path or reg(registry_text)
             t = table_path or table_valid
-            return check_ladders(r, t)
+            return check_ladders(r, t, machine_path=machine_path,
+                                 efforts=mod_efforts if efforts == "mod" else efforts)
+
+        check = guarded(check_raw, (None, [], 0, 0, 0, 0, None))
 
         # зуб 0 (положительный контроль): валидная лестница -- 0 нарушений
         reason, vs, l, r, *_ = check(
@@ -632,12 +894,12 @@ def self_check():
         fake_root = os.path.join(work, "no-such-root", "deep")
         fake_home = os.path.join(work, "no-such-home")
         fake_explicit = os.path.join(work, "no-such-explicit.toml")
-        p, att, err = resolve_registry(fake_root, env={ENV_REGISTRY_VAR: fake_explicit},
+        p, att, err = resolve_registry_s(fake_root, env={ENV_REGISTRY_VAR: fake_explicit},
                                        home=fake_home)
         tooth("env указывает мимо -> громкий отказ с путём",
               p is None and err is not None and fake_explicit in err,
               f"path={p} err={err}")
-        p, att, err = resolve_registry(fake_root, env={}, home=fake_home)
+        p, att, err = resolve_registry_s(fake_root, env={}, home=fake_home)
         tooth("все кандидаты мимо -> None + перечень искомого",
               p is None and err is None and len(att) == 2
               and all("no-such" in path for _, path in att),
@@ -652,9 +914,9 @@ def self_check():
         # — нумерация брифа, не индекс печати (существующие 8 зубов впереди).
         reason, vs, l, r, *_ = check(
             '[failover.class.exec-0n]\n'
-            'models = [{model = "glm-5.3", effort = "max"}]\n')
+            'models = [{model = "glm-5.3", effort = "max"}, "grok-4.6"]\n')
         tooth("богатая форма: допуск + эффорт в pins -> нет нарушений",
-              reason is None and not vs and l == 1 and r == 1,
+              reason is None and not vs and l == 1 and r == 2,
               f"reason={reason} violations={vs} ladders={l} rungs={r}")
 
         reason, vs, *_ = check(
@@ -692,9 +954,9 @@ def self_check():
 
         reason, vs, l, r, *_ = check(
             '[failover.class.exec-0n]\n'
-            'models = [{model = "glm-5.3"}]\n')
+            'models = [{model = "glm-5.3"}, "grok-4.6"]\n')
         tooth("богатая форма без effort -> правило 3 молчит",
-              reason is None and not vs and l == 1 and r == 1
+              reason is None and not vs and l == 1 and r == 2
               and not any("правило-3-эффорт" in x for x in (vs or []))
               and not any("пин-эффорта-не-объявлен" in x for x in (vs or [])),
               f"reason={reason} violations={vs} ladders={l} rungs={r}")
@@ -732,7 +994,7 @@ def self_check():
                   and not any("семейство не определено" in x for x in vs)
                   for reason, vs in cases7
               ),
-              f"cases={cases7}")
+              f"cases={cases7}", calls=3)
 
         reason, vs, *_ = check(
             '[failover.class.exec-0n]\n'
@@ -788,14 +1050,14 @@ def self_check():
 
         # зубы 20-21 (адъюдикация контроллера #230): вердикт не смеет
         # объявлять правило-3 соблюдённым при пустом знаменателе.
-        vl0 = verdict_line("/р.toml", 20, 77, 0, 4)
+        vl0 = verdict_line_s("/р.toml", 20, 77, 0, 4)
         tooth("вердикт при нуле ступеней с эффортом -> правило-3 НЕ ИЗМЕРЕНО",
               "правило-3-эффорт НЕ ИЗМЕРЕНО" in vl0
               and "правило-3-эффорт — на всех" not in vl0
               and "77" in vl0
               and "правило-4-запас — на всех 4 классах таблицы" in vl0,
               f"строка={vl0!r}")
-        vl1 = verdict_line("/р.toml", 20, 77, 5, 4)
+        vl1 = verdict_line_s("/р.toml", 20, 77, 5, 4)
         tooth("вердикт при ненуле -> правило-3 названо со своим знаменателем",
               "правило-3-эффорт — на всех 5" in vl1
               and "НЕ ИЗМЕРЕНО" not in vl1
@@ -852,71 +1114,179 @@ def self_check():
         main_home = os.path.join(work, "main-home")
         main_table = os.path.join(main_root, "hooks", "routing-table.toml")
 
-        # --- правило-5-веер: выделенные зубы (волна ремонта 2026-09-19) --------
-        # CONSTRAINT: #231-ветви пинят ПРОВОДКУ main() (резолв слоёв и исходника
-        # мода); эти зубы пинят само правило-5 на прямом входе check_ladders --
-        # мутация правила краснит их, не трогая ветви #231.
-        def modsrc(with_layers: bool) -> str:
-            p = os.path.join(work, f"mod-{'layers' if with_layers else 'base'}.ts")
-            with open(p, "w", encoding="utf-8") as f:
-                f.write("// синтетический исходник мода для правила-5\n"
-                        + ('const layer = "routing-override"\n' if with_layers
-                           else "const layer = base_only\n"))
-            return p
+        # --- правило-6-терминал: прямые зубы (#509) ---------------------------
+        t6 = '[failover.class.exec-0n]\nmodels = ["glm-5.3", "grok-4.6"]\n'
+        with open(table_valid, encoding="utf-8") as src:
+            table_valid_text = src.read()
+        t6_pins_x = table_with(table_valid_text + '"claude-opus-5-5" = ["xhigh"]\n')
+        t6_pins_h = table_with(table_valid_text + '"claude-opus-5-5" = ["high"]\n')
 
-        t5_reg = reg('[probe.x]\ny = 1\n')
-        t5_base = table_with('[classes.nolad5]\nlabel = "n"\n'
-                             'allowed = ["glm-5.3", "gpt-6-astra"]\n')
-        t5_over = table_with('[classes.nolad5]\nallowed = ["glm-5.3"]\n')
-        reason, vs, l, r, er, cc, fan = check_ladders(
-            t5_reg, t5_base,
-            mod_source_path=modsrc(False), override_paths=[t5_over])
-        v5a = " ".join(vs or [])
-        tooth("правило-5: мод без слоёв -- лишняя модель названа, клетка названа",
+        def tooth6(name, head, needles, absent=(), table_path=None):
+            reason, vs, _l, _r, _er, _cc, term = check(
+                "[failover]\n" + head + t6, table_path=table_path,
+                terminal=False)
+            joined = " ".join(vs or [])
+            tooth(name,
+                  reason is None and vs is not None and len(vs) == 1
+                  and all(n in joined for n in needles)
+                  and not any(a in joined for a in absent)
+                  and term is None,
+                  f"reason={reason} violations={vs} terminal={term!r}")
+
+        tooth6("правило-6: ключ не объявлен -- красен", "enabled = true\n",
+               ("правило-6-терминал", "не объявлен"))
+        tooth6("правило-6: пустая строка и пробелы -- красен",
+               'terminal = "  "\n', ("пуст",))
+        tooth6("правило-6: список -- красен",
+               'terminal = ["claude-opus-5-5"]\n', ("список",))
+        tooth6("правило-6: число -- форма негодна", "terminal = 42\n",
+               ("негодна (int)",))
+        tooth6("правило-6: таблица без model -- красен",
+               'terminal = {effort = "high"}\n', ("без model",))
+        tooth6("правило-6: вендорский носитель -- красен",
+               'terminal = "glm-5.3"\n', ("glm-5.3", "не Anthropic"))
+        tooth6("правило-6: носитель перед опечаткой ключа",
+               'terminal = {model = "glm-5.3", efort = "high"}\n',
+               ("не Anthropic",), absent=("ключ-терминала-неизвестен",))
+        tooth6("правило-6: опечатка ключа -- красен",
+               'terminal = {model = "claude-opus-5-5", efort = "high"}\n',
+               ("ключ-терминала-неизвестен", "efort"))
+        # B2: эффорт claude-терминала судит словарь мода, не [pins].
+        tooth6("B2: негодный эффорт терминала -- красен",
+               'terminal = {model = "claude-opus-5-5", effort = "bogus"}\n',
+               ("правило-6-терминал", "bogus", "негоден"))
+        tooth6("B2: регистр эффорта не нормализуется -- красен (паритет мода)",
+               'terminal = {model = "claude-opus-5-5", effort = "High"}\n',
+               ("правило-6-терминал", "High", "негоден"))
+        reason, vs, _l, _r, _er, _cc, term = check(
+            '[failover]\nterminal = {model = "claude-opus-5-5", effort = "high"}\n'
+            + t6, terminal=False, efforts=None)
+        tooth("B2: словарь мода не загружен -- эффорт неизмерим, красен",
+              reason is None and vs is not None and len(vs) == 1
+              and "неизмерим" in vs[0] and term is None,
+              f"reason={reason} violations={vs} terminal={term!r}")
+
+        reason, vs, _l, _r, _er, _cc, term = check(
+            '[failover]\nterminal = {model = "claude-opus-5-5", effort = "xhigh"}\n'
+            + t6, terminal=False)
+        tooth("B2: годный эффорт без записи в [pins] -- зелёно",
+              reason is None and not vs and term == "claude-opus-5-5",
+              f"reason={reason} violations={vs} terminal={term!r}")
+        reason, vs, _l, _r, _er, _cc, term = check(
+            '[failover]\nterminal = {model = "claude-opus-5-5", effort = "high"}\n'
+            + t6, table_path=t6_pins_x, terminal=False)
+        tooth("B1: запись [pins] терминал не сужает -- зелёно",
+              reason is None and not vs and term == "claude-opus-5-5",
+              f"reason={reason} violations={vs} terminal={term!r}")
+        reason, vs, _l, _r, _er, _cc, term = check(
+            '[failover]\nterminal = {model = "claude-opus-5-5", effort = "high"}\n'
+            + t6, table_path=t6_pins_h, terminal=False)
+        tooth("правило-6: таблица с эффортом в pins -- зелёно",
+              reason is None and not vs and term == "claude-opus-5-5",
+              f"reason={reason} violations={vs} terminal={term!r}")
+
+        # E1: одна нормализация (trim, lower, снятие [1m]); имя -- нормализованное.
+        # Предмет -- terminal_violation (паритет мода); неканоничную форму в
+        # каноне красит правило-6-канон (зубы FIX4-(б) ниже).
+        v_e1, term = terminal_violation_s({"terminal": " Claude-Opus-5-5[1M] "}, {}, mod_efforts)
+        tooth("E1: строка-носитель нормализуется, имя в кортеже нормализовано",
+              v_e1 is None and term == "claude-opus-5-5",
+              f"violation={v_e1!r} terminal={term!r}")
+        # FIX4-(б): форма канона -- без пробелов по краям, нижний регистр.
+        tooth6("FIX4-(б): терминал с пробелами по краям -- красен, ключ и значение названы",
+               'terminal = " claude-opus-5-5 "\n',
+               ("правило-6-канон", "[failover].terminal", "' claude-opus-5-5 '"),
+               absent=("правило-6-терминал",))
+        reason, vs, _l, _r, _er, _cc, term = check(
+            '[failover]\nterminal = "claude-opus-5-5[1m]"\n' + t6, terminal=False)
+        tooth("FIX4-(б): суффикс [1m] в нижнем регистре каноничен -- зелёно",
+              reason is None and not vs and term == "claude-opus-5-5",
+              f"reason={reason} violations={vs} terminal={term!r}")
+        reason, vs, *_ = check(
+            '[failover.class.exec-0n]\nmodels = [" GLM-5.3 ", "grok-4.6[1m]"]\n')
+        tooth("E1: ступени сверяются с допуском через ту же нормализацию",
+              reason is None and not vs,
+              f"reason={reason} violations={vs}")
+        # E2: алиасы отвергаются, в т.ч. после нормализации.
+        for alias in ("opus", " Sonnet ", "fable", "HAIKU"):
+            tooth6(f"E2: алиас терминала {alias.strip()} -- красен",
+                   f'terminal = "{alias}"\n',
+                   ("правило-6-терминал", "алиас"))
+        # E3: таблица паритета мода -- тот же вердикт у прибора.
+        parity, parity_err = load_parity_table_s()
+        mism = []
+        for row in parity or []:
+            fo = {} if row.get("absent") else {"terminal": row.get("raw")}
+            v_p, _n = terminal_violation_s(fo, {}, mod_efforts)
+            got = "red" if v_p is not None else "green"
+            if got != row.get("verdict"):
+                mism.append((row.get("raw"), got, row.get("verdict"), v_p))
+        tooth("E3: таблица паритета терминала -- вердикты прибора и мода совпадают",
+              parity_err is None and parity and len(parity) >= 10 and not mism,
+              f"err={parity_err} rows={len(parity or [])} расхождения={mism}",
+              calls=1 + len(parity or []))
+        tooth("E1: суффикс окна [2m] снимается той же нормализацией, что [1m]",
+              norm_model_id(" Claude-Opus-5-5[2M] ") == "claude-opus-5-5"
+              and norm_model_id("claude-opus-5-5[1m]") == "claude-opus-5-5"
+              and norm_model_id("m[3m]") == "m[3m]",
+              f"[2M]={norm_model_id(' Claude-Opus-5-5[2M] ')!r} [3m]={norm_model_id('m[3m]')!r}",
+              calls=0)
+
+        # A5: devin/swe-2 допущена в клетки сетки -- семейство прибору известно.
+        table_devin = table_with(
+            '[classes.crit-form]\nlabel = "c"\nallowed = ["grok-4.6", "devin/swe-2"]\n'
+            '[pins]\n"grok-4.6" = ["medium", "max"]\n"devin/swe-2" = ["high"]\n')
+        reason, vs, *_ = check(
+            '[failover.class.crit-form]\nmodels = [{model = "grok-4.6", effort = "medium"}, '
+            '{model = "devin/swe-2", effort = "high"}]\n', table_path=table_devin)
+        tooth("A5: ступень devin/swe-2 -- семейство опознано, зелёно",
+              reason is None and not vs,
+              f"reason={reason} violations={vs}")
+
+        # A4: правило-1 -- по СЛИТОМУ допуску (база + машинный слой).
+        machine_excl = table_with(
+            '[classes.exec-0n]\nlabel = "m"\nallowed = ["glm-5.3", "qwen3.8-flash"]\n')
+        reason, vs, *_ = check(
+            '[failover.class.exec-0n]\nmodels = ["glm-5.3", "grok-4.6"]\n',
+            machine_path=machine_excl)
+        va = " ".join(vs or [])
+        tooth("A4: машинный слой снимает ступень -- правило-1-допуск (слитый допуск)",
               reason is None and vs
-              and any("правило-5-веер" in x and "nolad5" in x and "gpt-6-astra" in x
-                      for x in vs)
-              and fan == 1,
-              f"reason={reason} violations={vs} fan={fan}")
+              and any("правило-1-допуск" in x and "grok-4.6" in x and "слитый допуск" in x
+                      for x in vs),
+              f"reason={reason} violations={vs}")
+        table_anth = table_with(
+            '[classes.exec-0n]\nlabel = "t"\n'
+            'allowed = ["glm-5.3", "grok-4.6", "opus", "claude-opus-5-5[1m]"]\n')
+        reason, vs, *_ = check(
+            '[failover.class.exec-0n]\nmodels = ["glm-5.3", "grok-4.6"]\n',
+            table_path=table_anth)
+        tooth("A4: Anthropic-носитель допуска полноту не требует",
+              reason is None and not vs,
+              f"reason={reason} violations={vs}")
+        machine_bad = table_with('[classes.exec-0n\n')
+        reason, vs, *_ = check(
+            '[failover.class.exec-0n]\nmodels = ["glm-5.3", "grok-4.6"]\n',
+            machine_path=machine_bad)
+        tooth("A4: нечитаемый машинный слой -- отказ прибора, не откат к базе",
+              reason is not None and "машинный" in reason and vs is None,
+              f"reason={reason} violations={vs}")
 
-        reason, vs, l, r, er, cc, fan = check_ladders(
-            t5_reg,
-            table_with('[classes.noanth5]\nlabel = "a"\nallowed = ["glm-5.3", "opus"]\n'),
-            mod_source_path=modsrc(True), override_paths=[])
-        tooth("правило-5: антропик в allowed-ветке бесклеточника красен и при слоях",
-              reason is None and vs
-              and any("правило-5-антропик" in x and "noanth5" in x and "opus" in x
-                      for x in vs)
-              and not any("правило-5-веер" in x for x in vs)
-              and fan == 1,
-              f"reason={reason} violations={vs} fan={fan}")
+        main_cwd = os.path.join(work, "main-cwd")
+        os.makedirs(main_cwd)
 
-        reason, vs, l, r, er, cc, fan = check_ladders(
-            t5_reg, t5_base,
-            mod_source_path=modsrc(True), override_paths=[t5_over])
-        tooth("правило-5: мод со слоями -- подмножество зелено, счётчик веера жив",
-              reason is None and not vs and fan == 1,
-              f"reason={reason} violations={vs} fan={fan}")
-
-        t5_broken = table_with('[classes.nolad5\nallowed = ["glm-5.3"]\n')
-        reason, vs, *_ = check_ladders(
-            t5_reg, t5_base,
-            mod_source_path=modsrc(True), override_paths=[t5_broken])
-        tooth("правило-5: битый слой допуска -- отказ прибора с путём, не пустой допуск",
-              reason is not None and t5_broken in reason and vs is None,
-              f"reason={reason}")
-
-
-        def capture_main(argv, env=None):
+        def capture_main_raw(argv, env=None, cwd=None):
             out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 rc = main(argv, root=main_root, env={} if env is None else env,
-                          home=main_home)
+                          home=main_home, cwd=main_cwd if cwd is None else cwd)
             return rc, out.getvalue(), err.getvalue()
 
-        def main_tooth(number, name, result, expected):
+        capture_main = guarded(capture_main_raw, (None, "", ""))
+
+        def main_tooth(number, name, result, expected, calls=1):
             tooth(f"#231 ветвь {number}: {name}", result == expected,
-                  f"получено={result!r}, ожидалось={expected!r}")
+                  f"получено={result!r}, ожидалось={expected!r}", calls=calls)
 
         main_tooth(1, "--registry без пути", capture_main(["--registry"]),
                    (2, "", "ПРИБОР НЕДОСТУПЕН: --registry без пути\n"))
@@ -925,28 +1295,16 @@ def self_check():
                     f"{main_table}\n"))
 
         os.makedirs(os.path.dirname(main_table))
-        mod_source = os.path.join(main_root, "plugins", "catalyst-probes",
-                                  "hooks", "register.ts")
-        os.makedirs(os.path.dirname(mod_source))
-        machine_override = os.path.join(main_home, ".claude", "catalyst",
-                                        "routing-override.toml")
-        os.makedirs(os.path.dirname(machine_override))
 
-        def write_main(table_text, mod_with_layers):
+        def write_main(table_text):
             with open(main_table, "w", encoding="utf-8") as f:
                 f.write(table_text)
-            # CONSTRAINT: содержимое -- только признак правила-5 (литерал
-            # routing-override); логику мода прибор не исполняет.
-            with open(mod_source, "w", encoding="utf-8") as f:
-                f.write("// синтетический стол правила-5\n" +
-                        ("const layer = \"routing-override\"\n"
-                         if mod_with_layers else "const layer = \"base-only\"\n"))
 
         def main_table_text(extra=""):
             with open(table_valid, encoding="utf-8") as src:
                 return src.read() + extra
 
-        write_main(main_table_text(), mod_with_layers=False)
+        write_main(main_table_text())
         main_tooth(3, "ошибка выбора реестра",
                    capture_main([], env={ENV_REGISTRY_VAR: fake_explicit}),
                    (2, "", f"ПРИБОР НЕДОСТУПЕН: env {ENV_REGISTRY_VAR} указывает "
@@ -964,59 +1322,110 @@ def self_check():
                    capture_main(["--registry", bad_shape]),
                    (2, "", f"ПРИБОР НЕДОСТУПЕН: реестр {bad_shape}: секция "
                     "[failover] не таблица -- форма лестниц не разобрана\n"))
-        # правило-5, красная сторона: мод БЕЗ слоёв строит веер из базы,
-        # оверрайд сужает допуск клетки без лестницы -- лишняя модель названа;
-        # бесклеточник с Anthropic в allowed красен антропик-половиной.
-        with open(machine_override, "w", encoding="utf-8") as f:
-            f.write('[classes.solo5]\nallowed = ["glm-5.3"]\n')
-        write_main(
-            main_table_text('[classes.solo5]\nlabel = "s"\n'
-                            'allowed = ["glm-5.3", "gpt-6-astra"]\n'
-                            '[classes.anth5]\nlabel = "a"\n'
-                            'allowed = ["glm-5.3", "opus"]\n'),
-            mod_with_layers=False)
+        # три правила на одном реестре: каждое нарушение своей строкой.
+        write_main(main_table_text())
         bad_rungs = reg('[failover.class.exec-0n]\n'
                         'models = ["glm-5.3-flash", "opus"]\n')
         expected_violations = (
             "НАРУШЕНИЕ правило-1-допуск: клетка exec-0n, ступень glm-5.3-flash — "
             "вне допуска клетки: нет в [classes.exec-0n].allowed "
-            "(hooks/routing-table.toml)\n"
+            "(слитый допуск: база + машинный + проектный)\n"
             "НАРУШЕНИЕ правило-2-антропик: клетка exec-0n, ступень opus — "
             "Anthropic-носитель в лестнице запрещён: автоматический переход "
             "на него обошёл бы маркер [anthropic-exception:…] молча\n"
-            "НАРУШЕНИЕ правило-5-веер: клетка solo5 — allowed-ветка "
-            "шире оверрайд-допуска клетки: gpt-6-astra "
-            "(мод без слоёв строит веер, который гвард по слоям допуска "
-            "не пропустит)\n"
-            "НАРУШЕНИЕ правило-5-антропик: клетка anth5 — "
-            "Anthropic-носители opus в allowed-ветке "
-            "без явной лестницы: автоматический переход обошёл бы "
-            "маркер [anthropic-exception:…] молча\n"
+            "НАРУШЕНИЕ правило-6-терминал: ключ [failover].terminal не "
+            "объявлен — клетка, исчерпавшая лестницу, останется без "
+            "дефолта\n"
         )
         main_tooth(6, "нарушения отдельными строками",
                    capture_main(["--registry", bad_rungs]),
                    (1, expected_violations, ""))
-        # правило-5 не перекрывает НЕ ИЗМЕРЕНО: бесклеточников нет -- violations
-        # пусты, ноль лестниц по-прежнему код 3.
-        write_main(main_table_text(), mod_with_layers=False)
+        # реестр без [failover]: правило-6 не идёт, ноль лестниц по-прежнему код 3.
+        write_main(main_table_text())
         empty = reg('[probe.x]\ny = 1\n')
         main_tooth(7, "пустой предмет не измерен",
                    capture_main(["--registry", empty]),
                    (3, f"НЕ ИЗМЕРЕНО: в реестре {empty} не разобрано ни одной "
                     "таблицы [failover.*] — пустой результат без предмета нулём "
                     "не считается\n", ""))
-        # правило-5, зелёная сторона: мод СО слоями строит веер из слоёного
-        # допуска -- подмножество выполняется, счётчик веера в вердикте.
-        write_main(
-            main_table_text('[classes.solo5]\nlabel = "s"\n'
-                            'allowed = ["glm-5.3", "gpt-6-astra"]\n'),
-            mod_with_layers=True)
-        valid = reg('[failover.class.exec-0n]\n'
-                    'models = [{model = "glm-5.3", effort = "max"}]\n')
+        # зелёный итог несёт имя терминала в вердикте.
+        write_main(main_table_text('[classes.solo5]\nlabel = "s"\nallowed = ["glm-5.3", "gpt-6-astra"]\n'))
+        valid = reg('[failover]\nterminal = "claude-opus-5-5"\n\n[failover.class.exec-0n]\nmodels = [{model = "glm-5.3", effort = "max"}, "grok-4.6"]\n')
         main_tooth(8, "зелёный итог",
                    capture_main([], env={ENV_REGISTRY_VAR: valid}),
-                   (0, verdict_line(valid, 1, 1, 1, 2, 1) + "\n", ""))
+                   (0, verdict_line_s(valid, 1, 2, 1, 2, "claude-opus-5-5") + "\n", ""),
+                   calls=2)
 
+        # A4 через main: машинный слой берётся из HOME и назван в вердикте.
+        machine_home = os.path.join(main_home, ".claude", "catalyst",
+                                    "routing-override.toml")
+        os.makedirs(os.path.dirname(machine_home))
+        with open(machine_home, "w", encoding="utf-8") as f:
+            f.write('[classes.exec-0n]\nlabel = "m"\nallowed = ["glm-5.3"]\n')
+        rc_m, out_m, err_m = capture_main([], env={ENV_REGISTRY_VAR: valid})
+        tooth("A4 main: машинный слой HOME снимает ступень -- код 1",
+              rc_m == 1 and "правило-1-допуск" in out_m and "grok-4.6" in out_m
+              and err_m == "",
+              f"rc={rc_m} out={out_m!r} err={err_m!r}")
+        with open(machine_home, "w", encoding="utf-8") as f:
+            f.write('[classes.exec-0n]\nlabel = "m"\nallowed = ["glm-5.3", "grok-4.6"]\n')
+        rc_m, out_m, err_m = capture_main([], env={ENV_REGISTRY_VAR: valid})
+        tooth("A4 main: машинный слой назван в вердикте",
+              rc_m == 0 and "(слитый допуск: база+машинный)" in out_m,
+              f"rc={rc_m} out={out_m!r} err={err_m!r}")
+
+        # F: проектный слой -- от --project и от cwd.
+        proj = os.path.join(work, "proj")
+        proj_probes = os.path.join(proj, ".claude", "probes", "probes.toml")
+        os.makedirs(os.path.dirname(proj_probes))
+        with open(proj_probes, "w", encoding="utf-8") as f:
+            f.write('[failover]\nterminal = "opus"\n')
+        rc_f, out_f, err_f = capture_main(["--project", proj],
+                                          env={ENV_REGISTRY_VAR: valid})
+        tooth("F: проектный терминал-алиас (--project) -- красен",
+              rc_f == 1 and "правило-6-терминал" in out_f and "алиас" in out_f,
+              f"rc={rc_f} out={out_f!r} err={err_f!r}")
+        with open(proj_probes, "w", encoding="utf-8") as f:
+            f.write('[failover.class.exec-0n]\nmodels = ["glm-5.3", "grok-4.6", "qwen3.8-flash"]\n')
+        proj_sub = os.path.join(proj, "sub", "deeper")
+        os.makedirs(proj_sub)
+        rc_f, out_f, err_f = capture_main([], env={ENV_REGISTRY_VAR: valid},
+                                          cwd=proj_sub)
+        tooth("F: проектная лестница с недопущенной (поиск от cwd) -- красна",
+              rc_f == 1 and "правило-1-допуск" in out_f
+              and "qwen3.8-flash" in out_f,
+              f"rc={rc_f} out={out_f!r} err={err_f!r}")
+        proj_override = os.path.join(proj, ".claude", "catalyst",
+                                     "routing-override.toml")
+        os.makedirs(os.path.dirname(proj_override))
+        with open(proj_override, "w", encoding="utf-8") as f:
+            f.write('[classes.exec-0n]\nlabel = "p"\n'
+                    'allowed = ["glm-5.3", "grok-4.6", "qwen3.8-flash"]\n')
+        rc_f, out_f, err_f = capture_main(["--project", proj],
+                                          env={ENV_REGISTRY_VAR: valid})
+        tooth("F: проектный слой допуска допускает ступень -- зелёно, слой назван",
+              rc_f == 0 and "(слитый допуск: база+машинный+проектный)" in out_f,
+              f"rc={rc_f} out={out_f!r} err={err_f!r}")
+        upper = reg('[failover]\nterminal = "Claude-Opus-5-5[1M]"\n\n[failover.class.exec-0n]\n'
+                    'models = [{model = "glm-5.3", effort = "max"}, "grok-4.6"]\n')
+        rc_c, out_c, err_c = capture_main([], env={ENV_REGISTRY_VAR: upper})
+        tooth("FIX4-(б) main: терминал в верхнем регистре -- код 1, строка называет ключ и значение",
+              rc_c == 1 and err_c == "" and out_c == (
+                  "НАРУШЕНИЕ правило-6-канон: [failover].terminal = 'Claude-Opus-5-5[1M]' — "
+                  "неканоничная форма (пробельные символы или верхний регистр); канон пишет id "
+                  "без пробелов в нижнем регистре\n"),
+              f"rc={rc_c} out={out_c!r} err={err_c!r}")
+        tabbed = reg('[failover]\nterminal = "claude-opus-5-5\\t[1m]"\n\n[failover.class.exec-0n]\n'
+                     'models = [{model = "glm-5.3", effort = "max"}, "grok-4.6"]\n')
+        rc_t, out_t, err_t = capture_main([], env={ENV_REGISTRY_VAR: tabbed})
+        tooth("FIX5 Р6 main: таб внутри id терминала -- код 1, строка называет ключ и значение",
+              rc_t == 1 and err_t == "" and out_t == (
+                  "НАРУШЕНИЕ правило-6-канон: [failover].terminal = 'claude-opus-5-5\\t[1m]' — "
+                  "неканоничная форма (пробельные символы или верхний регистр); канон пишет id "
+                  "без пробелов в нижнем регистре\n"),
+              f"rc={rc_t} out={out_t!r} err={err_t!r}")
+
+    book.close()
     for i, (name, ok, detail) in enumerate(teeth, 1):
         if ok:
             print(f"зуб {i} {name}: зелёный")
@@ -1029,7 +1438,7 @@ def self_check():
     return 1
 
 
-def main(argv, root=None, env=None, home=None):
+def main(argv, root=None, env=None, home=None, cwd=None):
     root = tool_root() if root is None else root
     envd = os.environ if env is None else env
     homed = os.path.expanduser("~") if home is None else home
@@ -1037,8 +1446,6 @@ def main(argv, root=None, env=None, home=None):
         return self_check()
 
     table_path = os.path.join(root, "hooks", "routing-table.toml")
-    mod_source = os.path.join(root, "plugins", "catalyst-probes", "hooks",
-                              "register.ts")
     explicit_reg = None
     if "--registry" in argv:
         i = argv.index("--registry")
@@ -1046,15 +1453,21 @@ def main(argv, root=None, env=None, home=None):
             print("ПРИБОР НЕДОСТУПЕН: --registry без пути", file=sys.stderr)
             return 2
         explicit_reg = argv[i + 1]
+    project_dir = None
+    if "--project" in argv:
+        i = argv.index("--project")
+        if i + 1 >= len(argv):
+            print("ПРИБОР НЕДОСТУПЕН: --project без пути", file=sys.stderr)
+            return 2
+        project_dir = argv[i + 1]
+        if not os.path.isdir(project_dir):
+            print(f"ПРИБОР НЕДОСТУПЕН: --project не каталог: {project_dir}",
+                  file=sys.stderr)
+            return 2
 
     if not os.path.isfile(table_path):
         print("ПРИБОР НЕДОСТУПЕН: таблица маршрутизации не найдена: "
               f"{table_path}", file=sys.stderr)
-        return 2
-    if not os.path.isfile(mod_source):
-        print("ПРИБОР НЕДОСТУПЕН: исходник мода не найден: "
-              f"{mod_source} -- правило-5-веер без него неизмеримо",
-              file=sys.stderr)
         return 2
 
     if explicit_reg is not None:
@@ -1071,10 +1484,22 @@ def main(argv, root=None, env=None, home=None):
                 print(f"  - {label}: {path}", file=sys.stderr)
             return 2
 
-    override_paths = resolve_override_layers(root, env=envd, home=homed)
-    reason, violations, ladders, rungs, effort_rungs, classes_checked, fan_checked = check_ladders(
-        registry_path, table_path, mod_source_path=mod_source,
-        override_paths=override_paths)
+    # CONSTRAINT (#509-FIX1 A4/F): слои -- поиском мода и гварда: машинный
+    # дом по HOME, проектные -- ближайшие вверх от --project или cwd; дом
+    # машинного слоя проектным не становится, боевой глобальный реестр и сам
+    # предмет -- проектным реестром тоже.
+    start = project_dir if project_dir is not None else (os.getcwd() if cwd is None else cwd)
+    machine = os.path.join(homed, ".claude", "catalyst", "routing-override.toml")
+    project_override = find_upward(start, PROJECT_OVERRIDE_REL, exclude=(machine,))
+    live_global = os.path.join(homed, ".claude", "probes", "probes.toml")
+    project_registry = find_upward(start, PROJECT_PROBES_REL,
+                                   exclude=(live_global, registry_path))
+    efforts, _eff_err = load_mod_efforts(root)
+
+    reason, violations, ladders, rungs, effort_rungs, classes_checked, terminal = check_ladders(
+        registry_path, table_path, machine_path=machine,
+        project_override=project_override, project_registry=project_registry,
+        efforts=efforts)
     if reason is not None:
         print(f"ПРИБОР НЕДОСТУПЕН: {reason}", file=sys.stderr)
         return 2
@@ -1087,8 +1512,9 @@ def main(argv, root=None, env=None, home=None):
               "таблицы [failover.*] — пустой результат без предмета нулём "
               "не считается")
         return 3
+    _tab, layers, _err = load_layers(table_path, machine, project_override)
     print(verdict_line(registry_path, ladders, rungs, effort_rungs,
-                       classes_checked, fan_checked))
+                       classes_checked, terminal, layers or "база"))
     return 0
 
 
