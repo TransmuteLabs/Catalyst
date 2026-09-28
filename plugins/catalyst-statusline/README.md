@@ -40,13 +40,36 @@ tall, with named themes and per-axis view settings.
   with a diagnostic. Segments whose colour carries their threshold scale
   (context, the rate-limit windows) are offered no colour.
 - **Picker `/statusline-mod`**: a pane with a row of pills per line and the
-  buttons ◀ ▶ ▲ ▼ ✕ (hotkeys `h` `l` `k` `j` `x`), an «Доступные» list with a
-  filter, layout presets (`default`, `ClaudeCodeStatusline`, `claude-hud`),
-  a preview rendered by the same builder as the band, and
-  `Сохранить` · `Отмена` · `По умолчанию` · `Отменить` (an undo stack of 30).
+  buttons ◀ ▶ ▲ ▼ ✕ (hotkeys `h` `l` `k` `j` `x`) for the pill in focus, where
+  ✕ takes it out of its line; `✕ строка` deletes any line but the last one and
+  names the elements it frees, and `+ строка` stops at the rows the band holds
+  once the band has been measured. The «Элементы» tab has a filter and a target
+  line (`◀ строка` / `строка ▶`); an element not placed goes to the end of the
+  target line, and a placed one (its pill reads `✓ id · стр.N`) leaves every
+  line it stands in. Layout presets (`default`, `ClaudeCodeStatusline`,
+  `claude-hud`) and a preview rendered by the same builder as the band. The
+  panel draws on the terminal, the desktop, VS Code and mobile. On a surface
+  with Select, «Вид» has one Select per axis; on mobile (no Select, no Input)
+  the axes are pills and each settings text field is replaced by the line
+  `ввод текста здесь недоступен — поле: /config catalyst-statusline.<field>`;
+  the element search is not a setting and reads `поиск здесь недоступен`.
+  «Темы» is a button per theme on every surface; the theme in focus is shown
+  in the preview without changing the draft. Every press either changes the
+  draft, the tab or the level, closes the pane, or says why it did nothing.
+  Under the tabs a state line reads `path · цель: строка N · черновик:
+  изменено полей: N не сохранено` (N counts the changed fields, not the
+  presses; or `сохранено`); under the bottom row a key hint.
+  The bottom row: `Сохранить` (`s`) · `↶ Шаг назад` (`z`, the draft's own
+  undo, 50 steps, kept with the draft) · `Отменить все правки` (only with
+  unsaved edits; returns the draft to the saved state and keeps the pane
+  open; itself a step `↶ Шаг назад` takes back) · `Закрыть` (`q`, keeps the draft) · `Откатить сохранение` (the saves'
+  undo stack of 30) · `Сбросить к теме`, and on the element level `← Назад`
+  (`b`) back to the tab it came from. Esc closes and keeps the draft; the next
+  open says the unsaved draft is continued.
   Saving writes the plugin's own `/config` rows; a `{ deny }` is shown in the
-  panel; the draft and the open flag live under the session id, so a reload
-  restores them. `/statusline-mod reset` writes every field back to its default.
+  panel and the undo record keeps only the fields actually written; the draft
+  and the open flag live under the session id, so a reload restores them.
+  `/statusline-mod reset` writes every field back to its default.
 
 Everything below is the upstream README of the base the mod was merged from;
 where it and the section above disagree, the section above is the 0.4.0 mod.
@@ -302,3 +325,18 @@ next interrupted run kept `37K/200K` until the next prompt, as did a run left to
   arrives, since the engine has no count then either: the screen read 0.8 s after the prompt
   was sent showed it, and the one 0.8 s later showed the new figure. A finished turn,
   `/clear` and `/compact` show what the engine reports.
+- The limit of two unsettled store writes per session key holds per module
+  environment, not per host. A reload starts a new environment with an empty count
+  while writes of the old one may still be pending: module state does not survive a
+  reload, and `$.store` — the only state shared across environments — is the very
+  operation that hangs.
+- Pruning keeps the 32 newest session snapshots. A session older than those
+  resumed with `--resume` starts the bar from zero.
+- `session.end` races its pending writes against a successful three-second
+  `/bin/sleep`, `clock.after(3000)`, and the hook-owned `clock.sleep(3000)` with
+  `next.signal`. A refused or non-zero process sleep does not end the wait;
+  the other bounds still apply. The hook-owned sleep also ends on cancellation
+  and spends the hook's budget. An unsettled sent write is reported as possibly
+  unstored; "the sleep bound did not run" is added only after a process sleep refusal.
+- A snapshot from a process whose clock is more than a day ahead is overwritten
+  by this process's next write; `session-snapshot-clock` names the affected key.

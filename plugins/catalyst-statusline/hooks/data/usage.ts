@@ -3,6 +3,7 @@
 // sources are declared here, the core runs them and feeds reduce.
 // CONSTRAINT (P7): numbers are formatted only through args.nf, never locally.
 import type { Collector, ElementDef, FormatArgs, Input, Ok, Row, Source, Value, Variant } from './types'
+import { own } from './own'
 
 // Catalogue constants the reference formulas carry (CATALOGUE-elements-43).
 const CTX_200K = 200000 // E002/E003: the fixed denominator of the transcript formulas
@@ -44,8 +45,8 @@ const FALLBACK_PRICE = { input: 3, output: 15, cache_write: 3.75, cache_read: 0.
 function canonicalModel(model: string): string {
   return model.replace(/\[[^\]]*\]$/, '').replace(/-\d{8}$/, '')
 }
-function priceOf(model: string, u: Sum4): number {
-  const p = PRICES_PER_MTOK[model] ?? PRICES_PER_MTOK[canonicalModel(model)] ?? FALLBACK_PRICE
+export function priceOf(model: string, u: Sum4): number {
+  const p = own(PRICES_PER_MTOK, model) ?? own(PRICES_PER_MTOK, canonicalModel(model)) ?? FALLBACK_PRICE
   return (u.input * p.input + u.output * p.output + u.write * p.cache_write + u.read * p.cache_read) / 1e6
 }
 

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import { world, start, command, MOUNT, BAND_MOUNT, PANE_MOUNT, walk, textOf, barText, STORE_OPEN, SESSION_ID, SURFACES } from './world'
+import { world, start, command, MOUNT, BAND_MOUNT, PANE_MOUNT, walk, textOf, barText, STORE_OPEN, SESSION_ID, SURFACES, USAGE, openFlags, isOpen } from './world'
 import type { Node } from './world'
 
 // The live band over the 0.5 core: the HUD default layout, hover cards, the
@@ -242,7 +242,11 @@ test('session.start registers /statusline-mod and the bare command opens the pan
   const result = await command($)
   expect(result.text).toBeUndefined()
   expect(w.opened).toEqual([{ id: 'statusline', title: 'Статус-строка', focus: true, closeOnEscape: true, holdToasts: true, rows: 30 }])
-  expect(w.persisted.get(STORE_OPEN)).toEqual({ session: SESSION_ID })
+  // #521 FIX2 Р27: the open flag carries its open's token
+  // #521 FIX4 Ф2: one key per open, `STORE_OPEN:<token>`
+  const flags = openFlags(w.persisted)
+  expect(flags.map((open) => ({ session: open.session, token: typeof open.token }))).toEqual([{ session: SESSION_ID, token: 'string' }])
+  expect(w.persisted.has(STORE_OPEN + ':' + flags[0]!.token)).toBe(true)
   const pane = await $.ui.mount(PANE_MOUNT)
   expect(await pane.find({ key: 'save' })).toBeDefined()
 })
@@ -263,6 +267,7 @@ test('a non-interactive session gets the /config path instead of the panel', asy
   expect(result.text).toContain('/statusline-mod')
   expect(w.opened).toEqual([])
   expect(w.persisted.has(STORE_OPEN)).toBe(false)
+  expect(isOpen(w.persisted)).toBe(false)
 })
 
 test('a panel another session opened is not drawn', async ($, on) => {
@@ -335,8 +340,16 @@ const session = ($: Engine, sessionId: string) =>
   $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work/demo/src', sessionId } as any)
 
 // CONSTRAINT: the body advances 7 260 fake seconds of the 1 Hz ticker — 1.9–4.2 s of wall time on the mac (S1-FIX5 logs); the 5 s default failed under parallel load
+// CONSTRAINT (ADJUDICATION-S4 Д4): the duration basis is the host's own
+// usage.startedAt — the world moves it with the session; session.start itself
+// carries no id, so the start calls below only say that a start happened
 test('T15: session duration runs from session.start when no turn has been seen', { timeoutMs: 30000 }, async ($, on) => {
-  const w = world(on)
+  let sid = 'sess-a'
+  let startedAt = 0
+  const w = world(on, {
+    'session.id': () => ({ value: sid }),
+    'session.usage': () => ({ value: { ...USAGE, startedAt } }),
+  })
   expect(w.clock.now()).toBe(0)
   await session($, 'sess-a')
   await w.clock.settle()
@@ -349,6 +362,8 @@ test('T15: session duration runs from session.start when no turn has been seen',
   await w.clock.advance(3_600_000)
   const second = await bandText($, 't15-b')
   expect(second).toContain('up ⏱ 2h 00m')
+  sid = 'sess-b'
+  startedAt = w.clock.now()
   await session($, 'sess-b')
   await w.clock.settle()
   await w.clock.advance(60_000)

@@ -11,6 +11,7 @@
 // state.json but must never be rendered (ADR-0013/0027 of the reference).
 
 import type { Collector, ElementDef, FormatArgs, Input, Ok, Row, Value, Variant } from './types'
+import { own, setOwn } from './own'
 
 // ---------------------------------------------------------------------------
 // pure reference ports (formulas verbatim from the carriers named in the
@@ -138,6 +139,8 @@ const V_LABEL: Record<VercelState, string> = {
 const V_DOT: Record<VercelState, string> = {
   QUEUED: '○', BUILDING: '◐', INITIALIZING: '◑', READY: '●', ERROR: '✗', CANCELED: '⊘',
 }
+export function vercelLabel(state: string): string { return own(V_LABEL as Record<string, string>, state) ?? state }
+export function vercelDot(state: string): string { return own(V_DOT as Record<string, string>, state) ?? '·' }
 
 /** `vercel ls --format json` prefixes chatter before the JSON; the parse starts at the first brace. */
 export function parseVercelList(stdout: string): Deployment[] {
@@ -229,6 +232,8 @@ const LIGHT_ICON: Record<LightColor, Row['icon']> = { green: 'ok', yellow: 'run'
 const REVIEW_WORD: Record<string, string> = { APPROVED: 'approved', CHANGES_REQUESTED: 'changes', REVIEW_REQUIRED: 'review' }
 // E284's row words (cc-pr-tracker register.tsx): the full phrases
 const REVIEW_PHRASE: Record<string, string> = { APPROVED: 'approved', CHANGES_REQUESTED: 'changes requested', REVIEW_REQUIRED: 'review required' }
+export function reviewPhrase(decision: string | null | undefined): string { return own(REVIEW_PHRASE, decision ?? '') ?? 'no review' }
+export function reviewWord(decision: string | null | undefined): string { return own(REVIEW_WORD, decision ?? '') ?? 'review' }
 function checksVerdict(checks: RollupNode[]): { icon: Row['icon']; word: string } {
   const verdicts = checks.map(c => String(c.conclusion ?? c.state ?? c.status ?? ''))
   if (verdicts.some(v => /FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED|ERROR/.test(v))) return { icon: 'fail', word: 'failing' }
@@ -290,16 +295,16 @@ type WfEntry = {
 }
 const TERMINAL_WORKFLOW_STATUSES: ReadonlySet<string> = new Set(['complete', 'completed', 'closed', 'abandoned', 'cancelled'])
 
-function frontmatterOf(text: string): Record<string, string> {
+export function frontmatterOf(text: string): Record<string, string> {
   const fields: Record<string, string> = {}
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(text)
   if (match === null) return fields
   for (const line of (match[1] ?? '').split(/\r?\n/u)) {
     const f = /^([A-Za-z0-9_-]+):\s*(.*)$/u.exec(line)
     if (f === null) continue
-    const value = f[2] ?? ''.trim()
+    const value = f[2] ?? ''
     const quoted = /^"(.*)"$|^'(.*)'$/u.exec(value.trim())
-    fields[f[1] as string] = quoted ? (quoted[1] ?? quoted[2] ?? '').trim() : value.trim()
+    setOwn(fields, f[1] as string, quoted ? (quoted[1] ?? quoted[2] ?? '').trim() : value.trim())
   }
   return fields
 }
@@ -379,9 +384,9 @@ const UNHELD_WORDING: Record<string, string> = {
   stop_hook_active: 'not held — Claude Code had already resumed the turn (stop_hook_active)',
   CLAUDE_PROJECT_DIR: 'not held — the session was not standing in the run\'s tree (CLAUDE_PROJECT_DIR)',
 }
-function lastStopWording(disposition: string, cause?: string): string {
-  if (disposition === 'unheld') return UNHELD_WORDING[cause ?? 'stop_hook_active'] ?? UNHELD_WORDING.stop_hook_active!
-  return LAST_STOP_WORDING[disposition as 'nudged' | 'paused' | 'stalled'] ?? disposition
+export function lastStopWording(disposition: string, cause?: string): string {
+  if (disposition === 'unheld') return own(UNHELD_WORDING, cause ?? 'stop_hook_active') ?? UNHELD_WORDING.stop_hook_active!
+  return own(LAST_STOP_WORDING as Record<string, string>, disposition) ?? disposition
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,7 +1047,7 @@ function deployTransition(s: State, deps: Deployment[], at: number): void {
       if (was === undefined) { s.deployToast = { text: `${d.name}: deploy started (${deployTargetOf(d)})`, at }; continue }
       if (IN_FLIGHT.has(was) && !IN_FLIGHT.has(d.state)) {
         const ms = (d.ready ?? d.createdAt) - d.createdAt
-        s.deployToast = { text: `${d.name}: ${V_LABEL[d.state]} after ${Math.max(0, ms)}ms`, at }
+        s.deployToast = { text: `${d.name}: ${vercelLabel(d.state)} after ${Math.max(0, ms)}ms`, at }
       }
     }
   }
@@ -1449,7 +1454,7 @@ function valueOf(s: State, elementId: string, args: FormatArgs): Value {
       // E284 is the reviewDecision word alone; the draft form belongs to E429's row
       const t = trackedNeeded(s)
       if ('state' in t) return t
-      const word = (pr: GhPrRow): string => REVIEW_PHRASE[pr.reviewDecision ?? ''] ?? 'no review'
+      const word = (pr: GhPrRow): string => reviewPhrase(pr.reviewDecision)
       if ('pr' in t) return ok(word(t.pr), t.at)
       return { state: 'stale', last: ok(word(t.stale.pr), t.stale.at), reason: t.reason }
     }
@@ -1691,7 +1696,7 @@ function valueOf(s: State, elementId: string, args: FormatArgs): Value {
       const pick = args.variant === 'prod' ? (d: Deployment) => d.target === 'production' : args.variant === 'preview' ? (d: Deployment) => d.target !== 'production' : () => true
       const d = a.data.find(pick)
       if (d === undefined) return { state: 'nosource', reason: args.variant === 'state' ? 'no deployments' : `no ${args.variant} deployment` }
-      const text = `${V_DOT[d.state]} ${V_LABEL[d.state]}`
+      const text = `${vercelDot(d.state)} ${vercelLabel(d.state)}`
       if (a.t === 'ok') return ok(text, a.at)
       return { state: 'stale', last: ok(text, a.at), reason: a.reason }
     }
@@ -1750,7 +1755,7 @@ function valueOf(s: State, elementId: string, args: FormatArgs): Value {
         return a.t === 'ok' ? value : { state: 'stale', last: value, reason: a.reason }
       }
       const rows = a.data.slice(0, maxRows).map(d =>
-        row(IN_FLIGHT.has(d.state) ? 'run' : d.state === 'READY' ? 'ok' : 'fail', d.url, `${V_DOT[d.state]} ${V_LABEL[d.state]}`, `${deployTargetOf(d)}${d.meta?.githubCommitRef !== undefined ? ` · ${d.meta.githubCommitRef}` : ''}`))
+        row(IN_FLIGHT.has(d.state) ? 'run' : d.state === 'READY' ? 'ok' : 'fail', d.url, `${vercelDot(d.state)} ${vercelLabel(d.state)}`, `${deployTargetOf(d)}${d.meta?.githubCommitRef !== undefined ? ` · ${d.meta.githubCommitRef}` : ''}`))
       const value = ok(`${nf.count(a.data.length)} deploys`, a.at, { rows })
       if (a.t === 'ok') return value
       return { state: 'stale', last: value, reason: a.reason }
@@ -1869,7 +1874,7 @@ function valueOf(s: State, elementId: string, args: FormatArgs): Value {
       if (a.t === 'nosource') return { state: 'nosource', reason: a.reason }
       const rows = a.data.createdBy.map(pr => {
         const verdict = checksVerdict(pr.statusCheckRollup ?? [])
-        const review = pr.isDraft ? 'draft' : REVIEW_WORD[pr.reviewDecision ?? ''] ?? 'review'
+        const review = pr.isDraft ? 'draft' : reviewWord(pr.reviewDecision)
         return row(verdict.icon, `#${pr.number} ${pr.title}`, review, pr.url)
       })
       const value = ok(`${nf.count(a.data.createdBy.length)} open PRs by me`, a.at, { rows })
@@ -1934,7 +1939,7 @@ function valueOf(s: State, elementId: string, args: FormatArgs): Value {
       if (a.t === 'nosource') return { state: 'nosource', reason: a.reason }
       const pr = a.data.currentBranch[0]
       if (pr === undefined) return { state: 'nosource', reason: 'no PR on the current branch' }
-      const text = REVIEW_PHRASE[pr.reviewDecision ?? ''] ?? 'no review'
+      const text = reviewPhrase(pr.reviewDecision)
       if (a.t === 'ok') return ok(text, a.at)
       return { state: 'stale', last: ok(text, a.at), reason: a.reason }
     }

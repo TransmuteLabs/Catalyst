@@ -8,6 +8,7 @@
 // so the elements stay truthful under either feed.
 
 import type { Collector, ElementDef, FormatArgs, Input, Ok, Row, Source, Value } from './types'
+import { setOwn } from './own'
 
 const SLOW_TOOL_MS = 30_000
 const QUIET_MS = 120_000
@@ -15,6 +16,11 @@ const DEAD_FLOOR_MS = 20 * 60_000
 const QUESTION_FLOOR = 20
 const RING_CAP = 8
 const RECENT_CAP = 8
+// CONSTRAINT (S4-FIX12 Н3, critic sol №2 / swe2 AR(f)): the agent map is
+// cloned on every feed (S4-FIX11 Н3) — its growth must be bounded like the
+// base family's. The number is the base CAP.agents (data/base.ts:93), the
+// two families list agents for the same screen and cap alike.
+const AGENTS_CAP = 64
 const ASK = 'AskUserQuestion'
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit'])
 const STAGES = ['intake', 'shape', 'slice', 'plan', 'implement', 'verify', 'review', 'handoff', 'ship', 'retro'] as const
@@ -73,6 +79,7 @@ type State = {
   turnErrors: number
   ring: RingEntry[]
   agents: Map<string, AgentRec>
+  agentsDropped: number
   mainTool?: ToolMark
   mainBoundedMs: number
   agentExactMs: number
@@ -124,13 +131,13 @@ function frontmatterOf(text: string): Record<string, string> {
     if (f === null) continue
     const raw = (f[2] ?? '').trim()
     const q = /^"(.*)"$|^'(.*)'$/.exec(raw)
-    fields[f[1] as string] = q === null ? raw : (q[1] ?? q[2] ?? '').trim()
+    setOwn(fields, f[1] as string, q === null ? raw : (q[1] ?? q[2] ?? '').trim())
   }
   return fields
 }
 
 // Items of one top-level YAML list: `- field: value` heads with same-indent fields.
-function yamlListItems(text: string, key: string): Record<string, string>[] | null {
+export function yamlListItems(text: string, key: string): Record<string, string>[] | null {
   const head = new RegExp(`^${key}:\\s*$`, 'm').exec(text)
   if (head === null) return null
   const lines = text.slice((head.index ?? 0) + (head[0] ?? '').length).split(/\r?\n/)
@@ -150,7 +157,7 @@ function yamlListItems(text: string, key: string): Record<string, string>[] | nu
       const field = /^([\w-]+):\s*(.*)$/.exec(dash[1] ?? '')
       if (field !== null) {
         fieldIndent = indent + 2
-        item[field[1] as string] = (field[2] ?? '').trim()
+        setOwn(item, field[1] as string, (field[2] ?? '').trim())
       }
       continue
     }
@@ -160,7 +167,7 @@ function yamlListItems(text: string, key: string): Record<string, string>[] | nu
     const field = /^([\w-]+):\s*(.*)$/.exec(line.trimStart())
     if (field !== null) {
       const k = field[1] as string
-      if (!(k in item)) item[k] = (field[2] ?? '').trim()
+      if (!Object.prototype.hasOwnProperty.call(item, k)) setOwn(item, k, (field[2] ?? '').trim())
     }
   }
   return items
@@ -341,6 +348,31 @@ function ensureAgent(s: State, key: string, at: number, listed: boolean): AgentR
       lastEventAt: at,
     }
     s.agents.set(key, rec)
+    // CONSTRAINT (S4-FIX12 Н3, critic sol №2 / swe2 AR(f)): the map is capped
+    // at AGENTS_CAP. On overflow one OTHER entry leaves — first a finished
+    // ('completed'/'failed') one with the smallest lastEventAt; only when none
+    // has finished, the smallest lastEventAt among all. The record just
+    // created is never the victim. Every drop counts into agentsDropped; the
+    // growth of that counter is diagnosed at the feed site (activity-agents-cap).
+    while (s.agents.size > AGENTS_CAP) {
+      let victim: string | undefined
+      let victimAt = 0
+      for (const [k, r] of s.agents) {
+        if (k === key) continue
+        if (r.status === 'completed' || r.status === 'failed') {
+          if (victim === undefined || r.lastEventAt < victimAt) { victim = k; victimAt = r.lastEventAt }
+        }
+      }
+      if (victim === undefined) {
+        for (const [k, r] of s.agents) {
+          if (k === key) continue
+          if (victim === undefined || r.lastEventAt < victimAt) { victim = k; victimAt = r.lastEventAt }
+        }
+      }
+      if (victim === undefined) break
+      s.agents.delete(victim)
+      s.agentsDropped++
+    }
   }
   return rec
 }
@@ -388,6 +420,7 @@ function init(): State {
     turnErrors: 0,
     ring: [],
     agents: new Map(),
+    agentsDropped: 0,
     mainBoundedMs: 0,
     agentExactMs: 0,
     chars: 0,

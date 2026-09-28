@@ -121,22 +121,53 @@ test('R10-userThemes: replacing saved themes dirties the next clock picture', as
   await picture(async (p) => changed(p, () => SL.__pictureThemes({ mine: { shape: 'lean' } })))
 })
 
-test('R10-durBase: a changed duration base within the same bucket builds a picture', async () => {
-  await picture(async (p) => changed(p, () => event('session.start', { sessionId: 'picture-b' }, 500)))
+test('R10-durBase: the first session.start moves the duration base from -1', async () => {
+  await picture(async (p) => {
+    const base = (): any => ((SL.__stateSnapshot()['famStates'] as Array<[unknown, any]>).find(([fam]) => fam === FAMILIES[0])![1])
+    expect(base().durBase).toBe(-1)
+    // CONSTRAINT: changed() ticks twice around the change — the event's own
+    // stamp, read before it runs, is the base the assert names
+    const at = p.time.n
+    await changed(p, () => event('session.start', { sessionId: 'picture-a' }, at))
+    expect(base().durBase).toBe(at)
+  }, false)
 })
 
-test('R10-sessionId: a new session with the same duration base builds a picture', async () => {
-  await picture(async (p) => changed(p, () => event('session.start', { sessionId: 'picture-b' }, 0)))
+// CONSTRAINT (ADJUDICATION-S4-FIX2 F6): the session id itself never clears
+// active tools — only an id CHANGE does (R10-session-info); session.start is
+// not the id, so the running calls survive it.
+test('R10-session-keep: session.start keeps the active tools', async () => {
+  await picture(async (p) => {
+    SL.__feed({ source: { kind: 'session', call: 'info' }, ok: true, data: { id: 'picture-a', turns: 0 }, now: p.time.n } as never)
+    event('tool.call', { tool: 'Read', callKey: 't:keep', agentScope: 'm' })
+    expect(activeOf()).toBe(1)
+    event('session.start', { sessionId: 'picture-a' }, p.time.n)
+    expect(activeOf()).toBe(1)
+  })
+})
+
+test('R10-session-info: an id change clears active tools and dirties the picture', async () => {
+  await picture(async (p) => {
+    const info = (id: string) => SL.__feed({ source: { kind: 'session', call: 'info' }, ok: true, data: { id, turns: 0 }, now: p.time.n })
+    const active = () => ((SL.__stateSnapshot()['famStates'] as Array<[unknown, any]>).find(([fam]) => fam === FAMILIES[0])![1]).tools.active.size
+    info('picture-a')
+    event('tool.call', { tool: 'Read', callKey: 't:session', agentScope: 'm' })
+    expect(active()).toBe(1)
+    await p.tick()
+    await changed(p, () => info('picture-b'))
+    expect(active()).toBe(0)
+  })
 })
 
 test('R10-active-add: a new active tool dirties the next clock picture', async () => {
   await picture(async (p) => changed(p, () => event('tool.call', { tool: 'Read', callKey: 't:picture', agentScope: 'm' })))
 })
 
+const activeOf = (): number => ((SL.__stateSnapshot()['famStates'] as Array<[unknown, any]>).find(([fam]) => fam === FAMILIES[0])![1]).tools.active.size
+
 for (const [name, input] of [
   ['result', ['tool.call', { callKey: 't:picture', callTool: 'Read', isError: false }]],
   ['turn', ['turn.complete', { turnId: 'picture-turn' }]],
-  ['session', ['session.start', { sessionId: 'picture-b' }]],
   ['end', ['session.end', {}]],
 ] as const) {
   test('R10-active-' + name + ': active removal dirties the next clock picture', async () => {

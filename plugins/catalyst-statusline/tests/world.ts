@@ -19,11 +19,35 @@ export const PANE = { title: 'Статус-строка', isFocused: true, bodyC
 export const PANE_MOUNT = { plugin: 'catalyst-statusline', surface: 'terminal' as const, component: 'Pane' as const, props: PANE, requestId: PANE_ID }
 
 export const STORE_OPEN = 'statusline.open.v1'
+export const STORE_OPEN_CLOSED = 'statusline.open-closed.v1'
 export const STORE_DRAFT = 'statusline.draft.v1'
 export const STORE_SAVING = 'statusline.saving.v1'
 export const STORE_UNDO = 'statusline.undo.v1'
 export const STORE_LASTGOOD = 'statusline.lastgood.v1'
 export const STORE_THEMES = 'statusline.themes.v1'
+
+// CONSTRAINT (#521 FIX4 Ф2/Ф3): the open flag, the undo record and the save
+// mark live one per key (`<base>:<token|saveId>`); the bare key is the
+// pre-FIX4 form a restore migrates
+type Store = Map<string, unknown>
+const keyed = (persisted: Store, base: string): string[] => [...persisted.keys()].filter((k) => k.startsWith(base + ':'))
+export const openFlags = (persisted: Store): Array<{ session?: string; token?: string; t?: number }> =>
+  keyed(persisted, STORE_OPEN).map((k) => persisted.get(k) as { session?: string; token?: string; t?: number })
+// CONSTRAINT (#521 FIX8b Р1): the close mark of a session lives under
+// `<STORE_OPEN_CLOSED>:<session>` as `{t}`; the sessions, sorted
+export const closedMarks = (persisted: Store): string[] =>
+  keyed(persisted, STORE_OPEN_CLOSED).map((k) => k.slice(STORE_OPEN_CLOSED.length + 1)).sort()
+export const isOpen = (persisted: Store, session?: string): boolean => openFlags(persisted).some((f) => session === undefined || f?.session === session)
+export type UndoRecord = { saveId?: string; t?: number; fields: string[]; prev: Record<string, string>; written: Record<string, string> }
+export const undoStack = (persisted: Store): UndoRecord[] =>
+  keyed(persisted, STORE_UNDO)
+    .map((k) => persisted.get(k) as UndoRecord)
+    .sort((a, b) => (a.t ?? 0) - (b.t ?? 0) || (String(a.saveId ?? '') < String(b.saveId ?? '') ? -1 : String(a.saveId ?? '') > String(b.saveId ?? '') ? 1 : 0))
+export const saveMarks = (persisted: Store): Array<{ saveId?: string; t?: number; fields?: string[]; values?: Record<string, string> }> =>
+  keyed(persisted, STORE_SAVING).map((k) => persisted.get(k) as { saveId?: string })
+// CONSTRAINT (#521 FIX5 Ч4): a user theme lives under `<STORE_THEMES>:<id>` as `{name, …axes, t}`
+export const themeRecords = (persisted: Store): Array<{ id: string; name?: string; t?: number } & Record<string, unknown>> =>
+  keyed(persisted, STORE_THEMES).map((k) => ({ ...(persisted.get(k) as Record<string, unknown>), id: k.slice(STORE_THEMES.length + 1) }))
 
 export const USAGE = {
   context: { tokens: 83000, window: 1000000, percent: 8 },
@@ -99,6 +123,12 @@ export function world(on: On, over: Mocks = {}, store: Record<string, unknown> =
     return result
   })
   mock.store(on, store)
+  // CONSTRAINT (#521 Р12): /config rows answer what the world last wrote to
+  // them, as the host's rows do — a static list makes every undo read as a
+  // field changed behind the picker. A refused or denied write records nothing.
+  // The kit takes one hook per event in this module: the record wraps the
+  // config.set mock that stands (the world's own or a test's override).
+  const configValues = new Map<string, unknown>()
   const opened: unknown[] = []
   const closed: unknown[] = []
   const toasts: string[] = []
@@ -156,7 +186,7 @@ export function world(on: On, over: Mocks = {}, store: Record<string, unknown> =
       if (joined === 'claude --version') return { value: { code: 0, stdout: '2.1.280 (tweakcc)\n', stderr: '' } }
       throw new Error('no process in the kit: ' + joined)
     },
-    'config.list': () => ({ value: OPTION_ROWS.map((row) => ({ ...row })) }),
+    'config.list': () => ({ value: OPTION_ROWS.map((row) => (configValues.has(row.key) ? { ...row, value: configValues.get(row.key) } : { ...row })) }),
     'config.set': (_$: any, e: any) => {
       writes.push({ key: e.key, value: e.value })
       return { value: e.value }
@@ -189,6 +219,16 @@ export function world(on: On, over: Mocks = {}, store: Record<string, unknown> =
     'ui.render': (_$: any, e: any) => ({ type: 'Box', props: {}, children: [{ type: 'Text', props: {}, children: ['ENGINE ' + e.component] }] }),
     'prompt.submit': (_$: any, e: any) => ({ text: e.text, origin: e.origin }),
     ...over,
+  }
+  const setMock = mocks['config.set']!
+  // CONSTRAINT (#521 FIX2 Р18): an answer that carries a `deny` field, at the
+  // top or under `value`, is a refusal whatever its value
+  const denies = (x: unknown): boolean => !!x && typeof x === 'object' && 'deny' in x
+  mocks['config.set'] = async (...args: any[]) => {
+    const result = (await setMock(...args)) as { value?: unknown } | undefined
+    const e = args[1] as { key: string; value: unknown }
+    if (!denies(result) && !denies(result?.value)) configValues.set(e.key, e.value)
+    return result
   }
   for (const [event, fn] of Object.entries(mocks)) on(event as any, fn as any)
   return { clock, persisted, opened, closed, toasts, writes, registered, logs, reads, cmds, statuses }

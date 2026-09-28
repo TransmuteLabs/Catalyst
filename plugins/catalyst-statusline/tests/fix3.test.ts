@@ -13,10 +13,18 @@ const drain = async (): Promise<void> => {
 
 const CAP_DIAG = 64 // CAP.diag in statusline.ts — the diag buffer depth
 
+// CONSTRAINT (#521 FIX5 Ч4): a user theme is read from its own key
+// `<STORE_THEMES>:<id>` as `{name, …axes, t}` — the stands seed that form and
+// list their keys as the host store does
+const themeKey = (name: string): string => STORE_THEMES + ':' + name
+const themeSeed = (name: string, axes: Record<string, string>): Record<string, unknown> => ({ [themeKey(name)]: { name, ...axes, t: 1 } })
+const isThemeKey = (k: string): boolean => k.startsWith(STORE_THEMES + ':')
+
 const storeOf = (entries: Record<string, unknown>) => ({
   get: async (k: string): Promise<unknown> => entries[k],
   set: async (): Promise<void> => undefined,
   delete: async (): Promise<void> => undefined,
+  keys: async (): Promise<string[]> => Object.keys(entries),
 })
 
 const fullStand = () => ({
@@ -43,7 +51,7 @@ const fullStand = () => ({
 test('F3a: a stored user theme reaches the band before its first build', async () => {
   SL.__resetState()
   const $ = {
-    store: storeOf({ [STORE_THEMES]: { u1: { palette: 'mono' } } }),
+    store: storeOf(themeSeed('u1', { palette: 'mono' })),
     session: { id: async () => 'f3a' },
     ui: { log: async () => undefined, status: () => undefined },
   }
@@ -65,12 +73,14 @@ test('F3b: saving a theme in the picker reapplies the live options', async () =>
     SL.__pictureThemes({ u1: { palette: 'mono' } })
     SL.__render({ template: 'dur||x=constant', theme: 'u1', palette: 'theme' })
     expect(SL.__state().view.paletteName).toBe('mono')
-    const nodes = walk(SL.__renderPicker({ template: 'dur||x=constant', theme: 'u1', palette: 'theme' }, 'view'))
+    // the save reads the stored themes before and after its write (#521 FIX5 Ч4)
+    const store = recStore(themeSeed('u1', { palette: 'mono' }))
+    const nodes = walk(SL.__renderPicker({ template: 'dur||x=constant', theme: 'u1', palette: 'theme' }, 'view', 120, undefined, store))
     const byKey = (key: string) => nodes.find((n) => n.props?.['key'] === key)
     const axis = byKey('ax:palette:codex')
     expect(axis).toBeDefined()
     ;(axis!.props!['onPress'] as () => void)()
-    const themeNodes = walk(SL.__renderPicker({ template: 'dur||x=constant', theme: 'u1', palette: 'theme' }, 'themes'))
+    const themeNodes = walk(SL.__renderPicker({ template: 'dur||x=constant', theme: 'u1', palette: 'theme' }, 'themes', 120, undefined, store))
     const tByKey = (key: string) => themeNodes.find((n) => n.props?.['key'] === key)
     const nameInput = tByKey('theme-name')
     expect(nameInput).toBeDefined()
@@ -150,9 +160,12 @@ test('F7: an arm-refusal diagnostic stays bounded', async () => {
 test('F8: overflowing the diag buffer drops shipped records, never unshipped ones', async () => {
   SL.__resetState()
   const logs: string[] = []
+  // CONSTRAINT (#521 FIX2 Р20): the stand answers the session root — a refused
+  // root is a record of its own, outside the two this tooth counts
   const $ = {
     clock: { now: async () => 70000 },
     ui: { log: (t: string) => { logs.push(t) }, invalidate: () => undefined },
+    session: { root: async () => '/work/demo', cwd: async () => '/work/demo' },
   }
   const clockRuns: Array<() => void> = []
   SL.__setArmEvery((ms: number, fn: () => void) => {
@@ -199,8 +212,11 @@ const recStore = (entries: Record<string, unknown>) => {
   const writes: Array<{ key: string; value: unknown }> = []
   return {
     get: async (k: string): Promise<unknown> => entries[k],
-    set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: v }) },
+    // a theme save reads its own key back (#521 FIX5 Ч4): theme writes are kept
+    set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: v }); if (isThemeKey(k)) entries[k] = v },
     delete: async (k: string): Promise<void> => { writes.push({ key: k, value: undefined }) },
+    // the host store lists its keys (#521 FIX4 Ф2/Ф3 read the keyed records)
+    keys: async (): Promise<string[]> => Object.keys(entries),
     writes,
   }
 }
@@ -244,7 +260,7 @@ test('F3c: register+session.start with a persisted user theme builds it without 
   SL.__resetState()
   const { on, handlers } = startHandlers()
   const OPTS = { template: 'dur||x=constant', theme: 'u1', palette: 'theme', placement: 'above', details: 'off' }
-  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: { u1: { palette: 'codex' } } })
+  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD, ...themeSeed('u1', { palette: 'codex' }) })
   const $ = optStand(store)
   try {
     SL.register(on as never, OPTS as never)
@@ -271,7 +287,7 @@ test('F3c: register+session.start with a persisted user theme builds it without 
 // host truth keeps the unknown name and the diagnosis pair is exact.
 test('F3d: an unknown host theme rolls back to last good while rawOptions keeps it', async () => {
   SL.__resetState()
-  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: { u1: { palette: 'codex' } } })
+  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD, ...themeSeed('u1', { palette: 'codex' }) })
   const $ = optStand(store)
   try {
     await SL.restoreAfterReload($ as never, { template: 'dur||x=constant', theme: 'u2', palette: 'theme' } as never)
@@ -301,7 +317,7 @@ const pickerSaveTheme = (raw: Record<string, string>, name: string, store: Picke
 // host truth is stored as the new last good.
 test('F3e: saving the host theme after a rollback re-decides and stores it as last good', async () => {
   SL.__resetState()
-  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: { u1: { palette: 'codex' } } })
+  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD, ...themeSeed('u1', { palette: 'codex' }) })
   const $ = optStand(store)
   const OPTS = { template: 'dur||x=constant', theme: 'u2', palette: 'theme', placement: 'above', details: 'off' }
   try {
@@ -360,7 +376,7 @@ test('F3h: a failing theme storage keeps the band on the previous theme', async 
   SL.__resetState()
   const store = recStore({})
   store.set = async (k: string): Promise<void> => {
-    if (k === STORE_THEMES) throw new Error('read-only storage')
+    if (isThemeKey(k)) throw new Error('read-only storage')
   }
   const $ = optStand(store)
   const OPTS = { template: 'dur||x=constant', theme: 'u9', placement: 'above', details: 'off' }
@@ -495,8 +511,10 @@ const gatedStore = (entries: Record<string, unknown>) => {
   const writes: Array<{ key: string; value: unknown }> = []
   return {
     get: async (k: string): Promise<unknown> => { await gate; return entries[k] },
-    set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: v }) },
+    // a theme save reads its own key back (#521 FIX5 Ч4): theme writes are kept
+    set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: v }); if (isThemeKey(k)) entries[k] = v },
     delete: async (k: string): Promise<void> => { writes.push({ key: k, value: undefined }) },
+    keys: async (): Promise<string[]> => { await gate; return Object.keys(entries) },
     writes,
     release: () => release(),
   }
@@ -519,6 +537,7 @@ const refusingThemesStore = () => {
     },
     set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: v }) },
     delete: async (k: string): Promise<void> => { writes.push({ key: k, value: undefined }) },
+    keys: async (): Promise<string[]> => [STORE_LASTGOOD],
     writes,
   }
 }
@@ -534,11 +553,17 @@ test('S1-FIX5 T1: the picker theme save waits for the restore', async () => {
     const started = handlers['session.start']!($ as never, { isInteractive: true } as never, async (e: unknown) => e)
     await drain()
     await pickerSaveTheme({ template: '||', theme: 'hud', palette: 'theme' }, 'u9', store)
-    expect(store.writes.filter((w) => w.key === STORE_THEMES).length).toBe(0)
+    expect(store.writes.filter((w) => isThemeKey(w.key)).length).toBe(0)
     store.release()
     await started
     await drain()
-    expect(store.writes.filter((w) => w.key === STORE_THEMES).length).toBe(1)
+    // #521 FIX5 Ч6/Ч7: the restore gives the draft its session, so the tree
+    // drawn before it acts on nothing and says so; the save repeated on a tree
+    // drawn after the restore writes once
+    expect(store.writes.filter((w) => isThemeKey(w.key)).length).toBe(0)
+    expect(SL.__stateSnapshot()['saveResult']).toBe('панель обновлена под текущую сессию — повторите действие')
+    await pickerSaveTheme({ template: '||', theme: 'hud', palette: 'theme' }, 'u9', store)
+    expect(store.writes.filter((w) => isThemeKey(w.key)).length).toBe(1)
     expect(store.writes.filter((w) => w.key === STORE_LASTGOOD && JSON.stringify((w.value as { __raw?: unknown })?.__raw) === '{}').length).toBe(0)
   } finally {
     SL.__resetState()
@@ -621,7 +646,7 @@ test('S1-FIX5 T5: a theme save refuses to overwrite unread stored themes', async
   try {
     await SL.restoreAfterReload(optStand(store) as never, { template: 'dur||x=constant', theme: 'u1', palette: 'theme' } as never)
     await pickerSaveTheme({ template: 'dur||x=constant', theme: 'u1', palette: 'theme' }, 'u5', store)
-    expect(store.writes.filter((w) => w.key === STORE_THEMES).length).toBe(0)
+    expect(store.writes.filter((w) => isThemeKey(w.key)).length).toBe(0)
     expect(String(SL.__stateSnapshot()['themeNote']).startsWith('тема не сохранена: сохранённые темы не прочитаны')).toBe(true)
   } finally {
     SL.__resetState()
@@ -635,7 +660,7 @@ test('S1-FIX5 T6: a successful themes read clears the failed flag', async () => 
   const OPTS = { template: 'dur||x=constant', theme: 'u1', palette: 'theme' }
   try {
     await SL.restoreAfterReload(optStand(store) as never, OPTS as never)
-    await SL.restoreAfterReload(optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: { u1: { palette: 'codex' } } })) as never, OPTS as never)
+    await SL.restoreAfterReload(optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD, ...themeSeed('u1', { palette: 'codex' }) })) as never, OPTS as never)
     expect(SL.__stateSnapshot()['themesFailed']).toBe(false)
     expect(SL.__state().themeName).toBe('u1')
   } finally {
@@ -646,7 +671,7 @@ test('S1-FIX5 T6: a successful themes read clears the failed flag', async () => 
 // T7 (П.3): a broken stored lastGood says lastgood-broken and is never re-stored
 test('S1-FIX5 T7: a broken lastGood diagnoses lastgood-broken', async () => {
   SL.__resetState()
-  const store = recStore({ [STORE_LASTGOOD]: { __raw: { template: 'dur||x=constant', theme: 'gone', palette: 'theme' } }, [STORE_THEMES]: {} })
+  const store = recStore({ [STORE_LASTGOOD]: { __raw: { template: 'dur||x=constant', theme: 'gone', palette: 'theme' } } })
   try {
     await SL.restoreAfterReload(optStand(store) as never, { template: '||' } as never)
     const diag = SL.__diag()
@@ -787,6 +812,7 @@ const parkingStore = (entries: Record<string, unknown>, parkKey: string, later?:
     },
     set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: JSON.parse(JSON.stringify(v ?? null)) }) },
     delete: async (k: string): Promise<void> => { writes.push({ key: k, value: undefined }) },
+    keys: async (): Promise<string[]> => Object.keys(entries),
     writes,
     open: () => park.open(),
     reads: () => reads,
@@ -843,7 +869,7 @@ test('S1-FIX6 U2: a stale restore at the draft read leaves pickerOpen and the dr
   SL.__resetState()
   const { on, handlers } = startHandlers()
   const stored = { session: 'f4', lines: [[]], axes: { palette: 'semantic' }, elements: {}, focus: null, tab: 'view', query: '', fam: 'all', targetLine: 0, themeName: '' }
-  const store = parkingStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {}, [STORE_OPEN]: { session: 'f4' }, [STORE_DRAFT]: stored }, STORE_DRAFT, null)
+  const store = parkingStore({ [STORE_LASTGOOD]: HUD_GOOD,[STORE_OPEN + ':t0']: { session: 'f4', token: 't0', t: 1 }, [STORE_DRAFT]: stored }, STORE_DRAFT, null)
   const $ = optStand(store)
   try {
     SL.register(on as never, OPT_HUD as never)
@@ -868,7 +894,7 @@ test('S1-FIX6 U3: a stale restore at the save mark writes no save notice into th
   SL.__resetState()
   const { on, handlers } = startHandlers()
   const mark = { fields: ['template'], values: { template: 'other||x=constant' } }
-  const store = parkingStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {}, [STORE_SAVING]: mark }, STORE_SAVING, null)
+  const store = parkingStore({ [STORE_LASTGOOD]: HUD_GOOD,[STORE_SAVING]: mark }, STORE_SAVING, null)
   const $ = optStand(store)
   try {
     SL.register(on as never, OPT_HUD as never)
@@ -895,13 +921,15 @@ test('S1-FIX6 U4: a theme save across register is dropped with its own diagnosis
   const park = gateOf()
   let parked = false
   const writes: Rec[] = []
+  const u1 = themeSeed('u1', { palette: 'codex' })
   const store = {
-    get: async (k: string): Promise<unknown> => (k === STORE_LASTGOOD ? HUD_GOOD : k === STORE_THEMES ? { u1: { palette: 'codex' } } : undefined),
+    get: async (k: string): Promise<unknown> => (k === STORE_LASTGOOD ? HUD_GOOD : u1[k]),
     set: async (k: string, v: unknown): Promise<void> => {
-      if (k === STORE_THEMES && !parked) { parked = true; await park.p }
+      if (isThemeKey(k) && !parked) { parked = true; await park.p }
       writes.push({ key: k, value: JSON.parse(JSON.stringify(v ?? null)) })
     },
     delete: async (k: string): Promise<void> => { writes.push({ key: k, value: undefined }) },
+    keys: async (): Promise<string[]> => Object.keys(u1),
   }
   try {
     SL.register(on as never, OPT_HUD as never)
@@ -937,7 +965,7 @@ test('S1-FIX6 U5: a picker action queued before register is dropped', async () =
     await started
     await drain()
     await drain()
-    expect(store.writes.filter((w) => w.key === STORE_THEMES).length).toBe(0)
+    expect(store.writes.filter((w) => isThemeKey(w.key)).length).toBe(0)
     expect(SL.__diag().filter((d) => d.key === 'stale-picker action').length).toBeGreaterThan(0)
   } finally {
     SL.__resetState()
@@ -950,7 +978,7 @@ test('S1-FIX6 U6: restore assigns pickerOpen only together with the stored draft
   SL.__resetState()
   const { on, handlers } = startHandlers()
   const stored = { session: 'f4', lines: [[]], axes: { palette: 'semantic' }, elements: {}, focus: null, tab: 'view', query: '', fam: 'all', targetLine: 0, themeName: '' }
-  const store = parkingStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {}, [STORE_OPEN]: { session: 'f4' }, [STORE_DRAFT]: stored }, STORE_DRAFT)
+  const store = parkingStore({ [STORE_LASTGOOD]: HUD_GOOD,[STORE_OPEN + ':t0']: { session: 'f4', token: 't0', t: 1 }, [STORE_DRAFT]: stored }, STORE_DRAFT)
   const $ = optStand(store)
   try {
     SL.register(on as never, OPT_HUD as never)
@@ -977,14 +1005,14 @@ test('S1-FIX6 U7: a close inside the restore window stays closed', async () => {
   const idGate = gateOf()
   const entries: Record<string, unknown> = {
     [STORE_LASTGOOD]: HUD_GOOD,
-    [STORE_THEMES]: {},
-    [STORE_OPEN]: { session: 'f4' },
+    [STORE_OPEN + ':t0']: { session: 'f4', token: 't0', t: 1 },
     [STORE_DRAFT]: { session: 'f4', lines: [[]], axes: {}, elements: {}, focus: null, tab: 'layout', query: '', fam: 'all', targetLine: 0, themeName: '' },
   }
   const store = {
     get: async (k: string): Promise<unknown> => entries[k],
     set: async (k: string, v: unknown): Promise<void> => { entries[k] = v },
     delete: async (k: string): Promise<void> => { delete entries[k] },
+    keys: async (): Promise<string[]> => Object.keys(entries),
   }
   const base = optStand(store)
   const $ = { ...base, session: { ...base.session, id: async () => { await idGate.p; return 'f4' } } }
@@ -999,7 +1027,7 @@ test('S1-FIX6 U7: a close inside the restore window stays closed', async () => {
     await started
     await drain()
     expect(SL.__stateSnapshot()['pickerOpen']).toBe(false)
-    expect(STORE_OPEN in entries).toBe(false)
+    expect(Object.keys(entries).filter((k) => k.startsWith(STORE_OPEN))).toEqual([])
   } finally {
     SL.__resetState()
   }
@@ -1046,13 +1074,18 @@ test('S1-FIX6 U9: the theme save retries a refused themes read and stores both',
   const { on, handlers } = startHandlers()
   let themeReads = 0
   const writes: Rec[] = []
+  const data: Record<string, unknown> = themeSeed('u1', { palette: 'codex' })
   const store = {
     get: async (k: string): Promise<unknown> => {
-      if (k === STORE_THEMES) { themeReads++; if (themeReads === 1) throw new Error('io-once'); return { u1: { palette: 'codex' } } }
-      return k === STORE_LASTGOOD ? HUD_GOOD : undefined
+      if (k === STORE_THEMES) { themeReads++; if (themeReads === 1) throw new Error('io-once'); return undefined }
+      return k === STORE_LASTGOOD ? HUD_GOOD : data[k]
     },
-    set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: JSON.parse(JSON.stringify(v ?? null)) }) },
+    set: async (k: string, v: unknown): Promise<void> => {
+      writes.push({ key: k, value: JSON.parse(JSON.stringify(v ?? null)) })
+      if (isThemeKey(k)) data[k] = JSON.parse(JSON.stringify(v ?? null))
+    },
     delete: async (k: string): Promise<void> => { writes.push({ key: k, value: undefined }) },
+    keys: async (): Promise<string[]> => Object.keys(data),
   }
   try {
     SL.register(on as never, OPT_HUD as never)
@@ -1061,9 +1094,10 @@ test('S1-FIX6 U9: the theme save retries a refused themes read and stores both',
     expect(SL.__stateSnapshot()['themesFailed']).toBe(true)
     writes.length = 0
     await pickerSaveTheme(OPT_HUD, 'u7', store)
-    const themes = writes.filter((w) => w.key === STORE_THEMES)
-    expect(themes.length).toBe(1)
-    expect(Object.keys(themes[0]!.value as object).sort()).toEqual(['u1', 'u7'])
+    // #521 FIX5 Ч4: the save writes its own key only; u1 stays as stored
+    const themes = writes.filter((w) => isThemeKey(w.key))
+    expect(themes.map((w) => (w.value as { name?: string }).name)).toEqual(['u7'])
+    expect(Object.keys(data).filter(isThemeKey).map((k) => (data[k] as { name?: string }).name).sort()).toEqual(['u1', 'u7'])
     expect(writes.filter((w) => w.key === STORE_LASTGOOD).length).toBeGreaterThan(0)
     expect(SL.__stateSnapshot()['themesFailed']).toBe(false)
     expect(SL.__stateSnapshot()['themeNote']).toBe('тема «u7» сохранена')
@@ -1078,13 +1112,15 @@ test('S1-FIX6 U10: the picker open retries a refused themes read', async () => {
   const { on, handlers } = startHandlers()
   let themeReads = 0
   const writes: Rec[] = []
+  const u1 = themeSeed('u1', { palette: 'codex' })
   const store = {
     get: async (k: string): Promise<unknown> => {
-      if (k === STORE_THEMES) { themeReads++; if (themeReads === 1) throw new Error('io-once'); return { u1: { palette: 'codex' } } }
-      return k === STORE_LASTGOOD ? HUD_GOOD : undefined
+      if (k === STORE_THEMES) { themeReads++; if (themeReads === 1) throw new Error('io-once'); return undefined }
+      return k === STORE_LASTGOOD ? HUD_GOOD : u1[k]
     },
     set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: JSON.parse(JSON.stringify(v ?? null)) }) },
     delete: async (k: string): Promise<void> => { writes.push({ key: k, value: undefined }) },
+    keys: async (): Promise<string[]> => Object.keys(u1),
   }
   const $ = interactiveStand(store)
   const OPTS = { ...OPT_HUD, theme: 'u1' }
@@ -1126,9 +1162,10 @@ test('S1-FIX6 U12: the lastGood write refusal is diagnosed only in its own state
   SL.__resetState()
   const { on } = startHandlers()
   const refusing = {
-    get: async (k: string): Promise<unknown> => (k === STORE_THEMES ? {} : undefined),
+    get: async (): Promise<unknown> => undefined,
     set: async (k: string): Promise<void> => { if (k === STORE_LASTGOOD) throw new Error('io-lg') },
     delete: async (): Promise<void> => undefined,
+    keys: async (): Promise<string[]> => [],
   }
   try {
     SL.register(on as never, OPT_HUD as never)
@@ -1140,9 +1177,10 @@ test('S1-FIX6 U12: the lastGood write refusal is diagnosed only in its own state
     SL.register(on as never, OPT_HUD as never)
     const park = gateOf()
     const late = {
-      get: async (k: string): Promise<unknown> => (k === STORE_THEMES ? {} : undefined),
+      get: async (): Promise<unknown> => undefined,
       set: async (k: string): Promise<void> => { if (k === STORE_LASTGOOD) { await park.p; throw new Error('io-late') } },
       delete: async (): Promise<void> => undefined,
+      keys: async (): Promise<string[]> => [],
     }
     const restoring = SL.restoreAfterReload(optStand(late) as never, OPT_HUD as never)
     await drain()
@@ -1164,7 +1202,7 @@ test('S1-FIX6 U13: the command after a reload decides the pane from the surfaces
   const run = async (surfaces: (() => Promise<string[]>) | undefined): Promise<{ r: Record<string, unknown>; open: unknown }> => {
     SL.__resetState()
     SL.register(on as never, OPT_HUD as never)
-    const base = interactiveStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {} }))
+    const base = interactiveStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD }))
     const $ = surfaces ? { ...base, session: { ...base.session, surfaces } } : base
     const r = (await commandOn(handlers, $, '')) as Record<string, unknown>
     await drain()
@@ -1191,7 +1229,7 @@ test('S1-FIX6 U14: a reset across register writes no notice into the new state',
   SL.__resetState()
   const { on, handlers } = startHandlers()
   const rows = gateOf()
-  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {} })
+  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD })
   const $ = { ...interactiveStand(store), config: { list: async () => { await rows.p; return [] }, set: async () => undefined } }
   try {
     SL.register(on as never, OPT_HUD as never)
@@ -1219,7 +1257,7 @@ test('S1-FIX6 U15: a picker open across register is dropped', async () => {
   // only the id read of the picker open parks; the startup reads answer at once
   let armed = false
   let parked = 0
-  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {} })
+  const store = recStore({ [STORE_LASTGOOD]: HUD_GOOD })
   const base = interactiveStand(store)
   const $ = { ...base, session: { ...base.session, id: async () => { if (armed && parked++ === 0) await idGate.p; return 'f4' } } }
   try {
@@ -1236,7 +1274,7 @@ test('S1-FIX6 U15: a picker open across register is dropped', async () => {
     await opening
     await drain()
     expect(SL.__stateSnapshot()['draft']).toBeNull()
-    expect(store.writes.slice(before).filter((w) => w.key === STORE_OPEN).length).toBe(0)
+    expect(store.writes.slice(before).filter((w) => w.key.startsWith(STORE_OPEN)).length).toBe(0)
     expect(SL.__diag().filter((d) => d.key === 'stale-picker open').length).toBe(1)
   } finally {
     SL.__resetState()
@@ -1332,18 +1370,20 @@ test('S1-FIX6 U20: a theme save parked on its themes read across register is dro
   const park = gateOf()
   let themeReads = 0
   const writes: Rec[] = []
+  const u1 = themeSeed('u1', { palette: 'codex' })
   const store = {
     get: async (k: string): Promise<unknown> => {
       if (k === STORE_THEMES) {
         themeReads++
         if (themeReads === 1) throw new Error('io-once')
         if (themeReads === 2) await park.p
-        return { u1: { palette: 'codex' } }
+        return undefined
       }
-      return k === STORE_LASTGOOD ? HUD_GOOD : undefined
+      return k === STORE_LASTGOOD ? HUD_GOOD : u1[k]
     },
     set: async (k: string, v: unknown): Promise<void> => { writes.push({ key: k, value: JSON.parse(JSON.stringify(v ?? null)) }) },
     delete: async (k: string): Promise<void> => { writes.push({ key: k, value: undefined }) },
+    keys: async (): Promise<string[]> => Object.keys(u1),
   }
   try {
     SL.register(on as never, OPT_HUD as never)
@@ -1358,7 +1398,7 @@ test('S1-FIX6 U20: a theme save parked on its themes read across register is dro
     park.open()
     await drain()
     await drain()
-    expect(writes.filter((w) => w.key === STORE_THEMES).length).toBe(0)
+    expect(writes.filter((w) => isThemeKey(w.key)).length).toBe(0)
     expect(SL.__diag().filter((d) => d.key === 'stale-theme save').length).toBe(1)
     expect(Object.keys(SL.__stateSnapshot()['userThemes'] as Record<string, unknown>).includes('u7')).toBe(false)
   } finally {
@@ -1425,6 +1465,7 @@ const memStore = (entries: Record<string, unknown>) => {
     get: async (k: string): Promise<unknown> => data[k],
     set: async (k: string, v: unknown): Promise<void> => { data[k] = JSON.parse(JSON.stringify(v ?? null)) },
     delete: async (k: string): Promise<void> => { delete data[k] },
+    keys: async (): Promise<string[]> => Object.keys(data),
   }
 }
 
@@ -1787,7 +1828,7 @@ for (const c of SWEEP) {
 const THEMES_SET_REFUSED = (store: ReturnType<typeof memStore>) => ({
   ...store,
   set: async (k: string, v: unknown): Promise<void> => {
-    if (k === STORE_THEMES) throw new Error('io-refused')
+    if (isThemeKey(k)) throw new Error('io-refused')
     return store.set(k, v)
   },
 })
@@ -1985,11 +2026,13 @@ test('S1-FIX7 U24: a theme-save reread across the second register is dropped alo
     let armWait = false
     let themesReads = 0
     let invalidations = 0
+    // #521 FIX5 Ч4: the save reads the themes right before its write — the
+    // themes reads are restore 1, the save, restore 2, the reread
     const store = {
       get: async (k: string): Promise<unknown> => {
         if (k === STORE_THEMES) {
           themesReads++
-          if (mode === 'themes' && themesReads === 3) await gateWait.p
+          if (mode === 'themes' && themesReads === 4) await gateWait.p
           return undefined
         }
         if (k === STORE_LASTGOOD) {
@@ -1999,9 +2042,10 @@ test('S1-FIX7 U24: a theme-save reread across the second register is dropped alo
         return undefined
       },
       set: async (k: string, _v: unknown): Promise<void> => {
-        if (k === STORE_THEMES && !setParked) { setParked = true; await gateSet.p }
+        if (isThemeKey(k) && !setParked) { setParked = true; await gateSet.p }
       },
       delete: async (): Promise<void> => undefined,
+      keys: async (): Promise<string[]> => [],
     }
     const base = optStand(store)
     const $ = { ...base, ui: { ...base.ui, invalidate: () => { invalidations++ } } }
@@ -2024,8 +2068,8 @@ test('S1-FIX7 U24: a theme-save reread across the second register is dropped alo
       gateSet.open()
       await drain()
       await drain()
-      if (mode === 'restore') expect({ mode, themesReads }).toEqual({ mode, themesReads: 1 })
-      if (mode === 'themes') expect({ mode, themesReads }).toEqual({ mode, themesReads: 3 })
+      if (mode === 'restore') expect({ mode, themesReads }).toEqual({ mode, themesReads: 2 })
+      if (mode === 'themes') expect({ mode, themesReads }).toEqual({ mode, themesReads: 4 })
       const diagBefore = SL.__diag().length
       const invBefore = invalidations
       SL.register(on as never, OPT_HUD as never)
@@ -2055,7 +2099,7 @@ test('S1-FIX7 U25: a stale clock resolve cannot clear the failed clock of the ne
   const gate = gateOf()
   const OPTS = { ...OPT_HUD, numDuration: 'clock' }
   let first = true
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {} })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p } return 5000 }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p } return 5000 }, every: () => ({ cancel() {} }) } }
   const poison = { ...optStand(recStore({})), clock: { now: async (): Promise<number> => { throw new Error('no-clock') }, every: () => ({ cancel() {} }) } }
   try {
     SL.register(on as never, OPTS as never)
@@ -2087,7 +2131,7 @@ test('S1-FIX7 U26: a stale refused clock read says nothing and poisons nothing',
   const { on } = startHandlers()
   const gate = gateOf()
   let first = true
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {} })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p; throw new Error('late-refused') } return 5000 }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p; throw new Error('late-refused') } return 5000 }, every: () => ({ cancel() {} }) } }
   try {
     SL.register(on as never, OPT_HUD as never)
     const refreshing = SL.__refresh($ as never)
@@ -2115,7 +2159,7 @@ test('S1-FIX7 U27: a stale refresh cannot reap the live timer of the new state',
   const gate = gateOf()
   const OPTS = { ...OPT_HUD, numDuration: 'clock', details: 'off' }
   let clockCalls = 0
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {} })), clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 1) { await gate.p; return 9000 } return 5000 }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 1) { await gate.p; return 9000 } return 5000 }, every: () => ({ cancel() {} }) } }
   try {
     SL.__setArmEvery(() => ({ cancel() {} }))
     SL.register(on as never, OPTS as never)
@@ -2151,7 +2195,7 @@ test('S1-FIX7 U28: a refresh that went stale inside the rearm sync ships nothing
   const OPTS = { ...OPT_HUD, numDuration: 'clock', details: 'off' }
   const logs: string[] = []
   let clockCalls = 0
-  const base = optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {} }))
+  const base = optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD }))
   const $ = {
     ...base,
     ui: { ...base.ui, log: (t: string): void => { logs.push(t) } },
@@ -2189,22 +2233,28 @@ test('S1-FIX7 U29: a picker open stale at the draft persist writes no draft into
   const { on, handlers } = startHandlers()
   const gate = gateOf()
   const stored = { session: 'f4', lines: [[]], axes: { palette: 'semantic' }, elements: {}, focus: null, tab: 'view', query: '', fam: 'all', targetLine: 0, themeName: '' }
-  const entries: Record<string, unknown> = { [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {}, [STORE_OPEN]: { session: 'f4' }, [STORE_DRAFT]: stored }
+  const entries: Record<string, unknown> = { [STORE_LASTGOOD]: HUD_GOOD,[STORE_OPEN]: { session: 'f4' }, [STORE_DRAFT]: stored }
   const writes: Array<{ key: string; value: unknown }> = []
-  let armSet = true
+  // #521 FIX4 Ф2: the restore moves the bare flag to its token key first — the
+  // park is armed for the open's own flag write, after the restore
+  let armSet = false
   const store = {
     get: async (k: string): Promise<unknown> => entries[k],
     set: async (k: string, v: unknown): Promise<void> => {
       writes.push({ key: k, value: JSON.parse(JSON.stringify(v ?? null)) })
-      if (k === STORE_OPEN && armSet) { armSet = false; await gate.p }
+      entries[k] = JSON.parse(JSON.stringify(v ?? null))
+      if (k.startsWith(STORE_OPEN + ':') && armSet) { armSet = false; await gate.p }
     },
     delete: async (k: string): Promise<void> => { delete entries[k] },
+    keys: async (): Promise<string[]> => Object.keys(entries),
   }
   const $ = interactiveStand(store)
   try {
     SL.register(on as never, OPT_HUD as never)
     await startOn(handlers, $ as never)
     await drain()
+    expect(SL.__stateSnapshot()['pickerOpen']).toBe(true)
+    armSet = true
     // gen1 restores the picker WITH a draft, then opens across the register
     const opening1 = commandOn(handlers, $ as never, '')
     await drain()
@@ -2220,7 +2270,8 @@ test('S1-FIX7 U29: a picker open stale at the draft persist writes no draft into
     await drain()
     await drain()
     // H:2153: a draft written after the persist belongs to the dead open
-    expect({ draftWrites: writes.slice(writesBefore).filter((w) => w.key === STORE_DRAFT).length }).toEqual({ draftWrites: 0 })
+    // #521 FIX2 Р13: a draft write goes to the session's key STORE_DRAFT + ':' + id
+    expect({ draftWrites: writes.slice(writesBefore).filter((w) => w.key.startsWith(STORE_DRAFT)).length }).toEqual({ draftWrites: 0 })
   } finally {
     SL.__resetState()
   }
@@ -2242,7 +2293,7 @@ test('S1-FIX7 U30: the captured source tick stops at each of its three guards', 
     let lateClock = 0
     let lateRun = 0
     let lateInvalidate = 0
-    const base = optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD, [STORE_THEMES]: {} }))
+    const base = optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD }))
     const $ = {
       ...base,
       ui: { ...base.ui, invalidate: () => { if (afterReg) lateInvalidate++ } },

@@ -1,4 +1,6 @@
-import type { Collector, ElementDef, FormatArgs, Input, Ok, Row, Value } from './types'
+import type { Collector, ElementDef, FormatArgs, Input, Ok, Row, SessionInfo, Value } from './types'
+import { snapshotText } from './snapshotText'
+import { own } from './own'
 
 // Base family: the 27 elements of 0.4.0 plus the HUD elements of DESIGN Р2/Р8
 // under their reserved ids. CONSTRAINT (types.ts): this module is pure — no `$`,
@@ -23,8 +25,10 @@ type ToolsState = {
   done: { name: string; isError: boolean }[]
 }
 
+type AgentRec = { name: string; desc: string; model: string; status: string; at: number; doneAt: number; turn?: string }
+
 type AgentsState = {
-  map: Map<string, { name: string; desc: string; model: string; status: string; at: number; doneAt: number }>
+  map: Map<string, AgentRec>
   done: string[]
 }
 
@@ -43,6 +47,8 @@ export type BaseState = {
   interactive: boolean
   cwd: string
   root: string
+  // the root is the cwd standing in for a refused session root (#521 FIX3b)
+  rootDegraded: boolean
   git: GitRef | null
   gitFail: string
   github: string | null
@@ -51,9 +57,22 @@ export type BaseState = {
   servedModel: string
   session: string
   resumed: boolean
+  resumedDecided: boolean
+  mainTurns: number
+  // the value mainTurns stood at when the last session:info read landed; the
+  // turns seen after it belong to whatever session owns the NEXT id (F3)
+  mainTurnsAtInfo: number
   priorTurns: number
+  durLastGood: string
   durBase: number
-  lastSessionId: string
+  // the host's own duration basis (usage.startedAt, the session's first launch);
+  // -1 until the usage read brings one — durBase is only the partial estimate
+  durStartedAt: number
+  // CONSTRAINT (F2): a session.start whose session id has not been read yet;
+  // only that start may seed the NEXT id's durBase — a /clear id change with
+  // no new start leaves durBase unknown (-1), never the old session's clock
+  unboundStart: boolean
+  lastStartAt: number
   usage: UsageState | null
   usageFail: string
   ctxCarried: boolean
@@ -64,7 +83,7 @@ export type BaseState = {
   speed: number | null
   ver: { text: string; installed: string } | null
   ram: { usedBytes: number; totalBytes: number; at: number; method: string } | null
-  cfgFiles: { mdProject: number; mdHome: number; at: number } | null
+  cfgFiles: { mdProject: number; mdHome: number; mdProjectFromCwd: boolean; at: number } | null
   settings: { hk: number; style: string; at: number } | null
   settingsFail: string
   tools: ToolsState
@@ -97,6 +116,16 @@ const stale = (last: Ok, reason: string): Value => ({ state: 'stale', last, reas
 function baseName(dir: string): string {
   const m = /([^/]+)\/?$/.exec(dir)
   return m ? m[1]! : dir
+}
+
+// CONSTRAINT (#521 FIX3 AR-1): what was read from the cwd because the session
+// root was refused says so in its own text — the alert face is empty by default
+export const CWD_GUESS = ' (cwd?)'
+
+// the project's name as drawn: `root` stays a path, the mark is added here
+function rootName(s: BaseState): string {
+  if (!s.root && !s.cwd) return ''
+  return baseName(s.root || s.cwd) + (s.root && s.rootDegraded ? CWD_GUESS : '')
 }
 
 // The classic payload carries model.display_name; the mods API gives the id.
@@ -149,17 +178,30 @@ function readUsageInto(s: BaseState, usage: unknown, now: number): void {
     return
   }
   const next: UsageState = { at: now, rl: [] }
+  // the host's own basis: when this session (or its first launch, if resumed)
+  // began in $.clock.now() milliseconds — /clear restarts it (d.ts:9795-9813)
+  const startedAt = u['startedAt']
+  if (typeof startedAt === 'number' && Number.isFinite(startedAt)) {
+    s.durStartedAt = startedAt
+  }
   const c = u['context'] as Ctx | undefined
   if (c && typeof c === 'object' && Number.isFinite(c.window) && c.window > 0) {
+    // CONSTRAINT (S4-FIX12 Н2, critic swe2 F1): the host's context node is
+    // normalized to its JSON shape AT THE READ — a verbatim node (extra
+    // members: a Map, an object, a cycle) standing in the family state would
+    // make the next state clone throw and freeze the family on every input
+    const ctx: Ctx = { window: c.window }
+    if (Number.isFinite(c.tokens)) ctx.tokens = c.tokens
+    if (Number.isFinite(c.percent)) ctx.percent = c.percent
     // an interrupted turn answers the window with no count: the old figure
     // stands, marked carried (measured live on 2.1.280, SPEC §14.12-7)
     const prior = s.usage?.context
-    if (c.tokens === undefined && prior?.tokens !== undefined && s.abortCarry) {
-      next.context = { ...c, tokens: prior.tokens, percent: prior.percent }
+    if (ctx.tokens === undefined && prior?.tokens !== undefined && s.abortCarry) {
+      next.context = { window: ctx.window, tokens: prior.tokens, percent: prior.percent }
       s.ctxCarried = true
     } else {
-      next.context = c
-      if (c.tokens !== undefined) s.ctxCarried = false
+      next.context = ctx
+      if (ctx.tokens !== undefined) s.ctxCarried = false
     }
   } else if (s.usage?.context) {
     next.context = s.usage.context
@@ -201,23 +243,22 @@ function readUsageInto(s: BaseState, usage: unknown, now: number): void {
   s.abortCarry = false
 }
 
-function reduceEvent(s: BaseState, event: string, data: unknown, now: number): void {
+function reduceEvent(s: BaseState, event: string, data: unknown, now: number, replay = false): void {
   const e = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
   if (event === 'session.start') {
+    s.lastStartAt = now
     s.started = true
+    s.unboundStart = true
     s.interactive = e['isInteractive'] === true
     if (typeof e['cwd'] === 'string' && e['cwd']) s.cwd = e['cwd']
-    const sid = typeof e['sessionId'] === 'string' ? e['sessionId'] : ''
-    if (sid !== '' && sid !== s.lastSessionId) {
-      s.durBase = now
-      s.lastSessionId = sid
-      s.tools.active.clear()
-    } else if (s.durBase < 0) {
-      s.durBase = now
-    }
+    // CONSTRAINT (d.ts:9013-9033): SessionStartInput carries no session id —
+    // the session's own id arrives with the session.info read; durBase here is
+    // only the estimate until usage.startedAt replaces it
+    if (s.durBase < 0) s.durBase = now
     return
   }
   if (event === 'turn.start') {
+    if (e['agentId'] == null) s.mainTurns++
     if (s.durBase < 0) s.durBase = now
     return
   }
@@ -242,10 +283,33 @@ function reduceEvent(s: BaseState, event: string, data: unknown, now: number): v
     if (s.durBase < 0) s.durBase = now
     s.tools.sawTurnComplete = true
     if (e['isAborted'] === true) s.abortCarry = true
-    const key = (e['agentId'] ? String(e['agentId']) : 'main') + ':' + String(e['turnId'] ?? '')
+    const key = snapshotText((e['agentId'] ? String(e['agentId']) : 'main') + ':' + String(e['turnId'] ?? ''))
     if (key === 'main:' || s.seenTurns.includes(key)) return
     s.seenTurns.push(key)
-    while (s.seenTurns.length > CAP.seenTurns) s.seenTurns.shift()
+    // CONSTRAINT (F1): during a replay the dedup set is the FULL union of the
+    // snapshot's keys and the replay's own — trimming mid-cycle would evict the
+    // snapshot's oldest key and count that turn twice when the buffer repeats it
+    if (!replay) while (s.seenTurns.length > CAP.seenTurns) s.seenTurns.shift()
+    if (e['agentId']) {
+      // CONSTRAINT (F5): an agent finishing with no usage (an error, an abort)
+      // still ends its row — the completion is the event's own fact; only the
+      // model name waits for a usage that may never come
+      // CONSTRAINT (Р5): a completion of the turn already counted for this
+      // agent changes nothing — its seenTurns key may have been evicted by
+      // the cap, and a repeat must neither re-date the row nor re-list it
+      // CONSTRAINT (FIX5 Р8): a changed agent gets a NEW record — reduce copies
+      // the map, not its records, and the previous state keeps its own
+      const id = snapshotText(String(e['agentId']))
+      const a = s.agents.map.get(id)
+      const tid = snapshotText(String(e['turnId'] ?? ''))
+      if (a && a.turn !== tid) {
+        s.agents.map.set(id, { ...a, status: 'completed', doneAt: now, turn: tid })
+        if (!s.agents.done.includes(id)) {
+          s.agents.done.push(id)
+          while (s.agents.done.length > CAP.doneAgents) s.agents.done.shift()
+        }
+      }
+    }
     const uu = e['usage'] && typeof e['usage'] === 'object' ? (e['usage'] as Record<string, unknown>) : null
     if (!uu) return
     const f = [uu['input_tokens'], uu['output_tokens'], uu['cache_read_input_tokens'], uu['cache_creation_input_tokens']]
@@ -267,14 +331,9 @@ function reduceEvent(s: BaseState, event: string, data: unknown, now: number): v
       const ms = e['durationMs']
       if (typeof out === 'number' && out > 0 && typeof ms === 'number' && ms > 0) s.speed = Math.round((out / (ms / 1000)) * 10) / 10
     } else {
-      const a = s.agents.map.get(String(e['agentId']))
-      if (a) {
-        a.status = 'completed'
-        a.doneAt = now
-        if (typeof uu['model'] === 'string' && uu['model']) a.model = uu['model'] as string
-        s.agents.done.push(String(e['agentId']))
-        while (s.agents.done.length > CAP.doneAgents) s.agents.done.shift()
-      }
+      const id = snapshotText(String(e['agentId']))
+      const a = s.agents.map.get(id)
+      if (a && typeof uu['model'] === 'string' && uu['model']) s.agents.map.set(id, { ...a, model: snapshotText(uu['model']) })
     }
     return
   }
@@ -302,6 +361,7 @@ function reduceEvent(s: BaseState, event: string, data: unknown, now: number): v
       if (!finishedName) finishedName = rec.name
     }
     if (!finishedName) finishedName = '?'
+    finishedName = snapshotText(finishedName)
     s.tools.doneTotal++
     if (finishedName !== '?' && (s.tools.byName.size < CAP.toolNames || s.tools.byName.has(finishedName))) {
       s.tools.byName.set(finishedName, (s.tools.byName.get(finishedName) ?? 0) + 1)
@@ -314,12 +374,14 @@ function reduceEvent(s: BaseState, event: string, data: unknown, now: number): v
     return
   }
   if (event === 'agent.spawn') {
-    const agentId = typeof e['agentId'] === 'string' ? e['agentId'] : ''
+    const agentId = typeof e['agentId'] === 'string' ? snapshotText(e['agentId']) : ''
     if (!agentId || s.agents.map.has(agentId)) return
     s.agents.map.set(agentId, {
-      name: String(e['subagentType'] || e['name'] || ''),
-      desc: String(e['description'] || ''),
-      model: String(e['model'] || ''),
+      name: snapshotText(String(e['subagentType'] || e['name'] || '')),
+      // Session strings stay bounded in memory so each store write need not
+      // hash the full captured strings again.
+      desc: snapshotText(String(e['description'] || '')),
+      model: snapshotText(String(e['model'] || '')),
       status: 'running',
       at: now,
       doneAt: 0,
@@ -391,7 +453,7 @@ function reduceCmd(s: BaseState, argv: readonly string[], okFlag: boolean, data:
   }
 }
 
-function reduceFile(s: BaseState, path: string, okFlag: boolean, data: unknown, now: number, error?: string): void {
+function reduceFile(s: BaseState, path: string, okFlag: boolean, data: unknown, now: number, error?: string, degraded = false): void {
   if (path === '/proc/meminfo') {
     if (!okFlag || typeof data !== 'string') return
     const total = /^MemTotal:\s+(\d+)\s*kB/m.exec(data)
@@ -431,8 +493,8 @@ function reduceFile(s: BaseState, path: string, okFlag: boolean, data: unknown, 
   if (path === 'CLAUDE.md' || path === '.claude/CLAUDE.md') {
     // the count is order-independent: each known path carries its own flag
     const has = okFlag && typeof data === 'string' && data.trim() !== '' ? 1 : 0
-    const prev = s.cfgFiles ?? { mdProject: 0, mdHome: 0, at: now }
-    if (path === 'CLAUDE.md') s.cfgFiles = { ...prev, mdProject: has, at: now }
+    const prev = s.cfgFiles ?? { mdProject: 0, mdHome: 0, mdProjectFromCwd: false, at: now }
+    if (path === 'CLAUDE.md') s.cfgFiles = { ...prev, mdProject: has, mdProjectFromCwd: degraded, at: now }
     else s.cfgFiles = { ...prev, mdHome: has, at: now }
     return
   }
@@ -583,7 +645,7 @@ const ELEMENTS: ElementDef[] = [
 const ALL_IDS = ELEMENTS.map((e) => e.id)
 
 const GIT_IDS = ['git', 'branch', 'git-branch']
-const USAGE_IDS = ['ctx', 'brk', 'rl', 'five-hour-limit', 'weekly-limit', 'cost']
+const USAGE_IDS = ['ctx', 'brk', 'rl', 'five-hour-limit', 'weekly-limit', 'cost', 'dur']
 
 const SOURCES: { source: import('./types').Source; elements: string[] }[] = [
   { source: { kind: 'event', event: 'session.start' }, elements: ALL_IDS },
@@ -594,6 +656,9 @@ const SOURCES: { source: import('./types').Source; elements: string[] }[] = [
   { source: { kind: 'event', event: 'session.end' }, elements: ['tools'] },
   { source: { kind: 'event', event: 'agent.spawn' }, elements: ['ag'] },
   { source: { kind: 'event', event: 'config.set' }, elements: ['model'] },
+  // the effort seed reads it once per start in the core's start path, never
+  // per refresh; the entry declares where the level lands
+  { source: { kind: 'session', call: 'config' }, elements: ['model'] },
   { source: { kind: 'session', call: 'usage' }, elements: USAGE_IDS },
   { source: { kind: 'session', call: 'model' }, elements: ['model'] },
   { source: { kind: 'session', call: 'info' }, elements: ['git-branch', 'directory', 'path', 'session', 'github'] },
@@ -725,13 +790,19 @@ function elValue(s: BaseState, id: string, args: FormatArgs): Value {
     case 'spd':
       return s.speed === null ? pend() : ok(nf.rate(s.speed, 'tok'))
     case 'dur': {
-      if (s.durBase < 0) return pend()
-      const partial = s.resumed ? '?' : ''
-      return ok(nf.duration(s.now - s.durBase) + partial)
+      const basis = s.durStartedAt >= 0 ? s.durStartedAt : s.durBase
+      if (basis < 0) return pend()
+      const delta = s.now - basis
+      if (delta < 0) return s.durLastGood ? stale(ok(s.durLastGood), 'clock before session start') : pend()
+      const partial = s.durStartedAt < 0 && s.resumed ? '?' : ''
+      s.durLastGood = nf.duration(delta) + partial
+      return ok(s.durLastGood)
     }
     case 'cfg': {
       const parts: string[] = []
-      if (s.cfgFiles && s.cfgFiles.mdProject + s.cfgFiles.mdHome > 0) parts.push(String(s.cfgFiles.mdProject + s.cfgFiles.mdHome) + ' CLAUDE.md')
+      // CONSTRAINT (#521 FIX4 Ф7): the cwd guess marks the CLAUDE.md part only;
+      // the hooks count is read from home, and the root name shows the guess
+      if (s.cfgFiles && s.cfgFiles.mdProject + s.cfgFiles.mdHome > 0) parts.push(String(s.cfgFiles.mdProject + s.cfgFiles.mdHome) + ' CLAUDE.md' + (s.cfgFiles.mdProjectFromCwd ? CWD_GUESS : ''))
       if (s.settings) parts.push(String(s.settings.hk) + ' hooks')
       if (s.settingsFail) {
         if (parts.length === 0) return { state: 'nosource', reason: s.settingsFail }
@@ -767,13 +838,13 @@ function elValue(s: BaseState, id: string, args: FormatArgs): Value {
     }
     case 'git': {
       if (s.gitFail === 'outside a git repository') return { state: 'nosource', reason: 'outside a git repository' }
-      const base = s.root || s.cwd ? baseName(s.root || s.cwd) : ''
+      const base = rootName(s)
       if (!s.git) return s.gitFail ? stale(ok(args.variant === 'bare' ? '?' : base + '(?)'), s.gitFail) : pend()
       const text = args.variant === 'bare' ? s.git.branch : base + '(' + s.git.branch + ')'
       return ok(text)
     }
     case 'git-branch': {
-      const base = s.root || s.cwd ? baseName(s.root || s.cwd) : ''
+      const base = rootName(s)
       if (!s.git) {
         if (s.gitFail === 'outside a git repository') return base ? ok(base) : { state: 'nosource', reason: 'outside a git repository' }
         return pend()
@@ -801,8 +872,12 @@ function elValue(s: BaseState, id: string, args: FormatArgs): Value {
       return ok((s.todo.current || 'todo') + ' (' + String(s.todo.done) + '/' + String(s.todo.total) + ')')
     }
     case 'ag': {
+      // zero is KNOWN only while the session was observed from its start
+      // (ADJUDICATION-S4 Д3 п.2): a reload that saw no session.start keeps
+      // the stub, never a zero
+      const knownFromStart = s.started && !s.resumed
       if (args.variant === 'counts') {
-        if (s.agents.map.size === 0) return pend()
+        if (s.agents.map.size === 0) return knownFromStart ? ok('ag 0') : pend()
         let running = 0
         for (const a of s.agents.map.values()) if (a.status === 'running') running++
         const done = s.agents.done.length
@@ -811,17 +886,18 @@ function elValue(s: BaseState, id: string, args: FormatArgs): Value {
         return ok(text)
       }
       const rows = agRows(s, args, s.now)
-      if (rows.length === 0) return pend()
+      if (rows.length === 0) return knownFromStart ? ok('ag 0') : pend()
       return ok(rows.map((r) => rowText(r)).join(' │ '), { rows })
     }
     case 'tools': {
+      const knownFromStart = s.started && !s.resumed
       if (args.variant === 'counts') {
-        if (!s.tools.sawAny && !s.tools.sawTurnComplete) return pend()
+        if (!s.tools.sawAny && !s.tools.sawTurnComplete) return knownFromStart ? ok('tools ✓0') : pend()
         let text = 'tools ✓' + String(s.tools.doneTotal)
         if (s.tools.errTotal > 0) text += ' e' + String(s.tools.errTotal)
         return ok(text)
       }
-      if (!s.tools.sawAny && !s.tools.sawTurnComplete && s.tools.active.size === 0) return pend()
+      if (!s.tools.sawAny && !s.tools.sawTurnComplete && s.tools.active.size === 0) return knownFromStart ? ok('✓ 0') : pend()
       const rows = toolsRows(s, args)
       if (rows.length === 0) return s.tools.doneTotal > 0 || s.tools.errTotal > 0 ? ok('✓ ' + String(s.tools.doneTotal)) : pend()
       return ok(rows.map((r) => rowText(r)).join(' │ '), { rows })
@@ -862,8 +938,119 @@ function shortWin(kind: string): string {
 const ROW_ICON: Record<Row['icon'] & string, string> = { ok: '✓', run: '◐', fail: '✗', todo: '▸', info: 'ℹ' }
 
 export function rowText(r: Row): string {
-  const icon = ROW_ICON[r.icon ?? 'info'] ?? ''
+  const icon = own(ROW_ICON as Record<string, string>, r.icon ?? 'info') ?? ''
   return (icon ? icon + ' ' : '') + r.label + (r.detail ? ': ' + r.detail : '') + (r.right ? ' (' + r.right + ')' : '')
+}
+
+// ---------- the reload snapshot (AR6) ----------
+
+// The accumulators the host does not repeat after a module reload; the core
+// stores them in $.store under the session id and merges them back on restore.
+// CONSTRAINT: Maps serialize as arrays of pairs — $.store JSON-drops a Map
+// (d.ts:2905-2910); the stored shape is strict, a malformed value merges
+// nothing rather than half the counters.
+export type BaseSnapshot = {
+  sum: BaseState['sum']
+  seenTurns: string[]
+  tools: { sawAny: boolean; sawTurnComplete: boolean; doneTotal: number; errTotal: number; byName: [string, number][]; done: { name: string; isError: boolean }[] }
+  agents: { map: [string, AgentRec][]; done: string[] }
+  started: boolean
+  resumed: boolean
+  resumedDecided: boolean
+  mainTurns: number
+}
+
+export function snapshotOf(state: BaseState): { session: string; value: BaseSnapshot } | null {
+  if (state.session === '') return null
+  return {
+    session: state.session,
+    value: {
+      sum: state.sum === null ? null : { ...state.sum },
+      seenTurns: state.seenTurns.slice(),
+      tools: { sawAny: state.tools.sawAny, sawTurnComplete: state.tools.sawTurnComplete, doneTotal: state.tools.doneTotal, errTotal: state.tools.errTotal, byName: [...state.tools.byName], done: state.tools.done.slice() },
+      agents: { map: [...state.agents.map], done: state.agents.done.slice() },
+      started: state.started,
+      resumed: state.resumed,
+      resumedDecided: state.resumedDecided,
+      mainTurns: state.mainTurns,
+    },
+  }
+}
+
+const isPair = (v: unknown, t: (x: unknown) => boolean): v is [string, unknown] => Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && t(v[1])
+// CONSTRAINT (S4-FIX13 Т2, sol 2): Array.prototype.every skips holes, and
+// new Map threw on the undefined entry — a stored array is dense or malformed
+const denseEvery = (a: unknown[], p: (x: unknown) => boolean): boolean => { for (let i = 0; i < a.length; i++) { if (!(i in a) || !p(a[i])) return false } return true }
+
+export function applySnapshot(state: BaseState, value: unknown): BaseState {
+  if (!value || typeof value !== 'object') return state
+  const v = value as Partial<BaseSnapshot>
+  const tools = v.tools
+  const agents = v.agents
+  const wellFormed =
+    (v.sum === null || (v.sum && typeof v.sum === 'object' && [v.sum.total, v.sum.in, v.sum.out, v.sum.cache].every((n) => typeof n === 'number'))) &&
+    Array.isArray(v.seenTurns) && denseEvery(v.seenTurns, (x) => typeof x === 'string') &&
+    tools !== undefined && tools !== null && typeof tools === 'object' &&
+    typeof tools.sawAny === 'boolean' && typeof tools.sawTurnComplete === 'boolean' &&
+    typeof tools.doneTotal === 'number' && typeof tools.errTotal === 'number' &&
+    Array.isArray(tools.byName) && denseEvery(tools.byName, (p) => isPair(p, (n) => typeof n === 'number')) &&
+    Array.isArray(tools.done) && denseEvery(tools.done, (d) => d !== null && typeof d === 'object' && typeof (d as { name?: unknown }).name === 'string' && typeof (d as { isError?: unknown }).isError === 'boolean') &&
+    agents !== undefined && agents !== null && typeof agents === 'object' &&
+    Array.isArray(agents.map) && denseEvery(agents.map, (p) => isPair(p, (r) => r !== null && typeof r === 'object' &&
+      typeof (r as AgentRec).name === 'string' && typeof (r as AgentRec).desc === 'string' && typeof (r as AgentRec).model === 'string' && typeof (r as AgentRec).status === 'string' && typeof (r as AgentRec).at === 'number' && typeof (r as AgentRec).doneAt === 'number')) &&
+    Array.isArray(agents.done) && denseEvery(agents.done, (x) => typeof x === 'string') &&
+    typeof v.started === 'boolean' && typeof v.resumed === 'boolean' &&
+    typeof v.resumedDecided === 'boolean' && typeof v.mainTurns === 'number'
+  if (!wellFormed) return state
+  return {
+    ...state,
+    sum: v.sum === null || v.sum === undefined ? null : { ...(v.sum as NonNullable<BaseState['sum']>) },
+    seenTurns: (v.seenTurns as string[]).slice(),
+    tools: { ...state.tools, sawAny: tools!.sawAny, sawTurnComplete: tools!.sawTurnComplete, doneTotal: tools!.doneTotal, errTotal: tools!.errTotal, byName: new Map(tools!.byName as [string, number][]), done: tools!.done.slice() },
+    // CONSTRAINT (S4-FIX12 Н2 п.3, sol 3/4): a restored record is rebuilt
+    // from the AgentRec fields only — a spread of the stored value would let
+    // a foreign node (a cycle in `turn`, an extra field) into the live state
+    agents: { map: new Map((agents!.map as [string, AgentRec][]).map(([key, rec]) => [key, { name: rec.name, desc: rec.desc, model: rec.model, status: rec.status, at: rec.at, doneAt: rec.doneAt, ...(typeof rec.turn === 'string' ? { turn: rec.turn } : {}) }])), done: (agents!.done as string[]).slice() },
+    started: v.started!,
+    resumed: v.resumed!,
+    resumedDecided: v.resumedDecided!,
+    mainTurns: v.mainTurns!,
+    // the restored turns were all seen before any new info read (F3)
+    mainTurnsAtInfo: v.mainTurns!,
+  }
+}
+
+// Replay shares event reduction but publishes only the persisted accumulators.
+// The current active calls, clock, model, usage and effort belong to live input.
+export function replaySnapshot(state: BaseState, inputs: readonly Input[], sinceInfo = 0): BaseState {
+  const replay: BaseState = {
+    ...state,
+    seenTurns: [...state.seenTurns],
+    tools: { ...state.tools, active: new Map(), byName: new Map(state.tools.byName), done: [...state.tools.done] },
+    agents: { map: new Map([...state.agents.map].map(([key, rec]) => [key, { ...rec }])), done: [...state.agents.done] },
+  }
+  for (const input of inputs) {
+    if (input.source.kind === 'event') reduceEvent(replay, input.source.event, input.ok ? input.data : undefined, input.now, true)
+  }
+  // the cap holds AFTER the whole replay, keeping the newest keys (F1)
+  while (replay.seenTurns.length > CAP.seenTurns) replay.seenTurns.shift()
+  return {
+    ...state,
+    sum: replay.sum,
+    seenTurns: replay.seenTurns,
+    tools: { ...replay.tools, active: state.tools.active, capDropped: state.tools.capDropped },
+    agents: replay.agents,
+    started: replay.started,
+    mainTurns: replay.mainTurns,
+    // CONSTRAINT (Р6): of the replayed turns only the `sinceInfo` last ones
+    // came after the last info read — the rest are the restored session's
+    // INVARIANT (FIX5 X12): sinceInfo ≤ replay.mainTurns − state.mainTurns,
+    // the result stays in [S, R] and the min-clamp never binds: every live
+    // main turn.start counts undeduplicated (base.ts:239-240) and is buffered
+    // while recovery is pending; only an id-carrying info read moves the
+    // baseline (base.ts:1123-1125). The clamp is a bound, not a live branch.
+    mainTurnsAtInfo: replay.mainTurns - Math.min(Math.max(0, sinceInfo), Math.max(0, replay.mainTurns - state.mainTurns)),
+  }
 }
 
 const collector: Collector<BaseState> = {
@@ -878,6 +1065,7 @@ const collector: Collector<BaseState> = {
       interactive: false,
       cwd: '',
       root: '',
+      rootDegraded: false,
       git: null,
       gitFail: '',
       github: null,
@@ -886,9 +1074,15 @@ const collector: Collector<BaseState> = {
       servedModel: '',
       session: '',
       resumed: false,
+      resumedDecided: false,
+      mainTurns: 0,
+      mainTurnsAtInfo: 0,
       priorTurns: 0,
+      durLastGood: '',
       durBase: -1,
-      lastSessionId: '',
+      durStartedAt: -1,
+      unboundStart: false,
+      lastStartAt: -1,
       usage: null,
       usageFail: '',
       ctxCarried: false,
@@ -934,14 +1128,52 @@ const collector: Collector<BaseState> = {
         return s
       }
       if (src.call === 'info') {
-        const i = (input.data ?? {}) as { cwd?: string; root?: string; id?: string; turns?: number }
+        const i = (input.data ?? {}) as Partial<SessionInfo>
         if (typeof i.cwd === 'string' && i.cwd) s.cwd = i.cwd
-        if (typeof i.root === 'string' && i.root) s.root = i.root
-        if (typeof i.id === 'string' && i.id) s.session = i.id
-        if (typeof i.turns === 'number' && i.turns > 0) {
-          s.resumed = true
-          s.priorTurns = i.turns
+        if (typeof i.root === 'string' && i.root) {
+          s.root = i.root
+          s.rootDegraded = i.rootDegraded === true
         }
+        if (typeof i.id === 'string' && i.id) {
+          // the session change is known here, not at session.start (which
+          // carries no id): the running calls of the old session are not ours
+          if (s.session !== '' && s.session !== i.id) {
+            s.tools = initTools()
+            s.agents = initAgents()
+            s.sum = null
+            s.seenTurns = []
+            // F3: the turns seen after the LAST info read belong to the new
+            // session — the ones before it were the old session's, already counted
+            s.mainTurns = s.mainTurns - s.mainTurnsAtInfo
+            s.resumed = false
+            s.resumedDecided = false
+            s.priorTurns = 0
+            // F2: only a session.start still unbound to an id seeds the new
+            // session's basis; durStartedAt of the old session never carries over
+            s.durBase = s.unboundStart ? s.lastStartAt : -1
+            s.durStartedAt = -1
+            s.durLastGood = ''
+          }
+          s.session = i.id
+          s.unboundStart = false
+          // CONSTRAINT (Р7): only an info read carrying the id moves the F3
+          // baseline — a session change is recognised by the id alone
+          s.mainTurnsAtInfo = s.mainTurns
+        }
+        if (!s.resumedDecided && typeof i.turns === 'number') {
+          s.resumed = i.turns > s.mainTurns
+          s.priorTurns = s.resumed ? i.turns - s.mainTurns : 0
+          s.resumedDecided = true
+        }
+        return s
+      }
+      if (src.call === 'config') {
+        // the effort seed (ADJUDICATION-S2 #8/#9): the /config rows are the
+        // only place a level exists before the first turn.step; a level that
+        // arrived by event is never overwritten
+        const rows = Array.isArray(input.data) ? (input.data as { key?: unknown; value?: unknown }[]) : []
+        const seeded = rows.find((r) => r && typeof r.key === 'string' && /effort/i.test(r.key) && (typeof r.value === 'string' || typeof r.value === 'number'))
+        if (seeded && s.effort === undefined) s.effort = seeded.value as string | number
         return s
       }
       if (src.call === 'messages') {
@@ -965,7 +1197,7 @@ const collector: Collector<BaseState> = {
       return s
     }
     if (src.kind === 'file') {
-      reduceFile(s, src.path, input.ok, input.data, input.now, input.error)
+      reduceFile(s, src.path, input.ok, input.data, input.now, input.error, input.degraded === true)
       return s
     }
     if (src.kind === 'env') {

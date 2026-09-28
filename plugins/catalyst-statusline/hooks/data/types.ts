@@ -62,13 +62,23 @@ export type ElementDef = {
 }
 
 // CONSTRAINT: 'info' is the core's COMPOSITE source — the host has no
-// $.session.info door; the core assembles data = { cwd: string; root: string;
-// id: string; turns: number; transcriptPath?: string }.
+// $.session.info door; the core assembles data = SessionInfo.
+// CONSTRAINT (#521 FIX3b): `root` is always a path — on a refused root it is
+// the cwd, and `rootDegraded` says so; the mark is drawn, never stored in it.
+export type SessionInfo = {
+  cwd: string
+  root: string
+  rootDegraded?: boolean
+  id: string
+  turns: number
+  transcriptPath?: string
+}
+
 // CONSTRAINT: a turn.complete input's data is { ...the event input,
 // ...the result of next(e) } — on a name conflict the result's field wins.
 export type Source =
   | { kind: 'event'; event: 'session.start' | 'session.end' | 'turn.start' | 'turn.step' | 'turn.complete' | 'tool.call' | 'agent.spawn' | 'config.set' }
-  | { kind: 'session'; call: 'usage' | 'messages' | 'model' | 'info' }
+  | { kind: 'session'; call: 'usage' | 'messages' | 'model' | 'info' | 'config' }
   | { kind: 'cmd'; argv: readonly string[]; everyMs: number; cwd?: 'project' }
   | { kind: 'file'; path: string; everyMs: number; relativeTo?: 'project' | 'home' }
   | { kind: 'transcript'; everyMs: number }
@@ -81,6 +91,8 @@ export type Input = {
   data?: unknown
   error?: string
   now: number
+  // a project-relative file read from the cwd because the root was refused
+  degraded?: boolean
 }
 
 export type NumberFormat = {

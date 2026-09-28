@@ -2,9 +2,9 @@ import { expect, test } from 'claude-code/testing'
 import type { Collector, Source } from '../hooks/data/types'
 import base from '../hooks/data/base'
 import {
-  buildRegistry, resolveVariantOwner, closeKeepDraft, __renderPicker, __feed, __render, __diag,
+  buildRegistry, resolveVariantOwner, __renderPicker, __feed, __render, __diag,
 } from '../hooks/statusline'
-import { world, start, command, BAND_MOUNT, PANE_MOUNT, walk, textOf, STORE_OPEN, STORE_DRAFT, SESSION_ID, PANE_ID, HOME } from './world'
+import { world, start, command, BAND_MOUNT, PANE_MOUNT, walk, textOf, STORE_OPEN, STORE_DRAFT, SESSION_ID, PANE_ID, HOME, isOpen } from './world'
 import type { Node } from './world'
 
 // The 0.5 teeth: the Р5 panel (tabs, pills, preview, bottom), the Р4
@@ -12,20 +12,6 @@ import type { Node } from './world'
 // routing, the loud duplicate-id, the N elements with their reason, and the
 // text snapshots for the eye. Driven through the live picker hooks where the
 // kit allows (presses on the pane) and the stand where it cannot.
-
-// A stand `$` for the exported handlers the kit cannot drive live: the store
-// with the kit's own memory semantics (0.4.0 drove restoreAfterReload the
-// same way).
-const standDollar = (persisted: Map<string, unknown>): any => ({
-  store: {
-    get: async (k: string) => persisted.get(k),
-    set: async (k: string, v: unknown) => { persisted.set(k, JSON.parse(JSON.stringify(v))) },
-    delete: async (k: string) => { persisted.delete(k) },
-  },
-  session: { id: async () => SESSION_ID },
-  plugin: { name: 'catalyst-statusline', root: '/stand' },
-  ui: { log: async () => undefined, invalidate: async () => undefined },
-})
 
 const openPanel = async ($: any, on: any, over: Record<string, (...args: any[]) => unknown> = {}, store: Record<string, unknown> = {}) => {
   const w = world(on, over, store)
@@ -48,7 +34,8 @@ const byKey = async (pane: { findAll: (q: { type: string }) => Promise<unknown> 
 
 test('Р5: the panel shows the preview, six tabs and the bottom row; a tab press switches the body', async ($, on) => {
   const { w, pane } = await openPanel($, on)
-  for (const key of ['tab:layout', 'tab:elements', 'tab:element', 'tab:view', 'tab:themes', 'tab:numbers', 'save', 'cancel', 'undo', 'reset']) {
+  // #521 Р6: the bottom row names five actions; «Отменить все правки» stands only with unsaved edits
+  for (const key of ['tab:layout', 'tab:elements', 'tab:element', 'tab:view', 'tab:themes', 'tab:numbers', 'save', 'undo-step', 'close', 'undo', 'reset']) {
     expect(await pane.find({ key })).toBeDefined()
   }
   // hotkeys 1-6 sit on the tab pills
@@ -58,7 +45,10 @@ test('Р5: the panel shows the preview, six tabs and the bottom row; a tab press
   expect(allText(walk(await pane.drawn()))).toContain('Строка 1')
   await pane.press({ key: 'tab:themes' })
   await w.clock.settle()
+  // #521 FIX2 Р17: each theme card carries its own button on every surface
+  expect(await pane.find({ type: 'Select', key: 'theme' })).toBeUndefined()
   expect(await pane.find({ key: 'theme:hud' })).toBeDefined()
+  expect(await pane.find({ key: 'themecard:hud' })).toBeDefined()
   expect(await pane.find({ key: 'theme-name' })).toBeDefined()
 })
 
@@ -74,6 +64,10 @@ test('Р5: the 0.4 checkbox list is gone — no digit-prefixed checkbox rows exi
 test('Р5: an element pill press changes the draft; Save writes the layout through /config', async ($, on) => {
   const { w, pane } = await openPanel($, on)
   await pane.press({ key: 'tab:elements' })
+  await w.clock.settle()
+  // CONSTRAINT (ADJUDICATION-S4 Д2 п.6): the default filter is the registry's
+  // first family; github sits on its own family's page
+  await pane.press({ key: 'fam:github' })
   await w.clock.settle()
   expect(await pane.find({ key: 'el:github' })).toBeDefined()
   await pane.press({ key: 'el:github' })
@@ -107,20 +101,26 @@ test('Р5: Esc keeps the unsaved draft in the store and it is restored on the ne
   const pane = await $.ui.mount(PANE_MOUNT)
   await pane.press({ key: 'tab:elements' })
   await w.clock.settle()
+  // CONSTRAINT (ADJUDICATION-S4 Д2 п.6): the default filter is the registry's
+  // first family; github sits on its own family's page
+  await pane.press({ key: 'fam:github' })
+  await w.clock.settle()
   await pane.press({ key: 'el:github' })
   await w.clock.settle()
   // Esc raises ui.close with the person's origin; the kit cannot raise that
-  // event from the test side (measured), so the tooth runs the handler the
-  // event dispatches, against the same persisted store
-  await closeKeepDraft(standDollar(w.persisted))
+  // event from the test side (measured). CONSTRAINT (#521 FIX2 Р27): the open
+  // flag goes only with the token of the open that wrote it, which the kit's
+  // own plugin instance holds — «Закрыть» runs the same closeKeepDraft there
+  await pane.press({ key: 'close' })
   await w.clock.settle()
-  expect(w.persisted.has(STORE_DRAFT)).toBe(true)
+  expect(w.persisted.has(STORE_DRAFT + ':' + SESSION_ID)).toBe(true)
   expect(w.persisted.has(STORE_OPEN)).toBe(false)
+  expect(isOpen(w.persisted)).toBe(false)
   await command($)
   await w.clock.settle()
   await pane.unmount()
   const again = await $.ui.mount(PANE_MOUNT)
-  const draft = w.persisted.get(STORE_DRAFT) as { lines: { id: string }[][] }
+  const draft = w.persisted.get(STORE_DRAFT + ':' + SESSION_ID) as { lines: { id: string }[][] }
   expect(draft.lines.flat().some((s) => s.id === 'github')).toBe(true)
   expect(await again.find({ key: 'box:el:github' })).toBeDefined()
 })
@@ -195,11 +195,15 @@ test('Р6: at least fourteen built-in themes are offered and each card draws the
   const { w, pane } = await openPanel($, on)
   await pane.press({ key: 'tab:themes' })
   await w.clock.settle()
-  const themeButtons = (await byKey(pane, 'Button', /theme:/)).map((b) => keyOf(b))
+  // #521 FIX2 Р17: every offered theme is a button on its preview card
+  expect(await pane.find({ type: 'Select', key: 'theme' })).toBeUndefined()
+  const themeCards = (await byKey(pane, 'Box', /^themecard:/)).map((b) => keyOf(b))
+  const themeButtons = (await byKey(pane, 'Button', /^theme:/)).map((b) => keyOf(b))
   for (const name of ['hud', 'powerline', 'pill', 'catppuccin-mocha', 'nord', 'gruvbox-dark', 'tokyo-night', 'dracula', 'solarized-dark', 'solarized-light', 'mono', 'minimal', 'classic', 'claude-code', 'codex']) {
+    expect(themeCards).toContain('themecard:' + name)
     expect(themeButtons).toContain('theme:' + name)
   }
-  expect(themeButtons.length).toBeGreaterThanOrEqual(14)
+  expect(themeCards.length).toBeGreaterThanOrEqual(14)
   const nodes = walk(await pane.drawn())
   const card = (name: string): string => allText(walk(nodes.find((n) => keyOf(n) === 'themecard:' + name)!))
   // the card renders the user's own layout through that theme
@@ -212,6 +216,7 @@ test('Р6: applying a theme takes the whole view and Save writes the theme field
   const { w, pane } = await openPanel($, on)
   await pane.press({ key: 'tab:themes' })
   await w.clock.settle()
+  // #521 FIX2 Р17: the pick is the theme's button
   await pane.press({ key: 'theme:powerline' })
   await w.clock.settle()
   await pane.press({ key: 'save' })
@@ -284,6 +289,10 @@ test('14.8-17: { deny } from $.config.set is shown in the panel, not gulled', as
   const { w, pane } = await openPanel($, on, { 'config.set': (_$: any, e: any) => ({ deny: 'locked by policy' }) })
   await pane.press({ key: 'tab:elements' })
   await w.clock.settle()
+  // CONSTRAINT (ADJUDICATION-S4 Д2 п.6): the default filter is the registry's
+  // first family; github sits on its own family's page
+  await pane.press({ key: 'fam:github' })
+  await w.clock.settle()
   await pane.press({ key: 'el:github' })
   await w.clock.settle()
   await pane.press({ key: 'save' })
@@ -303,11 +312,13 @@ test('14.8-18 (Esc path): a reload restores the open panel and its draft from $.
   expect(await pane.find({ key: 'seg:cost' })).toBeDefined()
 })
 
-test('14.8-22: a surface without the pane gets the /config path and does not fall', async ($, on) => {
+// #521 FIX2 Р16: vscode draws the panel itself; the /config-only stub is gone
+test('14.8-22: vscode draws the panel, not a /config-only stub, and does not fall', async ($, on) => {
   const { pane } = await openPanel($, on)
   await pane.unmount()
   const other = await $.ui.mount({ ...PANE_MOUNT, surface: 'vscode' as any })
-  expect(await other.find({ type: 'Text', text: /Open \/statusline-mod in the terminal/ })).toBeDefined()
+  expect(await other.find({ type: 'Text', text: /Open \/statusline-mod in the terminal/ })).toBeUndefined()
+  expect(await other.find({ key: 'tab:layout' })).toBeDefined()
   expect(await other.find({ key: 'close' })).toBeDefined()
 })
 

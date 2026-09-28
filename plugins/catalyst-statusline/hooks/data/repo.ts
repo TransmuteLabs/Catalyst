@@ -2,6 +2,7 @@
 // Every formula: CATALOGUE-elements-43.md rows E004–E622 of this family, grounded
 // against the reference carriers named there.
 import type { Collector, ElementDef, Family, FormatArgs, Input, NumberFormat, Ok, Option, Row, Source, Value } from './types'
+import { own, setOwn } from './own'
 
 // One feed of one source. `last` keeps the last good value so a failure after a
 // success renders stale, never as zero (types.ts: stale = last good + reason).
@@ -450,7 +451,13 @@ const collector: Collector<RepoState> = {
     const src = input.source
     if (src.kind === 'clock') { s.clockAt = input.now; return s }
     if (src.kind === 'env') {
-      const v = input.ok && typeof input.data === 'object' && input.data !== null ? input.data as Record<string, string | undefined> : {}
+      // CONSTRAINT (S4-FIX12 Н2, critic swe2 F1): only the string values are
+      // kept — the env slot is read from a host answer whose shape is not
+      // ours to trust, and a verbatim object node in the family state would
+      // make a later state clone throw
+      const v = input.ok && typeof input.data === 'object' && input.data !== null
+        ? Object.fromEntries(Object.entries(input.data as Record<string, unknown>).filter(([, x]) => typeof x === 'string')) as Record<string, string>
+        : {}
       s.env = slot(s.env, input, v)
       return s
     }
@@ -581,13 +588,13 @@ function envOf(state: RepoState): Record<string, string | undefined> {
   return state.env && state.env.ok ? state.env.v : {}
 }
 
-function dotenvOf(state: RepoState): Record<string, string> {
+export function dotenvOf(state: RepoState): Record<string, string> {
   const f = state.files['.env']
   const out: Record<string, string> = {}
   if (!f || !f.ok) return out
   for (const line of f.v.split('\n')) {
     const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim())
-    if (m) out[m[1]!] = m[2]!
+    if (m) setOwn(out, m[1]!, m[2]!)
   }
   return out
 }
@@ -610,6 +617,7 @@ const INSTANCE_DIRS: Record<string, number> = {
   '.claude-next': 1, '.claude-secondary': 2, '.claude-tertiary': 3, '.claude-quaternary': 4, '.claude-quinary': 5,
   '.claude-senary': 6, '.claude-septenary': 7, '.claude-octonary': 8, '.claude-nonary': 9, '.claude-denary': 10,
 }
+export function instanceOfDir(cfg: string): number | undefined { return own(INSTANCE_DIRS, baseName(cfg)) }
 const CIRCLED = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳']
 
 function flowOf(branch: string): { icon: string; target?: string } {
@@ -797,7 +805,7 @@ function valueOf(state: RepoState, elementId: string, args: FormatArgs): Value {
           if (head !== '' && head !== tp) cfg = head
         }
         if (cfg === undefined) cfg = env.CLAUDE_CONFIG_DIR
-        if (cfg !== undefined && cfg !== '') n = INSTANCE_DIRS[baseName(cfg)]
+        if (cfg !== undefined && cfg !== '') n = instanceOfDir(cfg)
       }
       if (n === undefined) return { state: 'nosource', reason: 'инстанс не определён: нет CLAUDE_INSTANCE_N, карта каталогов и CLAUDE_CONFIG_DIR не сказали' }
       const circled = env.TERM_PROGRAM === 'iTerm.app' && n <= 20

@@ -6,7 +6,7 @@ import {
   __setArmEvery, __syncSourceTimers, buildNf, valueOf,
 } from '../hooks/statusline'
 import * as statusline from '../hooks/statusline'
-import { world, start, BAND_MOUNT, walk, textOf } from './world'
+import { world, start, BAND_MOUNT, walk, textOf, SESSION_ID } from './world'
 import type { Node } from './world'
 
 // Teeth for the timer, scope and cap fixes. The loaded plugin and this import
@@ -297,13 +297,21 @@ test('G7a: an ordinary turn.complete drops its own scope and does not count the 
 
 test('G7b: session.start with a new id drops a row left hanging from the previous session', async ($, on) => {
   const release = holdTools(on)
-  const w = world(on)
+  // CONSTRAINT (ADJUDICATION-S4 Д4): SessionStartInput carries no session id —
+  // the change arrives with the world's session.info answer; the same id back
+  // clears nothing, a different one drops the previous session's rows
+  let sid = SESSION_ID
+  const w = world(on, { 'session.id': () => ({ value: sid }) })
   await start($)
   await w.clock.settle()
   const read = $.tool.call({ tool: 'Read', tool_use_id: 'rd', input: { file_path: 'a.ts' } } as any)
   await w.clock.settle()
   expect(await bandText($, 'g7b-run')).toContain('◐ Read')
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work/demo/src', sessionId: 'sess-new' } as any)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work/demo/src' } as any)
+  await w.clock.settle()
+  expect(await bandText($, 'g7b-same')).toContain('◐ Read')
+  sid = 'sess-new'
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work/demo/src' } as any)
   await w.clock.settle()
   expect(await bandText($, 'g7b-next')).not.toMatch(/◐ Read/)
   release('rd')
