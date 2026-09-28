@@ -8,8 +8,9 @@
 # CONSTRAINT: git-хуки не переносятся клоном; дверь сама себя не включает --
 # включение: git config core.hooksPath .githooks
 #
-# CONSTRAINT: ось B и ось C читают РАБОЧЕЕ ДЕРЕВО, а не индекс -- дверь
-# заявляет ровно то, что проверила: staged-копия и рабочая могут расходиться.
+# CONSTRAINT: оси B и C читают ИНДЕКС (снимок git checkout-index), рабочее
+# дерево не читают: дверь заявляет ровно то, что коммитит; staged-копия и
+# рабочая могут расходиться, и рабочая здесь ничего не доказывает.
 #
 # CONSTRAINT: гейт синтаксиса -- bun, НЕ tsc: tsc перехватывается
 # PreToolUse-хуком rch и уезжает в удалённую сборку (инцидент RCH-I011),
@@ -21,77 +22,202 @@ set -u
 
 fail() { printf 'дверь приёмки плагина: ОТКАЗ %s\n' "$1"; exit 1; }
 
-json_version() {   # version из JSON на stdin; rc=1, если JSON не читается
-  python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("version", ""))
-except Exception:
-    sys.exit(1)'
+# CONSTRAINT: bash вне POSIX-режима обрывает составную команду на ошибке раскрытия и продолжает скрипт -- успех двери требует записи каждой стадии.
+# Стадия -- функция, вызванная на верхнем уровне; её последний оператор -- запись
+# имени в STAGES_DONE. Стадия, пропущенная по объявленному правилу, пишет имя с
+# пометкой :skip. Успех -- только pass_exit: каждое имя STAGES_EXPECTED записано
+# ровно один раз и в этом порядке.
+STAGES_EXPECTED="staged classify tools axis_a axes_bc axis_d scope_index head_probe scope_head scope_union witness summary"
+STAGES_DONE=""
+PASS_MSG=""
+stages_skip() {   # <имя>...: стадии, пропущенные по объявленному правилу
+  local n
+  for n in "$@"; do
+    STAGES_DONE="$STAGES_DONE $n:skip"
+  done
+}
+stages_check() {
+  local got="" s e missing=""
+  for s in $STAGES_DONE; do
+    got="${got:+$got }${s%:skip}"
+  done
+  [ "$got" = "$STAGES_EXPECTED" ] && return 0
+  for e in $STAGES_EXPECTED; do
+    case " $got " in
+      *" $e "*) ;;
+      *) missing="${missing:+$missing }$e" ;;
+    esac
+  done
+  fail "СТАДИЯ_НЕ_ЗАВЕРШЕНА: ${missing:-порядок или повтор записей} (записано:$STAGES_DONE)"
+}
+pass_exit() {
+  stages_check
+  [ -z "$PASS_MSG" ] || printf '%s\n' "$PASS_MSG"
+  exit 0
 }
 
-staged=$(git diff --cached --name-only)
-[ -n "$staged" ] || exit 0
+# CONSTRAINT: хосты, чьи свидетели принимаются: прогоны стендов идут только на
+# usbox, и свидетель с иной машины ничего не доказывает о площадке прогонов.
+# Массив: элемент не проходит word-split и glob.
+WITNESS_HOSTS=(usbox)
+
+json_version() {   # version из JSON на stdin; rc=1, если JSON не читается или корень не объект
+  # CONSTRAINT: версия -- непустая печатаемая строка, равная своему strip():
+  # null, число, объект и пробелы печатались бы литералом ("None", "1", "{}")
+  # и читались бы как объявленная версия. Иное значение -- пустая строка.
+  python3 -c 'import json,sys
+try:
+    j = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if not isinstance(j, dict):
+    sys.exit(1)
+v = j.get("version")
+print(v if isinstance(v, str) and v and v == v.strip() and v.isprintable() else "")'
+}
+
+# CONSTRAINT: staged-список читается ОДИН раз, из --name-status -z, и служит и
+# классификатору, и оси A: без -z git кавычит не-ASCII пути (core.quotePath), и
+# кавыченный путь не матчится ни одним классом; --name-only при переименовании
+# отдаёт только НОВОЕ имя, и файл, уведённый из плагина наружу, не будил бы ось A
+# своего плагина. Отказ git -- ПРИБОР_НЕДОСТУПЕН, а не «пустой коммит».
+stage_staged() {
+STG=""
+trap '[ -z "$STG" ] || rm -f "$STG"' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 131' QUIT; trap 'exit 143' TERM
+STG=$(mktemp "${TMPDIR:-/tmp}/plugin-gate-staged.XXXXXX") || fail "ПРИБОР_НЕДОСТУПЕН: не создан файл staged-списка"
+git diff --cached --name-status -z > "$STG"
+grc=$?
+[ "$grc" -eq 0 ] || fail "ПРИБОР_НЕДОСТУПЕН: git diff --cached rc=$grc"
+staged_paths=()
+while IFS= read -r -d '' st; do
+  IFS= read -r -d '' f || fail "ПРИБОР_НЕДОСТУПЕН: git diff --cached: запись $st без пути"
+  staged_paths+=("$f")
+  case "$st" in
+    R*|C*)
+      IFS= read -r -d '' f || fail "ПРИБОР_НЕДОСТУПЕН: git diff --cached: запись $st без второго пути"
+      staged_paths+=("$f")
+      ;;
+  esac
+done < "$STG"
+rm -f "$STG"
+trap - EXIT
+trap - HUP INT QUIT TERM
+STAGES_DONE="$STAGES_DONE staged"
+}
+stage_staged
+if [ "${#staged_paths[@]}" -eq 0 ]; then
+  stages_skip classify tools axis_a axes_bc axis_d scope_index head_probe scope_head scope_union witness summary
+  pass_exit
+fi
 
 # Классификация: plugins/<name>/... -> плагин <name>; skills/, agents/,
 # commands/, hooks/, .claude-plugin/ -> корневой плагин catalyst (дом ".").
-plugins=""
+# CONSTRAINT: имя плагина -- значение из пути: множество каталогов -- массив,
+# членство -- точное сравнение строк; значение не встаёт в позицию паттерна case
+# и не проходит glob-раскрытие (имя plugins/[x] раскрылось бы в plugins/x).
+stage_classify() {
+plugin_dirs=()
 root_touched=0
-# CONSTRAINT: оснастка (стенды, скрипты, сама дверь) поднимает ТОЛЬКО стадию 5,
-# не оси A--D: она не входит ни в один плагин, и требовать за неё бамп версии
-# было бы неверно. Но гонять стенды за неё обязательно -- иначе правка, ломающая
-# стенд, проходит молча, и дверь слепа ровно к своей собственной поломке.
-harness_touched=0
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
+for f in "${staged_paths[@]}"; do
   case "$f" in
     plugins/*/?*)
       name="${f#plugins/}"; name="${name%%/*}"
       p="plugins/$name"
-      case " $plugins " in *" $p "*) ;; *) plugins="$plugins $p";; esac
+      seen=0
+      for q in ${plugin_dirs[@]+"${plugin_dirs[@]}"}; do
+        [ "$q" = "$p" ] && seen=1
+      done
+      [ "$seen" = 1 ] || plugin_dirs+=("$p")
       ;;
+    # CONSTRAINT: такой путь не принадлежит ни одному плагину и не будит ни одной
+    # оси; молчаливый `exit 0` за него -- пропуск классификатора.
+    plugins|plugins/*|skills|agents|commands|hooks|.claude-plugin|.codex-plugin|.cursor-plugin|.kimi-plugin) fail "ПУТЬ_СЕМЬИ_НЕ_КЛАССИФИЦИРОВАН: $f" ;;
     skills/*|agents/*|commands/*|hooks/*|.claude-plugin/*) root_touched=1 ;;
     # CONSTRAINT: зеркала манифеста тоже будят дверь -- ось D сторожит именно
     # их, и правка ОДНОГО зеркала обязана её поднять, иначе расхождение версий
     # уезжает молча (norms.yaml: дом управляет, зеркало -- баг).
     .codex-plugin/*|.cursor-plugin/*|.kimi-plugin/*) root_touched=1 ;;
-    tests/*|scripts/*|.githooks/*) harness_touched=1 ;;
   esac
-done <<EOF
-$staged
-EOF
+done
+STAGES_DONE="$STAGES_DONE classify"
+}
+stage_classify
 
-[ -n "$plugins" ] || [ "$root_touched" = 1 ] || [ "$harness_touched" = 1 ] || exit 0
-
+# CONSTRAINT: ранний выход -- только пустой staged-список (выше): оси A--D будит
+# классификатор (dirs / root_touched ниже), а стадия 5 идёт для ЛЮБОГО staged-пути.
 if [ "${CATALYST_PLUGIN_GATE:-}" = "off" ]; then
-  printf 'CATALYST_PLUGIN_GATE=off: дверь приёмки плагина ПРОПУЩЕНА по явной ручке\n'
-  exit 0
+  PASS_MSG='CATALYST_PLUGIN_GATE=off: дверь приёмки плагина ПРОПУЩЕНА по явной ручке'
+  stages_skip tools axis_a axes_bc axis_d scope_index head_probe scope_head scope_union witness summary
+  pass_exit
 fi
 
+stage_tools() {
 # Список корней: каталоги плагинов плюс корень репозитория для корневого.
-dirs="$plugins"
-[ "$root_touched" = 1 ] && dirs="$dirs ."
+dirs=(${plugin_dirs[@]+"${plugin_dirs[@]}"})
+[ "$root_touched" = 1 ] && dirs+=(".")
+
+# CONSTRAINT: python3 -- прибор осей A и D (разбор манифестов); без него обе оси
+# молча выключались бы. Спрашивается там же, где claude и bun: только если есть
+# плагин, который им мерить.
+if [ "${#dirs[@]}" -gt 0 ]; then
+  command -v python3 >/dev/null 2>&1 || fail "ПРИБОР_НЕДОСТУПЕН: python3 не найден в PATH -- оси A и D не мерят, это «не измерено», а не «чисто»"
+fi
+STAGES_DONE="$STAGES_DONE tools"
+}
+stage_tools
 
 # --- ОСЬ A: код изменён -> version обязана отличаться от HEAD -----------------
-for d in $dirs; do
+stage_axis_a() {
+for d in ${dirs[@]+"${dirs[@]}"}; do
   manifest="$d/.claude-plugin/plugin.json"
   [ "$d" = "." ] && manifest=".claude-plugin/plugin.json"
   has_code=0
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
+  for f in "${staged_paths[@]}"; do
     [ "$f" = "$manifest" ] && continue
     if [ "$d" = "." ]; then
       case "$f" in
         skills/*|agents/*|commands/*|hooks/*|.claude-plugin/*) has_code=1; break ;;
       esac
-    else
-      case "$f" in "$d"/*) has_code=1; break ;; esac
+    elif [ "${f:0:$((${#d}+1))}" = "$d/" ]; then
+      has_code=1; break
     fi
-  done <<EOF
-$staged
-EOF
+  done
+  # CONSTRAINT: манифест, которого нет в индексе, -- удаление плагина, только
+  # когда в индексе не осталось ни одного файла плагина; остались файлы --
+  # отказ МАНИФЕСТА_НЕТ: снятый манифест при живом коде пускал бы правку без
+  # версии. СУЩЕСТВУЮЩИЙ, но неразбираемый -- отказ МАНИФЕСТ_НЕЧИТАЕМ.
+  # Присутствие меряется ls-files / rev-parse -q --verify с явным rc, чтение --
+  # git show; отказ чтения -- ПРИБОР_НЕДОСТУПЕН, а не «манифеста нет».
+  # CONSTRAINT: версия собственного манифеста проверяется при ЛЮБОЙ правке
+  # плагина, не только при правке кода: коммит одного манифеста иначе снимал
+  # version молча. Сравнение с предками -- только при правке кода (ниже).
+  lsm=$(git ls-files -s -- ":(literal)$manifest") || fail "ПРИБОР_НЕДОСТУПЕН: git ls-files $manifest"
+  if [ -z "$lsm" ]; then
+    # CONSTRAINT: NUL-список переводится в строки внутри той же подстановки:
+    # подстановка с NUL печатала бы предупреждение bash. rc подстановки -- И git,
+    # И tr: код одного члена конвейера пропустил бы усечённый список в сторону
+    # пропуска МАНИФЕСТА_НЕТ.
+    if [ "$d" = "." ]; then
+      lpf=$(git ls-files -z -- skills agents commands hooks .claude-plugin .codex-plugin .cursor-plugin .kimi-plugin | tr '\0' '\n'; p=("${PIPESTATUS[@]}"); [ "${p[0]}" -eq 0 ] && [ "${p[1]}" -eq 0 ]) \
+        || fail "ПРИБОР_НЕДОСТУПЕН: git ls-files $d"
+    else
+      lpf=$(git ls-files -z -- ":(literal)$d" | tr '\0' '\n'; p=("${PIPESTATUS[@]}"); [ "${p[0]}" -eq 0 ] && [ "${p[1]}" -eq 0 ]) \
+        || fail "ПРИБОР_НЕДОСТУПЕН: git ls-files $d"
+    fi
+    [ -z "$lpf" ] || fail "МАНИФЕСТА_НЕТ: $manifest отсутствует в индексе, а файлы плагина $d в нём есть"
+    continue
+  fi
+  mj=$(git show ":$manifest") || fail "ПРИБОР_НЕДОСТУПЕН: git show :$manifest"
+  staged_v=$(printf '%s' "$mj" | json_version) || fail "МАНИФЕСТ_НЕЧИТАЕМ: $manifest (индекс)"
+  # CONSTRAINT: staged-манифест без version не сравним ни с предком, ни с
+  # зеркалами; пустое значение уводило первую позицию оси D к версии второго зеркала.
+  [ -n "$staged_v" ] || fail "МАНИФЕСТ_БЕЗ_ВЕРСИИ: $manifest (индекс): version отсутствует или не является непустой печатаемой строкой без пробелов по краям"
   [ "$has_code" = 1 ] || continue
-  staged_v=$(git show ":$manifest" 2>/dev/null | json_version) || continue
-  git rev-parse -q --verify HEAD >/dev/null 2>&1 || continue
+  git rev-parse -q --verify HEAD >/dev/null
+  hrc=$?
+  [ "$hrc" -eq 1 ] && continue
+  [ "$hrc" -eq 0 ] || fail "ПРИБОР_НЕДОСТУПЕН: git rev-parse HEAD rc=$hrc"
 
   # CONSTRAINT: предков у коммита бывает БОЛЬШЕ ОДНОГО, и сравнение только с HEAD
   # (первым родителем) отбивало слияние, версию которого подняла ВТОРАЯ сторона:
@@ -101,39 +227,107 @@ EOF
   # ставленного. Предок, чей код совпал со ставленным, версии не требует --
   # слияние, взявшее сторону целиком, не вносит ничего своего.
   parents="HEAD"
-  if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
-    while IFS= read -r mh; do
-      [ -n "$mh" ] && parents="$parents $mh"
-    done < "$(git rev-parse --git-dir)/MERGE_HEAD"
+  gd=$(git rev-parse --git-dir) || fail "ПРИБОР_НЕДОСТУПЕН: git rev-parse --git-dir"
+  # CONSTRAINT: существующий MERGE_HEAD, который не читается или пуст, -- отказ прибора: иначе сверка со вторым предком молча снимается.
+  if [ -e "$gd/MERGE_HEAD" ] || [ -L "$gd/MERGE_HEAD" ]; then
+    [ -f "$gd/MERGE_HEAD" ] && [ -r "$gd/MERGE_HEAD" ] || fail "ПРИБОР_НЕДОСТУПЕН: MERGE_HEAD не читается"
+    mhs=$(cat -- "$gd/MERGE_HEAD") || fail "ПРИБОР_НЕДОСТУПЕН: MERGE_HEAD не читается"
+    [ -n "$mhs" ] || fail "ПРИБОР_НЕДОСТУПЕН: MERGE_HEAD пуст"
+    # CONSTRAINT: git пишет в MERGE_HEAD только полные sha, иное слово -- отказ прибора; подложенный sha другого существующего коммита отличить нельзя -- предел доверия к содержимому .git.
+    # CONSTRAINT: слова режутся под set -f -- глоб из содержимого раскрылся бы в имена файлов корня; класс перечислен, не диапазоном: смысл диапазона вне локали C POSIX не определяет. Состояние -f до цикла восстанавливается.
+    case $- in *f*) mh_f=1 ;; *) mh_f=0 ;; esac
+    set -f
+    mh_re='^([0123456789abcdef]{40}|[0123456789abcdef]{64})$'
+    mh_n=0
+    for mh in $mhs; do
+      [[ $mh =~ $mh_re ]] || fail "ПРИБОР_НЕДОСТУПЕН: MERGE_HEAD: слово не sha: $mh"
+      parents="$parents $mh"; mh_n=$((mh_n+1))
+    done
+    [ "$mh_f" = 1 ] || set +f
+    [ "$mh_n" -gt 0 ] || fail "ПРИБОР_НЕДОСТУПЕН: MERGE_HEAD не содержит предка"
   fi
 
   for p in $parents; do
-    git show "$p:$manifest" >/dev/null 2>&1 || continue   # нет у предка -- новый плагин, не отказ
+    git rev-parse -q --verify "$p^{commit}" >/dev/null || fail "ПРИБОР_НЕДОСТУПЕН: предок $p не разрешается"
+    git rev-parse -q --verify "$p:$manifest" >/dev/null
+    prc=$?
+    [ "$prc" -eq 1 ] && continue   # нет у предка -- новый плагин, не отказ
+    [ "$prc" -eq 0 ] || fail "ПРИБОР_НЕДОСТУПЕН: git rev-parse $p:$manifest rc=$prc"
+    pj=$(git show "$p:$manifest") || fail "ПРИБОР_НЕДОСТУПЕН: git show $p:$manifest"
     # CONSTRAINT: манифест исключён из сравнения кода той же границей, что и в
     # has_code выше -- иначе подъём одной только версии сам считался бы правкой
     # кода и требовал бы второго подъёма.
+    # CONSTRAINT: --quiet: 0 -- код совпал, 1 -- отличается; любой иной код --
+    # отказ git, а не «отличается»: сравнение версий по неизмеренной разнице
+    # выдавало бы отказ git за штатную ветку.
     if [ "$d" = "." ]; then
       git diff --cached --quiet "$p" -- skills agents commands hooks .claude-plugin \
-        ":(exclude)$manifest" && continue
+        ":(exclude)$manifest"
     else
-      git diff --cached --quiet "$p" -- "$d" ":(exclude)$manifest" && continue
+      git diff --cached --quiet "$p" -- ":(literal)$d" ":(exclude,literal)$manifest"
     fi
-    p_v=$(git show "$p:$manifest" 2>/dev/null | json_version) || continue
+    qrc=$?
+    [ "$qrc" -eq 0 ] && continue
+    [ "$qrc" -eq 1 ] || fail "ПРИБОР_НЕДОСТУПЕН: git diff --cached --quiet rc=$qrc"
+    p_v=$(printf '%s' "$pj" | json_version) || fail "МАНИФЕСТ_НЕЧИТАЕМ: $manifest (предок $(git rev-parse --short "$p"))"
     if [ "$staged_v" = "$p_v" ]; then
       fail "ВЕРСИЯ_НЕ_ПОДНЯТА: $d -- код отличается от предка $(git rev-parse --short "$p"), а version в .claude-plugin/plugin.json ($staged_v) совпадает с версией этого предка"
     fi
   done
 done
+STAGES_DONE="$STAGES_DONE axis_a"
+}
+stage_axis_a
 
-# CONSTRAINT: приборы осей B и C спрашиваются, только если есть что ими мерить.
-# Коммит одной оснастки не трогает ни один плагин -- требовать за него claude и
-# bun значило бы краснить ПРИБОР_НЕДОСТУПЕН там, где мерить и нечего.
-if [ -n "$dirs" ]; then
+removed_dirs=()
+
+stage_axes_bc() {
+# --- СНИМОК ИНДЕКСА для осей B и C --------------------------------------------
+# CONSTRAINT: git-окружение хука НЕ счищается: ls-files и checkout-index читают
+# ИНДЕКС ХУКА (GIT_INDEX_FILE при `git commit --only/--include` -- временный
+# индекс этого репо), и снятие переменной подсунуло бы снимок чужого индекса.
+# CONSTRAINT: отказ ls-files или checkout-index ЛЮБОГО файла -- ПРИБОР_НЕДОСТУПЕН:
+# неполный снимок мерил бы оси B/C не тем деревом, и «зелёная» ось врала бы.
+# ls-files идёт в NUL-режиме: без -z не-ASCII пути кавычатся, не находятся
+# в индексе и молча выпадали из снимка.
+SNAP=""; LSF=""
+trap '[ -z "$SNAP$LSF" ] || rm -rf ${SNAP:+"$SNAP"} ${LSF:+"$LSF"}' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 131' QUIT; trap 'exit 143' TERM
+SNAP=$(mktemp -d "${TMPDIR:-/tmp}/plugin-gate-snap.XXXXXX") || fail "ПРИБОР_НЕДОСТУПЕН: не создан каталог снимка индекса"
+LSF=$(mktemp "${TMPDIR:-/tmp}/plugin-gate-ls.XXXXXX") || fail "ПРИБОР_НЕДОСТУПЕН: не создан файл списка снимка"
+# CONSTRAINT: плагин, у которого в индексе не осталось ни одного файла, удалён
+# этим коммитом: валидатор и синтаксис мерить нечего, и отказ валидатора на
+# отсутствующем каталоге назывался бы чужой причиной. Членство -- точное
+# сравнение строк, как у plugin_dirs.
+is_removed() {
+  local q
+  for q in ${removed_dirs[@]+"${removed_dirs[@]}"}; do
+    [ "$q" = "$1" ] && return 0
+  done
+  return 1
+}
+for d in "${dirs[@]}"; do
+  if [ "$d" = "." ]; then ps="."; else ps=":(literal)$d"; fi
+  git ls-files -z -- "$ps" > "$LSF" \
+    || fail "ПРИБОР_НЕДОСТУПЕН: снимок индекса для осей B/C не построен: $d"
+  if [ "$d" != "." ] && [ ! -s "$LSF" ]; then
+    removed_dirs+=("$d")
+    printf 'дверь приёмки плагина: плагин %s удалён -- оси B и C к нему не применимы\n' "$d"
+    continue
+  fi
+  while IFS= read -r -d '' f; do
+    [ -n "$f" ] || continue
+    git checkout-index --prefix="$SNAP/" -- "$f" \
+      || fail "ПРИБОР_НЕДОСТУПЕН: снимок индекса для осей B/C не построен: $f"
+  done < "$LSF"
+done
 
 # --- ОСЬ B: ценз валидатора ---------------------------------------------------
 command -v claude >/dev/null 2>&1 || fail "ПРИБОР_НЕДОСТУПЕН: claude не найден в PATH -- это «не измерено», а не «чисто»"
-for d in $dirs; do
-  out=$(claude plugin validate "$d" 2>&1)
+for d in "${dirs[@]}"; do
+  is_removed "$d" && continue
+  if [ "$d" = "." ]; then sd="$SNAP"; else sd="$SNAP/$d"; fi
+  out=$(claude plugin validate "$sd" 2>&1)
   if [ $? -ne 0 ]; then
     printf 'дверь приёмки плагина: ОТКАЗ ВАЛИДАТОР_ОТКАЗАЛ: claude plugin validate %s\n' "$d"
     printf '%s\n' "$out"
@@ -142,33 +336,52 @@ for d in $dirs; do
 done
 
 # --- ОСЬ C: синтаксис каждого *.ts под <плагин>/hooks/ ------------------------
+# CONSTRAINT: список -- find -print0 (пути с пробелом/переводом строки) и
+# симлинки тоже: .ts-симлинк под hooks/ грузится хостом так же, как файл.
 command -v bun >/dev/null 2>&1 || fail "ПРИБОР_НЕДОСТУПЕН: bun не найден в PATH -- это «не измерено», а не «чисто»"
-for d in $dirs; do
-  ts_files=$(find "$d/hooks" -type f -name '*.ts' 2>/dev/null)
-  [ -n "$ts_files" ] || continue
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
+for d in "${dirs[@]}"; do
+  if [ "$d" = "." ]; then sd="$SNAP"; else sd="$SNAP/$d"; fi
+  [ -d "$sd/hooks" ] || continue
+  find "$sd/hooks" \( -type f -o -type l \) -name '*.ts' -print0 > "$LSF" \
+    || fail "ПРИБОР_НЕДОСТУПЕН: список *.ts оси C не построен: $d/hooks"
+  while IFS= read -r -d '' f; do
     out=$(bun build --no-bundle --target=bun --outfile=/dev/null "$f" 2>&1)
     if [ $? -ne 0 ]; then
-      printf 'дверь приёмки плагина: ОТКАЗ СИНТАКСИС_МОДУЛЯ: %s\n' "$f"
+      printf 'дверь приёмки плагина: ОТКАЗ СИНТАКСИС_МОДУЛЯ: %s\n' "${f#"$SNAP/"}"
       printf '%s\n' "$out"
       exit 1
     fi
-  done <<EOF
-$ts_files
-EOF
+  done < "$LSF"
 done
 
-fi   # конец блока осей B и C
+STAGES_DONE="$STAGES_DONE axes_bc"
+}
+# CONSTRAINT: приборы осей B и C спрашиваются, только если есть что ими мерить.
+# Коммит одной оснастки не трогает ни один плагин -- требовать за него claude и
+# bun значило бы краснить ПРИБОР_НЕДОСТУПЕН там, где мерить и нечего.
+if [ "${#dirs[@]}" -gt 0 ]; then
+  stage_axes_bc
+else
+  STAGES_DONE="$STAGES_DONE axes_bc:skip"
+fi
 
 # --- ОСЬ D: зеркала манифеста корневого плагина -------------------------------
-if [ "$root_touched" = 1 ]; then
+stage_axis_d() {
   mirrors=".claude-plugin/plugin.json .codex-plugin/plugin.json .cursor-plugin/plugin.json .kimi-plugin/plugin.json"
   first=""
   diverged=0
   listing=""
   for m in $mirrors; do
-    v=$(git show ":$m" 2>/dev/null | json_version) || v="ОТСУТСТВУЕТ"
+    lsm=$(git ls-files -s -- ":(literal)$m") || fail "ПРИБОР_НЕДОСТУПЕН: git ls-files $m"
+    if [ -n "$lsm" ]; then
+      mj=$(git show ":$m") || fail "ПРИБОР_НЕДОСТУПЕН: git show :$m"
+      v=$(printf '%s' "$mj" | json_version) || fail "МАНИФЕСТ_НЕЧИТАЕМ: $m (индекс)"
+      # CONSTRAINT: staged-манифест без version не сравним ни с предком, ни с
+      # зеркалами; пустое значение уводило первую позицию оси D к версии второго зеркала.
+      [ -n "$v" ] || fail "МАНИФЕСТ_БЕЗ_ВЕРСИИ: $m (индекс): version отсутствует или не является непустой печатаемой строкой без пробелов по краям"
+    else
+      v="ОТСУТСТВУЕТ"
+    fi
     [ -n "$first" ] || first="$v"
     [ "$v" = "$first" ] || diverged=1
     listing="$listing
@@ -178,41 +391,200 @@ if [ "$root_touched" = 1 ]; then
     printf 'дверь приёмки плагина: ОТКАЗ ЗЕРКАЛА_РАЗОШЛИСЬ (норма norms.yaml: дом управляет, зеркало -- баг):%s\n' "$listing"
     exit 1
   fi
+  STAGES_DONE="$STAGES_DONE axis_d"
+}
+if [ "$root_touched" = 1 ]; then
+  stage_axis_d
+else
+  STAGES_DONE="$STAGES_DONE axis_d:skip"
 fi
 
-# --- СТАДИЯ 5 (СТЕНДЫ): агрегатор tests/run-all.sh ----------------------------
-# CONSTRAINT: стадия будится тем же классификатором, что оси A--D (проверено
-# выходом на классификации выше) -- коммит вне дерева семьи сюда не доходит.
-# CONSTRAINT: rc=2 агрегатора -- тот же класс, что отсутствующий файл: мерить
-# не получилось, а это отказ, а не тихий пропуск.
-if [ ! -f tests/run-all.sh ]; then
-  fail "ПРИБОР_НЕДОСТУПЕН: tests/run-all.sh не найден -- стенды не позваны, это «не измерено», а не «чисто»"
-fi
-# CONSTRAINT: стенды гоняются БЕЗ git-окружения хука. git экспортирует хуку
-# GIT_INDEX_FILE (и GIT_PREFIX): при обычном коммите это относительный
-# `.git/index`, при `git commit --only/--include <paths>` -- АБСОЛЮТНЫЙ путь к
-# временному индексу этого репо. Стенды строят свои временные репо; унаследованный
-# путь заставляет их писать чужой индекс («invalid object … Error building
-# trees»), и дверь краснеет ложно. GIT_DIR/GIT_WORK_TREE -- тот же класс.
-stands_out=$(env -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_DIR -u GIT_WORK_TREE bash tests/run-all.sh 2>&1)
-stands_rc=$?
-if [ "$stands_rc" -eq 1 ]; then
-  printf 'дверь приёмки плагина: ОТКАЗ СТЕНД_КРАСЕН: стенд семьи красен\n'
-  printf '%s\n' "$stands_out"
+# --- СТАДИЯ 5 (СТЕНДЫ): свидетель прогона tests/run-witness.sh ----------------
+# CONSTRAINT: стадия будится ЛЮБЫМ staged-путём, а карта обязана покрывать
+# каждый путь: путь вне карты -- КАРТА_НЕ_ПОКРЫВАЕТ, а не молчаливый проход.
+# CONSTRAINT: хук стенды НЕ исполняет: их гоняет производитель свидетеля
+# (tests/run-witness.sh) на usbox по снимку ДЕРЕВА T; хук проверяет СВИДЕТЕЛЬ --
+# файл <git-dir>/catalyst-witness/<T>, где T = git write-tree, строго из трёх
+# строк (scope=…, rc=0, host=…, хост из WITNESS_HOSTS) со scope, НАКРЫВАЮЩИМ
+# требуемый (множество из scope= ⊇ множества S).
+# CONSTRAINT: git-окружение хука для stand-scope НЕ счищается: сопоставление
+# читает ИНДЕКС ХУКА, и при `git commit --only/--include <paths>` GIT_INDEX_FILE
+# указывает на временный индекс этого репо -- его и обязана видеть карта.
+# Свидетель для такого коммита производится явно:
+#   GIT_INDEX_FILE=<временный> git write-tree  ->  T
+#   bash tests/run-witness.sh --tree <T> --scope <S>
+# CONSTRAINT: rc stand-scope делится по вине: rc 2 -- путь вне карты
+# (КАРТА_НЕ_ПОКРЫВАЕТ), rc 4 -- карта негодна (КАРТА_НЕИСПРАВНА), rc 3 и прочие
+# ненулевые -- прибор не мерил (ПРИБОР_НЕДОСТУПЕН); подмена одного другим
+# называла бы отказ среды дырой карты, а негодную карту -- непокрытым путём.
+# CONSTRAINT: сопоставитель и карта берутся из индекса, как оси B/C; рабочая копия ничего не доказывает.
+stage_scope_index() {
+lss=$(git ls-files -s -- tests/stand-scope.sh) || fail "ПРИБОР_НЕДОСТУПЕН: git ls-files tests/stand-scope.sh"
+[ -n "$lss" ] || fail "ПРИБОР_НЕДОСТУПЕН: tests/stand-scope.sh нет в индексе -- сопоставление путей со стендами невозможно, это «не измерено», а не «чисто»"
+ssx=$(git show :tests/stand-scope.sh) || fail "ПРИБОР_НЕДОСТУПЕН: git show :tests/stand-scope.sh"
+top=$(git rev-parse --show-toplevel) || fail "ПРИБОР_НЕДОСТУПЕН: git rev-parse --show-toplevel"
+# CONSTRAINT: $0 индексной копии -- путь стенда в дереве, от него stand-scope считает HERE/ROOT.
+S=$(bash -c "$ssx" "$top/tests/stand-scope.sh" --staged)
+src=$?
+if [ "$src" -eq 2 ]; then
+  printf 'дверь приёмки плагина: ОТКАЗ КАРТА_НЕ_ПОКРЫВАЕТ: staged-путь вне карты tests/stand-map.tsv (строки stand-scope выше)\n'
   exit 1
 fi
-if [ "$stands_rc" -ne 0 ]; then
-  printf 'дверь приёмки плагина: ОТКАЗ ПРИБОР_НЕДОСТУПЕН: агрегатор стендов вернул rc=%s (мерить не получилось)\n' "$stands_rc"
-  printf '%s\n' "$stands_out"
+if [ "$src" -eq 4 ]; then
+  printf 'дверь приёмки плагина: ОТКАЗ КАРТА_НЕИСПРАВНА: карта tests/stand-map.tsv негодна (строка stand-scope выше)\n'
   exit 1
+fi
+if [ "$src" -ne 0 ]; then
+  fail "ПРИБОР_НЕДОСТУПЕН: tests/stand-scope.sh вернул rc=$src -- сопоставление путей не состоялось, это «не измерено», а не «чисто»"
+fi
+STAGES_DONE="$STAGES_DONE scope_index"
+}
+stage_scope_index
+# CONSTRAINT: индексная копия не может урезать scope ниже HEAD-копии; первый коммит сопоставителя свидетельствует сам по построению.
+S_head=""
+hvrc=""
+stage_head_probe() {
+git rev-parse -q --verify HEAD:tests/stand-scope.sh >/dev/null
+hvrc=$?
+[ "$hvrc" -eq 0 ] || [ "$hvrc" -eq 1 ] || fail "ПРИБОР_НЕДОСТУПЕН: git rev-parse -q --verify HEAD:tests/stand-scope.sh rc=$hvrc"
+if [ "$hvrc" -eq 0 ]; then
+  git rev-parse -q --verify HEAD:tests/stand-map.tsv >/dev/null
+  hvrc=$?
+  [ "$hvrc" -eq 0 ] || [ "$hvrc" -eq 1 ] || fail "ПРИБОР_НЕДОСТУПЕН: git rev-parse -q --verify HEAD:tests/stand-map.tsv rc=$hvrc"
+fi
+STAGES_DONE="$STAGES_DONE head_probe"
+}
+stage_head_probe
+stage_scope_head() {
+  hsx=$(git show HEAD:tests/stand-scope.sh) || fail "ПРИБОР_НЕДОСТУПЕН: git show HEAD:tests/stand-scope.sh"
+  S_head=$(bash -c "$hsx" "$top/tests/stand-scope.sh" --staged --map-rev HEAD --skip-uncovered)
+  hsrc=$?
+  [ "$hsrc" -eq 0 ] || fail "ПРИБОР_НЕДОСТУПЕН: HEAD-копия tests/stand-scope.sh вернула rc=$hsrc"
+  STAGES_DONE="$STAGES_DONE scope_head"
+}
+# CONSTRAINT: :skip у HEAD-прохода -- только rc 1 пробы (в HEAD нет сопоставителя или карты); иной rc проба уже отвергла.
+if [ "$hvrc" = 0 ]; then
+  stage_scope_head
+elif [ "$hvrc" = 1 ]; then
+  STAGES_DONE="$STAGES_DONE scope_head:skip"
+fi
+stage_scope_union() {
+# CONSTRAINT: проверяется код одного sort: запись встроенного printf в трубу падает, только если sort закрылся до EOF, а это отказ sort.
+su=$(printf '%s\n' ${S//,/ } ${S_head//,/ } | LC_ALL=C sort -u) || fail "ПРИБОР_НЕДОСТУПЕН: sort объединения scope"
+S=""
+for sn in $su; do S="${S:+$S,}$sn"; done
+STAGES_DONE="$STAGES_DONE scope_union"
+}
+stage_scope_union
+stage_witness() {
+  T=$(git write-tree) || fail "ПРИБОР_НЕДОСТУПЕН: git write-tree отказ -- дерево свидетеля не построено"
+  # CONSTRAINT: git-dir берётся rev-parse'ом, а не литерой .git: в worktree
+  # git-каталог лежит вне рабочего дерева, и свидетель обязан лежать там же,
+  # где его ищет производитель (tests/run-witness.sh).
+  wgd=$(git rev-parse --git-dir) || fail "ПРИБОР_НЕДОСТУПЕН: git rev-parse --git-dir (свидетель)"
+  WIT="$wgd/catalyst-witness/$T"
+  # CONSTRAINT: свидетель -- СТРОГО три строки scope=…, rc=0, host=… с хостом из
+  # WITNESS_HOSTS: парсер, ищущий строки «где-то в файле», принимал смешанные
+  # rc=1/rc=0, симлинки и свидетелей чужих машин.
+  w_fail=""
+  if [ -L "$WIT" ]; then
+    w_fail="симлинк"
+  elif [ ! -f "$WIT" ]; then
+    w_fail="нет"
+  else
+    w_l1=$(sed -n '1p' "$WIT")
+    w_l2=$(sed -n '2p' "$WIT")
+    w_l3=$(sed -n '3p' "$WIT")
+    # CONSTRAINT: счёт строк -- awk NR (незавершённая последняя строка -- тоже
+    # строка), и файл обязан кончаться \n: wc -l не видел четвёртой строки без \n.
+    # Сравнение строковое -- пустой результат отказавшего awk не равен 3.
+    w_n=$(awk 'END{print NR}' "$WIT")
+    w_nl=$(tail -c 1 "$WIT" | wc -l | tr -d ' ')
+    case "$w_l1" in
+      scope=*) ;;
+      *) w_fail="формат" ;;
+    esac
+    if [ -z "$w_fail" ] && [ "$w_l2" != "rc=0" ]; then
+      w_fail="rc"
+    fi
+    if [ -z "$w_fail" ]; then
+      case "$w_l3" in
+        host=*) ;;
+        *) w_fail="формат" ;;
+      esac
+    fi
+    if [ -z "$w_fail" ]; then
+      # CONSTRAINT: членство -- точное сравнение строк: значение из файла не
+      # встаёт в паттерн (host=*, host=usbox* не площадки).
+      w_host="${w_l3#host=}"
+      host_ok=0
+      for h in "${WITNESS_HOSTS[@]}"; do
+        [ "$h" = "$w_host" ] && host_ok=1
+      done
+      [ "$host_ok" = 1 ] || w_fail="хост $w_host не площадка прогонов"
+    fi
+    if [ -z "$w_fail" ] && [ "$w_n" != 3 ]; then
+      w_fail="формат"
+    fi
+    if [ -z "$w_fail" ] && [ "$w_nl" != 1 ]; then
+      w_fail="формат"
+    fi
+    if [ -z "$w_fail" ]; then
+      # CONSTRAINT: свидетель с БОЛЕЕ ШИРОКИМ scope годится (тот прогон поглотил
+      # наш), узкий -- нет: непроверенные стенды не считаются зелёными.
+      w_scope="${w_l1#scope=}"
+      for want in ${S//,/ }; do
+        case ",$w_scope," in
+          *",$want,"*) ;;
+          *) w_fail="scope"; break ;;
+        esac
+      done
+    fi
+  fi
+  if [ -n "$w_fail" ]; then
+    if [ "$w_fail" = "нет" ]; then
+      fail "СВИДЕТЕЛЯ_НЕТ: дерево $T, нужен scope $S; произвести: bash tests/run-witness.sh --tree $T --scope $S"
+    fi
+    fail "СВИДЕТЕЛЯ_НЕТ: дерево $T, нужен scope $S ($w_fail); произвести: bash tests/run-witness.sh --tree $T --scope $S"
+  fi
+  printf 'стадия 5: свидетель %s scope=%s\n' "$T" "$S"
+  st5="свидетель стендов $S"
+  STAGES_DONE="$STAGES_DONE witness"
+}
+if [ -z "$S" ]; then
+  printf 'стадия 5: изменённые пути не мерит ни один стенд (tests/stand-map.tsv) -- стенды не звались\n'
+  st5='стенды не звались: пути вне стендов по карте'
+  STAGES_DONE="$STAGES_DONE witness:skip"
+else
+  stage_witness
 fi
 
 # CONSTRAINT: дверь называет, ЧТО проверила. Пустой список плагинов означает
-# коммит одной оснастки: оси A--D не запускались, и объявить их пройденными
-# было бы ложью.
-if [ -n "$dirs" ]; then
-  printf 'дверь приёмки плагина: прошло (версия/валидатор/синтаксис/зеркала/стенды) --%s\n' "$dirs"
-else
-  printf 'дверь приёмки плагина: затронута только оснастка -- прошло (стенды); оси плагина не запускались\n'
+# коммит, не тронувший ни одного плагина: оси A--D не запускались, и объявить
+# их пройденными было бы ложью. Проверенные -- dirs за вычетом удалённых; ось
+# зеркал названа, только если тронут корневой плагин.
+stage_summary() {
+checked=()
+if [ "${#dirs[@]}" -gt 0 ]; then
+  for d in "${dirs[@]}"; do
+    is_removed "$d" || checked+=("$d")
+  done
 fi
-exit 0
+axes="версия/валидатор/синтаксис"
+[ "$root_touched" = 1 ] && axes="$axes/зеркала"
+if [ "${#checked[@]}" -gt 0 ]; then
+  pass_line="дверь приёмки плагина: прошло ($axes; $st5) --$(printf ' %s' "${checked[@]}")"
+  if [ "${#removed_dirs[@]}" -gt 0 ]; then
+    pass_line="$pass_line; удалены:$(printf ' %s' "${removed_dirs[@]}")"
+  fi
+  PASS_MSG="$pass_line"
+elif [ "${#dirs[@]}" -gt 0 ]; then
+  PASS_MSG=$(printf 'дверь приёмки плагина: плагины удалены -- оси плагина к ним не применялись; прошло (%s); удалены:%s' "$st5" "$(printf ' %s' "${removed_dirs[@]}")")
+else
+  PASS_MSG=$(printf 'дверь приёмки плагина: плагины не затронуты -- прошло (%s); оси плагина не запускались' "$st5")
+fi
+STAGES_DONE="$STAGES_DONE summary"
+}
+stage_summary
+pass_exit
+fail "СТАДИЯ_НЕ_ЗАВЕРШЕНА: проверка стадий не завершилась"
