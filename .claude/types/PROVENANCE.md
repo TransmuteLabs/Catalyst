@@ -1,5 +1,22 @@
 # PROVENANCE — контракт типов мод-API в этом каталоге
 
+## Текущее издание: 2.1.283 (28.09)
+
+- `claude-code.d.ts` и `claude-code-plugins.d.ts` порождены командой `/plugin-types`,
+  которую юзер выполнил 2026-09-28 13:25 в сессии каталога
+  `/Users/maratkarimov/work/SIB/Agents/claudeapp`; файлы скопированы сюда байт в байт.
+- Образ: `/Users/maratkarimov/.local/bin/claude` → `/Users/maratkarimov/.local/share/claude/versions/2.1.283`,
+  225 034 896 Б, SHA-256 `23163f8ee7df6d7e6f33514dadb5ed6fb6e3faec8490ec6f06e00b94a8baa328`;
+  `--version`: `2.1.283 (Claude Code)` / `4.3.3 (tweakcc)`; баннер: «`// Written by Claude Code 2.1.283.`».
+- SHA-256: `claude-code.d.ts` `62eca4548f32e84be006a265b77c5c39d59ec943d692b664bbbc969100b8b5b5` (25 встроенных
+  инструментов), `claude-code-plugins.d.ts` `44150f02dcf449a67bf96e5f2c9265c39189900781004b38b7a4914bbe3decc8`
+  (declares nothing: ни один включённый плагин не называет `types`).
+- `claude-code-mcp.d.ts` НЕ заменён: его содержимое — MCP-инструменты сессии порождения
+  (там — коннектор claude.ai Claude Docs), мод их не использует; оставлен пустой набор издания 2.1.278.
+- hook_event_name: 33 имени, набор равен изданию 2.1.278.
+
+## Прежнее издание: 2.1.278 (21.09)
+
 Порождение: команда `/plugin-types` (команда сессии Claude Code, `type:"local"`),
 выполненная неинтерактивно:
 
