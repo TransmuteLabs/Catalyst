@@ -180,7 +180,7 @@ function readTranscript(s: State, stdout: string): void {
 function readHandoff(s: State, stdout: string): void {
   const field = (re: RegExp): string | undefined => {
     const m = re.exec(stdout)
-    return m ? m[1].trim() : undefined
+    return m ? m[1]!.trim() : undefined
   }
   s.handoff = {
     goal: field(/^goal:\s*(.+)$/m) ?? field(/^topic:\s*(.+)$/m) ?? field(/^#\s+(.+)$/m),
@@ -220,7 +220,7 @@ function reduceUsage(s: State, data: unknown, now: number): void {
 
 function ctxDiffs(s: State): number[] {
   const out: number[] = []
-  for (let i = 1; i < s.ctxSamples.length; i++) out.push(s.ctxSamples[i].tokens - s.ctxSamples[i - 1].tokens)
+  for (let i = 1; i < s.ctxSamples.length; i++) out.push(s.ctxSamples[i]!.tokens - s.ctxSamples[i - 1]!.tokens)
   return out
 }
 
@@ -591,16 +591,16 @@ const usage: Collector<State> = {
           const diffs = ctxDiffs(s)
           if (!diffs.length) return { state: 'pending' }
           if (args.variant === 'last') {
-            const d = diffs[diffs.length - 1]
-            return ok(`+${nf.tokens(d)} last turn`, s.ctxSamples[s.ctxSamples.length - 1].at, { num: d, unit: 'tokens' })
+            const d = diffs[diffs.length - 1]!
+            return ok(`+${nf.tokens(d)} last turn`, s.ctxSamples[s.ctxSamples.length - 1]!.at, { num: d, unit: 'tokens' })
           }
           if (args.variant === 'average') {
             const avg = diffs.reduce((a, b) => a + b, 0) / diffs.length
-            return ok(`+${nf.tokens(Math.round(avg))} average over ${diffs.length} turns`, s.ctxSamples[s.ctxSamples.length - 1].at, { num: Math.round(avg), unit: 'tokens' })
+            return ok(`+${nf.tokens(Math.round(avg))} average over ${diffs.length} turns`, s.ctxSamples[s.ctxSamples.length - 1]!.at, { num: Math.round(avg), unit: 'tokens' })
           }
-          let ema = diffs[0]
-          for (let i = 1; i < diffs.length; i++) ema += (diffs[i] - ema) * EMA_ALPHA
-          return ok(`ema +${nf.tokens(Math.round(ema))}`, s.ctxSamples[s.ctxSamples.length - 1].at, { num: Math.round(ema), unit: 'tokens' })
+          let ema = diffs[0]!
+          for (let i = 1; i < diffs.length; i++) ema += (diffs[i]! - ema) * EMA_ALPHA
+          return ok(`ema +${nf.tokens(Math.round(ema))}`, s.ctxSamples[s.ctxSamples.length - 1]!.at, { num: Math.round(ema), unit: 'tokens' })
         }
         return answer(s, [K_USAGE], s.ctxSamples.length > 1, draw)
       }
@@ -608,13 +608,13 @@ const usage: Collector<State> = {
         const draw = (): Value => {
           const thr = last?.threshold
           const used = last?.tokens
-          if (thr === undefined || used === undefined) return { state: 'pending' }
+          if (!last || thr === undefined || used === undefined) return { state: 'pending' }
           const diffs = ctxDiffs(s)
           if (!diffs.length) return { state: 'pending' }
           let rate: number
           if (args.variant === 'ema') {
-            let ema = diffs[0]
-            for (let i = 1; i < diffs.length; i++) ema += (diffs[i] - ema) * EMA_ALPHA
+            let ema = diffs[0]!
+            for (let i = 1; i < diffs.length; i++) ema += (diffs[i]! - ema) * EMA_ALPHA
             rate = ema
           } else {
             rate = diffs.reduce((a, b) => a + b, 0) / diffs.length // 'average' and the compactAt source share the average slope
@@ -632,7 +632,7 @@ const usage: Collector<State> = {
         const draw = (): Value => {
           const thr = last?.threshold
           const used = last?.tokens
-          if (thr === undefined || used === undefined) return { state: 'pending' }
+          if (!last || thr === undefined || used === undefined) return { state: 'pending' }
           const n = Math.max(0, thr - used)
           return ok(`${nf.tokens(n)} tokens to compaction`, last.at, { num: n, unit: 'tokens' })
         }
@@ -666,7 +666,7 @@ const usage: Collector<State> = {
           const min = Math.min(...xs.map((x) => x.tokens))
           const max = Math.max(...xs.map((x) => x.tokens))
           const cells = xs.map((x) => SPARK[max > min ? Math.round((SPARK.length - 1) * ((x.tokens - min) / (max - min))) : (SPARK.length - 1) >> 1])
-          return ok(cells.join(''), xs[xs.length - 1].at)
+          return ok(cells.join(''), xs[xs.length - 1]!.at)
         }
         return answer(s, [K_USAGE], s.ctxSamples.length > 1, draw)
       }

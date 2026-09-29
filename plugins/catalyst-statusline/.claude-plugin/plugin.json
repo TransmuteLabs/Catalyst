@@ -1,6 +1,6 @@
 {
   "name": "catalyst-statusline",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Multi-line status HUD above the prompt over data families (hooks/data/*.ts pure collectors, one core subscription per event), with the /statusline-mod pill panel: live preview, six tabs (layout, elements, per-element settings, view axes, themes, number formats). Based on konsta95/ClaudeCodeMods statusline 0.3.2 (MIT, c49ad4a).",
   "author": {
     "name": "Marat Karimov"
