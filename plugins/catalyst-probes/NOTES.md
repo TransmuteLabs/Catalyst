@@ -635,3 +635,41 @@ the envelope: absent fields mean "there was nothing to measure with", while
 zeros would mean a measured zero.
 
 ## #306 — AGENTS.md carrier removed (2026-09-19): 2.1.277 ships `agents-md@builtin`
+
+## #495 — environment memo when the working directory is unknown (0.1.52)
+
+The world memo is keyed by the working directory (#308), so when the
+directory is unknown (`PWD` unreadable or empty and no saved cwd) it is
+neither read nor written. Before 0.1.52 this also meant `envBundle` (about
+25 `$.env.get` reads) and the `env-unreadable:*` loss notes ran on every
+call. Now that branch keeps a separate short memo of the ENVIRONMENT only,
+`{ t, env }`: inside `WORLD_MEMO_MS` of the same epoch the environment
+comes from the memo, `envBundle` is not called and the `env-unreadable:*`
+notes are not repeated. The memo is reset by `newSession` together with the
+world memo and is not written by a call that saw the epoch change. The WORLD
+under an unknown directory is still built by `loadWorld` on every call:
+`findProjectHome` walks relative paths from the process's actual directory,
+so the key `""` never counts as a match. A known directory never uses the
+environment memo. Teeth: `units.test.ts` Z495-a…d.
+
+All three memos (`envMemo`, `worldMemo`, `allowedMemo`) use the half-open
+window `[t, t + WORLD_MEMO_MS)`: equal clocks hit; clocks rolled back to
+`t - 1` miss. Teeth: AR2-env/world/allowed. The environment memo's epoch
+boundary is its reset in `newSession`, not a second epoch field; the
+post-load epoch guard still prevents an old call from writing a new memo.
+The stand has one host-boundary door, `hostMemoReset`, for all three memos:
+`envMemo`, `worldMemo`, and `allowedMemo`. A fresh stand host models a fresh
+production process, so none of these module-level memos may survive that
+boundary. Base unit host constructors (`fsEnv$`, `env495$`, `fan313$`,
+`mod$393`) call the door; wrappers, including `host514`, inherit it through
+`mod$393`. The behavior stand calls it in `wired` and before each direct
+`{}` host. Z495-f fills all three on host A, resets once, and counts fresh
+reads on host B on the same clocks; Z495-c changes epoch on the SAME host,
+so the constructor reset cannot hide a missing `newSession` reset.
+
+## #497 — `heredoc` key dropped from the canon
+
+`FORM_REQ` no longer lists `heredoc` and nothing in the module reads it
+(the shell scanner replaced the regex, #489-B1-FIX5). The kit canon
+`probes/probes.toml` drops the line; tooth Z497 pins that the form probe
+still judges a heredoc body without the key.
