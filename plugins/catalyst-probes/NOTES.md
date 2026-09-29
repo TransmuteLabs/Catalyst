@@ -397,13 +397,17 @@ model on it.
 `declared`, the agent's declared model. A matching name is not taken as
 success. A step answered with `ok` by a rung that is not the declared model
 queues a hint for the main loop at most once per (agent, rung model) per
-session: `агент <agentId> (<subagent_type>): объявлен <declared>, шаг
-обслужила <model> — вердикт этого агента принадлежит <model>`. That bounds
+session: `агент <agentId> (<subagent_type>): шаг агента обслужила <model>
+(объявлена <declared>)`. That bounds
 the queuing, not the delivery. The hint goes through the main loop's common
 queue: in `context` of the next main-loop `tool.call`, or by `submit` on the
 tick once the text is at least 60 s old. An eviction from the queue is
 written as `nudge_dropped`; a failed enqueue is `lost`
-`failover-served-nudge`.
+`failover-served-nudge`. When the agent watchers see the agent completed
+(terminal status in `agent.list`), one `served-summary` journal record
+lists `{model, steps}` of its steps if at least one step was served by a
+model other than the declared one; no hint goes to the conversation
+(#509-FIX9 R5).
 
 **Reviewers stay apart.** A reviewer's spawn registers its declared model,
 and every `ok` step registers its rung model (at most 64 agents). A
@@ -484,9 +488,59 @@ path or `402/…`, `402.`, `402-` at the start, is not a quota. A line that
 names a dead provider and carries a 402 status, such as `API Error: 402
 model x is not available on this server`, is `permanent-model`: the dead
 provider is checked before the quota. `quota` has a 60 min
-cooldown. All of these are checked before the prefix tables, so they also
-win over the `API Error` wrapper, and a body that names a dead provider or
-model wins over a request prefix: a change of model cures it. The request
+cooldown, unless the text carries `soonest recovery in <N>h<N>m<N>s` (any
+subsequence of the ordered h/m/s parts, integer, which may be separated by
+spaces): then the mark
+lives the parsed duration; the
+duration is read from the full refusal line, not the clipped evidence
+(#509-FIX9 R3, #509-FIX10 F4). A numeric unit after the parsed part, such as
+`2m 1h`, breaks the order: the shortened duration would be false, so the
+text carries no term and the mark lives the default cooldown (#509-FIX11 B5).
+`last upstream error: quota)` and `spent allowance` are
+quota marks each on its own. Inside the `API Error` wrapper the HTTP status
+is parsed (#509-FIX9 R4, #509-FIX10 F3): 413 is `request` by the status
+alone; 400 is `request` only when the text carries a size subject of the
+request — a size word before `too long`, `too many tokens`, or a
+context-length excess, and `token limit exceeded` / `input length exceeded`
+are size subjects too (#509-FIX11 B4); a time subject keeps
+`temporary-unknown` with the other 4xx: the temporary verb `took` between
+the subject and `too long` (`request/query/message/input/body/payload/history took too long`, and `processing took too long` with no size word at
+all) is a duration, not a size; 401,
+403 and 404 are `permanent-model`;
+402, a dead provider and `model_not_found` are decided by the body before
+the wrapper status. The body-decided classes (402, a dead provider,
+`model_not_found`) are checked before the prefix tables, so they also win
+over the `API Error` wrapper, and a body that names a dead provider or
+model wins over a request prefix: a change of model cures it; the wrapper
+status classes above (400/413/401/403/404) are decided inside the
+`API Error` branch itself. A terminal
+rung with a live `temporary-known` or `quota` mark is skipped entirely:
+unlike a regular rung, which a live mark only defers to the tail of the
+plan on the first pass (it is still called), the terminal is called in no
+full pass, first or later — and when the declared model is the terminal, the
+same rule removes it from the head of the plan too; once its term is past,
+it is called as before (#509-FIX9 R2, #509-FIX10 F1). The heartbeat and
+deadline probes still call it for liveness while the step waits: a probe is
+not a full pass. When the plan is empty because the live mark removed its
+only model, the step waits for the term by the regular wait (wake at the
+term, heartbeat liveness probes) instead of passing the call straight
+through the mark; a genuinely empty plan (no declared model, no rungs) still
+passes straight through (#509-FIX11 B2). A probe refusal (heartbeat or
+deadline) does not move the term of a live mark of the same model: not with
+the same refusal class, and not when the class changes inside the
+`temporary-known`/`quota` pair in either direction — the pair is one group
+for this ban (#509-FIX10 F2). Inside the pair a strictly earlier credible
+recovery read from the probe's own line shortens the term; an equal or
+later term does not move it (#509-FIX11 B3). The probe itself is not
+suppressed: it keeps calling `next` at the heartbeat pace of `waitPaceOf`
+(240 s by default, shorter when a smaller stall timeout brings the deadline
+closer). A class outside the pair, or an expired
+mark, is written by the general rule of refusal marks. Once the term is past,
+the next full pass calls the model again (#514 FIX3 L2, #509-FIX10 F2).
+A reviewer's registry
+entry is released when the agent watchers see its
+agent completed, before the 2 h bound, which stays the upper limit
+(#509-FIX9 R7). The request
 class decides when the tail names no model. A body that does not parse as JSON has
 no code, and the text rules still apply. These classes are also known
 lines. So when `next` throws with only such a body, with no `API Error`

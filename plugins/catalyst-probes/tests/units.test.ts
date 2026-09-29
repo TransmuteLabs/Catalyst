@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.50")
+  expect(MOD_VERSION).toBe("0.1.51")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -9078,7 +9078,8 @@ test("#514 FIX2b H1 / FIX3 M2: префикс таблицы решает по �
   const cr = R514.classifyRefusal
   const cases: Array<[string, string]> = [
     ["Please run /login · API Error: 429 Request rejected (429) · rate limited", "permanent-model"],
-    ["API Error: 400 Prompt is too long", "temporary-unknown"],
+    ["API Error: 400 Prompt is too long", "request"],
+    ["API Error: 409 Prompt is too long", "temporary-unknown"],
     ["API Error: 402 Credit balance is too low", "quota"],
     ["  Prompt is too long", "request"],
   ]
@@ -10997,7 +10998,7 @@ test("#509-FIX7 Р12: лестничный успех -- одна подсказ
   const h = host514("7r12", T0, { noProc: true })
   failoverBindSet("ag-7r12", { ladder: ["r7r12a", "r7r12b"], terminal: "", rungEffort: { r7r12a: "high", r7r12b: "high" }, subagentType: "t12", class: "", sticky: null })
   const next = next514(h, { "in7r12": refuseAll514(NORESP6), "r7r12a": (k) => (k < 2 ? null : NORESP6), "r7r12b": () => null })
-  const text = (m: string) => "агент ag-7r12 (t12): объявлен in7r12, шаг обслужила " + m + " — вердикт этого агента принадлежит " + m
+  const text = (m: string) => "агент ag-7r12 (t12): шаг агента обслужила " + m + " (объявлена in7r12)"
   await step514(h, "ag-7r12", "in7r12", next, { index: 0 })
   expect(p5Q(""), "первая подмена -- одна запись").toEqual([text("r7r12a")])
   await step514(h, "ag-7r12", "in7r12", next, { index: 1 })
@@ -14893,4 +14894,996 @@ test("p531 FIX8 Р9: 65 sid подряд с отказом записи кэпа
   const lost = lost8(st.m.writes)["session-cap-unlanded-evicted"]
   expect(lost && { n: lost.n, last: lost.last }, "вытеснение названо").toEqual({ n: 1, last: "sid-f8r9-0" })
   SA.probeCapStateReset()
+})
+
+// --- #509-FIX9: терминал под известным сроком, квота прокси, статус обёртки,
+// фактическая модель шага, реестр проверяющих при завершении агента ------------
+// CONSTRAINT: имена мода -- через namespace-импорт R514/SA: красная фаза на
+// дереве до волны обязана показывать отказ каждого зуба отдельной строкой.
+const FIX9_PROXY_QUOTA = "API Error: 503 auth_unavailable: no auth available (providers=codex, model=gpt-6-astra; last upstream error: quota); 2 credentials parked: spent allowance; soonest recovery in 1h2m3s"
+
+function fix9Mark(text: string, model: string, T: number): any {
+  const c = R514.classifyRefusal(text, T, model)
+  const mk = R514.noteModelRefusal(model, T, c.class, c.readyAt, "carrier-refusal", text, new Map())
+  return { cls: c.class, ms: mk ? mk.until - T : null }
+}
+
+async function fix9Tick(h: any, T: number, list: () => Promise<any[]>): Promise<void> {
+  h.m.setNow(T)
+  h.m.$.agent.list = list
+  // CONSTRAINT: тик не должен отправлять submit-канал: режим сессии --
+  // неизвестен (session.start не было), шов лишь фиксирует попытки.
+  R514.staleInteractiveReset()
+  h.submits = h.submits || []
+  if (!h.m.$.prompt) h.m.$.prompt = { submit: async (arg: any) => { h.submits.push(arg); return { text: String(arg && arg.text) } } }
+  const n = h.m.everyCbs.length
+  R514.armStaleAgentsTimer(h.m.$, T)
+  expect(h.m.everyCbs.length, "тик взведён").toBe(n + 1)
+  await h.m.everyCbs[n]()
+  await settle393()
+}
+
+test("#509-FIX9 R3: строка прокси «last upstream error: quota); … spent allowance; soonest recovery in 1h2m3s» -- quota, срок 3723 с", () => {
+  expect(fix9Mark(FIX9_PROXY_QUOTA, "gpt-6-astra", Date.parse("2026-10-04T09:00:00Z"))).toEqual({ cls: "quota", ms: 3723000 })
+})
+
+test("#509-FIX9 R3: каждый признак прокси по отдельности -- quota; без «soonest recovery in» -- срок 60 мин", () => {
+  const T = Date.parse("2026-10-04T09:05:00Z")
+  expect(fix9Mark("API Error: 503 auth_unavailable (model=gpt-6-astra; last upstream error: quota)", "gpt-6-astra", T)).toEqual({ cls: "quota", ms: 3600000 })
+  expect(fix9Mark("API Error: 503 auth_unavailable: 2 credentials parked: spent allowance", "gpt-6-astra", T)).toEqual({ cls: "quota", ms: 3600000 })
+})
+
+test("#509-FIX9 R3: credential_quota по-прежнему quota; срок из «soonest recovery in» и у неё", () => {
+  const T = Date.parse("2026-10-04T09:10:00Z")
+  expect(fix9Mark("API Error: 429 credential_quota exhausted for this key", "gpt-6-astra", T)).toEqual({ cls: "quota", ms: 3600000 })
+  expect(fix9Mark("API Error: 429 credential_quota exhausted; soonest recovery in 2m0s", "gpt-6-astra", T)).toEqual({ cls: "quota", ms: 120000 })
+})
+
+test("#509-FIX9 R3: разбор срока -- любая подпоследовательность частей и нули; без частей -- 60 мин", () => {
+  const T = Date.parse("2026-10-04T09:15:00Z")
+  const rows: Array<[string, number]> = [
+    ["soonest recovery in 0h5m0s", 300000],
+    ["soonest recovery in 2m0s", 120000],
+    ["soonest recovery in 45s", 45000],
+    ["soonest recovery in 2h", 7200000],
+    ["soonest recovery in 2h3s", 7203000],
+    ["soonest recovery in 1h2m3s.", 3723000],
+    ["soonest recovery in soon", 3600000],
+    ["soonest recovery in", 3600000],
+  ]
+  for (const [tail, ms] of rows) {
+    expect({ tail, got: fix9Mark("API Error: 503 last upstream error: quota); " + tail, "gpt-6-astra", T) }).toEqual({ tail, got: { cls: "quota", ms } })
+  }
+})
+
+test("#509-FIX9 R3: шаг -- срок квоты из полной строки отказа (длиннее REFUSAL_TEXT_MAX) доходит до цели ожидания", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 4, 9, 20, 0)
+  const h = host514("9r3", T0, { noProc: true })
+  const parked: string[] = []
+  for (let i = 0; i < 12; i++) parked.push("codex-account-" + i + ": spent allowance")
+  const line = "API Error: 503 auth_unavailable: no auth available (providers=codex, model=in9r3; last upstream error: quota); credentials parked: " + parked.join(", ") + "; soonest recovery in 1h2m3s"
+  expect(line.length, "форма срока лежит за REFUSAL_TEXT_MAX").toBeGreaterThan(R514.REFUSAL_TEXT_MAX + 20)
+  failoverBindSet("ag-9r3", { ladder: [], terminal: "claude-t9r3", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in9r3": refuseAll514(line), "claude-t9r3": refuseAll514(FIX9_PROXY_QUOTA.replace("1h2m3s", "2h")) })
+  await step514(h, "ag-9r3", "in9r3", next)
+  expect(next.seen).toEqual(["in9r3", "claude-t9r3"])
+  expect(attempts514(h, "ag-9r3").map(r => r.refusalClass)).toEqual(["quota", "quota"])
+  const w = waits514(h, "ag-9r3", "wait-unavailable")
+  expect(w.map(r => ({ wakeAt: r.wakeAt, wakeModel: r.wakeModel }))).toEqual([{ wakeAt: new Date(T0 + 3723000).toISOString(), wakeModel: "in9r3" }])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX9 R4: статус обёртки API Error решает класс -- request, permanent-model, прежние 402 / unknown provider / model_not_found, прочий 4xx", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-04T09:30:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 250000 tokens > 200000 maximum\"}}", "request"],
+    ["API Error: 413 request body Too Long for upstream", "request"],
+    ["API Error: 401 {\"error\":{\"message\":\"invalid x-api-key\"}}", "permanent-model"],
+    ["API Error: 403 {\"error\":{\"type\":\"permission_error\",\"message\":\"content policy\"}}", "permanent-model"],
+    ["API Error: 404 {\"error\":{\"message\":\"route not found\"}}", "permanent-model"],
+    ["API Error: 402 Payment Required", "quota"],
+    ["API Error: 400 {\"error\":\"unknown provider grok-4.6\"}", "permanent-model"],
+    ["API Error: 400 {\"error\":{\"code\":\"model_not_found\",\"message\":\"x\"}}", "permanent-model"],
+    ["API Error: 409 Conflict", "temporary-unknown"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX9 R4 / #509-FIX10 F3: в обёртке 400 решает предмет размера, 413 -- статус; «too long» без предмета ни при каком статусе", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-04T09:35:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 Bad Request: invalid tool schema", "temporary-unknown"],
+    ["API Error: 413 Request Entity Too Large", "request"],
+    ["API Error: 500 upstream took too long", "temporary-unknown"],
+    ["API Error: 429 queue too long", "temporary-unknown"],
+    ["API Error: 4000 too long", "temporary-unknown"],
+    ["Request timed out: too long", "temporary-unknown"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+async function fix9Term(tag: string, cls: string): Promise<any> {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 4, 10, 0, 0)
+  let next: any = null
+  const h = host514("9r2" + tag, T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
+  const aid = "ag-9r2" + tag
+  const inM = "in9r2" + tag
+  const rM = "r9r2" + tag
+  const tM = "claude-t9r2" + tag
+  failoverBindSet(aid, { ladder: [rM], terminal: tM, rungEffort: { [rM]: "max" }, subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls)
+  const script = { [inM]: refuseAll514(RL429), [rM]: refuseAll514(RL429), [tM]: () => null }
+  next = next514(h, script)
+  const out1 = await step514(h, aid, inM, next)
+  const first = {
+    seen: next.seen.slice(),
+    served: out1 && out1.value && out1.value.text,
+    skipped: waits514(h, aid, "skipped-known-until").map(r => ({ model: r.model, pass: r.pass })),
+  }
+  h.m.setNow(T0 + 3600000 + 1000)
+  const next2 = next514(h, script)
+  const out2 = await step514(h, aid, inM, next2, { index: 1 })
+  const after = { seen: next2.seen.slice(), served: out2 && out2.value && out2.value.text }
+  rungCooldownReset()
+  failoverBindReset()
+  return { first, after, inM, rM, tM }
+}
+
+test("#509-FIX9 R2: клетка исчерпана, у терминала метка temporary-known на час -- первый проход терминал не зовёт, после срока зовёт", async () => {
+  const g = await fix9Term("k", "temporary-known")
+  expect(g.first, "первый проход: терминал пропущен и назван").toEqual({ seen: [g.inM, g.rM], served: undefined, skipped: [{ model: g.tM, pass: 1 }] })
+  expect(g.after, "срок терминала истёк -- вызов есть").toEqual({ seen: [g.inM, g.rM, g.tM], served: "OK-" + g.tM })
+})
+
+test("#509-FIX9 R2: у терминала метка quota со сроком в будущем -- первый проход терминал не зовёт, после срока зовёт", async () => {
+  const g = await fix9Term("q", "quota")
+  expect(g.first).toEqual({ seen: [g.inM, g.rM], served: undefined, skipped: [{ model: g.tM, pass: 1 }] })
+  expect(g.after).toEqual({ seen: [g.inM, g.rM, g.tM], served: "OK-" + g.tM })
+})
+
+test("#509-FIX9 R2: метка temporary-unknown на терминале -- первый проход его зовёт, как прежде", async () => {
+  const g = await fix9Term("u", "temporary-unknown")
+  expect(g.first).toEqual({ seen: [g.inM, g.rM, g.tM], served: "OK-" + g.tM, skipped: [] })
+})
+
+test("#509-FIX9 R5: агент завершён, шаги обслужили две модели -- одна запись served-summary {model, steps}; итоговой подсказки нет", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 4, 11, 0, 0)
+  const h = host514("9r5", T0, { noProc: true })
+  const aid = "ag-9r5"
+  failoverBindSet(aid, { ladder: ["r9r5"], terminal: "", rungEffort: { r9r5: "high" }, subagentType: "t9r5", class: "", sticky: null })
+  const next = next514(h, { "in9r5": (k) => (k === 0 ? NORESP6 : null), "r9r5": () => null })
+  await step514(h, aid, "in9r5", next, { index: 0 })
+  h.m.setNow(T0 + 60000)
+  await step514(h, aid, "in9r5", next, { index: 1 })
+  expect(next.seen, "шаг 0 -- ступень, шаг 1 -- объявленная").toEqual(["in9r5", "r9r5", "in9r5"])
+  const q0 = p5Q("")
+  expect(q0, "подсказка шага").toEqual(["агент ag-9r5 (t9r5): шаг агента обслужила r9r5 (объявлена in9r5)"])
+  await fix9Tick(h, T0 + 120000, async () => [{ id: aid, status: "running", type: "t9r5" }])
+  expect(waits514(h, aid, "served-summary"), "агент жив -- итога нет").toEqual([])
+  await fix9Tick(h, T0 + 180000, async () => [{ id: aid, status: "completed", type: "t9r5" }])
+  await fix9Tick(h, T0 + 240000, async () => [{ id: aid, status: "completed", type: "t9r5" }])
+  const sums = waits514(h, aid, "served-summary")
+  expect(sums.map(r => ({ declared: r.declared, served: r.served, subagentType: r.subagentType })), "одна запись на завершение").toEqual([
+    { declared: "in9r5", served: [{ model: "r9r5", steps: 1 }, { model: "in9r5", steps: 1 }], subagentType: "t9r5" },
+  ])
+  expect(p5Q(""), "итог в разговор не идёт").toEqual(q0)
+  expect(h.submits, "итог не уходит и submit-каналом").toEqual([])
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX9 R5: все шаги на объявленной модели -- записи served-summary нет", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 4, 11, 30, 0)
+  const h = host514("9r5b", T0, { noProc: true })
+  const aid = "ag-9r5b"
+  failoverBindSet(aid, { ladder: ["r9r5b"], terminal: "", rungEffort: { r9r5b: "high" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in9r5b": () => null, "r9r5b": () => null })
+  await step514(h, aid, "in9r5b", next, { index: 0 })
+  await step514(h, aid, "in9r5b", next, { index: 1 })
+  expect(next.seen).toEqual(["in9r5b", "in9r5b"])
+  await fix9Tick(h, T0 + 60000, async () => [{ id: aid, status: "completed", type: "t" }])
+  expect(waits514(h, aid, "served-summary")).toEqual([])
+  expect(p5Q("")).toEqual([])
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX9 R7: проверяющий B завершён -- его запись снята до 2 ч, ступени второго критика снова видят его модель", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 4, 12, 0, 0)
+  const h = host514("9r7", T0, { noProc: true })
+  await spawn514(h, "ag-9r7b", "crit-mech", "gpt-6-sol-t9r7")
+  const b0 = R514.sessionReviewerServedGet("ag-9r7b")
+  expect(b0 && b0.model, "B занял модель на спавне").toBe("gpt-6-sol-t9r7")
+  await fix9Tick(h, T0 + 60000, async () => [{ id: "ag-9r7b", status: "completed", type: "t" }])
+  expect(R514.sessionReviewerServedGet("ag-9r7b"), "запись снята задолго до REVIEWER_LIVE_MS").toBe(undefined)
+  failoverBindSet("ag-9r7a", { ladder: ["gpt-6-sol-t9r7", "qwen-t9r7"], terminal: "", rungEffort: { "gpt-6-sol-t9r7": "high", "qwen-t9r7": "high" }, subagentType: "t", class: "crit-mech", sticky: null })
+  const next = next514(h, { "grok-4.7-t9r7": refuseAll514(NORESP6), "gpt-6-sol-t9r7": () => null, "qwen-t9r7": () => null })
+  const out = await step514(h, "ag-9r7a", "grok-4.7-t9r7", next)
+  expect(next.seen, "фильтр пары модели B больше не видит").toEqual(["grok-4.7-t9r7", "gpt-6-sol-t9r7"])
+  expect(out.value && out.value.text).toBe("OK-gpt-6-sol-t9r7")
+  expect(attempts514(h, "ag-9r7a").map(r => r.rungsFilteredReviewer)).toEqual([0, 0])
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX9 R7: запись, поставленная после запроса списка, не снимается; живой и отсутствующий в списке -- не снимаются", async () => {
+  await clear393()
+  reset514()
+  const T0 = Date.UTC(2026, 9, 4, 12, 30, 0)
+  const h = host514("9r7r", T0, { noProc: true })
+  R514.sessionReviewerServedSet("ag-9r7c", "m-old-9r7", T0)
+  R514.sessionReviewerServedSet("ag-9r7d", "m-d-9r7", T0)
+  R514.sessionReviewerServedSet("ag-9r7e", "m-e-9r7", T0)
+  await fix9Tick(h, T0 + 60000, async () => {
+    R514.sessionReviewerServedSet("ag-9r7c", "m-new-9r7", T0 + 60000)
+    return [{ id: "ag-9r7c", status: "completed", type: "t" }, { id: "ag-9r7d", status: "running", type: "t" }]
+  })
+  const c = R514.sessionReviewerServedGet("ag-9r7c")
+  const d = R514.sessionReviewerServedGet("ag-9r7d")
+  const e = R514.sessionReviewerServedGet("ag-9r7e")
+  expect({ c: c && c.model, d: d && d.model, e: e && e.model }).toEqual({ c: "m-new-9r7", d: "m-d-9r7", e: "m-e-9r7" })
+  await clear393()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX9 R7: idle-watch вооружён, список берёт тик висящих агентов -- запись завершённого проверяющего снята тем же тиком", async () => {
+  const T0 = 909_000_000
+  const st = sa$("9r7s", T0)
+  await saStart(st)
+  R514.sessionReviewerServedSet("ag-9r7s", "m-9r7s", T0)
+  st.agents = [saRun("ag-9r7s", { status: "completed" })]
+  const calls0 = st.listCalls
+  await saTickAt(st, T0 + SA_MIN)
+  expect(R514.sessionReviewerServedGet("ag-9r7s")).toBe(undefined)
+  expect(st.listCalls - calls0, "один запрос списка на тик").toBe(1)
+  await clear393()
+})
+
+// --- #509-FIX10: терминал при объявленной = терминал, размерный «too long»,
+// пробелы в сроке квоты ---------------------------------------------------------
+// CONSTRAINT: имена мода -- через namespace-импорт R514: красная фаза на
+// дереве FIX9 обязана показывать отказ каждого зуба отдельной строкой.
+
+async function fix10TermDecl(tag: string, cls: string): Promise<any> {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 5, 10, 0, 0)
+  let next: any = null
+  const h = host514("10f1" + tag, T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
+  const aid = "ag-10f1" + tag
+  const tM = "claude-t10f1" + tag
+  const rM = "r10f1" + tag
+  failoverBindSet(aid, { ladder: [rM], terminal: tM, rungEffort: { [rM]: "max" }, subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls)
+  const script: any = { [rM]: refuseAll514(RL429), [tM]: (_k: number, t: number) => (t >= T0 + 3600000 + 1000 ? null : RL429) }
+  next = next514(h, script)
+  const out1 = await step514(h, aid, tM, next)
+  const first = {
+    seen: next.seen.slice(),
+    served: out1 && out1.value && out1.value.text,
+    skipped: waits514(h, aid, "skipped-known-until").map(r => ({ model: r.model, pass: r.pass })),
+  }
+  h.m.setNow(T0 + 3600000 + 1000)
+  const next2 = next514(h, script)
+  const out2 = await step514(h, aid, tM, next2, { index: 1 })
+  const after = { seen: next2.seen.slice(), served: out2 && out2.value && out2.value.text }
+  rungCooldownReset()
+  failoverBindReset()
+  return { first, after, rM, tM }
+}
+
+test("#509-FIX10 F1: объявленная = терминал, живая метка quota -- вызова нет ни в какой позиции, skippedKnown несёт терминал; после срока -- вызов", async () => {
+  const g = await fix10TermDecl("q", "quota")
+  expect(g.first, "первый проход: терминал снят и назван").toEqual({ seen: [g.rM], served: undefined, skipped: [{ model: g.tM, pass: 1 }] })
+  expect(g.after, "срок истёк -- терминал вернулся в план").toEqual({ seen: [g.tM], served: "OK-" + g.tM })
+})
+
+test("#509-FIX10 F1: объявленная = терминал, живая метка temporary-known на первом проходе без skipKnown -- вызова нет, после срока есть", async () => {
+  const g = await fix10TermDecl("k", "temporary-known")
+  expect(g.first, "первый проход: терминал снят и назван").toEqual({ seen: [g.rM], served: undefined, skipped: [{ model: g.tM, pass: 1 }] })
+  expect(g.after, "срок истёк -- терминал вернулся в план").toEqual({ seen: [g.tM], served: "OK-" + g.tM })
+})
+
+test("#509-FIX11 B2: объявленная = терминал без ступеней, живая метка quota -- план опустел от метки, но шаг ждёт срока: пробы живости зовут next, wake зовёт после срока, прямого вызова до срока нет", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 6, 10, 0, 0)
+  const tM = "claude-t11e"
+  const aid = "ag-11e"
+  const h = host514("11e", T0)
+  failoverBindSet(aid, { ladder: [], terminal: tM, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota")
+  const at: number[] = []
+  const next = next514(h, {
+    [tM]: (_k: number, t: number) => { at.push(t); return t >= T0 + 600000 ? null : "API Error: 503 auth_unavailable (model=claude-t11e; last upstream error: quota); soonest recovery in 10m" },
+  })
+  const out = await step514(h, aid, tM, next)
+  const kinds = waits514(h, aid, "wait-probe").map(r => r.kind)
+  expect(out.value && out.value.text, "шаг завершён после срока, не прямым вызовом в отказ").toBe("OK-" + tM)
+  expect(kinds[kinds.length - 1], "срок наступил -- пробуждение полным проходом").toBe("wake")
+  expect(kinds.filter(k => k === "heartbeat").length, "heartbeat-вызовы next не подавлены").toBeGreaterThanOrEqual(2)
+  expect(at.filter(t => t > T0 && t < T0 + 600000 - 1000).length, "до срока -- только пробы живости").toBeGreaterThanOrEqual(2)
+  expect(at[at.length - 1] - T0, "завершающий вызов -- после срока метки").toBeGreaterThanOrEqual(600000)
+  expect(waits514(h, aid, "skipped-known-until").map(r => ({ model: r.model, pass: r.pass })), "снятие метки названо").toEqual([{ model: tM, pass: 1 }])
+  expect(waits514(h, aid, "wait-unavailable"), "дверь сна не отказывала").toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX11 B2: то же ожидание, прерванное на первом сне, -- модель не вызвана ни разу: прямого обхода метки нет", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 6, 10, 30, 0)
+  const tM = "claude-t11eb"
+  const aid = "ag-11eb"
+  let next: any = null
+  const h = host514("11eb", T0, { sleepHook: (n: number) => { if (n === 1) next.signal.aborted = true } })
+  failoverBindSet(aid, { ladder: [], terminal: tM, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota")
+  next = next514(h, { [tM]: refuseAll514(RL429) })
+  await step514(h, aid, tM, next)
+  expect(next.seen, "до срока модель не зовётся -- прямого вызова нет").toEqual([])
+  expect(attempts514(h, aid), "попыток лестницы нет").toEqual([])
+  expect(waits514(h, aid, "wait-aborted").length, "выход назван прерыванием ожидания").toBe(1)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX11 B2: действительно пустой план без меток -- прямой вызов сохранён", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 6, 11, 0, 0)
+  const h = host514("11ec", T0, { noProc: true })
+  failoverBindSet("ag-11ec", { ladder: [], terminal: "", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "": refuseAll514(RL429) })
+  await step514(h, "ag-11ec", "", next)
+  expect(next.seen, "пустой план -- шаг без перехвата лестницы, прямой вызов").toEqual([""])
+  expect(attempts514(h, "ag-11ec"), "попыток лестницы нет ни в какой позиции").toEqual([])
+  expect(waits514(h, "ag-11ec", "skipped-known-until"), "снимать нечего").toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX10 F3: «too long» решает только с предметом размера запроса; 413 -- request по статусу", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-05T11:30:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 processing took too long; retry later", "temporary-unknown"],
+    ["API Error: 400 prompt is too long: 210000 tokens > 200000 maximum", "request"],
+    ["API Error: 413 Request Entity Too Large", "request"],
+    ["API Error: 400 context length exceeded", "request"],
+    ["API Error: 409 Conflict", "temporary-unknown"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX10 F4: срок «soonest recovery in» -- части могут разделяться пробелами", () => {
+  const T = Date.parse("2026-10-05T11:45:00Z")
+  const rows: Array<[string, number]> = [
+    ["1h 2m", 3720000],
+    ["1h2m3s", 3723000],
+    ["45m", 2700000],
+    ["2h", 7200000],
+    ["1h 2m 3s", 3723000],
+  ]
+  for (const [tail, ms] of rows) {
+    expect({ tail, got: fix9Mark("API Error: 503 auth_unavailable (model=gpt-6-astra; last upstream error: quota); soonest recovery in " + tail, "gpt-6-astra", T) }).toEqual({ tail, got: { cls: "quota", ms } })
+  }
+})
+
+// --- #509-FIX10 F2 (пересмотр): смена класса внутри пары temporary-known/quota
+// на пробе сердцебиения не двигает срок живой метки ----------------------------
+// CONSTRAINT: ряд идёт фактическим путём turn.step → attemptOne → markRefusal,
+// функция метки не мокается. Первоначальный отказ даёт живую метку до
+// T0+1800000 (10:30); каждая проба сердцебиения отказывает строкой ДРУГОГО
+// класса пары с более поздним сроком (11:00 / +30 м от отказа) -- без запрета
+// переписывания срока смена класса двигала бы срок метки за первоначальную
+// границу, и первый вызов после неё ушёл бы на пробу сердцебиения (следующий
+// такт 240 с), а не на полный проход по сроку. Сердцебиение при этом продолжает
+// звать next каждые 240 с (подавление вызова запрещено: отказ исходного F2).
+
+async function fix10F2Row(tag: string, firstLine: string, beatLine: string): Promise<any> {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 8, 10, 0, 0)
+  const inM = "in10f2" + tag
+  const tM = "claude-t10f2" + tag
+  const aid = "ag-10f2" + tag
+  const h = host514("10f2" + tag, T0)
+  failoverBindSet(aid, { ladder: [], terminal: tM, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const at: number[] = []
+  const next = next514(h, {
+    [inM]: (k: number, t: number) => { at.push(t); return k === 0 ? firstLine : (t >= T0 + 1800000 ? null : beatLine) },
+    [tM]: refuseAll514("Not logged in · Please run /login"),
+  })
+  const out = await step514(h, aid, inM, next)
+  const kinds = waits514(h, aid, "wait-probe").map(r => r.kind)
+  const clsRow = attempts514(h, aid).filter(r => r.modelRequested === inM && r.refusalClass).map(r => r.refusalClass)
+  rungCooldownReset()
+  failoverBindReset()
+  return { out, at, kinds, clsRow, inM, T0 }
+}
+
+test("#509-FIX10 F2: отказ сердцебиения quota не двигает срок живой метки temporary-known -- полный проход в первоначальный срок", async () => {
+  const g = await fix10F2Row("a",
+    "You've hit your session limit · resets 10:30am (UTC)",
+    "API Error: 503 auth_unavailable (model=gpt-6-astra; last upstream error: quota); soonest recovery in 30m")
+  expect(g.out.value && g.out.value.text).toBe("OK-" + g.inM)
+  expect(g.clsRow.slice(0, 2), "переход класса на пробе").toEqual(["temporary-known", "quota"])
+  expect(g.kinds[g.kinds.length - 1], "метка истекла в первоначальный срок -- пробуждение полным проходом").toBe("wake")
+  expect(g.kinds.filter(k => k === "heartbeat").length, "сердцебиение не реже 240 с -- вызовы next сохранены").toBeGreaterThanOrEqual(7)
+  expect(g.at[g.at.length - 1] - g.T0, "полный проход зовёт модель по первоначальному сроку").toBeLessThan(1800000 + 10000)
+  expect(g.at.filter(t => t > g.T0 + 1800000 + 10000).length, "продлённый срок оставил бы вызовы за первоначальной границей").toBe(0)
+})
+
+test("#509-FIX10 F2: отказ сердцебиения temporary-known не двигает срок живой метки quota -- полный проход в первоначальный срок", async () => {
+  const g = await fix10F2Row("b",
+    "API Error: 503 auth_unavailable (model=gpt-6-astra; last upstream error: quota); soonest recovery in 30m",
+    "You've hit your session limit · resets 11am (UTC)")
+  expect(g.out.value && g.out.value.text).toBe("OK-" + g.inM)
+  expect(g.clsRow.slice(0, 2), "переход класса на пробе").toEqual(["quota", "temporary-known"])
+  expect(g.kinds[g.kinds.length - 1], "метка истекла в первоначальный срок -- пробуждение полным проходом").toBe("wake")
+  expect(g.kinds.filter(k => k === "heartbeat").length, "сердцебиение не реже 240 с -- вызовы next сохранены").toBeGreaterThanOrEqual(7)
+  expect(g.at[g.at.length - 1] - g.T0, "полный проход зовёт модель по первоначальному сроку").toBeLessThan(1800000 + 10000)
+  expect(g.at.filter(t => t > g.T0 + 1800000 + 10000).length, "продлённый срок оставил бы вызовы за первоначальной границей").toBe(0)
+})
+
+// --- #509-FIX11: quota в wake-проходе, сокращение срока пары, классы отказа ----
+// CONSTRAINT: ряды идут фактическим путём turn.step → attemptOne → markRefusal /
+// failoverStepPlan; часы движет только подставной /bin/sleep стенда.
+
+test("#509-FIX11 B1: wake-проход снимает живую quota-метку ступени -- Q не вызывается до её срока, после срока вызывается; первичный проход никого не пропускает", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 9, 10, 0, 0)
+  const inM = "in11w"
+  const bM = "r11wb"
+  const qM = "r11wq"
+  const tM = "claude-t11w"
+  const aid = "ag-11w"
+  const h = host514("11w", T0)
+  failoverBindSet(aid, { ladder: [bM, qM], terminal: tM, rungEffort: { [bM]: "high", [qM]: "high" }, subagentType: "t", class: "", sticky: null })
+  R514.noteModelRefusal(qM, T0, "quota", T0 + 3600000, "carrier-refusal", "pre-quota")
+  const atQ: number[] = []
+  const next = next514(h, {
+    [inM]: (k: number, _t: number) => (k === 0 ? "You've hit your session limit · resets 10:30am (UTC)" : RL429),
+    [bM]: (_k: number, t: number) => (t >= T0 + 600000 ? RL429 : "You've hit your session limit · resets 10:10am (UTC)"),
+    [qM]: (k: number, t: number) => {
+      atQ.push(t)
+      return k === 0 || t < T0 + 3600000
+        ? "API Error: 503 auth_unavailable (model=r11wq; last upstream error: quota); soonest recovery in 1h"
+        : null
+    },
+    [tM]: refuseAll514("Not logged in · Please run /login"),
+  })
+  const out = await step514(h, aid, inM, next)
+  expect(out.value && out.value.text, "шаг завершён вызовом Q после её срока").toBe("OK-" + qM)
+  expect(next.seen.slice(0, 4), "первичный проход: объявленная, обе ступени и терминал -- никого не пропустили").toEqual([inM, bM, qM, tM])
+  expect(atQ.length, "Q вызвана ровно дважды: первичный проход и срок").toBe(2)
+  expect(atQ[0] - T0, "не-пропуск Q на первичном проходе").toBeLessThan(60000)
+  expect(atQ[1] - T0, "второй вызов Q -- после срока квоты").toBeGreaterThanOrEqual(3600000)
+  const skippedQ = waits514(h, aid, "skipped-known-until").filter(r => r.model === qM)
+  expect(skippedQ.length, "wake-проходы снимают живую quota-метку в skippedKnown").toBeGreaterThan(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX11 B3: проба с более ранним достоверным recovery сокращает срок живой метки пары -- полный проход по сокращённому сроку, heartbeat продолжает звать next", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 9, 10, 0, 0)
+  const inM = "in11s"
+  const tM = "claude-t11s"
+  const aid = "ag-11s"
+  const h = host514("11s", T0)
+  failoverBindSet(aid, { ladder: [], terminal: tM, rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const at: number[] = []
+  const next = next514(h, {
+    [inM]: (k: number, t: number) => {
+      at.push(t)
+      return k === 0
+        ? "You've hit your session limit · resets 11am (UTC)"
+        : (t >= T0 + 540000 ? null : "API Error: 503 auth_unavailable (model=in11s; last upstream error: quota); soonest recovery in 5m")
+    },
+    [tM]: refuseAll514("Not logged in · Please run /login"),
+  })
+  const out = await step514(h, aid, inM, next)
+  const kinds = waits514(h, aid, "wait-probe").map(r => r.kind)
+  const clsRow = attempts514(h, aid).filter(r => r.modelRequested === inM && r.refusalClass).map(r => r.refusalClass)
+  expect(out.value && out.value.text).toBe("OK-" + inM)
+  expect(clsRow.slice(0, 2), "переход класса на пробе").toEqual(["temporary-known", "quota"])
+  expect(kinds[kinds.length - 1], "сокращённый срок наступил -- пробуждение полным проходом").toBe("wake")
+  expect(kinds.filter(k => k === "heartbeat").length, "сердцебиение продолжает звать next").toBeGreaterThanOrEqual(1)
+  expect(at[at.length - 1] - T0, "вызов по сокращённому сроку (~T0+540000), не по первоначальному часу").toBeLessThan(600000)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#509-FIX11 B4: «took» между предметом и «too long» -- длительность, не размер; «token limit exceeded»/«input length exceeded» -- предмет размера", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-06T12:00:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 request took too long", "temporary-unknown"],
+    ["API Error: 400 query took too long", "temporary-unknown"],
+    ["API Error: 400 message took too long", "temporary-unknown"],
+    ["API Error: 400 input took too long", "temporary-unknown"],
+    ["API Error: 400 body took too long", "temporary-unknown"],
+    ["API Error: 400 payload took too long", "temporary-unknown"],
+    ["API Error: 400 history took too long", "temporary-unknown"],
+    ["API Error: 400 processing took too long; retry later", "temporary-unknown"],
+    ["API Error: 400 prompt is too long: 210000 tokens > 200000 maximum", "request"],
+    ["API Error: 400 context length exceeded", "request"],
+    ["API Error: 400 token limit exceeded", "request"],
+    ["API Error: 400 input length exceeded", "request"],
+    ["API Error: 400 too many tokens", "request"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX12 T1: временные формы глагола и «processing deadline» у 400 -- длительность, не размер; прежний контроль «prompt is too long» остаётся размером", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-07T10:15:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 request is taking too long", "temporary-unknown"],
+    ["API Error: 400 query has taken too long", "temporary-unknown"],
+    ["API Error: 400 message takes too long", "temporary-unknown"],
+    ["API Error: 400 input will take too long", "temporary-unknown"],
+    ["API Error: 400 request exceeds the input processing deadline", "temporary-unknown"],
+    ["API Error: 400 prompt is too long", "request"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX12 T2: явные размерные формы у 400 -- request; 409 -- не размер, 413 -- статус", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-07T10:30:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 Request Entity Too Large", "request"],
+    ["API Error: 400 context_length_exceeded", "request"],
+    ["API Error: 400 input_length_exceeded", "request"],
+    ["API Error: 400 tokens limit exceeded", "request"],
+    ["API Error: 400 context limit exceeded", "request"],
+    ["API Error: 400 maximum request size exceeded", "request"],
+    ["API Error: 400 request exceeded the maximum input tokens", "request"],
+    ["API Error: 400 payload size exceeded", "request"],
+    ["API Error: 409 Conflict", "temporary-unknown"],
+    ["API Error: 413 Request Entity Too Large", "request"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX13 N1: временные/частотные формы у 400 -- длительность или лимит плана, не размер: temporary-unknown", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-08T09:20:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 request has been running too long", "temporary-unknown"],
+    ["API Error: 400 request failed! Response was too long to arrive", "temporary-unknown"],
+    ["API Error: 400 The deadline for this request is too long", "temporary-unknown"],
+    ["API Error: 400 request is taking the payload too long", "temporary-unknown"],
+    ["API Error: 400 request timed  out too long", "temporary-unknown"],
+    ["API Error: 400 request timed-out too long", "temporary-unknown"],
+    ["API Error: 400 request timeout too long", "temporary-unknown"],
+    ["API Error: 400 request_limit_exceeded", "temporary-unknown"],
+    ["API Error: 400 request limit exceeded", "temporary-unknown"],
+    ["API Error: 400 token limit for your plan", "temporary-unknown"],
+    ["API Error: 400 request is taking too long; payload was slow to arrive", "temporary-unknown"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX13 P1: явные размерные формы у 400 -- request", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-08T09:40:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 image is too large", "request"],
+    ["API Error: 400 pdf was too large", "request"],
+    ["API Error: 400 maximum_request_size_exceeded", "request"],
+    ["API Error: 400 exceeding the maximum input tokens", "request"],
+    ["API Error: 400 prompt is too long", "request"],
+    ["API Error: 400 request was too long", "request"],
+    ["API Error: 400 too many tokens", "request"],
+    ["API Error: 400 request is too long; please shorten it", "request"],
+    ["API Error: 400 request timed out! prompt is too long", "request"],
+    ["API Error: 400 context_length_exceeded", "request"],
+    ["API Error: 400 Request Entity Too Large", "request"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX14 N2: плановый, частотный и отрицающий 400 -- temporary-unknown, лестницу не прекращать", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T09:10:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 exceeding the request limit for your plan", "temporary-unknown"],
+    ["API Error: 400 exceeded the maximum request limit of 60 requests per minute", "temporary-unknown"],
+    ["API Error: 400 tokens limit exceeded for the current minute", "temporary-unknown"],
+    ["API Error: 400 request timed out. This was not a too many tokens error.", "temporary-unknown"],
+    ["API Error: 400 request timed out. It was not a request_size_limit_exceeded error.", "temporary-unknown"],
+    ["API Error: 400 too many tokens per minute", "temporary-unknown"],
+    ["API Error: 400 request has run too long", "temporary-unknown"],
+    ["API Error: 400 request was too long to arrive", "temporary-unknown"],
+    ["API Error: 400 request limit exceeded", "temporary-unknown"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX14 P2: подлинный размер у 400 остаётся request: size_limit, чужое отрицание, императив после фразы", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T09:30:00Z")
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 request_size_limit_exceeded", "request"],
+    ["API Error: 400 request size limit exceeded", "request"],
+    ["API Error: 400 prompt is too long, please run compaction", "request"],
+    ["API Error: 400 too many tokens; this is not a timeout", "request"],
+    ["API Error: 400 request timed out! prompt is too long", "request"],
+    ["API Error: 400 tokens limit exceeded", "request"],
+    ["API Error: 400 exceeding the maximum input tokens", "request"],
+    ["API Error: 400 image is too large", "request"],
+    ["API Error: 400 context_length_exceeded", "request"],
+  ]
+  for (const [line, cls] of rows) expect({ line, cls: cr(line, now, "gpt-6-astra").class }).toEqual({ line, cls })
+})
+
+test("#509-FIX15 N3: плановая/частотная пара, локальное отрицание и длительность у 400 -- temporary-unknown, лестницу не прекращать", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T10:10:00Z")
+  const lines = [
+    "API Error: 400 Exceeding the Request Limit",
+    "API Error: 400 EXCEEDED THE REQUEST LIMIT",
+    "API Error: 400 exceeding the request Limit",
+    "API Error: 400 request_size_limit_exceeded was not the cause",
+    "API Error: 400 request_size_limit_exceeded wasn't the cause",
+    "API Error: 400 too many tokens is not the error",
+    "API Error: 400 this wasn't a too many tokens error",
+    "API Error: 400 It isn't a request_size_limit_exceeded error",
+    "API Error: 400 request was not too long",
+    "API Error: 400 request is too long to run",
+    "API Error: 400 tokens limit exceeded per month",
+    "API Error: 400 too many tokens per week",
+    "API Error: 400 too many tokens, 60 requests per minute",
+  ]
+  // CONSTRAINT (#509-FIX15): класс фактического отказа собирается для ВСЕХ строк
+  // до первого сравнения -- провал ранней строки не прячет остальные.
+  const rows = lines.map((line) => ({ line, expected: "temporary-unknown", actual: cr(line, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX15 P3: подлинный размер у 400 остаётся request: локальное отрицание, чужая причина через запятую/but, «<subject> tokens exceeded»", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T10:30:00Z")
+  const lines = [
+    "API Error: 400 this was not a timeout but the prompt is too long",
+    "API Error: 400 not a timeout, prompt is too long",
+    "API Error: 400 please run compaction, the prompt is too long",
+    "API Error: 400 without compaction the prompt is too long",
+    "API Error: 400 not a timeout, request_size_limit_exceeded",
+    "API Error: 400 not a timeout but request_size_limit_exceeded",
+    "API Error: 400 not only too many tokens",
+    "API Error: 400 input_tokens_exceeded",
+    "API Error: 400 context tokens exceeded",
+    "API Error: 400 prompt tokens exceeded",
+    "API Error: 400 request_tokens_exceeded",
+    "API Error: 400 request timed out; input_tokens_exceeded",
+    "API Error: 400 prompt is too long, please run compaction",
+  ]
+  const rows = lines.map((line) => ({ line, expected: "request", actual: cr(line, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX16 N4: отрицание с because of, длительность субъекта и частота второй причины у 400 -- temporary-unknown, лестницу не прекращать", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T11:10:00Z")
+  const tails = [
+    "this is not because of a request_size_limit_exceeded error",
+    "this isn't because of too many tokens",
+    "not because of the input_tokens_exceeded error",
+    "request has run the prompt too long",
+    "request has run the payload too long",
+    "request is too long to run",
+    "too many tokens per minute, prompt tokens exceeded per hour",
+    "too many tokens, 60 requests per minute",
+  ]
+  // CONSTRAINT (#509-FIX16): класс фактического отказа собирается для ВСЕХ строк
+  // до первого сравнения -- провал ранней строки не прячет остальные.
+  const rows = tails.map((tail) => ({ tail, expected: "temporary-unknown", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX16 P4: самостоятельный размер рядом с чужой частотой/временем/отрицанием у 400 остаётся request", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T11:30:00Z")
+  const tails = [
+    "too many tokens per minute, prompt tokens exceeded",
+    "too many tokens per minute but prompt tokens exceeded",
+    "too many tokens per minute and prompt tokens exceeded",
+    "prompt tokens exceeded, too many tokens per minute",
+    "not a timeout and the prompt is too long",
+    "request timed out and prompt is too long",
+    "without a timeout the prompt is too long",
+    "this was not a timeout: the prompt is too long",
+    "no timeout and prompt is too long",
+    "the prompt to run is too long",
+    "prompt is too long to run compaction",
+    "request has run the payload too long, prompt is too long",
+  ]
+  const rows = tails.map((tail) => ({ tail, expected: "request", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX17 N5: частота при первой причине, субъектная длительность с already у 400 -- temporary-unknown, лестницу не прекращать", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T12:10:00Z")
+  const tails = [
+    "too many tokens, 60 requests per minute but not because of prompt tokens exceeded",
+    "too many tokens, 60 requests per minute and not because of prompt tokens exceeded",
+    "too many tokens, 60 requests per minute: not because of prompt tokens exceeded",
+    "too many tokens, 60 requests per minute however prompt tokens exceeded was not the cause",
+    "too many tokens, 60 requests per minute but prompt tokens exceeded per hour",
+    "too many tokens, 60 requests per minute, took too long",
+    "too many tokens, 60 requests per minute, too long",
+    "too many tokens, 60 requests per minute, request was too long to arrive",
+    "too many tokens, 60 requests per minute, request took too long",
+    "request has already run the payload too long",
+    "too many tokens, took too long, 60 requests per minute",
+  ]
+  // CONSTRAINT (#509-FIX17): класс фактического отказа собирается для ВСЕХ
+  // хвостов до первого сравнения -- провал ранней строки не прячет остальные.
+  const rows = tails.map((tail) => ({ tail, expected: "temporary-unknown", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX17 P5: размер не подавляется поздним временем/длительностью или отрицаённой чужой причиной у 400", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T12:30:00Z")
+  const tails = [
+    "request timed out: the prompt is too long",
+    "too many tokens per minute: prompt tokens exceeded",
+    "prompt is too long because the input is run-length encoded",
+    "prompt is too long the payload has run",
+    "request has run dry so the prompt is too long",
+    "not because of a request timeout the prompt is too long",
+    "didn't time out the prompt is too long",
+    "prompt is too long the request timed out",
+    "request has run the payload too long, prompt is too long",
+  ]
+  const rows = tails.map((tail) => ({ tail, expected: "request", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX18 N6: временной/длительный свободный кандидат запятой не отрывает частоту, отрицание глагола длительности и положительный timed у 400 -- temporary-unknown, лестницу не прекращать", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T13:10:00Z")
+  const tails = [
+    "too many tokens, request took too long, 60 requests per minute",
+    "too many tokens, the request was too long to arrive, 60 requests per minute",
+    "too many tokens, request has run the payload too long, 60 requests per minute",
+    "the prompt didn't take too long",
+    "the request did not take too long",
+    "not because of a failure the request timed out the prompt is too long",
+  ]
+  // CONSTRAINT (#509-FIX18): класс фактического отказа собирается для ВСЕХ
+  // хвостов до первого сравнения -- провал ранней строки не прячет остальные.
+  const rows = tails.map((tail) => ({ tail, expected: "temporary-unknown", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX18 P6: степенное «so», позиционный AUX_RUN, дефис run-length и 1-3 слова до timeout не гасят настоящий размер у 400", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T13:30:00Z")
+  const tails = [
+    "the prompt is so verbose it is too long",
+    "the payload is so large it is too long",
+    "the input is run-length encoded the prompt is too long",
+    "request has run the payload too long the prompt is too long",
+    "not because of a maximum request timeout the prompt is too long",
+    "request has run dry so the prompt is too long",
+    "didn't time out the prompt is too long",
+  ]
+  const rows = tails.map((tail) => ({ tail, expected: "request", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX19 N7: отрицённая длительность (take/run с отрицанием и предметом) и её кандидат у запятой не доказывают размер у 400 -- temporary-unknown, лестницу не прекращать", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T14:10:00Z")
+  const tails = [
+    "too many tokens, the prompt didn't take too long, 60 requests per minute",
+    "too many tokens, the request did not take too long, 60 requests per minute",
+    "didn't take the prompt too long",
+    "did not take the request too long",
+    "the prompt never took too long",
+    "the prompt was not taking too long",
+    "the prompt isn't taking too long",
+    "the request didn't run the payload too long",
+    "the request has not run the payload too long",
+    "the request had not run the payload too long",
+    "the request isn't run the payload too long",
+    "the prompt is never taking too long",
+    "the prompt wasn't taking too long",
+  ]
+  // CONSTRAINT (#509-FIX19): класс фактического отказа собирается для ВСЕХ
+  // хвостов до первого сравнения -- провал ранней строки не прячет остальные.
+  const rows = tails.map((tail) => ({ tail, expected: "temporary-unknown", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX19 P7: «so now/so the overall» -- новая клауза предмета, цифровое и дефисное слово в отрицании timeout и последующий положительный размер не гасятся у 400", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T14:30:00Z")
+  const tails = [
+    "request timed out so now the prompt is too long",
+    "request timed out so the overall prompt is too long",
+    "not because of a 3 second timeout the prompt is too long",
+    "not because of a client-side timeout the prompt is too long",
+    "the prompt didn't take too long the payload is too long",
+    "request has run the payload too long the prompt is too long",
+    "the prompt is so verbose it is too long",
+    "didn't time out the prompt is too long",
+  ]
+  const rows = tails.map((tail) => ({ tail, expected: "request", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX20 N8: голый предмет у отрицённой длительности, модальные/be-отрицания и отрицённая сильная причина запятой не доказывают размер у 400 -- temporary-unknown, лестницу не прекращать", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T15:10:00Z")
+  const tails = [
+    "didn't take prompt too long",
+    "did not take request too long",
+    "didn't run payload too long",
+    "too many tokens, didn't take prompt too long, 60 requests per minute",
+    "too many tokens, didn't run payload too long, 60 requests per minute",
+    "the request would not take too long",
+    "the prompt will not take too long",
+    "the prompt should not take too long",
+    "the prompt must not take too long",
+    "the request won't run the payload too long",
+    "the request couldn't run the payload too long",
+    "the request cannot run the payload too long",
+    "the prompt not taking too long",
+    "the request not run the payload too long",
+    "the request didn't take its prompt too long",
+    "the prompt should not be too long",
+    "the prompt will not be too long",
+    "the prompt won't be too long",
+    "the prompt cannot be too long",
+    "too many tokens, not because of a request_size_limit_exceeded error, 60 requests per minute",
+  ]
+  // CONSTRAINT (#509-FIX20): класс фактического отказа собирается для ВСЕХ
+  // хвостов до первого сравнения -- провал ранней строки не прячет остальные.
+  const rows = tails.map((tail) => ({ tail, expected: "temporary-unknown", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX20 P8: положительный размер переживает соседнее отрицание длительности/be, а временной маркер не немится чужим отрицанием у 400", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T15:30:00Z")
+  // CONSTRAINT (#509-FIX20): ожидание задано В КАЖДОЙ строке -- смешанный
+  // блок, одна неправильная строка не прячет другие.
+  const rows: Array<[string, string]> = [
+    ["the prompt didn't take too long the payload is too long", "request"],
+    ["the prompt should not be too long but the payload is too long", "request"],
+    ["request_size_limit_exceeded", "request"],
+    ["the payload is too long", "request"],
+    ["didn't run-length too long", "request"],
+    ["the request has not run the request timed out the prompt is too long", "temporary-unknown"],
+    ["the request didn't run the payload timeout the prompt is too long", "temporary-unknown"],
+    ["the prompt wasn't taking the request timed out the prompt is too long", "temporary-unknown"],
+  ]
+  const got = rows.map(([tail, expected]) => ({ tail, expected, actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(got.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX21 N9: сжатые модальные отрицания be/take/run, самостоятельный временной маркер после отрицённого take и порядок прилагательное→артикль у 400 -- temporary-unknown, лестницу не прекращать", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T16:10:00Z")
+  // CONSTRAINT (#509-FIX21): строки не содержат отдельного положительного
+  // размера -- его отсутствие обязательное условие класса этой группы.
+  const tails = [
+    "the prompt wouldn't be too long",
+    "the prompt shouldn't be too long",
+    "the prompt mustn't be too long",
+    "the request wouldn't take prompt too long",
+    "the prompt shouldn't run the payload too long",
+    "the request mustn't take the context too long",
+    "the prompt didn't take timeout the prompt is too long",
+    "the prompt didn't take timed out the prompt is too long",
+    "the prompt didn't take deadline the prompt is too long",
+    "the request did not take deadline the prompt is too long",
+    "the request didn't take the entire payload too long",
+    "the request didn't take entire the payload too long",
+  ]
+  // CONSTRAINT (#509-FIX21): класс фактического отказа собирается для ВСЕХ
+  // хвостов до первого сравнения -- провал ранней строки не прячет остальные.
+  const rows = tails.map((tail) => ({ tail, expected: "temporary-unknown", actual: cr("API Error: 400 " + tail, now, "gpt-6-astra").class }))
+  expect(rows.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX21 P9: двойное отрицание be, самостоятельная следующая причина и статусный приоритет 413/quota/401/403/404 у отрицённых форм -- размер остаётся request", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T16:30:00Z")
+  // CONSTRAINT (#509-FIX21): ожидание задано В КАЖДОЙ строке -- смешанный блок
+  // с временными противоконтролями, одна неправильная строка не прячет другие.
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 the prompt can't not be too long", "request"],
+    ["API Error: 400 the request cannot not be too long", "request"],
+    ["API Error: 400 the prompt can't not take too long", "temporary-unknown"],
+    ["API Error: 400 the prompt shouldn't be too long but the payload is too long", "request"],
+    ["API Error: 400 the prompt didn't take timeout, the payload is too long", "request"],
+    ["API Error: 400 the request didn't take entire the payload too long, the payload is too long", "request"],
+    ["API Error: 413 the prompt wouldn't be too long", "request"],
+    ["API Error: 401 the prompt wouldn't be too long", "permanent-model"],
+    ["API Error: 403 the prompt wouldn't be too long", "permanent-model"],
+    ["API Error: 404 the prompt wouldn't be too long", "permanent-model"],
+    ["API Error: 402 the prompt wouldn't be too long", "quota"],
+  ]
+  const got = rows.map(([line, expected]) => ({ line, expected, actual: cr(line, now, "gpt-6-astra").class }))
+  expect(got.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX22 P10: развёрнутые и сжатые двойные отрицания be -- request; одиночная отрицённая be и временная take-форма -- temporary-unknown", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T17:10:00Z")
+  // CONSTRAINT (#509-FIX22): ожидание задано В КАЖДОЙ строке -- смешанный блок
+  // с одиночной развёрнутой, сжатыми двойными, положительной и отрицённой
+  // соседней причиной после but, временной take-формой и статусным 413;
+  // одна неправильная строка не прячет другие.
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 the prompt will not not be too long", "request"],
+    ["API Error: 400 the request would not not be too long", "request"],
+    ["API Error: 400 the prompt should not not be too long", "request"],
+    ["API Error: 400 the request must not not be too long", "request"],
+    ["API Error: 400 the prompt can not not be too long", "request"],
+    ["API Error: 400 the request could not not be too long", "request"],
+    ["API Error: 400 the prompt would not be too long", "temporary-unknown"],
+    ["API Error: 400 the prompt can't not be too long", "request"],
+    ["API Error: 400 the request cannot not be too long", "request"],
+    ["API Error: 400 the prompt would not not be too long but the payload is too long", "request"],
+    ["API Error: 400 the prompt would not not be too long but the payload would not be too long", "request"],
+    ["API Error: 400 the prompt can't not take too long", "temporary-unknown"],
+    ["API Error: 413 the request would not not be too long", "request"],
+    ["API Error: 413 the request would not be too long", "request"],
+  ]
+  const got = rows.map(([line, expected]) => ({ line, expected, actual: cr(line, now, "gpt-6-astra").class }))
+  expect(got.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX22 P11: отрицание be не переносится на следующий размерный кандидат", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-09T17:10:00Z")
+  // CONSTRAINT (#509-FIX22 P11): обе строки — одиночное «would not be» и
+  // следующий размер в той же части, без разделителя. Ожидание request
+  // задано в каждой строке: отрицание не переносится на второй кандидат.
+  // Это не отрицённый сосед за but.
+  const rows: Array<[string, string]> = [
+    ["API Error: 400 the prompt would not be too long the payload is too long", "request"],
+    ["API Error: 400 the prompt would not be too long since the payload is too long", "request"],
+  ]
+  const got = rows.map(([line, expected]) => ({ line, expected, actual: cr(line, now, "gpt-6-astra").class }))
+  expect(got.filter((r) => r.expected !== r.actual)).toEqual([])
+})
+
+test("#509-FIX11 B5: срок «soonest recovery in» -- числовой unit после разобранной части ломает порядок h/m/s: укороченного ложного срока нет", () => {
+  const q = R514.quotaRecoveryMsOf
+  expect(typeof q, "quotaRecoveryMsOf экспортирована").toBe("function")
+  const rows: Array<[string, number]> = [
+    ["soonest recovery in 2m 1h", -1],
+    ["soonest recovery in 45s 1m", -1],
+    ["soonest recovery in 1h2m3s", 3723000],
+    ["soonest recovery in 1h 2m 3s", 3723000],
+    ["soonest recovery in 30m", 1800000],
+    ["soonest recovery in 1h2m3s.", 3723000],
+    ["soonest recovery in 2m0s", 120000],
+  ]
+  for (const [tail, ms] of rows) {
+    expect({ tail, got: q("API Error: 503 auth_unavailable (model=x; last upstream error: quota); " + tail) }).toEqual({ tail, got: ms })
+  }
 })

@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.50"
+export const MOD_VERSION = "0.1.51"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -323,8 +323,24 @@ export const PROVIDER_GONE_RX = /\b(unknown provider|model not found|no such mod
 // («line 402», путь `/402/`) квотой не считается.
 // CONSTRAINT (#509-FIX8 Р2): в начале строки -- `402`, за которым пробел или
 // конец строки (форма SDK `<status> <тело>`); `402/…`, `402.`, `402-` -- не статус.
-export const QUOTA_RX = /^\s*402(?=\s|$)|(?:\bAPI Error:\s*|"status"\s*:\s*|\bstatus\s*[=:]\s*|\bHTTP(?:\/[\d.]+)?\s+)402\b|\b(?:payment required|insufficient (?:balance|credits?|quota)|credential_quota|quota (?:exceeded|exhausted))\b/i
+// CONSTRAINT (#509-FIX9 R3): отказ прокси «last upstream error: quota)» и
+// «spent allowance» -- quota, каждый признак сам по себе.
+export const QUOTA_RX = /^\s*402(?=\s|$)|(?:\bAPI Error:\s*|"status"\s*:\s*|\bstatus\s*[=:]\s*|\bHTTP(?:\/[\d.]+)?\s+)402\b|\b(?:payment required|insufficient (?:balance|credits?|quota)|credential_quota|quota (?:exceeded|exhausted))\b|\blast upstream error:\s*quota\)|\bspent allowance\b/i
 export const QUOTA_COOLDOWN_MS = 60 * 60 * 1000
+// CONSTRAINT (#509-FIX9 R3): срок квоты из текста -- «soonest recovery in
+// <N>h<N>m<N>s», любая подпоследовательность частей в этом порядке, N целые,
+// части могут разделяться пробелами (#509-FIX10 F4); формы нет -- -1, срок
+// метки тогда QUOTA_COOLDOWN_MS.
+// CONSTRAINT (#509-FIX11 B5): после удачно разобранной части не должно стоять
+// другого числового unit («2m 1h» не упорядочен) -- укороченный срок ложен.
+export const QUOTA_RECOVERY_RX = /\bsoonest recovery in\s+(?=\d+[hms])(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?(?!\w)/i
+export function quotaRecoveryMsOf(text: any): number {
+  const s = String(text == null ? "" : text)
+  const m = QUOTA_RECOVERY_RX.exec(s)
+  if (!m) return -1
+  if (/^\s*\d+\s*[hms]/.test(s.slice(m.index + m[0].length))) return -1
+  return ((Number(m[1] || 0) * 60 + Number(m[2] || 0)) * 60 + Number(m[3] || 0)) * 1000
+}
 // CONSTRAINT (#509-FIX7 ADD1 Р14b): окно квоты z.ai (1308) по тексту -- запасной
 // признак к error.code; решает только на ступени не-Anthropic модели.
 export const QUOTA_WINDOW_RX = /\bUsage limit reached for \d+ hour/i
@@ -376,6 +392,326 @@ export const REFUSAL_CREDITS_NOW_RX = /^[^\r\n:]+ now uses usage credits · /
 // CONSTRAINT (#509-FIX4 AR-c/F-5): прочие начала строк таблицы хоста; класс
 // у них -- temporary-unknown, но строка известна и решает поиск строки отказа.
 export const REFUSAL_OTHER_PREFIXES = ["API Error", "Request timed out"]
+// CONSTRAINT (#509-FIX9 R4, #509-FIX10 F3): статус обёртки `API Error: <NNN>` --
+// 413 -- request, 400 -- request только с предметом размера запроса
+// (предикат refusalRequestSize), 401/403/404 -- permanent-model, прочие --
+// temporary-unknown. 402, мёртвый провайдер и model_not_found решает тело
+// строки раньше обёртки.
+export const REFUSAL_WRAP_STATUS_RX = /^API Error:\s*(\d{3})(?!\d)/
+// CONSTRAINT (#509-FIX10 F3, #509-FIX11 B4, #509-FIX12 T1/T2, #509-FIX13,
+// #509-FIX14, #509-FIX15, #509-FIX16): явные размерные формы делятся на
+// СИЛЬНЫЕ и НЕОДНОЗНАЧНЫЕ и проверяются по СМЫСЛОВОЙ ЧАСТИ ПРИЧИНЫ текста
+// после префикса обёртки, не поиском по всей строке (#509-FIX16: частота
+// спрашивается у части кандидата, не у всего предложения). СИЛЬНЫЕ -- слова
+// размера length|window|size, которые нельзя спутать с голым плановым/частотным «request limit»:
+// «request entity too large»; «<request|prompt|input|payload|message|body|
+// image|pdf> [is|was] too large»; «[maximum] <context|input|token(s)|payload|
+// prompt|request> + length|window|size + [limit] exceeded» с пробелом ИЛИ
+// «_» (включая request_size_limit_exceeded и maximum_request_size_exceeded);
+// exceed-глагол с предметом и квалификатором length|window|size.
+// НЕОДНОЗНАЧНЫЕ: «too many tokens»; «<tokens|context|input|payload|prompt>
+// limit exceeded» с пробелом или «_»; «<context|input|payload|prompt|request>
+// tokens exceeded» с пробелом или «_»; exceed-глагол с «<subject>
+// limit|tokens» -- размер только без частотного/планового квалификатора в
+// ТОЙ ЖЕ части причины (FREQ_RX), а глагольное
+// «exceed… [the] [maximum] request limit» без слова размера -- план или
+// частота, НЕ размер никогда: флаг i держит исходный регистр матча, поэтому
+// пара групп сверяется с приведением к нижнему регистру.
+const REFUSAL_SIZE_STRONG_RX = /\brequest entity too large\b|\b(?:request|prompt|input|payload|message|body|image|pdf)\s+(?:is\s+|was\s+)?too large\b|\b(?:maximum[ _]+)?(?:context|input|tokens?|payload|prompt|request)[ _]+(?:length|window|size)(?:[ _]+limit)?[ _]+exceeded\b|\bexceed(?:s|ed|ing)?\b\s+(?:the\s+)?(?:maximum\s+)?(?:context|tokens?|input|prompt|request)\b\s+(?:length|window|size)(?:[ _]+limit)?\b/gi
+// CONSTRAINT (#509-FIX14, #509-FIX15): группы 1/2 неоднозначной глагольной
+// формы несут пару предмет+квалификатор -- «request»+«limit» читается
+// напрямую (регистр матча произволен) и запрещена; «request size limit
+// exceeded» -- СИЛЬНАЯ форма и здесь не доезжает.
+const REFUSAL_SIZE_AMBIGUOUS_RX = /\btoo many tokens\b|\b(?:tokens?|context|input|payload|prompt)[ _]+limit[ _]+exceeded\b|\b(?:context|input|payload|prompt|request)[ _]+tokens[ _]+exceeded\b|\bexceed(?:s|ed|ing)?\b\s+(?:the\s+)?(?:maximum\s+)?(context|tokens?|input|request|prompt)\b\s+(limit|tokens)\b/gi
+// CONSTRAINT (#509-FIX14, #509-FIX15, #509-FIX16): частотный/плановый
+// квалификатор запрещает только НЕОДНОЗНАЧНУЮ форму и только в её
+// смысловой части причины; сильную форму не запрещает и из чужой части не
+// доходит (#509-FIX15: единицы частоты -- second..year с множественным
+// числом).
+const REFUSAL_SIZE_FREQ_RX = /\bper\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\b|\b(?:current|this)\s+(?:second|minute|hour|day|week|month|year)\b|\b(?:requests?|tokens?)\s+per\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\b|\bfor\s+your\s+plan\b/i
+// CONSTRAINT (#509-FIX16, #509-FIX17): границы причины. «but|however|and|:»
+// разрывают причины ВСЕГДА; запятая -- только когда в НЕПОСРЕДСТВЕННО
+// следующей сырой части до следующего разделителя есть новый самостоятельный
+// размерный кандидат-форма: дальний скан за границей разделителя отрывал
+// частотный квалификатор от первой причины. Без кандидата продолжение вида
+// «, 60 requests per minute» квалифицирует прежнюю причину и остаётся с ней;
+// на последующих запятых алгоритм повторяется.
+const REFUSAL_SIZE_CAUSE_SPLIT_RX = /(,|:|\bbut\b|\bhowever\b|\band\b)/i
+// CONSTRAINT (#509-FIX13, #509-FIX15, #509-FIX16, #509-FIX17, #509-FIX18,
+// #509-FIX20): свободная форма «subject … too long» -- предмет размера
+// внутри ОДНОЙ свободной части: текст после префикса обёртки делится по
+// «. ! ? ; \r \n», предложение -- по запятой, «but», «however», «and», «:»
+// и целому «so» (только свободная часть: явные неоднозначные причины «so»
+// не делят); «so» режет ТОЛЬКО новую клаузу с целым размерным предметом
+// (артикль/указатель перед ним допустим) -- степенной оборот «so verbose»
+// клаузой не считается; целое слово предмета -- не далее 80 знаков перед
+// «too long» в ТОЙ ЖЕ части. Временной veto позиционен для КОНКРЕТНОГО
+// «too long» (#509-FIX17: маркер ПОСЛЕ него ранее названный размер не
+// отвергает; до него в той же части -- отвергает, если сам НЕ отрица́н:
+// «not a timeout», «no timeout», «without a timeout», «not because of a
+// request timeout», «didn't/did not time out»; #509-FIX18: расширенное
+// «not because of a <1-3 слова>» отрица́ет ТОЛЬКО сам маркер timeout/
+// time out, чужой последующий положительный «timed out» -- никогда;
+// #509-FIX20: маркер немится только узкими маркерными формами, не
+// глагольным отрицанием длительности с предметом).
+// Длительность субъекта -- «<request|query|message|input|body|payload|
+// history> + has|have|had|is|was|were|will|did + [already] run» ДО
+// кандидатного «too long» в той же части (включая прямой объект); «run»
+// с дефисом или продолжением слова («run-length») глаголом не считается;
+// длительность кормит ТОЛЬКО БЛИЖАЙШИЙ следующий «too long» части --
+// законченная прежде длительность следующий кандидат не veto.
+// После «too long» длительность -- «to arrive» либо «to run» БЕЗ
+// названного объекта: «to run compaction» -- императив, не время запроса.
+// Отрица́нный глагол длительности или связка be прямо перед фразой
+// (семейства take и run с отрицаниями didn't/doesn't/don't/isn't/wasn't/
+// weren't/hasn't/haven't/hadn't/not/never, включая «is never», и модальными
+// will/would/should/must/can/could not,
+// won't/can't/couldn't/cannot/wouldn't/shouldn't/mustn't;
+// не более один целый предмет между (узкий порядок прилагательное→артикль
+// допустим), пробел перед голым предметом обязателен) -- отрицание размера,
+// не его подтверждение; самостоятельный положительный размер позже в части
+// не гасится.
+const REFUSAL_SIZE_TEMPORAL_RX = /\b(?:took|take|takes|taking|taken|running|ran|timed|timing|timeout|time[\s-]+out|processing|waiting|deadline|latency|elapsed|duration|arrive|arrives|arrived|arriving)\b/gi
+const REFUSAL_SIZE_AUX_RUN_RX = /\b(?:request|query|message|input|body|payload|history)\b\s+(?:has|have|had|is|was|were|will|did)\s+(?:already\s+)?run(?![\w-])/i
+// CONSTRAINT (#509-FIX17): дополнительное отрицание ТОЛЬКО временного
+// маркера (не размерной фразы): «not because of a <существительное>
+// timeout» и «didn't/did not time out».
+const REFUSAL_SIZE_MARKER_NEG_EXTRA_RX = /\bnot\s+because\s+of\s+(?:a|an|the)\s+[a-z]+\s*$|\b(?:didn't|did\s+not)\s*$/i
+// CONSTRAINT (#509-FIX18, #509-FIX19): «not because of a <1-3 слова>» --
+// та же форма с составным существительным; отрица́ет ТОЛЬКО маркер
+// timeout/time out, к чужим последующим «timed»/«took» не применяется.
+// Слово в окне -- буквенное, цифровое («3») или дефисное («client-side»).
+const REFUSAL_SIZE_MARKER_NEG_TIMEOUT_RX = /\bnot\s+because\s+of\s+(?:a|an|the)\s+(?:[a-z0-9-]+\s+){0,2}[a-z0-9-]+\s*$/i
+const REFUSAL_SIZE_SENTENCE_RX = /[.!?\r\n;]/
+const REFUSAL_SIZE_FREE_PART_RX = /(,|:|\bbut\b|\bhowever\b|\band\b|\bso\b)/i
+// CONSTRAINT (#509-FIX18, #509-FIX19): «so» режет свободную часть только
+// перед новой клаузой с целым размерным предметом (артикль/указатель перед
+// ним допустим, узкое вводное now/then и прилагательное
+// overall/entire/whole/full/total/current -- тоже часть клаузы);
+// группа в FREE_PART_RX несёт разделитель для этого решения.
+const REFUSAL_SIZE_SO_CLAUSE_RX = /^\s*(?:(?:now|then)\s+)?(?:(?:a|an|the|this|that|these|those)\s+)?(?:(?:overall|entire|whole|full|total|current)\s+)?(?:(?:a|an|the|this|that|these|those)\s+)?(?:prompt|request|input|context|message|payload|body|query|history|tokens?|length|size)\b/i
+const REFUSAL_SIZE_TOO_LONG_AFTER_RX = /^\s*to\s+arrive\b|^\s*to\s+run\b(?!\s+[A-Za-z])/i
+const REFUSAL_SIZE_FREE_SUBJECT_RX = /\b(?:prompt|request|input|context|message|payload|body|query|history|tokens?|length|size)\b/gi
+const REFUSAL_SIZE_TOO_LONG_RX = /\btoo long\b/gi
+// CONSTRAINT (#509-FIX15, #509-FIX16, #509-FIX18, #509-FIX19, #509-FIX20,
+// #509-FIX21, #509-FIX22):
+// отрицание ЛОКАЛЬНО к размерной фразе и применяется ТОЛЬКО к ней
+// (refusalSizeNegated); отрицание ВРЕМЕННОГО МАРКЕРА решает отдельная
+// узкая форма REFUSAL_SIZE_MARKER_NEG_BEFORE_RX. Глобальное «любое
+// not/no/never/without до совпадения отрицает его» отменено: (а) прямо
+// перед фразой «not|no|never|without», «is|was|were not» и сокращения
+// isn't/wasn't/weren't, затем необязательное «because of» и необязательный
+// артикль (в обоих порядках); (б) отрицанная связка be перед фразой:
+// «not be», «will/would/should/must/can/could not be», «won't/can't/
+// couldn't/cannot/wouldn't/shouldn't/mustn't be»; двойное отрицание be --
+// сжатое («can't not be») И развёрнутое («would not not be»: модальное
+// not непосредственно перед заключательным not) -- утвердительный размер, НЕ
+// отрицание; (в) отрицание didn't/doesn't/don't/isn't/wasn't/
+// weren't/hasn't/haven't/hadn't/not и never (включая «is never»), а также
+// «will/would/should/must/can/could not»,
+// «won't/can't/couldn't/cannot/wouldn't/shouldn't/mustn't» +
+// глагол длительности take/run-семейства (run с дефисом или продолжением
+// слова глаголом не считается; одиночное «not» не накрывает составные
+// отрицания «would not»/«was not»/«has not» -- у каждой составной группы
+// своя альтернатива, ветка погашения остаётся однофакторной) с НЕ БОЛЕЕ
+// одним целым предметом --
+// пробел перед предметом обязателен и не поглощается факультативным
+// определителем (артикль/указатель/притяжательное) или узким прилагательным
+// (допустим и узкий порядок прилагательное→артикль→предмет, как у
+// REFUSAL_SIZE_SO_CLAUSE_RX);
+// (г) сразу после фразы «is|was|were not»/сокращение + «the|a|an» +
+// «cause|reason|error|issue».
+// Между отрицающим словом и фразой допустимы только артикль, «because of»,
+// глагол длительности/связка и один предмет, поэтому отрицание не
+// переносится через «but|however|and|so», запятую, разделитель предложения
+// или другой «too long», а «not only» -- усиление, не отрицание.
+// Одно правило для сильной, неоднозначной и свободной форм.
+const REFUSAL_SIZE_NEGATE_BEFORE_RX = /(?:\b(?:not|no|never|without)|\b(?:is|was|were)\s+not|\b(?:isn't|wasn't|weren't))(?:\s+(?:a|an|the))?(?:\s+because\s+of)?(?:\s+(?:a|an|the))?\s*$|\b(?:(?<!\b(?:can't|couldn't|won't|wouldn't|shouldn't|mustn't|cannot|(?:will|would|should|must|can|could)\s+not)\s+)not|(?:will|would|should|must|can|could)\s+not|won't|can't|couldn't|cannot|wouldn't|shouldn't|mustn't)\s+be\s*$|\b(?:didn't|did\s+not|doesn't|does\s+not|don't|do\s+not|isn't|is\s+not|wasn't|was\s+not|weren't|were\s+not|hasn't|has\s+not|haven't|have\s+not|hadn't|had\s+not|never|(?:is|was|were)\s+never|(?<!\b(?:will|would|should|must|can|could|is|was|were|has|have|had|do|does|did)\s)not|(?:will|would|should|must|can|could)\s+not|won't|can't|couldn't|cannot|wouldn't|shouldn't|mustn't)\s+(?:takes?|took|taking|taken|running|ran|run(?![\w-]))(?:\s+(?:(?:a|an|the|this|that|these|those|my|your|our|their|its)\s+)?(?:(?:overall|entire|whole|full|total|current)\s+)?(?:(?:a|an|the|this|that|these|those)\s+)?(?:prompt|request|input|context|message|payload|body|query|history|tokens?|length|size))?\s*$/i
+// CONSTRAINT (#509-FIX20, #509-FIX21): отрицание ВРЕМЕННОГО МАРКЕРА -- узкая
+// форма без глагольных take/run-альтернатив: отрицённая длительность
+// («didn't run payload», «didn't take its request») чужой последующий маркер
+// «timed out»/«timeout»/«deadline» НЕ немит; прямое «didn't time out» немит
+// только REFUSAL_SIZE_MARKER_NEG_EXTRA_RX.
+const REFUSAL_SIZE_MARKER_NEG_BEFORE_RX = /(?:\b(?:not|no|never|without)|\b(?:is|was|were)\s+not|\b(?:isn't|wasn't|weren't))(?:\s+(?:a|an|the))?(?:\s+because\s+of)?(?:\s+(?:a|an|the))?\s*$/i
+const REFUSAL_SIZE_NEGATE_AFTER_RX = /^\s*(?:(?:is|was|were)\s+not|isn't|wasn't|weren't)\s+(?:the|a|an)\s+(?:cause|reason|error|issue)\b/i
+
+function refusalSizeNegated(before: string, after: string): boolean {
+  return REFUSAL_SIZE_NEGATE_BEFORE_RX.test(before) || REFUSAL_SIZE_NEGATE_AFTER_RX.test(after)
+}
+
+// CONSTRAINT (#509-FIX16, #509-FIX17, #509-FIX18, #509-FIX20, #509-FIX21):
+// временной veto -- только НЕотрица́емый маркер ДО кандидатного «too long»
+// (переданный префикс); ближайшее локальное отрицание прямо перед маркером
+// делает его немым, включая формы REFUSAL_SIZE_MARKER_NEG_EXTRA_RX и узкую
+// маркерную форму REFUSAL_SIZE_MARKER_NEG_BEFORE_RX (без глагольных
+// take/run-альтернатив -- отрицённая длительность чужой маркер не немит);
+// расширенное составное «not because of a <1-3 слова>» немит только маркер
+// timeout/time out; позиция проверяется по каждому матчу, не по всей строке.
+function refusalSizeTemporalDenies(before: string): boolean {
+  REFUSAL_SIZE_TEMPORAL_RX.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = REFUSAL_SIZE_TEMPORAL_RX.exec(before)) !== null) {
+    const head = before.slice(0, m.index)
+    const marker = m[0].toLowerCase()
+    const timeoutMarker = marker === "timeout" || /^time[\s-]+out$/.test(marker)
+    if (
+      !REFUSAL_SIZE_MARKER_NEG_BEFORE_RX.test(head) &&
+      !REFUSAL_SIZE_MARKER_NEG_EXTRA_RX.test(head) &&
+      !(timeoutMarker && REFUSAL_SIZE_MARKER_NEG_TIMEOUT_RX.test(head))
+    ) return true
+  }
+  return false
+}
+
+// CONSTRAINT (#509-FIX16, #509-FIX17, #509-FIX18, #509-FIX19, #509-FIX20):
+// новый самостоятельный размерный кандидат для решения о разрыве запятой --
+// ФОРМА (сильная, неоднозначная или свободная С целым предметом перед
+// «too long» в пределах 80 знаков в ЭТОЙ части), не её действительность,
+// НО отрицание сверяется у САМОГО совпадения (refusalSizeNegated его
+// before/after) -- для сильной/неоднозначной формы отрицённая причина
+// кандидатом не считается и остаётся при частотной клаузе. Голое «too
+// long»/«took too long» кандидатом НЕ является; свободный кандидат
+// временного вида (неотрица́емый temporal-маркер или AUX_RUN до него, хвост
+// «to arrive»/безобъектный «to run») ИЛИ отрицённая фраза кандидатом не
+// считается -- veto решается для конкретного совпадения, не для всей части;
+// частоту «too many tokens» отрицённая средняя часть не отрывает.
+// Запрещённая пара request+limit кандидатом не считается.
+function refusalSizeCandidateIn(t: string): boolean {
+  let m: RegExpExecArray | null
+  REFUSAL_SIZE_STRONG_RX.lastIndex = 0
+  while ((m = REFUSAL_SIZE_STRONG_RX.exec(t)) !== null) {
+    if (!refusalSizeNegated(t.slice(0, m.index), t.slice(m.index + m[0].length))) return true
+  }
+  REFUSAL_SIZE_AMBIGUOUS_RX.lastIndex = 0
+  while ((m = REFUSAL_SIZE_AMBIGUOUS_RX.exec(t)) !== null) {
+    if (m[1] !== undefined && m[1].toLowerCase() === "request" && m[2].toLowerCase() === "limit") continue
+    if (!refusalSizeNegated(t.slice(0, m.index), t.slice(m.index + m[0].length))) return true
+  }
+  REFUSAL_SIZE_TOO_LONG_RX.lastIndex = 0
+  let auxFrom = 0
+  while ((m = REFUSAL_SIZE_TOO_LONG_RX.exec(t)) !== null) {
+    const before = t.slice(0, m.index)
+    const after = t.slice(m.index + m[0].length)
+    const veto =
+      refusalSizeTemporalDenies(before) ||
+      REFUSAL_SIZE_AUX_RUN_RX.test(t.slice(auxFrom, m.index)) ||
+      REFUSAL_SIZE_TOO_LONG_AFTER_RX.test(after) ||
+      refusalSizeNegated(before, after)
+    auxFrom = m.index + m[0].length
+    if (veto) continue
+    REFUSAL_SIZE_FREE_SUBJECT_RX.lastIndex = 0
+    let sm: RegExpExecArray | null
+    while ((sm = REFUSAL_SIZE_FREE_SUBJECT_RX.exec(t)) !== null) {
+      if (sm.index + sm[0].length <= m.index && m.index - (sm.index + sm[0].length) <= 80) return true
+    }
+  }
+  return false
+}
+
+// CONSTRAINT (#509-FIX16, #509-FIX17): смысловые части причины одного
+// предложения; кандидата запятой спрашивают у НЕПОСРЕДСТВЕННО следующей
+// сырой части, не у всего остатка.
+function refusalSizeCauseParts(s: string): string[] {
+  const raw = s.split(REFUSAL_SIZE_CAUSE_SPLIT_RX)
+  const parts: string[] = [raw[0]]
+  for (let i = 1; i + 1 < raw.length; i += 2) {
+    const sep = raw[i]
+    if (sep === "," && !refusalSizeCandidateIn(raw[i + 1])) {
+      parts[parts.length - 1] += sep + raw[i + 1]
+    } else {
+      parts.push(raw[i + 1])
+    }
+  }
+  return parts
+}
+
+// CONSTRAINT (#509-FIX18): части свободного предложения; разделитель «so»
+// без новой клаузы с целым размерным предметом остаётся внутри прежней
+// части.
+function refusalSizeFreeParts(s: string): string[] {
+  const raw = s.split(REFUSAL_SIZE_FREE_PART_RX)
+  const parts: string[] = [raw[0]]
+  for (let i = 1; i + 1 < raw.length; i += 2) {
+    const sep = raw[i]
+    const next = raw[i + 1]
+    if (sep.toLowerCase() === "so" && !REFUSAL_SIZE_SO_CLAUSE_RX.test(next)) {
+      parts[parts.length - 1] += sep + next
+    } else {
+      parts.push(next)
+    }
+  }
+  return parts
+}
+
+function refusalRequestSizeFree(text: string): boolean {
+  const w = REFUSAL_WRAP_STATUS_RX.exec(text)
+  const body = w ? text.slice(w[0].length) : text
+  const sentences = body.split(REFUSAL_SIZE_SENTENCE_RX)
+  for (let i = 0; i < sentences.length; i++) {
+    const s = sentences[i]
+    if (!s) continue
+    const parts = refusalSizeFreeParts(s)
+    for (let j = 0; j < parts.length; j++) {
+      const p = parts[j]
+      if (!p) continue
+      REFUSAL_SIZE_TOO_LONG_RX.lastIndex = 0
+      let m: RegExpExecArray | null
+      let auxFrom = 0
+      while ((m = REFUSAL_SIZE_TOO_LONG_RX.exec(p)) !== null) {
+        const before = p.slice(0, m.index)
+        const after = p.slice(m.index + m[0].length)
+        const veto =
+          refusalSizeTemporalDenies(before) ||
+          REFUSAL_SIZE_AUX_RUN_RX.test(p.slice(auxFrom, m.index)) ||
+          REFUSAL_SIZE_TOO_LONG_AFTER_RX.test(after)
+        auxFrom = m.index + m[0].length
+        if (veto) continue
+        REFUSAL_SIZE_FREE_SUBJECT_RX.lastIndex = 0
+        let sm: RegExpExecArray | null
+        while ((sm = REFUSAL_SIZE_FREE_SUBJECT_RX.exec(p)) !== null) {
+          if (sm.index + sm[0].length <= m.index && m.index - (sm.index + sm[0].length) <= 80) {
+            if (!refusalSizeNegated(before, after)) return true
+          }
+        }
+      }
+    }
+  }
+  return false
+}
+
+// CONSTRAINT (#509-FIX13, #509-FIX14, #509-FIX15, #509-FIX16): единый
+// предикат предмета размера для кода 400; статус 413 решает request
+// безусловно, прочие статусы предмет не спрашивают. Явные формы идут
+// СМЫСЛОВЫМИ ЧАСТЯМИ ПРИЧИНЫ текста после префикса обёртки: при нескольких
+// причинах достаточно одной настоящей размерной, неотрицанной и, для
+// неоднозначной формы, нечастотной в её части.
+function refusalRequestSize(text: string): boolean {
+  const w = REFUSAL_WRAP_STATUS_RX.exec(text)
+  const body = w ? text.slice(w[0].length) : text
+  const sentences = body.split(REFUSAL_SIZE_SENTENCE_RX)
+  for (let i = 0; i < sentences.length; i++) {
+    const s = sentences[i]
+    if (!s) continue
+    const parts = refusalSizeCauseParts(s)
+    for (let j = 0; j < parts.length; j++) {
+      const p = parts[j]
+      if (!p) continue
+      const freq = REFUSAL_SIZE_FREQ_RX.test(p)
+      let m: RegExpExecArray | null
+      REFUSAL_SIZE_STRONG_RX.lastIndex = 0
+      while ((m = REFUSAL_SIZE_STRONG_RX.exec(p)) !== null) {
+        if (!refusalSizeNegated(p.slice(0, m.index), p.slice(m.index + m[0].length))) return true
+      }
+      REFUSAL_SIZE_AMBIGUOUS_RX.lastIndex = 0
+      while ((m = REFUSAL_SIZE_AMBIGUOUS_RX.exec(p)) !== null) {
+        if (m[1] !== undefined && m[1].toLowerCase() === "request" && m[2].toLowerCase() === "limit") continue
+        if (freq || refusalSizeNegated(p.slice(0, m.index), p.slice(m.index + m[0].length))) continue
+        return true
+      }
+    }
+  }
+  return refusalRequestSizeFree(text)
+}
 
 function startsWithAny(text: string, prefixes: string[]): boolean {
   for (let i = 0; i < prefixes.length; i++) if (text.indexOf(prefixes[i]) === 0) return true
@@ -612,14 +948,27 @@ export function resetsAtOf(line: string, atMs: number): { at: number; err: any }
 // не-Anthropic модели (фильтр модели первым; error.code 1308 или
 // QUOTA_WINDOW_RX -- quota), мёртвый провайдер по тексту (permanent-model),
 // квота по тексту (quota), обёртка `API Error`/`Request timed out`
-// (temporary-unknown), request, точная временная строка (temporary-unknown),
+// (по статусу обёртки -- request / permanent-model, иначе temporary-unknown;
+// #509-FIX9 R4), request, точная временная строка (temporary-unknown),
 // permanent, лимит. Без модели ступени правило окна не действует.
 export function classifyRefusal(line: string, atMs: number, model: string = ""): { class: string; readyAt: number; err: any } {
   const text = String(line || "").trim()
   if (!text) return { class: "temporary-unknown", readyAt: 0, err: null }
   const body = refusalBodyClassOf(text, model)
+  if (body === "quota") {
+    // CONSTRAINT (#509-FIX9 R3): срок читается из ПОЛНОЙ строки: улика
+    // попытки урезана до REFUSAL_TEXT_MAX, форма срока бывает дальше.
+    const d = quotaRecoveryMsOf(text)
+    return { class: body, readyAt: d >= 0 ? atMs + d : 0, err: null }
+  }
   if (body) return { class: body, readyAt: 0, err: null }
-  if (startsWithAny(text, REFUSAL_OTHER_PREFIXES)) return { class: "temporary-unknown", readyAt: 0, err: null }
+  if (startsWithAny(text, REFUSAL_OTHER_PREFIXES)) {
+    const st = REFUSAL_WRAP_STATUS_RX.exec(text)
+    const code = st ? Number(st[1]) : 0
+    if (code === 413 || (code === 400 && refusalRequestSize(text))) return { class: "request", readyAt: 0, err: null }
+    if (code === 401 || code === 403 || code === 404) return { class: "permanent-model", readyAt: 0, err: null }
+    return { class: "temporary-unknown", readyAt: 0, err: null }
+  }
   if (startsWithAny(text, REFUSAL_REQUEST_PREFIXES)) return { class: "request", readyAt: 0, err: null }
   if (REFUSAL_TEMPORARY_EXACT.indexOf(text) >= 0) return { class: "temporary-unknown", readyAt: 0, err: null }
   if (isPermanentLine(text)) return { class: "permanent-model", readyAt: 0, err: null }
@@ -902,8 +1251,10 @@ export function failoverAttemptModels(incoming: string, sticky: string | null, l
 // середины, оттуда снимается. Объявленная, совпавшая с терминалом, остаётся
 // первой, терминал второй раз не добавляется и перехода нет (termAt -1, D-8a);
 // остывая, она уходит в самый конец и там -- терминал. Живая метка permanent-model пропускает
-// модель (dead), кроме терминала. skipKnown (проход пробуждения, AR-3) снимает
-// модели с живой меткой temporary-known в skippedKnown. Длина плана не
+// модель (dead), кроме терминала. skipKnown (проход пробуждения, AR-3)
+// снимает модели с живой меткой temporary-known ИЛИ quota (#509-FIX11 B1:
+// живая quota не менее известна -- ответ до срока известен заранее);
+// первичный проход (skipKnown ложь) не снимает ничего. Длина плана не
 // ограничена счётом (H9).
 export function failoverStepPlan(incoming: string, sticky: string | null, ladder: string[], terminal: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, opts: { skipKnown?: boolean } = {}): { plan: string[]; all: string[]; dead: string[]; evidence: { [k: string]: any }; termAt: number; skippedKnown: string[] } {
   const base = failoverAttemptModels(incoming, sticky, ladder)
@@ -933,7 +1284,8 @@ export function failoverStepPlan(incoming: string, sticky: string | null, ladder
   const skippedKnown: string[] = []
   const known = (m: string): boolean => {
     const mk = marks.get(normModelId(m))
-    return !!(opts.skipKnown && mk && mk.class === "temporary-known" && isModelCooling(m, atMs, marks))
+    if (!opts.skipKnown || !mk || !isModelCooling(m, atMs, marks)) return false
+    return mk.class === "temporary-known" || mk.class === "quota"
   }
   if (opts.skipKnown) {
     const keep: string[] = []
@@ -942,6 +1294,13 @@ export function failoverStepPlan(incoming: string, sticky: string | null, ladder
       else keep.push(plan[i])
     }
     plan = keep
+  }
+  // CONSTRAINT (#509-FIX9 R2): терминал с живой меткой temporary-known или
+  // quota (срок в будущем) снимается в skippedKnown в ЛЮБОМ проходе, не только
+  // под skipKnown; срок истёк -- в плане, как прежде.
+  const termKnown = (m: string): boolean => {
+    const mk = marks.get(normModelId(m))
+    return !!(mk && (mk.class === "temporary-known" || mk.class === "quota") && isModelCooling(m, atMs, marks))
   }
   let termAt = -1
   // CONSTRAINT (#509-FIX4 AR-5): остывшая объявленная, равная терминалу, в
@@ -953,8 +1312,17 @@ export function failoverStepPlan(incoming: string, sticky: string | null, ladder
   }
   if (term && !declTerm) {
     all.push(term)
-    if (known(term)) skippedKnown.push(term)
+    if (termKnown(term)) skippedKnown.push(term)
     else { termAt = plan.length; plan.push(term) }
+  }
+  // CONSTRAINT (#509-FIX10 F1): объявленная = терминал с живой меткой
+  // temporary-known/quota снимается в skippedKnown — вызова нет ни как
+  // ступени, ни как терминала, ни в первом, ни в последующих проходах.
+  if (declTerm && termKnown(body[0])) {
+    const j = plan.indexOf(body[0])
+    if (j >= 0) plan.splice(j, 1)
+    if (skippedKnown.indexOf(body[0]) < 0) skippedKnown.push(body[0])
+    termAt = -1
   }
   return { plan, all, dead, evidence: d.evidence, termAt, skippedKnown }
 }
@@ -2324,6 +2692,8 @@ export function isModelCooling(model: string, atMs: number, marks: ReadonlyMap<s
 // не ставит: дефект запроса одинаков для любой модели и о модели не говорит.
 // CONSTRAINT (#509-FIX7 Р14): quota -- QUOTA_COOLDOWN_MS от отказа; метка не
 // мёртвая: модель откладывается в хвост плана, как остывающая.
+// CONSTRAINT (#509-FIX9 R3): срок quota, разобранный classifyRefusal из
+// «soonest recovery in» (readyAt > 0), заменяет QUOTA_COOLDOWN_MS.
 // Срок temporary-known, не лежащий в будущем, читается как неизвестный --
 // иначе перепроба шла бы без паузы.
 export function noteModelRefusal(model: string, atMs: number, cls: string, readyAt: number, reason: string, text: string, marks: Map<string, RungCooldownMark> = rungCooldownMarks): RungCooldownMark | null {
@@ -2334,7 +2704,7 @@ export function noteModelRefusal(model: string, atMs: number, cls: string, ready
   let klass = cls
   let until = 0
   if (cls === "permanent-model") until = atMs + PERMANENT_MARK_MS
-  else if (cls === "quota") until = atMs + QUOTA_COOLDOWN_MS
+  else if (cls === "quota") until = readyAt > 0 ? readyAt : atMs + QUOTA_COOLDOWN_MS
   else if (cls === "temporary-known" && readyAt > atMs) until = readyAt
   else { klass = "temporary-unknown"; until = atMs + refusalBackoffMs(n) }
   const mark: RungCooldownMark = { at: atMs, reason, until, class: klass, n, text: String(text || "").slice(0, REFUSAL_TEXT_MAX) }
@@ -2632,6 +3002,30 @@ export function sessionReviewersServedByOthers(agentId: string, atMs: number): s
     if (n && out.indexOf(n) < 0) out.push(n)
   })
   return out
+}
+
+// CONSTRAINT (#509-FIX9 R7): завершённый агент (терминальный статус в списке
+// agent.list) освобождает свою запись раньше REVIEWER_LIVE_MS -- только запись,
+// поставленную ДО запроса списка (seq не больше seqBefore): запись позже --
+// шаг возобновлённого агента, список её не видел.
+export function sessionReviewerServedRelease(agentId: string, seqBefore: number): boolean {
+  const id = String(agentId || "")
+  const cur = sessionReviewerServed.get(id)
+  if (!cur || cur.seq > seqBefore) return false
+  sessionReviewerServed.delete(id)
+  return true
+}
+
+export function sessionReviewerServedSeqOf(): number {
+  return sessionReviewerServedSeq
+}
+
+// CONSTRAINT (#509-FIX9 R7): тику нужен список агентов, пока в реестре есть
+// запись не старше REVIEWER_LIVE_MS -- её некому снять раньше срока, кроме тика.
+export function sessionReviewerServedLiveAt(atMs: number): boolean {
+  let live = false
+  sessionReviewerServed.forEach((r) => { if (atMs - r.t <= REVIEWER_LIVE_MS) live = true })
+  return live
 }
 
 // CONSTRAINT (#509-FIX3 M4): накопитель и проверка -- по нормализованному id с
@@ -5414,8 +5808,9 @@ async function staleAgentsTick($: any, gen: number): Promise<void> {
   let lst: any = null
   let listErr: any = null
   const listSeq = nudgeSeq
+  const ladderSeq = ladderSeqNow()
   try { lst = await $.agent.list() } catch (x) { listErr = x }
-  probeTickShare = { ep, seq: listSeq, lst: listErr === null && Array.isArray(lst) ? lst : null }
+  probeTickShare = { ep, seq: listSeq, lst: listErr === null && Array.isArray(lst) ? lst : null, lseq: ladderSeq }
   const now = await nowMs($)
   if (!live()) return
   if (listErr !== null || !Array.isArray(lst)) {
@@ -5619,7 +6014,83 @@ function notMainCount(tuid: string): void {
 // объявленной моделью, -- одна на (агент, модель ступени) в сессии.
 const ladderServedSaid = new Set<string>()
 const nudgeAbsentSince = new Map<string, number>()
-let probeTickShare: { ep: number; seq: number; lst: any[] | null } | null = null
+// CONSTRAINT (#509-FIX9 R5/R7): lseq -- счётчики реестра проверяющих и учёта
+// шагов, снятые ДО запроса списка тиком висящих агентов.
+let probeTickShare: { ep: number; seq: number; lst: any[] | null; lseq: LadderSeq } | null = null
+
+// CONSTRAINT (#509-FIX9 R5): учёт ok-шагов агента по модели ступени (ключ --
+// normModelId, имя -- первое как написано) живёт до завершения агента или
+// смены сессии; потолок LADDER_SERVED_TALLY_MAX агентов, вытесняется
+// старейший по постановке, вытеснение -- noteLost ladder-served-tally-evicted.
+// other -- хоть один шаг обслужила не объявленная (тот же предикат, что у
+// подсказки: model !== original).
+export const LADDER_SERVED_TALLY_MAX = 256
+type LadderSeq = { r: number; t: number }
+type ServedTally = { declared: string; other: boolean; rows: Array<{ model: string; key: string; steps: number }>; seq: number; jpath: string; sid: string; subagentType: any; cls: any }
+const ladderServedTally = new Map<string, ServedTally>()
+let ladderServedTallySeq = 0
+
+function ladderServedTallyAdd(aid: string, declared: string, model: string, jpath: string, sid: string, subagentType: any, cls: any, $?: any): void {
+  if (!jpath) return
+  let tl = ladderServedTally.get(aid)
+  if (!tl) {
+    while (ladderServedTally.size >= LADDER_SERVED_TALLY_MAX) {
+      const oldest = ladderServedTally.keys().next().value
+      if (oldest === undefined) break
+      ladderServedTally.delete(oldest)
+      noteLost("ladder-served-tally-evicted", new Error("агент " + String(oldest)), $)
+    }
+    tl = { declared, other: false, rows: [], seq: 0, jpath, sid, subagentType, cls }
+    ladderServedTally.set(aid, tl)
+  }
+  tl.seq = ++ladderServedTallySeq
+  tl.jpath = jpath
+  tl.sid = sid
+  if (model !== declared) tl.other = true
+  const k = normModelId(model)
+  let row: { model: string; key: string; steps: number } | undefined = undefined
+  for (let i = 0; i < tl.rows.length; i++) if (tl.rows[i].key === k) row = tl.rows[i]
+  if (!row) { row = { model, key: k, steps: 0 }; tl.rows.push(row) }
+  row.steps++
+}
+
+function ladderSeqNow(): LadderSeq {
+  return { r: sessionReviewerServedSeqOf(), t: ladderServedTallySeq }
+}
+
+function ladderWatchPending(atMs: number): boolean {
+  return ladderServedTally.size > 0 || sessionReviewerServedLiveAt(atMs)
+}
+
+// CONSTRAINT (#509-FIX9 R5/R7): агент с терминальным статусом в списке тика
+// (STALE_TERMINAL) завершён: снимается его запись реестра проверяющих (R7) и
+// его учёт шагов; при other -- одна запись served-summary в журнал лестницы.
+// Учёт, тронутый после запроса списка (seq больше seq.t), -- шаг
+// возобновлённого агента: не снимается и не пишется. Отсутствие в списке
+// завершением не считается. Подсказки в разговор нет.
+async function ladderAgentsListed($: any, lst: any[] | null | undefined, seq: LadderSeq, now: number): Promise<void> {
+  if (!Array.isArray(lst)) return
+  for (let i = 0; i < lst.length; i++) {
+    const a = lst[i]
+    if (!a || !a.id || STALE_TERMINAL.indexOf(String(a.status)) < 0) continue
+    const id = String(a.id)
+    sessionReviewerServedRelease(id, seq.r)
+    const tl = ladderServedTally.get(id)
+    if (!tl || tl.seq > seq.t) continue
+    ladderServedTally.delete(id)
+    if (!tl.other) continue
+    try {
+      await appendJournal($, tl.jpath, {
+        t: isoOf(now), sid: tl.sid,
+        rec: id + "-served-summary-" + String(now),
+        outcome: "served-summary",
+        agentId: id, subagentType: tl.subagentType, class: tl.cls,
+        declared: tl.declared,
+        served: tl.rows.map((r) => ({ model: r.model, steps: r.steps })),
+      })
+    } catch (x) { noteLost("ladder-served-summary", x, $) }
+  }
+}
 
 // CONSTRAINT: смена эпохи снимает очереди прежней сессии (текст в новую не
 // переносится), но не молча: каждая снятая запись -- строка nudge_dropped
@@ -5646,6 +6117,7 @@ function probeSessionReset($: any): void {
   notMainPending.clear()
   notMainCounted.clear()
   ladderServedSaid.clear()
+  ladderServedTally.clear()
   probeTickShare = null
 }
 
@@ -6315,7 +6787,8 @@ async function probeTimerDeliver($: any, lst: any[] | null | undefined, listSeq:
 
 // CONSTRAINT: отдельного таймера нет -- тик 60 с #530 зовёт это после проверки
 // агентов; список агентов берётся у тика висящих агентов, если тот его снял.
-// Эпоха и поколение сверяются после каждого await до консультации и доставки.
+// Список нужен и лестнице: завершённый агент освобождает запись реестра
+// проверяющих (#509-FIX9 R7) и даёт served-summary (R5).
 async function probeTimerTick($: any, gen: number): Promise<void> {
   const share = probeTickShare
   probeTickShare = null
@@ -6341,12 +6814,18 @@ async function probeTimerTick($: any, gen: number): Promise<void> {
   nudgeQueue.forEach((_q, k) => { if (k) agentKeys = true })
   let lst: any[] | null | undefined = undefined
   let listSeq = 0
-  if (due.length || agentKeys) {
-    if (share && share.ep === ep) { lst = share.lst; listSeq = share.seq }
+  let ladderSeq: LadderSeq = { r: 0, t: 0 }
+  // CONSTRAINT (#509-FIX9 R5/R7): список нужен и лестнице -- пока есть учёт
+  // шагов или живая запись реестра проверяющих (ladderWatchPending).
+  if (due.length || agentKeys || ladderWatchPending(now)) {
+    if (share && share.ep === ep) { lst = share.lst; listSeq = share.seq; ladderSeq = share.lseq }
     else {
       listSeq = nudgeSeq
+      ladderSeq = ladderSeqNow()
       lst = await probeAgentList($)
     }
+    if (!live()) return
+    await ladderAgentsListed($, lst, ladderSeq, now)
     if (!live()) return
   }
   const evT = { tool_use_id: "timer-" + String(now) }
@@ -7183,7 +7662,10 @@ export function register(on: any) {
       terminalFiltered = true
     }
     const firstPlan = failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($))
-    if (!firstPlan.plan.length && !firstPlan.dead.length) return yield* driveNext(next(e), undefined, String(aid))
+    // CONSTRAINT (#509-FIX11 B2): прямой проход -- только для ДЕЙСТВИТЕЛЬНО
+    // пустого плана; план, опустевший от снятых живых меток, уходит в штатное
+    // ожидание (wake по сроку, пробы живости), а не в прямой вызов мимо метки.
+    if (!firstPlan.plan.length && !firstPlan.dead.length && firstPlan.skippedKnown.length === 0) return yield* driveNext(next(e), undefined, String(aid))
     // CONSTRAINT (#509-FIX3 M5, #509-FIX4 F4, #509-FIX5 Р3): сторож сбрасывает
     // только поток агента, в том числе запись отказа next; сердцебиение, кусок
     // и предел двери паузы -- из waitPaceOf по переменной сторожа, прочитанной
@@ -7717,13 +8199,24 @@ export function register(on: any) {
             await toastByD("агент " + String(bind.subagentType || aid) + ": текст отказа не прочитан (" + why + ")", "failover-unread-toast")
           }
         }
-        // CONSTRAINT (#509-FIX3 L2): отказ сердцебиения тем же классом, что живая
-        // метка, срок не двигает: иначе проба каждые 240 с продлевала бы метку
-        // бессрочно, и полный проход после её срока не наступал бы.
+        // CONSTRAINT (#509-FIX3 L2, #509-FIX10 F2, #509-FIX11 B3): отказ ПРОБЫ
+        // (heartbeat/deadline -- attemptOne(..., true)) при живой метке той же
+        // модели срок не продлевает ни при равном классе, ни при смене внутри
+        // пары temporary-known/quota (одна группа запрета, в обе стороны):
+        // иначе проба каждые 240 с продлевала бы метку бессрочно, и полный
+        // проход после её срока не наступал бы. Внутри пары более ранний
+        // достоверный recovery (строго раньше mk.until) срок СОКРАЩАЕТ --
+        // отбрасывать его -- держать агента дольше необходимого; равный или
+        // поздний срок метку не двигает. Класс вне пары и истёкшая метка --
+        // прежняя логика записи.
         const markRefusal = (reason: string): void => {
           if (!cls) return
           const mk = heartbeat ? markOf(model) : null
-          if (mk && mk.class === cls && isModelCooling(model, t1)) return
+          const pair = (c: string): boolean => c === "temporary-known" || c === "quota"
+          const pairLive = !!(mk && pair(mk.class) && pair(cls) && isModelCooling(model, t1))
+          if (mk && (mk.class === cls || (pair(mk.class) && pair(cls))) && isModelCooling(model, t1)) {
+            if (!(pairLive && typeof readyAt === "number" && readyAt > 0 && readyAt < mk.until)) return
+          }
           noteModelRefusal(model, t1, cls, readyAt, reason, clsText)
         }
         if (didThrow) {
@@ -7758,12 +8251,15 @@ export function register(on: any) {
           // вытеснение названо nudge_dropped, отказ постановки -- noteLost
           // failover-served-nudge. Эпоха сменилась за шаг -- подсказка не
           // ставится (очередь уже новой сессии).
+          // CONSTRAINT (#509-FIX9 R5): каждый ok-шаг учитывается моделью ступени
+          // для записи served-summary при завершении агента (ladderAgentsListed).
+          if (epoch === epStep) ladderServedTallyAdd(String(aid), original, model, jpath, sidStep, bind.subagentType, bind.class, $)
           if (model !== original && epoch === epStep) {
             const said = String(aid) + "\0" + normModelId(model)
             if (!ladderServedSaid.has(said)) {
               ladderServedSaid.add(said)
               void nudgeEnqueue($, "", {
-                text: "агент " + String(aid) + " (" + String(bind.subagentType || "") + "): объявлен " + original + ", шаг обслужила " + model + " — вердикт этого агента принадлежит " + model,
+                text: "агент " + String(aid) + " (" + String(bind.subagentType || "") + "): шаг агента обслужила " + model + " (объявлена " + original + ")",
                 probe: "failover", t: t1, jpath, sid: sidStep,
               }).catch(x => noteLost("failover-served-nudge", x, $))
             }
@@ -7837,20 +8333,20 @@ export function register(on: any) {
       }
       // CONSTRAINT (#509-FIX3 AR-3): проход пробуждения не зовёт модель с живым
       // известным сроком -- ответ до срока известен заранее; пропуск назван.
-      if (wake) {
-        for (let i = 0; i < built.skippedKnown.length; i++) {
-          const m = built.skippedKnown[i]
-          const mk = markOf(m)
-          await writeRec({
-            t: isoOf(tP), sid: sidStep,
-            rec: recHead + "-skipped-known-" + String(passN) + "-" + String(i),
-            outcome: "skipped-known-until",
-            agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
-            turnId: ev.turnId, index: ev.index, pass: passN,
-            model: m, until: mk && typeof mk.until === "number" ? isoOf(mk.until) : "",
-            refusalText: mk ? String(mk.text || "") : "",
-          }, "journal-skipped-known")
-        }
+      // CONSTRAINT (#509-FIX9 R2): в первом проходе skippedKnown несёт только
+      // терминал -- его пропуск назван той же записью.
+      for (let i = 0; i < built.skippedKnown.length; i++) {
+        const m = built.skippedKnown[i]
+        const mk = markOf(m)
+        await writeRec({
+          t: isoOf(tP), sid: sidStep,
+          rec: recHead + "-skipped-known-" + String(passN) + "-" + String(i),
+          outcome: "skipped-known-until",
+          agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+          turnId: ev.turnId, index: ev.index, pass: passN,
+          model: m, until: mk && typeof mk.until === "number" ? isoOf(mk.until) : "",
+          refusalText: mk ? String(mk.text || "") : "",
+        }, "journal-skipped-known")
       }
       const extra = Object.assign({}, journalBase, built.evidence)
       if (built.dead.length) extra.rungsSkippedDeadStep = built.dead.slice()
@@ -7928,7 +8424,11 @@ export function register(on: any) {
     // Первый проход до цикла -- тоже вызов.
     // CONSTRAINT (#509-FIX6 А1): засчитанная пауза перечитывания последней
     // попытки -- тоже пауза после вызова.
-    let pausedSinceCall = !!first.paused
+    // CONSTRAINT (#509-FIX11 B2): первый проход без единой попытки (план опустел
+    // от живых меток) -- не пауза после вымышленного next: вызова не было, wake
+    // по сроку и пробы живости разрешены сразу. От непустого плана случай
+    // отличается именно пустотой плана.
+    let pausedSinceCall = firstPlan.plan.length === 0 || !!first.paused
     const begin = async (target: any): Promise<void> => {
       if (begun) return
       begun = true
