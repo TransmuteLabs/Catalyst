@@ -23,7 +23,7 @@ import {
   FAILOVER_FOLD_PERIOD_MS, FOLD_ARM_RETRY_MS, failoverAttemptIsBoring, armFailoverFoldTimer,
   failoverFoldCount, failoverFoldNote, failoverFoldFlush, failoverFoldReset, failoverFoldWriteErr, failoverFoldSplitLost, failoverFoldResetLost,
   failoverFoldObserve, failoverWouldSetSticky,
-  sessionExecutorHas, sessionExecutorModelAdd, sessionExecutorsReset,
+  sessionExecutorHas, sessionExecutorModelAdd, sessionExecutorsReset, hostMemoReset,
   cooldownSnapshot, ladderCommandText, clipLadderArg,
   isModelCooling, noteRungCarrierRefusal, deferCoolingAttemptModels, rungCooldownReset,
   LADDER_COMMAND, LADDER_COMMAND_DESCRIPTION, LADDER_COMMAND_ARG_HINT,
@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.51")
+  expect(MOD_VERSION).toBe("0.1.52")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1106,6 +1106,7 @@ function spawnHook(): any {
 }
 
 function fsEnv$(files: Record<string, string>, env: Record<string, string>, now: number, envRefuses: string[] = []) {
+  hostMemoReset()
   const reads: string[] = []
   const writes: { path: string, text: string }[] = []
   const $: any = {
@@ -1247,6 +1248,213 @@ test("worldFor: неопределимый каталог не использу�
   // probes-файла на загрузку: layerHit в findProjectHome + чтение проекта).
   await worldFor(a.$)
   expect(a.reads.concat(u.reads).filter(p => p === probesA).length).toBe(2)
+})
+
+// --- #495: мемо окружения при неизвестном каталоге -----------------------------
+//
+// CONSTRAINT: счётчик чтений CLAUDE_JUDGE_CARRIER -- счётчик вызовов envBundle:
+// это имя читает только он. Каталог неизвестен, потому что PWD бросает, а
+// store.get отдаёт "". Мемо окружения -- состояние модуля и ключуется лишь
+// временем и эпохой, поэтому каждый зуб начинает с clear393 (новая эпоха), а
+// часы 495_xxx_xxx не пересекаются с часами соседей. Окно 5000 мс --
+// register.ts WORLD_MEMO_MS.
+function env495$(files: Record<string, string>, env: Record<string, string>, refuse: string[], clock: { now: number }) {
+  hostMemoReset()
+  const count = { carrier: 0 }
+  const $: any = {
+    clock: { now: async () => clock.now },
+    env: { get: async (k: string) => {
+      if (k === "CLAUDE_JUDGE_CARRIER") count.carrier++
+      if (refuse.indexOf(k) >= 0) throw new Error("env.get: scripted read refusal for " + k)
+      return env[k] || ""
+    } },
+    fs: {
+      read: async (p: string) => {
+        if (files[p] === undefined) throw new Error("ENOENT " + p)
+        return files[p]
+      },
+      write: async () => {},
+    },
+    store: { get: async () => "" },
+    session: { id: async () => "sid-495" },
+  }
+  return { $, count, env, refuse }
+}
+
+test("#495 Z495-a worldFor: неизвестный каталог -- второй вызов в окне берёт окружение из мемо", async () => {
+  await drainFold393()
+  await clear393()
+  const clock = { now: 495_000_000 }
+  const f = env495$({ "/probes-495a/probes.toml": "[failover]\nenabled = true\n" },
+    { CLAUDE_PROBES_DIR: "/probes-495a" }, ["PWD"], clock)
+  const w1 = await worldFor(f.$)
+  clock.now += 1000
+  const w2 = await worldFor(f.$)
+  expect(w1.cwd, "каталог неизвестен").toBe("")
+  expect(w2.cwd, "каталог неизвестен").toBe("")
+  expect(f.count.carrier, "envBundle отработал один раз на два вызова в окне").toBe(1)
+  expect(lostN393("env-unreadable:PWD"), "нечитаемая PWD названа один раз на два вызова в окне").toBe(1)
+  // Известный каталог идёт мимо мемо окружения: окружение читается заново.
+  f.refuse.length = 0
+  f.env.PWD = "/work-495a"
+  clock.now += 1000
+  const w3 = await worldFor(f.$)
+  expect(w3.cwd).toBe("/work-495a")
+  expect(f.count.carrier, "ветка известного каталога не берёт мемо окружения").toBe(2)
+})
+
+test("#495 Z495-b worldFor: неизвестный каталог -- вызов после окна читает окружение заново", async () => {
+  await clear393()
+  const clock = { now: 495_100_000 }
+  const f = env495$({ "/probes-495b/probes.toml": "[failover]\nenabled = true\n" },
+    { CLAUDE_PROBES_DIR: "/probes-495b" }, ["PWD"], clock)
+  await worldFor(f.$)
+  clock.now += 1000
+  await worldFor(f.$)
+  clock.now = 495_100_000 + 5000
+  await worldFor(f.$)
+  expect(f.count.carrier, "третий вызов на границе окна -- новое чтение окружения").toBe(2)
+})
+
+test("#495 Z495-c worldFor: неизвестный каталог -- смена эпохи сбрасывает мемо окружения", async () => {
+  await clear393()
+  const clock = { now: 495_200_000 }
+  const f = env495$({ "/probes-495c/probes.toml": "[failover]\nenabled = true\n" },
+    { CLAUDE_PROBES_DIR: "/probes-495c" }, ["PWD"], clock)
+  await worldFor(f.$)
+  await clear393(f)
+  clock.now += 1000
+  await worldFor(f.$)
+  expect(f.count.carrier, "после смены эпохи окружение читается заново").toBe(2)
+})
+
+test("#495 Z495-e worldFor: смена эпохи в полёте запрещает запись envMemo", async () => {
+  await clear393()
+  const clock = { now: 495_250_000 }
+  const f = env495$({}, {}, ["PWD"], clock)
+  let entered!: () => void
+  let release!: () => void
+  const waiting = new Promise<void>(resolve => { entered = resolve })
+  const parked = new Promise<void>(resolve => { release = resolve })
+  const get = f.$.env.get
+  let held = false
+  f.$.env.get = async (name: string) => {
+    if (name === "CLAUDE_JUDGE_CARRIER" && !held) {
+      held = true
+      entered()
+      await parked
+    }
+    return get(name)
+  }
+  const pending = worldFor(f.$)
+  await waiting
+  expect(f.count.carrier, "первое чтение окружения ещё висит").toBe(0)
+  await clear393(f)
+  release()
+  expect((await pending).cwd, "старый вызов вернул мир неизвестного каталога").toBe("")
+  expect(f.count.carrier).toBe(1)
+  clock.now++
+  await worldFor(f.$)
+  expect(f.count.carrier, "новая эпоха не берёт мемо старого вызова").toBe(2)
+  await worldFor(f.$)
+  expect(f.count.carrier, "мемо новой эпохи попадает на тех же часах").toBe(2)
+})
+
+test("#495 Z495-d worldFor: неизвестный каталог -- мир не мемоизирован, правка probes.toml видна в окне (#308)", async () => {
+  await clear393()
+  const clock = { now: 495_300_000 }
+  const files: Record<string, string> = { "/probes-495d/probes.toml": "[failover]\nenabled = true\n" }
+  const f = env495$(files, { CLAUDE_PROBES_DIR: "/probes-495d" }, ["PWD"], clock)
+  const w1 = await worldFor(f.$)
+  expect(w1.cwd).toBe("")
+  expect(w1.world.failover.enabled).toBe(true)
+  files["/probes-495d/probes.toml"] = "[failover]\nenabled = false\n"
+  clock.now += 1000
+  const w2 = await worldFor(f.$)
+  expect(w2.world.failover.enabled, "второй вызов в окне видит новое содержимое probes.toml").toBe(false)
+})
+
+test("#495 AR2-env: откат часов промахивается мимо envMemo, равные часы попадают", async () => {
+  await clear393()
+  const clock = { now: 495_400_000 }
+  const f = env495$({}, {}, ["PWD"], clock)
+  await worldFor(f.$)
+  await worldFor(f.$)
+  expect(f.count.carrier, "now === t берёт окружение из мемо").toBe(1)
+  clock.now--
+  await worldFor(f.$)
+  expect(f.count.carrier, "now === t - 1 читает окружение заново").toBe(2)
+})
+
+test("#495 AR2-world: откат часов промахивается мимо worldMemo, равные часы попадают", async () => {
+  await clear393()
+  const clock = { now: 495_500_000 }
+  const f = env495$({}, { PWD: "/work-495-ar2-world" }, [], clock)
+  const first = await worldFor(f.$)
+  expect(await worldFor(f.$), "now === t берёт тот же мир из мемо").toBe(first)
+  expect(f.count.carrier).toBe(1)
+  clock.now--
+  const back = await worldFor(f.$)
+  expect(back.t, "now === t - 1 собирает новый мир").toBe(clock.now)
+  expect(f.count.carrier).toBe(2)
+})
+
+test("#495 AR2-allowed: откат часов промахивается мимо allowedMemo, равные часы попадают", async () => {
+  await clear393()
+  const clock = { now: 495_600_000 }
+  const table = "/tbl-495-ar2/routing-table.toml"
+  const files = { [table]: '[classes.1a]\nallowed = ["before495"]\n' }
+  const f = env495$(files, {}, [], clock)
+  const env = { ROUTING_TABLE: table, CONFIG_DIR: "", HOME: "", PWD: "/work-495-ar2-allowed" }
+  const first = await loadAllowedByClass(f.$, env, env.PWD)
+  expect(first.allowedByClass["1a"]).toEqual(["before495"])
+  files[table] = '[classes.1a]\nallowed = ["after495"]\n'
+  expect(await loadAllowedByClass(f.$, env, env.PWD), "now === t берёт тот же допуск из мемо").toBe(first)
+  clock.now--
+  const back = await loadAllowedByClass(f.$, env, env.PWD)
+  expect(back.allowedByClass["1a"], "now === t - 1 читает новый допуск").toEqual(["after495"])
+})
+
+test("#495 Z495-f hostMemoReset: новый хост промахивается во всех трёх мемо внутри окна", async () => {
+  const clock = { now: 495_700_000 }
+  const cwd = "/work-495-host-reset"
+  const table = "/tbl-495-host-reset/routing-table.toml"
+  const files = { [table]: '[classes.1a]\nallowed = ["host495"]\n' }
+  const a = env495$(files, {}, [], clock)
+  const b = env495$(files, {}, [], clock)
+  const tableReads = { a: 0, b: 0 }
+  for (const [name, host] of [["a", a], ["b", b]] as const) {
+    const read = host.$.fs.read
+    host.$.fs.read = async (path: string) => {
+      if (path === table) tableReads[name]++
+      return read(path)
+    }
+  }
+  const allowedEnv = { ROUTING_TABLE: table, CONFIG_DIR: "", HOME: "", PWD: cwd }
+  // CONSTRAINT: оба конструктора сбрасывают мемо, поэтому оба хоста созданы
+  // ДО наполнения; после наполнения A единственная граница хоста -- дверь ниже.
+  await worldFor(a.$)
+  await worldFor(a.$)
+  expect(a.count.carrier, "A попадает в envMemo на тех же часах").toBe(1)
+  a.env.PWD = cwd
+  await worldFor(a.$)
+  await worldFor(a.$)
+  expect(a.count.carrier, "A попадает в worldMemo на тех же часах").toBe(2)
+  await loadAllowedByClass(a.$, allowedEnv, cwd)
+  await loadAllowedByClass(a.$, allowedEnv, cwd)
+  expect(tableReads.a, "A попадает в allowedMemo на тех же часах").toBe(1)
+
+  hostMemoReset()
+
+  // CONSTRAINT: допуск проверяется первым -- loadWorld иначе сменит ключ
+  // allowedMemo и скроет отсутствие его сброса дверью.
+  await loadAllowedByClass(b.$, allowedEnv, cwd)
+  expect(tableReads.b, "B читает таблицу после сброса allowedMemo").toBe(1)
+  await worldFor(b.$)
+  expect(b.count.carrier, "B читает окружение после сброса envMemo").toBe(1)
+  b.env.PWD = cwd
+  await worldFor(b.$)
+  expect(b.count.carrier, "B читает окружение после сброса worldMemo").toBe(2)
 })
 
 test("loadAllowedByClass: битая env-таблица не выигрывает, цепочка env:unusable→marketplace", async () => {
@@ -2503,6 +2711,7 @@ test("ladder-cmd: ПРОВОДКА -- регистрация из session.start,
   const started = subs.filter(s => s.ev === "session.start")
   expect(started.length).toBe(1)
   const specs: any[] = []
+  hostMemoReset()
   const $: any = {
     store: { set: async () => {} },
     command: { register: async (spec: any) => { specs.push(spec) } },
@@ -2530,6 +2739,7 @@ test("ladder-cmd: отказ двери регистрации не ломает
   })
   const started = subs.filter(s => s.ev === "session.start")
   expect(started.length).toBe(1)
+  hostMemoReset()
   const $: any = {
     store: { set: async () => {} },
     command: { register: async () => { throw new Error("no implementation for command.register") } },
@@ -2664,6 +2874,7 @@ test("catch: стримовая регистрация прогоняет пот
 const FAN313_NOW = 91_313_000
 
 function fan313$(): any {
+  hostMemoReset()
   const files: Record<string, string> = {
     "/probes-f313/probes.toml": "[failover]\nenabled = true\n",
   }
@@ -3021,6 +3232,7 @@ function mod$393(o: {
   proc?: (argv: string[], init: any, setNow: (n: number) => void, getNow: () => number) => Promise<any>
   messages?: (arg: any) => any
 }) {
+  hostMemoReset()
   let now = o.now ?? 97_600_000
   const sid = o.sid ?? "sid-units"
   const writes: { path: string; text: string }[] = []
@@ -3147,13 +3359,12 @@ function hook393(subs: Array<{ ev: string; matcher: any; fn: any }>, ev: string)
   return hit[0].fn
 }
 
-async function clear393(): Promise<void> {
+async function clear393(m: { $: any } = mod$393({})): Promise<void> {
   const subs = subs393()
   const cl = subs.filter(s =>
     s.ev === "command.run" && Array.isArray(s.matcher && s.matcher.command) &&
     s.matcher.command.indexOf("clear") >= 0)
   expect(cl.length).toBe(1)
-  const m = mod$393({})
   await cl[0].fn(m.$, { command: "clear", args: "" }, async (e: any) => e)
   await settle393()
 }
@@ -8082,6 +8293,19 @@ for (const [id, cmd, refuse] of PROBE10) {
     expect({ id, refused: f.length > 0, f }).toEqual({ id, refused: refuse, f: refuse ? f : [] })
   })
 }
+
+// CONSTRAINT (#497): канон probes.toml больше не несёт ключа `heredoc`; проба
+// формы обязана судить без него. Отсутствующий ключ FORM_REQ глушит пробу
+// молча (runForm возвращает null) -- поэтому зуб требует ВЕРДИКТ, а не
+// отсутствие отказа.
+test("#497 Z497 form: мир без ключа `heredoc` -- проба судит `git push` в теле heredoc", async () => {
+  const cfg = formGit10().replace(/^heredoc = ".*"\n/m, "")
+  expect(cfg.indexOf("heredoc"), "Z497 фикстура без ключа heredoc").toBe(-1)
+  const r = await formFix5("z497", "bash <<'X'\ngit push -f origin a:a\nX", cfg)
+  const f = gitF6(r)
+  expect(f.length > 0, "Z497 push из тела heredoc осуждён").toBe(true)
+  expect(r.rows.some((x: any) => x.outcome === "refuse"), "Z497 исход refuse").toBe(true)
+})
 
 // --- #509: лестница без потолка, терминальная ступень исчерпанной клетки -------
 //

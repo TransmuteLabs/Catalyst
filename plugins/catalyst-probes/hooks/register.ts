@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.51"
+export const MOD_VERSION = "0.1.52"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -1129,7 +1129,7 @@ export async function loadAllowedByClass($: any, env: any, cwdArg?: string): Pro
   if (project) layers.push(project)
   const routingUnread = !!(env && Array.isArray(env.UNREADABLE) && env.UNREADABLE.indexOf("CATALYST_ROUTING_TABLE") >= 0)
   const key = (routingUnread ? "u\0" : "p\0" + cand.envPath) + "\0" + cand.market + "\0" + layers.join("\0")
-  if (allowedMemo && now - allowedMemo.t < WORLD_MEMO_MS && allowedMemo.key === key) {
+  if (allowedMemo && now >= allowedMemo.t && now - allowedMemo.t < WORLD_MEMO_MS && allowedMemo.key === key) {
     return allowedMemo.value
   }
   const chain: string[] = []
@@ -2426,6 +2426,11 @@ async function applyPromptRules(
 // hit inside the window answers with a foreign projectHome (#308).
 const WORLD_MEMO_MS = 5000
 let worldMemo: any = null
+// CONSTRAINT (#495): при неизвестном каталоге (cwd === "") мемоизируется ТОЛЬКО
+// окружение -- envBundle и имена env-unreadable:*; мир при неизвестном каталоге
+// не мемоизируется никогда: findProjectHome идёт относительными путями от
+// фактического каталога процесса, и ключ "" не может считаться совпавшим (#308).
+let envMemo: { t: number, env: any } | null = null
 let allowedMemo: { t: number, key: string, value: { allowedByClass: { [classId: string]: string[] }, effortByClass: { [classId: string]: string }, allowedSrc: string, refused?: string } } | null = null
 
 // CONSTRAINT: однократность журнальной записи громкого отказа слоя допуска --
@@ -2502,23 +2507,32 @@ export async function worldFor($: any): Promise<any> {
   if (!cwd && !cwdStoreStale) {
     try { cwd = String(await $.store.get(CWD_KEY) || "") } catch (x) { cwd = ""; noteLost("cwd-store-read", x, $) }
   }
-  if (cwd && worldMemo && now - worldMemo.t < WORLD_MEMO_MS && worldMemo.cwd === cwd) {
+  if (cwd && worldMemo && now >= worldMemo.t && now - worldMemo.t < WORLD_MEMO_MS && worldMemo.cwd === cwd) {
     if (probeHear === null) probeIndexFrom(worldMemo)
     return worldMemo
   }
-  const env = await envBundle($)
-  for (let i = 0; i < ENV_UNREADABLE_NINE.length; i++) {
-    const name = ENV_UNREADABLE_NINE[i]
-    if (Array.isArray(env.UNREADABLE) && env.UNREADABLE.indexOf(name) >= 0)
-      noteLost("env-unreadable:" + name, new Error(name + " unreadable"), $)
+  // CONSTRAINT (#495): окно мемо окружения -- [t, t + WORLD_MEMO_MS): часы,
+  // ушедшие назад, не продлевают мемо, пока снова не догонят t.
+  const envHit = !cwd && envMemo !== null && now >= envMemo.t && now - envMemo.t < WORLD_MEMO_MS
+  let env: any
+  if (envHit) env = (envMemo as { env: any }).env
+  else {
+    env = await envBundle($)
+    for (let i = 0; i < ENV_UNREADABLE_NINE.length; i++) {
+      const name = ENV_UNREADABLE_NINE[i]
+      if (Array.isArray(env.UNREADABLE) && env.UNREADABLE.indexOf(name) >= 0)
+        noteLost("env-unreadable:" + name, new Error(name + " unreadable"), $)
+    }
   }
   const world = await loadWorld($, env, cwd)
   const packed = { t: now, cwd, env, world }
   // CONSTRAINT (#509-FIX8 Р5): мир, загруженный в прежней эпохе, -- мир прежней сессии: мемо и индекс слушателей новой эпохи он не пишет.
   if (ep !== epoch) return packed
-  // CONSTRAINT: при неопределимом каталоге мемо не используется и не
-  // заполняется -- неизвестный ключ никогда не считается совпавшим (#308).
+  // CONSTRAINT: при неопределимом каталоге мемо мира не используется и не
+  // заполняется -- неизвестный ключ никогда не считается совпавшим (#308);
+  // вместо него пишется мемо одного окружения (#495).
   if (cwd) worldMemo = packed
+  else if (!envHit) envMemo = { t: now, env }
   probeIndexFrom(packed)
   return packed
 }
@@ -2890,6 +2904,9 @@ export function classHasPrefix(classId: string, prefixes: string[]): boolean {
 export const SESSION_EXECUTOR_MODELS_CAP = 64
 const sessionExecutorModels: string[] = []
 let sessionExecutorModelsOverflow = false
+
+// CONSTRAINT: дверь сброса -- для тестового стенда (новый хост моделирует новый процесс).
+export function hostMemoReset(): void { envMemo = null; worldMemo = null; allowedMemo = null }
 
 export function sessionExecutorsReset(): void {
   sessionExecutorModels.length = 0
@@ -3408,6 +3425,7 @@ function newSession($: any): { rec: any; world: any } | null {
   capEpochPrune()
   sidMemo = null
   worldMemo = null
+  envMemo = null
   probeHear = null
   probeHearAgentTool = false
   probeNotMain = []

@@ -13,7 +13,7 @@ import type { Args, On } from "claude-code"
 
 // CONSTRAINT: версия берётся импортом, а не литералом: дом версии — register.ts
 // и .claude-plugin/plugin.json, их сверяет tests/scripts/test-mod-units.sh.
-import { MOD_VERSION, FAILOVER_FOLD_PERIOD_MS, failoverBindSet, failoverFoldReset, register as registerRaw514b, sessionExecutorsReset, rungCooldownReset, verdictKey } from "../hooks/register.ts"
+import { MOD_VERSION, FAILOVER_FOLD_PERIOD_MS, failoverBindSet, failoverFoldReset, register as registerRaw514b, sessionExecutorsReset, rungCooldownReset, verdictKey, hostMemoReset } from "../hooks/register.ts"
 import { STAND_MODEL_CAP_TEXT, standModelOver, cappedRegister, modelCapped } from "./stand-cap-514.ts"
 
 const register = cappedRegister(registerRaw514b)
@@ -150,6 +150,7 @@ function wired(
 ): Kept {
   // The harness refuses a second on("clock.now"), so an outage tooth takes
   // over the clock entirely: the mod reads $.clock.now() and nothing else.
+  hostMemoReset()
   failoverFoldReset()
   let clock: MockClock | null = null
   if (opts.clockBreak) {
@@ -1257,6 +1258,7 @@ describe("failover: agent.spawn + turn.step", () => {
   // НЕ ИЗМЕРЕНО: метка `outcome` в журнале при ЛОЖНОМ броске -- она живёт за
   // границей (2) и делит флаг с решением ниже, которое зуб держит.
   test("ложный бросок носителя — отказ, а не успех: ступень дальше, исчерпанный проход не бросает", async () => {
+    hostMemoReset()
     const steps: Record<string, any> = {}
     register((ev: string, ...rest: any[]) => {
       steps[ev] = rest[rest.length - 1]
@@ -1309,6 +1311,7 @@ describe("failover: agent.spawn + turn.step", () => {
     let caught: any = "НЕ БРОСИЛО"
     let returned: any = "НЕ ВЕРНУЛО"
     try {
+      hostMemoReset()
       returned = await settleStep(steps["turn.step"]({}, {
         turnId: "turn-unit-falsy-all", index: 0, model: "busy-model",
         messageCount: 1, agentId: "ag-unit-falsy-all",
@@ -1401,6 +1404,7 @@ describe("failover: agent.spawn + turn.step", () => {
   // бросок. Ступень НЕ последняя: старое поведение гасило бы бросок и звало
   // следующую.
   test("rung emitted a chunk then threw: the throw goes out, second rung NOT called", async () => {
+    hostMemoReset()
     const steps: Record<string, any> = {}
     register((ev: string, ...rest: any[]) => {
       steps[ev] = rest[rest.length - 1]
@@ -1439,6 +1443,7 @@ describe("failover: agent.spawn + turn.step", () => {
   // CONSTRAINT: стережёт от чрезмерного лечения: запрет перехода обязан
   // касаться ТОЛЬКО выдавшей ступени -- молчащая отказывает как раньше.
   test("silent refusal: ladder still moves to the second rung", async () => {
+    hostMemoReset()
     const steps: Record<string, any> = {}
     register((ev: string, ...rest: any[]) => {
       steps[ev] = rest[rest.length - 1]
