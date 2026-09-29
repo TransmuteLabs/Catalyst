@@ -404,7 +404,7 @@ test("строка ui.log несёт ПРИЧИНУ отказа, а не тол
   // CONSTRAINT: постоянная строка прошла бы проверку выше, если бы причина
   // случайно совпала с константой — две РАЗНЫЕ причины обязаны дать две
   // разные строки.
-  const second = await lineFor("the rule table is frozen")
-  expect(second, "the second line carries its own cause").toContain("the rule table is frozen")
+  const second = await lineFor("the module generation was replaced")
+  expect(second, "the second line carries its own cause").toContain("the module generation was replaced")
   expect(second !== first, "two different causes give two different lines").toBe(true)
 })
