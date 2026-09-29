@@ -12,7 +12,7 @@ set -u
 # неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
 # агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
 # дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
-EXPECTED_TEETH=261
+EXPECTED_TEETH=263
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -526,6 +526,8 @@ case "$slice_deny" in *ОТКАЗ*) check "t14 slice says refusal" 0 0 ;; *) che
 # "= отказ" на каждое правило (render_slice: breach). Без этой строки
 # отрицательная проверка ниже могла бы зеленеть на форме, которой нет вовсе.
 case "$slice_deny" in *"= отказ"*) check "t14 slice spells the breach" 0 0 ;; *) check "t14 slice spells the breach" 0 1 ;; esac
+# CONSTRAINT (#571): срез называет то же правило, что исполняет гейт (want == cid или want == parent).
+case "$slice_deny" in *"или его дочернюю точку"*) check "t14 slice role line admits child points" 0 0 ;; *) check "t14 slice role line admits child points" 0 1 ;; esac
 T="$WORK/table-warn.toml"
 check "t14 warn mode does not block"        warn  "$(gate "$(task implementer opus)")"
 out=$(gate_out "$(task implementer opus)")
@@ -810,6 +812,7 @@ check "t11 point accepted for its parent role" allow "$(gate "$(task catalyst:cr
 check "t11 quota follows the parent"          deny  "$(gate "$(task implementer opus "[dispatch-class:crit-mech-t] x")")"
 check "t11 quota marker lifts the parent"     allow "$(gate "$(task implementer opus "[dispatch-class:crit-mech-t] [anthropic-exception:pin] x")")"
 check "t11 point without parent is foreign"   deny  "$(gate "$(task catalyst:critic opus "[dispatch-class:exec-1n-t] [anthropic-exception:pin] x")")"
+case "$(gate_out "$(task catalyst:critic opus "[dispatch-class:exec-1n-t] [anthropic-exception:pin] x")")" in *"one of its child points"*) check "t11 foreign-class refusal names the child-point form" 0 0 ;; *) check "t11 foreign-class refusal names the child-point form" 0 1 ;; esac
 check "t11 parentless point stays unguarded"  allow "$(gate "$(task implementer opus "[dispatch-class:exec-1n-t] x")")"
 T="$BASE_TABLE"
 

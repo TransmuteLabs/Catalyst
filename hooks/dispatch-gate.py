@@ -707,7 +707,8 @@ def check_dispatch(tool_input, table, cwd, sink=None):
         if want and want != cid and want != parent:
             emit_deny(f"subagent '{st}' matches role '{role_name}', whose class is "
                       f"'{want}', but the dispatch declares '{cid}'. Declare "
-                      f"[dispatch-class:{want}] or dispatch a different agent — the "
+                      f"[dispatch-class:{want}] or one of its child points (a grid point "
+                      f"whose parent is '{want}'), or dispatch a different agent — the "
                       f"name and the class must not disagree.")
 
     check_class_admits(model, source, cid, cls, table)
@@ -1147,7 +1148,8 @@ def render_slice():
         match = "|".join(str(m) for m in role.get("match") or [])
         if role.get("class"):
             lines.append(f"- Имя агента содержит {match} → класс {role['class']} "
-                         f"(объявить другой = {breach}).")
+                         f"(объявить класс {role['class']} или его дочернюю точку — "
+                         f"точку, у которой parent = {role['class']}; другой класс = {breach}).")
     agent_cfg = (table.get("channels") or {}).get("agent") or {}
     required_for = agent_cfg.get("effort_required_for") or []
     if required_for:
