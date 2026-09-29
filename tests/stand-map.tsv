@@ -1,7 +1,7 @@
 plugins/catalyst-probes/	judge-serves,judge-ladder-live,mod-event-names,mod-units,ladder-policy
 plugins/catalyst-refusal-watch/	-
 plugins/catalyst-statusline/	-
-plugins/catalyst-swe-request/	-
+plugins/catalyst-swe-request/	swe-request
 hooks/	dispatch-gate,dispatch-stats,plugin-freshness,run-hook-forwarding,scripts,ladder-policy
 agents/	dispatch-gate,lint
 commands/	lint
