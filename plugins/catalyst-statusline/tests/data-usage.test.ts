@@ -249,9 +249,9 @@ test('u-ctx-categories: rows carry label, tokens and percent of the breakdown to
   }))
   const v = val(s, 'u-ctx-categories', F()) as { rows: { label: string; right: string }[] }
   expect(v.rows.length).toBe(2)
-  expect(v.rows[0].label).toBe('System prompt')
-  expect(v.rows[0].right).toContain('6k') // nf.tokens(5762) with the test's rounding nf
-  expect(v.rows[0].right).toContain('2%') // 5762/350000
+  expect(v.rows[0]!.label).toBe('System prompt')
+  expect(v.rows[0]!.right).toContain('6k') // nf.tokens(5762) with the test's rounding nf
+  expect(v.rows[0]!.right).toContain('2%') // 5762/350000
 })
 
 test('u-ctx-trend: a 10-cell sparkline normalised min..max', () => {

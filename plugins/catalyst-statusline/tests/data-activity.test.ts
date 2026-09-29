@@ -41,7 +41,7 @@ const E = {
   clock: { kind: 'clock', everyMs: 1000 },
 } as const
 
-const ps = { kind: 'cmd', argv: ['ps', '-Axo', '%cpu=,rss=,command='], everyMs: 5000 }
+const ps = { kind: 'cmd', argv: ['ps', '-Axo', '%cpu=,rss=,command='], everyMs: 5000 } as const
 const wfIndex = { kind: 'cmd', argv: ['find', '.ai/workflows', '-maxdepth', '2', '-name', '00-index.md', '-print', '-exec', 'cat', '{}', ';'], everyMs: 10000, cwd: 'project' } as const
 const wfDriver = { kind: 'cmd', argv: ['find', '.ai/workflows', '-maxdepth', '2', '-name', '.driver-journal.jsonl', '-print', '-exec', 'cat', '{}', ';'], everyMs: 10000, cwd: 'project' } as const
 const wfCost = { kind: 'cmd', argv: ['find', '.ai/workflows', '-maxdepth', '2', '-name', 'cost.jsonl', '-print', '-exec', 'cat', '{}', ';'], everyMs: 30000, cwd: 'project' } as const
@@ -450,7 +450,7 @@ test('act/wf-branches: shared branches group and the readiness chip uses the pro
     '.ai/workflows/r3/00-index.md\n---\nstatus: active\ncurrent-stage: plan\nbranch: bf\nupdated-at: 2026-09-24T10:00:00.000Z\n---\nx\n'
   let s2 = act.init()
   s2 = feed(s2, wfIndex, { code: 0, stdout: ready, stderr: '' }, T0)
-  rows = ((val(s2, 'a-wf-branches', args('groups')) as { rows?: { right?: string }[] }).rows ?? [])
+  rows = ((val(s2, 'a-wf-branches', args('groups')) as { rows?: { label: string; right?: string; detail?: string }[] }).rows ?? [])
   expect(rows[0]!.right).toBe('2/3 ready')
 })
 

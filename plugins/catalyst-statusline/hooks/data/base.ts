@@ -910,7 +910,7 @@ function elValue(s: BaseState, id: string, args: FormatArgs): Value {
       const make = (): Ok => {
         if (args.variant === 'percent') return ok(nf.percent(ratio), { ratio })
         if (args.variant === 'used') return ok(nf.bytes(s.ram!.usedBytes), { ratio, num: s.ram!.usedBytes, unit: 'bytes' })
-        return ok(nf.bytes(s.ram.usedBytes) + ' / ' + nf.bytes(s.ram.totalBytes), { ratio, num: s.ram.usedBytes, unit: 'bytes' })
+        return ok(nf.bytes(s.ram!.usedBytes) + ' / ' + nf.bytes(s.ram!.totalBytes), { ratio, num: s.ram!.usedBytes, unit: 'bytes' })
       }
       return make()
     }
