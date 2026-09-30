@@ -24,6 +24,7 @@ const timerStand = (): { $: any; cmds: string[]; reads: string[]; nowMs: { n: nu
   const $ = {
     clock: {
       now: async () => nowMs.n,
+      after: () => ({ cancel() {} }),
       every: () => {
         throw new Error('direct clock.every')
       },

@@ -40,7 +40,7 @@ async function picture(check: (p: Picture) => Promise<void>, started = true): Pr
       return { cancel() {} }
     })
   const $ = {
-    clock: { now: async () => time.n },
+    clock: { now: async () => time.n, after: () => ({ cancel() {} }) },
     ui: { log: () => undefined, invalidate: () => undefined },
   }
   const tick = async (): Promise<void> => {
@@ -292,7 +292,7 @@ const GH_PR_FIELDS = 'number,title,state,isDraft,mergeable,mergeStateStatus,revi
 const prSrc = { kind: 'cmd', argv: ['gh', 'pr', 'list', '--state', 'all', '--limit', '100', '--json', GH_PR_FIELDS], everyMs: 60000, cwd: 'project' }
 const prRow = (merge: string): string => JSON.stringify([{ number: 7, title: 't', state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: merge, reviewDecision: '', headRefOid: 'a', headRefName: 'b', baseRefName: 'main', isCrossRepository: false, body: '', url: 'https://github.com/o/r/pull/7', statusCheckRollup: [] }])
 const f1stand = (time: { n: number }, onInvalidate?: () => void) => ({
-  clock: { now: async () => time.n },
+  clock: { now: async () => time.n, after: () => ({ cancel() {} }) },
   ui: { log: () => undefined, invalidate: onInvalidate ?? (() => undefined) },
   process: { run: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }) },
   fs: { read: async () => '' },

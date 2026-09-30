@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import { world, start, command, MOUNT, BAND_MOUNT, PANE_MOUNT, walk, textOf, barText, STORE_OPEN, SESSION_ID, SURFACES, USAGE, openFlags, isOpen } from './world'
+import { world, start, command, MOUNT, BAND_MOUNT, PANE_MOUNT, walk, textOf, barText, STORE_OPEN, SESSION_ID, SURFACES, USAGE, openFlags, isOpen, v3Keys, NS_OPEN } from './world'
 import type { Node } from './world'
 
 // The live band over the 0.5 core: the HUD default layout, hover cards, the
@@ -242,11 +242,12 @@ test('session.start registers /statusline-mod and the bare command opens the pan
   const result = await command($)
   expect(result.text).toBeUndefined()
   expect(w.opened).toEqual([{ id: 'statusline', title: 'Статус-строка', focus: true, closeOnEscape: true, holdToasts: true, rows: 30 }])
-  // #521 FIX2 Р27: the open flag carries its open's token
-  // #521 FIX4 Ф2: one key per open, `STORE_OPEN:<token>`
+  // #521 FIX2 Р27, #551 D3: the open flag carries its open's id, one publication per write
+  // under the session's digest of NS_OPEN
   const flags = openFlags(w.persisted)
-  expect(flags.map((open) => ({ session: open.session, token: typeof open.token }))).toEqual([{ session: SESSION_ID, token: 'string' }])
-  expect(w.persisted.has(STORE_OPEN + ':' + flags[0]!.token)).toBe(true)
+  // #551 D4: an open is its openId
+  expect(flags.map((open) => ({ session: open.session, openId: typeof open.openId }))).toEqual([{ session: SESSION_ID, openId: 'string' }])
+  expect(v3Keys(w.persisted, NS_OPEN, SESSION_ID).length).toBe(1)
   const pane = await $.ui.mount(PANE_MOUNT)
   expect(await pane.find({ key: 'save' })).toBeDefined()
 })

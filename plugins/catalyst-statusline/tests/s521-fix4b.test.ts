@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
-import { walk, STORE_DRAFT, STORE_OPEN, STORE_UNDO, OPTION_ROWS } from './world'
+import { walk, STORE_DRAFT, STORE_OPEN, OPTION_ROWS, draftOf as draftIn, fnv64, v3Keys, NS_DRAFT, NS_UNDO } from './world'
 import type { Node } from './world'
 
 // #521 FIX4b teeth (AR1–AR3 of FIX4). CONSTRAINT (s521-fix1 tooth 11): the kit
@@ -108,13 +108,13 @@ test('#521 FIX4b AR1: a press, an input and a choice on the tree drawn before th
       ;(nodeOf(treeOf('numbers', store, $), 'tab:numbers').props!['onPress'] as () => void)()
       await drainLong()
       expect({ what, notice: snap()['saveResult'] }).not.toEqual({ what, notice: STALE_TREE })
-      const storedA = unstamped(persisted.get(draftKey('A')))
-      const storedB = unstamped(persisted.get(draftKey('B')))
+      const storedA = unstamped(draftIn(persisted, 'A'))
+      const storedB = unstamped(draftIn(persisted, 'B'))
       const liveB = JSON.stringify(snap()['draft'])
       const before = redraws
       act()
       await drainLong()
-      expect({ what, a: unstamped(persisted.get(draftKey('A'))), b: unstamped(persisted.get(draftKey('B'))), live: JSON.stringify(snap()['draft']) }).toEqual({ what, a: storedA, b: storedB, live: liveB })
+      expect({ what, a: unstamped(draftIn(persisted, 'A')), b: unstamped(draftIn(persisted, 'B')), live: JSON.stringify(snap()['draft']) }).toEqual({ what, a: storedA, b: storedB, live: liveB })
       expect({ what, notice: snap()['saveResult'] }).toEqual({ what, notice: STALE_TREE })
       expect({ what, redrawn: redraws > before }).toEqual({ what, redrawn: true })
     }
@@ -136,7 +136,7 @@ test('#521 FIX4b AR1: a press on the tree drawn after the rebind acts on the cur
     ;(nodeOf(treeOf('numbers', store, $), 'num:numUsd:short').props!['onPress'] as () => void)()
     await drainLong()
     expect(snap()['draft']?.axes?.numUsd).toBe('short')
-    expect((persisted.get(draftKey('B')) as any)?.axes?.numUsd).toBe('short')
+    expect((draftIn(persisted, 'B') as any)?.axes?.numUsd).toBe('short')
     expect(snap()['saveResult']).not.toBe(STALE_TREE)
   } finally {
     SL.__resetState()
@@ -170,13 +170,13 @@ test('#521 FIX4b AR1: a press on the tree drawn before /statusline-mod reopened 
     // the command's own open took B's draft, not a gather's rebind
     expect(snap()['saveResult']).not.toBe('сессия сменилась — черновик прежней сессии сохранён')
     expect(snap()['draft']?.axes?.numTokens).toBeUndefined()
-    const storedA = unstamped(persisted.get(draftKey('A')))
-    const storedB = unstamped(persisted.get(draftKey('B')))
+    const storedA = unstamped(draftIn(persisted, 'A'))
+    const storedB = unstamped(draftIn(persisted, 'B'))
     const liveB = JSON.stringify(snap()['draft'])
     const before = redraws
     press()
     await drainLong()
-    expect({ a: unstamped(persisted.get(draftKey('A'))), b: unstamped(persisted.get(draftKey('B'))), live: JSON.stringify(snap()['draft']) }).toEqual({ a: storedA, b: storedB, live: liveB })
+    expect({ a: unstamped(draftIn(persisted, 'A')), b: unstamped(draftIn(persisted, 'B')), live: JSON.stringify(snap()['draft']) }).toEqual({ a: storedA, b: storedB, live: liveB })
     expect(snap()['saveResult']).toBe(STALE_TREE)
     expect(redraws).toBeGreaterThan(before)
   } finally {
@@ -208,7 +208,7 @@ test('#521 FIX4b AR2: the rebind whose old-draft write is refused says the draft
     const session = { id: 'A' }
     let refuse = false
     const persisted = new Map<string, unknown>()
-    const store = storeOf(persisted, (k) => refuse && k === draftKey('A'))
+    const store = storeOf(persisted, (k) => refuse && k.startsWith(NS_DRAFT + '.' + fnv64('A') + ':'))
     const $ = await openInA(session, persisted, store)
     refuse = true
     session.id = 'B'
@@ -227,7 +227,7 @@ test('#521 FIX4b AR3: a save whose undo-stack read is refused goes on and says i
   SL.__resetState()
   try {
     const persisted = new Map<string, unknown>()
-    const store = storeOf(persisted, () => false, (k) => k === STORE_UNDO)
+    const store = storeOf(persisted, () => false, (k) => k.startsWith(NS_UNDO))
     const values = new Map<string, unknown>()
     const engine = {
       config: {
@@ -247,7 +247,7 @@ test('#521 FIX4b AR3: a save whose undo-stack read is refused goes on and says i
     expect(snap()['saveResult']).toBe('сохранено; откат этого сохранения недоступен — хранилище отказало в чтении стека')
     expect(SL.__diag().filter((d) => d.key === 'save-undo-unreadable').map((d) => d.kind + ' ' + d.text.includes('refused by the test'))).toEqual(['warn true'])
     // #521 FIX5 Ч5: the record of this save is in the store
-    const records = [...persisted.keys()].filter((k) => k.startsWith(STORE_UNDO + ':'))
+    const records = v3Keys(persisted, NS_UNDO)
     expect(records.length).toBe(1)
     const record = persisted.get(records[0]!) as { fields?: string[]; written?: Record<string, string> }
     expect({ numUsd: record.fields?.includes('numUsd'), written: record.written?.['numUsd'] }).toEqual({ numUsd: true, written: 'short' })

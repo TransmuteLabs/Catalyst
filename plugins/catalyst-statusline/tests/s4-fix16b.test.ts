@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
 import { FAMILIES } from '../hooks/data/index'
 import { boundText } from '../hooks/data/snapshotText'
-import { walk, rowText } from './world'
+import { walk, rowText, isSessKey, sessValue } from './world'
 import type { Node } from './world'
 import type { Source } from '../hooks/data/types'
 
@@ -99,7 +99,8 @@ const landed = (key: string): boolean => SL.__sessQueue().landed.some(([k]) => k
 const STALE = 'session-verify-stale|'
 const staleSince = (t: number): { at: number; key: string; text: string }[] => SL.__diag().filter((d) => d.key.startsWith(STALE) && at(d) > t).map((d) => ({ at: at(d), key: d.key, text: d.text }))
 
-// the next store.get of `key` waits for the returned release; later reads pass through
+// the next store.get of a snapshot of the logical `key` (either form, #551
+// §3.10) waits for the returned release; later reads pass through
 const hangNextGet = ($: any, key: string): { release: (v: unknown) => void; refuse: (err: unknown) => void; hits: () => number } => {
   let release: (v: unknown) => void = () => undefined
   let refuse: (err: unknown) => void = () => undefined
@@ -107,7 +108,7 @@ const hangNextGet = ($: any, key: string): { release: (v: unknown) => void; refu
   let hits = 0
   const get = $.store.get
   $.store.get = async (k: string) => {
-    if (k === key) {
+    if (isSessKey(k, key.slice('sess:'.length))) {
       hits++
       if (hits === 1) return gate
     }
@@ -222,7 +223,7 @@ test('S4F16b Б2: a clone refusal of the base family resets it with session A ke
     expect(famLive(FAMILIES[0]).session).toBe('A')
     await h['session.end']($, {}, async () => ({}))
     await drain()
-    const snap = persisted.get('sess:A')
+    const snap = sessValue(persisted, 'A')
     expect(snap !== undefined && snap !== null).toBe(true)
   } finally { SL.__resetState() }
 })
@@ -319,11 +320,11 @@ test('S4F16b Б5: a session change frees the key-merge and array-cap episodes an
     $.t += 16000
     eventInput('turn.complete', tokens('a1', 1))
     await end(h, $)
-    expect((persisted.get('sess:A') as { sum: { total: number } }).sum.total).toBe(51)
+    expect((sessValue(persisted, 'A') as { sum: { total: number } }).sum.total).toBe(51)
     // the gather's read-back of the landed key is refused
     const get = $.store.get
     $.store.get = async (k: string) => {
-      if (k === 'sess:A') throw new Error('get refused')
+      if (isSessKey(k, 'A')) throw new Error('get refused')
       return get(k)
     }
     $.t += 16000
@@ -331,7 +332,7 @@ test('S4F16b Б5: a session change frees the key-merge and array-cap episodes an
     // the next write of sess:A is refused
     const put = $.store.set
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') throw new Error('set refused')
+      if (isSessKey(k, 'A')) throw new Error('set refused')
       return put(k, v)
     }
     eventInput('turn.complete', tokens('a2', 1))

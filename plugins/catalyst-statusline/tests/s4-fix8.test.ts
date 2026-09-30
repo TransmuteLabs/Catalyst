@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
 import type { Source } from '../hooks/data/types'
+import { EXT_WRITER, NS_SESS, isSessKey, sessKeys, sessValue, v3Key } from './world'
 
 // S4-FIX8. CONSTRAINT (measured, the header of s4-fix7.test.ts): the kit loads
 // the folder plugin once; the teeth run against the imported module instance.
@@ -19,7 +20,8 @@ const drain = async (): Promise<void> => {
 const eventInput = (event: string, data: unknown, now = 0): void => SL.__feed({ source: { kind: 'event', event } as Source, ok: true, data, now })
 const tokens = (turnId: string, n: number) => ({ turnId, usage: { input_tokens: n, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
 const clone = (v: unknown): any => JSON.parse(JSON.stringify(v))
-const total = (m: Map<string, unknown>, k: string): number | undefined => (m.get(k) as { sum?: { total: number } } | undefined)?.sum?.total
+// the newest snapshot of the session of the logical key `sess:<id>`, both forms (#551 §3.10)
+const total = (m: Map<string, unknown>, k: string): number | undefined => (sessValue(m, k.slice('sess:'.length)) as { sum?: { total: number } } | undefined)?.sum?.total
 const deferred = <T,>() => {
   let resolve!: (v: T) => void
   let reject!: (e: unknown) => void
@@ -91,10 +93,19 @@ const start = async (persisted = new Map<string, unknown>(), id = 'A'): Promise<
   await drain()
   return { h, $, persisted }
 }
-const seedKeys = (persisted: Map<string, unknown>, n: number): void => {
-  for (let i = 0; i < n; i++) persisted.set('sess:K' + i, SNAP(i, (1000 + i) * 1000))
+// CONSTRAINT (#551 D2, D8): the prune deletes publications of this version
+// only — a `sess:<id>` key of the previous version younger than MARK_KEEP stays
+// (s551-protocol T14); the seeds are another environment's publications
+const extSess = (persisted: Map<string, unknown>, id: string, seq: number, value: Record<string, unknown>): void => {
+  persisted.set(v3Key(NS_SESS, id, EXT_WRITER, seq), { ...value, session: id })
 }
-const evicted = (persisted: Map<string, unknown>, gone: string[], next: string): boolean => gone.every((k) => !persisted.has(k)) && persisted.has(next)
+let extSeq = 0
+const seedKeys = (persisted: Map<string, unknown>, n: number): void => {
+  for (let i = 0; i < n; i++) extSess(persisted, 'K' + i, ++extSeq, SNAP(i, (1000 + i) * 1000))
+}
+// a snapshot of the logical key `sess:<id>` is in the store, either form
+const has = (persisted: Map<string, unknown>, k: string): boolean => sessKeys(persisted, k.slice('sess:'.length)).length > 0
+const evicted = (persisted: Map<string, unknown>, gone: string[], next: string): boolean => gone.every((k) => !has(persisted, k)) && has(persisted, next)
 // fires the 3 s end bound the mod's own clock holds (FIX8 Ф9); watchdogs
 // spliced out with it are the stand's, the test does not need them
 const fireEndBound = (stand: { timers: Timer[] }): number => {
@@ -116,7 +127,7 @@ test('S4F8 Ф1: a settle that frees a limit seat runs the key\'s parked newest, 
     const gates = [deferred<void>(), deferred<void>()]
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') {
+      if (isSessKey(k, 'A')) {
         const i = n++
         if (i === 0) await new Promise<void>(() => {}) // the first flight never answers
         if (i === 1) await gates[1]!.promise
@@ -148,7 +159,7 @@ test('S4F8 Ф1 end: the value the end parked at the limit is run by the freeing 
     const gates = [deferred<void>(), deferred<void>()]
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') {
+      if (isSessKey(k, 'A')) {
         const i = n++
         if (i === 0) await new Promise<void>(() => {})
         if (i === 1) await gates[1]!.promise
@@ -172,7 +183,7 @@ test('S4F8 Ф1 end: the value the end parked at the limit is run by the freeing 
 
 // ---------------------------------------------------------------- Ф2
 
-test('S4F8 Ф2 learn: a stored seq beyond the clock window is not learned, own writes overwrite it, one clock record', async () => {
+test('S4F8 Ф2 learn: a stored seq beyond the clock window is not learned, own writes rank above it, one clock record', async () => {
   SL.__resetState()
   try {
     const persisted = new Map<string, unknown>()
@@ -202,7 +213,7 @@ test('S4F8 Ф2 cap: a seqLast at the SEQ_CAP edge still writes, never ZERO', asy
     expect(diags('session-snapshot-clock').length).toBe(0)
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
-    const stored = persisted.get('sess:A') as { sum: { total: number }; seq: number }
+    const stored = sessValue(persisted, 'A') as { sum: { total: number }; seq: number }
     expect({ stored: stored.sum.total, seqAtEdge: stored.seq, stale: diags('stale-write').length }).toEqual({ stored: 655, seqAtEdge: SEQ_CAP - 1, stale: 0 })
   } finally { SL.__resetState() }
 })
@@ -212,17 +223,27 @@ test('S4F8 Ф2 cap: a seqLast at the SEQ_CAP edge still writes, never ZERO', asy
 test('S4F8 Ф3: the requeue path bounds the rows it re-puts', async () => {
   SL.__resetState()
   try {
+    // #551 §3.10: this environment's own publication gone at the read-back makes
+    // the gather re-put the landed value — the only path that bypasses
+    // sessWrite; the landed value is a 0.5.0 one a reload's restore learned
+    // above the publication, and another process's prune takes the publication
     const persisted = new Map<string, unknown>()
+    const { h, $ } = await start(persisted)
+    eventInput('turn.complete', tokens('a1', 100), 60000)
+    await end(h, $)
+    const own = sessKeys(persisted, 'A')
     const snap = SNAP(50, 42_000_000_000)
     snap['agents'] = { map: [['old', { name: 'x'.repeat(40_000), desc: 'd', model: 'm', status: 'running', at: 1, doneAt: 0 }]], done: [] }
     persisted.set('sess:A', { ...snap, origin: '' })
-    const { h, $ } = await start(persisted)
-    // a regression of the key below the module's own landed value makes the
-    // gather re-put the landed value — the only path that bypasses sessWrite
-    persisted.set('sess:A', { ...SNAP(1, 41_999_995_000), origin: '' })
-    $.t += 16000
-    await gather($)
-    const stored = persisted.get('sess:A') as { agents: { map: [string, { name: string }][] }; sum: { total: number } }
+    handlers()
+    const $2 = fullStand(persisted)
+    await SL.restoreAfterReload($2, {} as never)
+    await drain()
+    for (const k of own) persisted.delete(k)
+    $2.t += 16000
+    await gather($2)
+    expect(own.length).toBe(1)
+    const stored = sessValue(persisted, 'A') as { agents: { map: [string, { name: string }][] }; sum: { total: number } }
     expect({ name: stored.agents.map[0]![1]!.name.length, stored: stored.sum.total, size: JSON.stringify(stored).length < 4 * 1024 * 1024 }).toEqual({ name: 200, stored: 50, size: true })
   } finally { SL.__resetState() }
 })
@@ -236,7 +257,7 @@ test('S4F8 Ф4: every row of the stored record is bounded, seenTurns ids of a li
     for (let i = 0; i < 300; i++) eventInput('turn.complete', tokens('t'.repeat(17_000) + ':' + String(i), 1), 60000)
     eventInput('turn.complete', tokens('z', 100), 60000)
     await end(h, $)
-    const stored = persisted.get('sess:A') as { seenTurns: string[] }
+    const stored = sessValue(persisted, 'A') as { seenTurns: string[] }
     expect({ turns: stored.seenTurns.length, bounded: stored.seenTurns.every((id) => id.length <= 200), size: JSON.stringify(stored).length < 4 * 1024 * 1024 }).toEqual({ turns: 256, bounded: true, size: true })
   } finally { SL.__resetState() }
 })
@@ -249,7 +270,7 @@ test('S4F8 Ф4 model: the model row of an agent record is bounded', async () => 
     await drain()
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
-    const stored = persisted.get('sess:A') as { agents: { map: [string, { model: string }][] } }
+    const stored = sessValue(persisted, 'A') as { agents: { map: [string, { model: string }][] } }
     expect(stored.agents.map[0]![1]!.model.length).toBeLessThanOrEqual(200)
   } finally { SL.__resetState() }
 })
@@ -266,7 +287,7 @@ test('S4F8 Ф4 desc: the desc row of a 0.5.0 store value is bounded at the re-wr
     const { h, $ } = await start(persisted)
     eventInput('turn.complete', tokens('a1', 5), 60000)
     await end(h, $)
-    const stored = persisted.get('sess:A') as { agents: { map: [string, { desc: string }][] } }
+    const stored = sessValue(persisted, 'A') as { agents: { map: [string, { desc: string }][] } }
     expect(stored.agents.map[0]![1]!.desc.length).toBeLessThanOrEqual(200)
   } finally { SL.__resetState() }
 })
@@ -281,7 +302,7 @@ test('S4F8 Ф5 MC1: a foreign low-ord overwrite does not delete a key whose newe
     const { h, $ } = await start(persisted, 'K0')
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:K0' && n++ === 0) await new Promise<void>(() => {})
+      if (isSessKey(k, 'K0') && n++ === 0) await new Promise<void>(() => {})
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('k1', 100), 60000)
@@ -294,11 +315,11 @@ test('S4F8 Ф5 MC1: a foreign low-ord overwrite does not delete a key whose newe
     // the farewell of K0 landed through the end; the key keeps only its
     // unsettled store.set — another process overwrites the store value low
     $.t += 16000
-    persisted.set('sess:K0', { ...SNAP(9, 1) })
-    for (let i = 0; i < 12; i++) persisted.set('sess:J' + i, SNAP(i, (5000 + i) * 1000))
+    extSess(persisted, 'K0', ++extSeq, SNAP(9, 1))
+    for (let i = 0; i < 12; i++) extSess(persisted, 'J' + i, ++extSeq, SNAP(i, (5000 + i) * 1000))
     eventInput('turn.complete', tokens('a2', 1), 60000)
     await end(h, $)
-    expect({ kept: persisted.has('sess:K0'), pruned: evicted(persisted, Array.from({ length: 12 }, (_, i) => 'sess:K' + (i + 10)), 'sess:K22') }).toEqual({ kept: true, pruned: true })
+    expect({ kept: has(persisted, 'sess:K0'), pruned: evicted(persisted, Array.from({ length: 12 }, (_, i) => 'sess:K' + (i + 10)), 'sess:K22') }).toEqual({ kept: true, pruned: true })
   } finally { SL.__resetState() }
 })
 
@@ -311,7 +332,7 @@ test('S4F8 Ф5 MC2: a key whose waiting value survived a late refusal is never p
     const gates = [deferred<void>(), deferred<void>()]
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:K0') {
+      if (isSessKey(k, 'K0')) {
         const i = n++
         if (i === 0) { await gates[0]!.promise; throw new Error('late refusal') }
         if (i === 1) await gates[1]!.promise
@@ -337,7 +358,7 @@ test('S4F8 Ф5 MC2: a key whose waiting value survived a late refusal is never p
     $.t += 16000
     eventInput('turn.complete', tokens('a1', 5), 60000)
     await end(h, $)
-    expect({ kept: persisted.has('sess:K0'), pruned: evicted(persisted, Array.from({ length: 9 }, (_, i) => 'sess:K' + (i + 1)), 'sess:K10') }).toEqual({ kept: true, pruned: true })
+    expect({ kept: has(persisted, 'sess:K0'), pruned: evicted(persisted, Array.from({ length: 9 }, (_, i) => 'sess:K' + (i + 1)), 'sess:K10') }).toEqual({ kept: true, pruned: true })
   } finally { SL.__resetState() }
 })
 
@@ -350,7 +371,7 @@ test('S4F8 Ф6: an agent.spawn snapshot is written with no gather and no session
     const gates = [deferred<void>(), deferred<void>()]
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') {
+      if (isSessKey(k, 'A')) {
         const i = n++
         if (i === 0) await new Promise<void>(() => {})
         if (i === 1) await gates[1]!.promise
@@ -373,7 +394,7 @@ test('S4F8 Ф6: an agent.spawn snapshot is written with no gather and no session
     await h['agent.spawn']($, { subagentType: 'nm', description: 'd', model: 'm' }, async () => ({ agentId: 'ag9' }))
     await drain()
     await drain()
-    const stored = persisted.get('sess:A') as { agents: { map: [string, { name: string }][] }; sum: { total: number } }
+    const stored = sessValue(persisted, 'A') as { agents: { map: [string, { name: string }][] }; sum: { total: number } }
     expect({ agent: stored.agents.map.some(([id]) => id === 'ag9'), stored: stored.sum.total }).toEqual({ agent: true, stored: 150 })
   } finally { SL.__resetState() }
 })
@@ -388,7 +409,7 @@ test('S4F8 Ф7: the end record never claims the value unstored, only that store.
     // not say the value was not stored
     $.store.set = async (k: string, v: unknown) => {
       persisted.set(k, clone(v))
-      if (k === 'sess:A') await new Promise<void>(() => {})
+      if (isSessKey(k, 'A')) await new Promise<void>(() => {})
     }
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
@@ -408,7 +429,7 @@ test('S4F8 Ф8: a value displaced by a later end is not settled early, the earli
   try {
     const { h, $ } = await start()
     $.store.set = async (k: string) => {
-      if (k === 'sess:A') await new Promise<void>(() => {})
+      if (isSessKey(k, 'A')) await new Promise<void>(() => {})
     }
     await h['turn.complete']($, tokens('a1', 100), async () => ({}))
     await drain()
@@ -441,7 +462,7 @@ test('S4F8 Ф9 timer: endWait is bounded by the mod clock too, an eternal proces
   try {
     const { h, $ } = await start()
     $.store.set = async (k: string) => {
-      if (k === 'sess:A') await new Promise<void>(() => {})
+      if (isSessKey(k, 'A')) await new Promise<void>(() => {})
     }
     $.process.run = async () => { await new Promise<void>(() => {}) }
     eventInput('turn.complete', tokens('a1', 100), 60000)

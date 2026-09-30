@@ -135,7 +135,7 @@ test('#521 FIX3 AR-2: on mobile the search field says it is unavailable and name
 
 test('#521 FIX3 AR-3: a pane mounted before the reload restore ends draws the restored draft once the restore lands, with no clock settle', async ($, on) => {
   world(on, {}, {
-    [STORE_OPEN]: { session: SESSION_ID },
+    [STORE_OPEN]: { session: SESSION_ID, at: Date.now() },
     [STORE_DRAFT]: { session: SESSION_ID, lines: [[{ id: 'cost', body: '{cost.text}' }]], axes: { theme: 'hud' }, elements: {}, focus: null, tab: 'layout', query: '', fam: 'all', targetLine: 0, themeName: '' },
   })
   await start($)

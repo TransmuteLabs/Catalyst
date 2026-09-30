@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
 import { FAMILIES } from '../hooks/data'
 import type { Source } from '../hooks/data/types'
+import { isSessKey, sessValue } from './world'
 
 // S4-FIX4 (ADJUDICATION-S4-FIX3 Р1–Р7): the farewell queue, the one session
 // write queue, the gather-wide ticket, idempotent agent completion and the
@@ -32,13 +33,14 @@ const fullStand = (persisted = new Map<string, unknown>(), id = 'A'): any => ({
     get: async (k: string) => persisted.get(k),
     set: async (k: string, v: unknown) => { persisted.set(k, clone(v)) },
     delete: async (k: string) => { persisted.delete(k) },
+    keys: async () => [...persisted.keys()],
   },
   session: { id: async () => id, turns: async () => 0, cwd: async () => '/work/demo', root: async () => '/work/demo', model: async () => 'live-model', usage: async () => ({}), messages: async () => [] },
   config: { list: async () => [] },
   env: { get: async () => '' },
   fs: { read: async () => '' },
   process: { run: async () => ({ exitCode: 0, stdout: '', stderr: '' }) },
-  clock: { now: async () => 61000, every: () => ({ cancel() {} }) },
+  clock: { now: async () => 61000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
   plugin: { name: 'catalyst-statusline', root: '/stand' },
   ui: { log: async () => undefined, status: () => undefined, invalidate: () => undefined },
 })
@@ -57,7 +59,7 @@ test('S4F4 Z1: the farewell carries the turns that landed mid-gather, not the ga
     const $ = fullStand(persisted)
     const writesA: number[] = []
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') writesA.push((v as { sum: { total: number } | null }).sum?.total ?? -1)
+      if (isSessKey(k, 'A')) writesA.push((v as { sum: { total: number } | null }).sum?.total ?? -1)
       persisted.set(k, clone(v))
     }
     await SL.restoreAfterReload($, {} as never)
@@ -65,7 +67,7 @@ test('S4F4 Z1: the farewell carries the turns that landed mid-gather, not the ga
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await h['session.end']($, {}, async () => ({}))
     await drain()
-    expect((persisted.get('sess:A') as { sum: { total: number } }).sum.total).toBe(100)
+    expect((sessValue(persisted, 'A') as { sum: { total: number } }).sum.total).toBe(100)
     const gate = deferred<void>()
     let first = true
     $.session.id = async () => {
@@ -78,7 +80,7 @@ test('S4F4 Z1: the farewell carries the turns that landed mid-gather, not the ga
     eventInput('turn.complete', tokens('a2', 50), 61000)
     await h['session.end']($, {}, async () => ({}))
     await drain()
-    expect((persisted.get('sess:A') as { sum: { total: number } }).sum.total).toBe(150)
+    expect((sessValue(persisted, 'A') as { sum: { total: number } }).sum.total).toBe(150)
     const beforeSwitch = writesA.length
     gate.resolve()
     await gather
@@ -91,7 +93,7 @@ test('S4F4 Z1: the farewell carries the turns that landed mid-gather, not the ga
     await drain()
     expect(writesA.length).toBe(beforeSwitch + 1)
     expect(writesA[writesA.length - 1]).toBe(150)
-    expect((persisted.get('sess:A') as { sum: { total: number } }).sum.total).toBe(150)
+    expect((sessValue(persisted, 'A') as { sum: { total: number } }).sum.total).toBe(150)
   } finally { SL.__resetState() }
 })
 
@@ -121,7 +123,7 @@ test('S4F4 Z2a: a gather outrun after its switching dispatch still leaves the ol
     await g2
     await drain()
     expect(SL.__diag().some((d) => d.key === 'stale-refresh-newer')).toBe(true)
-    const stored = persisted.get('sess:A') as { sum: { total: number } } | undefined
+    const stored = sessValue(persisted, 'A') as { sum: { total: number } } | undefined
     expect(stored).toBeDefined()
     expect(stored!.sum.total).toBe(100)
   } finally { SL.__resetState() }
@@ -154,10 +156,10 @@ test('S4F4 Z2b: a gather outrun before its switching dispatch leaves the farewel
     await g2
     await drain()
     expect(SL.__diag().some((d) => d.key === 'stale-refresh-newer')).toBe(true)
-    expect(persisted.get('sess:A')).toBeUndefined()
+    expect(sessValue(persisted, 'A')).toBeUndefined()
     await SL.__refresh($)
     await drain()
-    const stored = persisted.get('sess:A') as { sum: { total: number } } | undefined
+    const stored = sessValue(persisted, 'A') as { sum: { total: number } } | undefined
     expect(stored).toBeDefined()
     expect(stored!.sum.total).toBe(100)
   } finally { SL.__resetState() }
@@ -172,7 +174,7 @@ test('S4F4 Z3: a farewell queued behind a hung write lands after it, not under i
     const gate = deferred<unknown>()
     let writes = 0
     $.store.set = async (key: string, v: unknown) => {
-      if (key === 'sess:A' && ++writes === 1) await gate.promise
+      if (isSessKey(key, 'A') && ++writes === 1) await gate.promise
       persisted.set(key, clone(v))
     }
     await SL.restoreAfterReload($, {} as never)
@@ -191,7 +193,7 @@ test('S4F4 Z3: a farewell queued behind a hung write lands after it, not under i
     await gather
     await drain()
     await drain()
-    expect((persisted.get('sess:A') as { sum: { total: number } }).sum.total).toBe(120)
+    expect((sessValue(persisted, 'A') as { sum: { total: number } }).sum.total).toBe(120)
   } finally { SL.__resetState() }
 })
 
@@ -204,7 +206,7 @@ test('S4F4 Z4: a write requested while the hung one later refuses is still writt
     const gate = deferred<unknown>()
     let writes = 0
     $.store.set = async (key: string, v: unknown) => {
-      if (key === 'sess:A' && ++writes === 1) {
+      if (isSessKey(key, 'A') && ++writes === 1) {
         await gate.promise
         throw new Error('store down')
       }
@@ -221,7 +223,7 @@ test('S4F4 Z4: a write requested while the hung one later refuses is still writt
     gate.reject(new Error('store down'))
     await drain()
     await drain()
-    expect((persisted.get('sess:A') as { sum: { total: number } }).sum.total).toBe(120)
+    expect((sessValue(persisted, 'A') as { sum: { total: number } }).sum.total).toBe(120)
     expect(writes).toBe(2)
   } finally { SL.__resetState() }
 })

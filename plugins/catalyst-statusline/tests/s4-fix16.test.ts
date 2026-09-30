@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
 import { FAMILIES } from '../hooks/data/index'
 import { boundText } from '../hooks/data/snapshotText'
-import { walk, rowText } from './world'
+import { walk, rowText, sessValue } from './world'
 import type { Node } from './world'
 import type { Source } from '../hooks/data/types'
 
@@ -107,7 +107,7 @@ test('S4F16 Г1: a family reset on a state the reduce throws on keeps session A 
     expect(live.tools.active.has('c1')).toBe(true)
     await h['session.end']($, {}, async () => ({}))
     await drain()
-    const snap = persisted.get('sess:A') as { tools?: { sawAny?: unknown } } | undefined
+    const snap = sessValue(persisted, 'A') as { tools?: { sawAny?: unknown } } | undefined
     expect(snap !== undefined && snap !== null).toBe(true)
     // the snapshot shape carries no active calls (base.ts snapshotOf); c1's trace in it is sawAny
     expect(snap!.tools!.sawAny).toBe(true)

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
-import { world, start, command, PANE_MOUNT, BAND_MOUNT, BAND, walk, textOf, STORE_DRAFT, STORE_OPEN, SESSION_ID, SURFACES, isOpen, undoStack } from './world'
+import { world, start, command, PANE_MOUNT, BAND_MOUNT, BAND, walk, textOf, STORE_DRAFT, STORE_OPEN, SESSION_ID, SURFACES, isOpen, undoStack, draftOf as draftIn, NS_DRAFT } from './world'
 import type { Node, World } from './world'
 
 // #521 FIX1 teeth. CONSTRAINT (ANALYSIS-521-swe2 traps 1-2): the pane is drawn
@@ -24,7 +24,8 @@ const propOf = (n: Node, name: string): unknown => (n as Record<string, unknown>
 const drain = async (): Promise<void> => { for (let i = 0; i < 60; i++) await Promise.resolve() }
 const settle = async (w: World): Promise<void> => { await w.clock.settle(); await drain() }
 // #521 FIX2 Р13: the draft lives under its session's key
-const draftOf = (w: World): any => w.persisted.get(STORE_DRAFT + ':' + SESSION_ID)
+// the newest draft of the session, every form (#551 §3.7)
+const draftOf = (w: World): any => draftIn(w.persisted, SESSION_ID)
 const nodesOf = async (pane: Pane): Promise<Node[]> => walk((await pane.drawn()) as Node)
 const textsOf = (nodes: Node[]): string[] => nodes.filter((n) => n.type === 'Text').map(textOf)
 const buttonKeys = (nodes: Node[]): string[] => nodes.filter((n) => n.type === 'Button').map(keyOf)
@@ -295,7 +296,8 @@ test('#521 tooth 6 (Р6): the draft undo stack survives restoreAfterReload', asy
   try {
     const persisted = new Map<string, unknown>()
     const one = [[{ id: 'model', body: '{model.text}' }]]
-    persisted.set(STORE_OPEN, { session: 'A' })
+    // #551 D5: a flag restores only with an age inside FLAG_TTL (no clock on this stand: the process clock)
+    persisted.set(STORE_OPEN, { session: 'A', at: Date.now() })
     persisted.set(STORE_DRAFT, { session: 'A', lines: [...one, [{ id: 'ctx', body: '{ctx.text}' }]], axes: {}, elements: {}, focus: null, tab: 'layout', query: '', fam: 'model', page: 0, targetLine: 0, themeName: '', undo: [{ lines: one, axes: {}, elements: {} }] })
     const $ = {
       store: {
@@ -314,9 +316,9 @@ test('#521 tooth 6 (Р6): the draft undo stack survives restoreAfterReload', asy
     expect(node).toBeDefined()
     ;(node!.props!['onPress'] as () => void)()
     for (let i = 0; i < 6; i++) await drain()
-    // #521 FIX2 Р13: the old single slot moved to the session's key at the restore
-    expect(persisted.has(STORE_DRAFT)).toBe(false)
-    expect(lineIds(persisted.get(STORE_DRAFT + ':A'))).toEqual([['model']])
+    // #551 D8: the old single slot is read only — it stays; the step went out as this version's draft of A
+    expect(persisted.has(STORE_DRAFT)).toBe(true)
+    expect(lineIds(draftIn(persisted, 'A'))).toEqual([['model']])
   } finally {
     SL.__resetState()
   }
@@ -456,7 +458,7 @@ test('#521 tooth 11 (Р11, picker store writes): a refused draft write is record
     const $ = {
       store: {
         get: async () => undefined,
-        set: async (k: string) => { if (k.startsWith(STORE_DRAFT)) throw new Error('draft write refused by the test') },
+        set: async (k: string) => { if (k.startsWith(STORE_DRAFT) || k.startsWith(NS_DRAFT)) throw new Error('draft write refused by the test') },
         delete: async () => undefined,
       },
       session: { id: async () => 'A' },

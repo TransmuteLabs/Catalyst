@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
-import { world, start, command, PANE_MOUNT, walk, textOf, STORE_DRAFT, STORE_OPEN, STORE_UNDO, SESSION_ID, OPTION_ROWS, openFlags, isOpen, undoStack, saveMarks, themeRecords } from './world'
+import { world, start, command, PANE_MOUNT, walk, textOf, STORE_DRAFT, STORE_OPEN, STORE_UNDO, SESSION_ID, OPTION_ROWS, isOpen, undoStack, saveMarks, themeRecords, draftOf as draftIn, v3Key, v3Keys, fnv64, NS_OPEN, NS_DRAFT, EXT_WRITER } from './world'
 import type { Node, World } from './world'
 
 // #521 FIX4 teeth (Ф1–Ф10). CONSTRAINT (ANALYSIS-521-swe2 traps 1-2): a kit
@@ -21,7 +21,9 @@ const drain = async (): Promise<void> => { for (let i = 0; i < 60; i++) await Pr
 const drainLong = async (): Promise<void> => { for (let i = 0; i < 12; i++) await drain() }
 const settle = async (w: World): Promise<void> => { await w.clock.settle(); await drain() }
 const draftKey = (session: string): string => STORE_DRAFT + ':' + session
-const draftOf = (w: World, session = SESSION_ID): any => w.persisted.get(draftKey(session))
+const draftOf = (w: World, session = SESSION_ID): any => draftIn(w.persisted, session)
+// the draft publications of `session` of this version
+const isDraftOf = (k: string, session: string): boolean => k.startsWith(NS_DRAFT + '.' + fnv64(session) + ':')
 const nodesOf = async (pane: Pane): Promise<Node[]> => walk((await pane.drawn()) as Node)
 const textsOf = (nodes: Node[]): string[] => nodes.filter((n) => n.type === 'Text').map(textOf)
 const buttonKeys = (nodes: Node[]): string[] => nodes.filter((n) => n.type === 'Button').map(keyOf)
@@ -168,7 +170,7 @@ test('#521 FIX4 Ф2: an open that lands between any two awaits of the close keep
       const before = (): void => {
         if (calls++ === at) {
           landed = true
-          persisted.set(STORE_OPEN + ':t-new', { session: 'A', token: 't-new', t: 2 })
+          persisted.set(v3Key(NS_OPEN, 'A', EXT_WRITER, 1), { session: 'A', openId: 't-new', e: 99, n: 0, at: 5000 })
         }
       }
       $.store = {
@@ -180,7 +182,9 @@ test('#521 FIX4 Ф2: an open that lands between any two awaits of the close keep
       await SL.closeKeepDraft($)
       if (!landed) break
       exercised++
-      expect({ at, flags: openFlags(persisted).map((f) => f.token) }).toEqual({ at, flags: ['t-new'] })
+      // #551 D8: the previous version's flag is read only — it stays, and the close's mark closes it
+      const v3 = v3Keys(persisted, NS_OPEN).map((k) => (persisted.get(k) as { openId?: string }).openId)
+      expect({ at, v3, v1: persisted.has(STORE_OPEN + ':t-old') }).toEqual({ at, v3: ['t-new'], v1: true })
     } finally {
       SL.__resetState()
     }
@@ -188,15 +192,17 @@ test('#521 FIX4 Ф2: an open that lands between any two awaits of the close keep
   expect(exercised).toBeGreaterThan(1)
 })
 
-test('#521 FIX4 Ф2: the bare open flag of the old form is read by the restore and moved to its token key', async () => {
+test('#521 FIX4 Ф2: the bare open flag of the old form is read by the restore, stays, and the adoption publishes its copy', async () => {
   SL.__resetState()
   try {
-    const persisted = new Map<string, unknown>([[STORE_OPEN, { session: 'A', token: 't1' }], [draftKey('A'), { session: 'A', t: 1, ...body([['ctx']]) }]])
+    const persisted = new Map<string, unknown>([[STORE_OPEN, { session: 'A', token: 't1', t: 1 }], [draftKey('A'), { session: 'A', t: 1, ...body([['ctx']]) }]])
     await SL.restoreAfterReload(gatherStand({ store: storeOf(persisted) }), {} as never)
     expect(snap()['pickerOpen']).toBe(true)
-    expect(persisted.has(STORE_OPEN)).toBe(false)
-    // #521 FIX5 Ч1, FIX6 Р1: the moved flag's token is «legacy-» + its session
-    expect(openFlags(persisted).map((f) => ({ session: f.session, token: f.token, t: typeof f.t }))).toEqual([{ session: 'A', token: 'legacy-A', t: 'number' }])
+    // #551 D8: the previous version's record is read only
+    expect(persisted.get(STORE_OPEN)).toEqual({ session: 'A', token: 't1', t: 1 })
+    // #521 FIX5 Ч1, FIX6 Р1: the bare flag's open is «legacy-» + its session
+    // #551 FIX9 Р5, D4: the copy keeps its order, epoch 0, counter 0; `at` is its age alone
+    expect(v3Keys(persisted, NS_OPEN).map((k) => persisted.get(k) as Record<string, unknown>).map((f) => ({ session: f['session'], openId: f['openId'], e: f['e'], n: f['n'], at: typeof f['at'] }))).toEqual([{ session: 'A', openId: 'v1:legacy-A', e: 0, n: 0, at: 'number' }])
   } finally {
     SL.__resetState()
   }
@@ -208,7 +214,7 @@ test('#521 FIX4 Ф2: a refused write of the open flag is recorded as picker-open
   const on = (event: string, ...rest: unknown[]): void => { handlers[event] = rest[rest.length - 1] as never }
   try {
     SL.register(on as never, {} as never)
-    const $ = gatherStand({ store: storeOf(new Map(), (k) => k.startsWith(STORE_OPEN)) })
+    const $ = gatherStand({ store: storeOf(new Map(), (k) => k.startsWith(NS_OPEN)) })
     await handlers['command.run']!($ as never, { command: 'statusline-mod', args: '' } as never, async (v: unknown) => v)
     await drainLong()
     expect(snap()['pickerOpen']).toBe(true)
@@ -275,7 +281,7 @@ test('#521 FIX4 Ф3: save 1 in flight, reload, save 2 whole, save 1\'s tail — 
   }
 })
 
-test('#521 FIX4 Ф3: the bare undo array of the old form is laid out by saveId once, in its order, and the bare key goes', async () => {
+test('#521 FIX4 Ф3: the bare undo array of the old form is read by saveId once, in its order, and the bare key stays', async () => {
   SL.__resetState()
   try {
     const persisted = new Map<string, unknown>([[STORE_UNDO, [
@@ -285,7 +291,8 @@ test('#521 FIX4 Ф3: the bare undo array of the old form is laid out by saveId o
     const store = storeOf(persisted)
     const values = new Map<string, unknown>([[ROW('numUsd'), 'short'], [ROW('numTokens'), 'raw']])
     await pressIn(store, engineOf(configOf(values)), 'numbers', 'undo')
-    expect(persisted.has(STORE_UNDO)).toBe(false)
+    // #551 D8: the previous version's record is read only
+    expect(Array.isArray(persisted.get(STORE_UNDO))).toBe(true)
     expect(values.get(ROW('numTokens'))).toBe('compact')
     expect(values.get(ROW('numUsd'))).toBe('short')
     const left = undoStack(persisted)
@@ -405,7 +412,7 @@ test('#521 FIX4 Ф6: a draft whose write was refused at the A→B switch stays i
     let session = 'A'
     let refuse = false
     const persisted = new Map<string, unknown>([[STORE_OPEN + ':t1', { session: 'A', token: 't1', t: 1 }], [draftKey('A'), { session: 'A', t: 1, ...body([['ctx']]) }]])
-    const store = storeOf(persisted, (k) => refuse && k === draftKey('A'))
+    const store = storeOf(persisted, (k) => refuse && isDraftOf(k, 'A'))
     const $ = gatherStand({ id: async () => session, store })
     await SL.restoreAfterReload($, {} as never)
     SL.__render({})
@@ -424,7 +431,7 @@ test('#521 FIX4 Ф6: a draft whose write was refused at the A→B switch stays i
     await SL.__refresh($)
     await drainLong()
     expect(snap()['pickerSession']).toBe('A')
-    expect((persisted.get(draftKey('A')) as any)?.axes?.numTokens).toBe('raw')
+    expect((draftIn(persisted, 'A') as any)?.axes?.numTokens).toBe('raw')
     expect(snap()['draft']?.axes?.numTokens).toBe('raw')
   } finally {
     SL.__resetState()
@@ -489,7 +496,7 @@ test('#521 FIX4 Ф8: one refresh after the id changed records the new session\'s
 
 // ---------- Ф9: the bare draft slot is pruned too ----------
 
-test('#521 FIX4 Ф9: a bare draft slot without a stamp is stamped at the first prune and starts to age', async ($, on) => {
+test('#521 FIX4 Ф9: a bare draft slot without a stamp is read only — the prune neither stamps nor removes it', async ($, on) => {
   const T0 = Date.now()
   const w = world(on, {}, { [STORE_DRAFT]: { session: 'other', ...body([['ver']]) } })
   await w.clock.set(T0)
@@ -497,9 +504,9 @@ test('#521 FIX4 Ф9: a bare draft slot without a stamp is stamped at the first p
   await settle(w)
   await command($)
   await settle(w)
-  const slot = w.persisted.get(STORE_DRAFT) as { session?: string; t?: unknown } | undefined
-  expect(slot?.session).toBe('other')
-  expect(typeof slot?.t).toBe('number')
+  // #551 D8: a record of the previous version with no age of its own never ages out
+  expect(w.persisted.get(STORE_DRAFT)).toEqual({ session: 'other', ...body([['ver']]) })
+  expect(isOpen(w.persisted, SESSION_ID)).toBe(true)
 })
 
 test('#521 FIX4 Ф9: a bare draft slot stamped older than seven days is pruned', async ($, on) => {
@@ -515,12 +522,12 @@ test('#521 FIX4 Ф9: a bare draft slot stamped older than seven days is pruned',
 
 // ---------- Ф10: a refused slot move is a transfer refusal, not a read refusal ----------
 
-test('#521 FIX4 Ф10: a refused write of the slot move is picker-draft-transfer; the panel opens with the slot\'s draft and the move lands at the next write', async () => {
+test('#521 FIX4 Ф10: a refused copy of the slot is picker-draft-transfer; the panel opens with the slot\'s draft and the copy lands at the next write, the slot stays', async () => {
   SL.__resetState()
   try {
     let refuse = true
     const persisted = new Map<string, unknown>([[STORE_OPEN + ':t1', { session: 'A', token: 't1', t: 1 }], [STORE_DRAFT, { session: 'A', ...body([['ctx']]) }]])
-    const $ = gatherStand({ store: storeOf(persisted, (k) => refuse && k === draftKey('A')) })
+    const $ = gatherStand({ store: storeOf(persisted, (k) => refuse && isDraftOf(k, 'A')) })
     await SL.restoreAfterReload($, {} as never)
     expect(snap()['pickerOpen']).toBe(true)
     expect(snap()['draft']?.lines?.map((l: { id: string }[]) => l.map((s) => s.id))).toEqual([['ctx']])
@@ -530,8 +537,10 @@ test('#521 FIX4 Ф10: a refused write of the slot move is picker-draft-transfer;
     expect(keys).not.toContain('picker-draft-read')
     refuse = false
     await SL.closeKeepDraft($)
-    expect(persisted.has(draftKey('A'))).toBe(true)
-    expect(persisted.has(STORE_DRAFT)).toBe(false)
+    expect(v3Keys(persisted, NS_DRAFT, 'A').length).toBe(1)
+    expect((draftIn(persisted, 'A') as any)?.lines?.map((l: { id: string }[]) => l.map((s) => s.id))).toEqual([['ctx']])
+    // #551 D8: the previous version's record is read only
+    expect(persisted.has(STORE_DRAFT)).toBe(true)
   } finally {
     SL.__resetState()
   }

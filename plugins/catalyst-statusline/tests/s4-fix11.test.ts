@@ -5,6 +5,7 @@ import { SESS_ID_PATHS, snapshotText } from '../hooks/data/snapshotText'
 import { cloneState } from '../hooks/data/cloneState'
 import { snapshotOf } from '../hooks/data/base'
 import type { Source } from '../hooks/data/types'
+import { EXT_WRITER, NS_SESS, sessKeys, sessValue, v3Key } from './world'
 
 // S4-FIX11. CONSTRAINT (measured, the header of s4-fix7.test.ts): the kit loads
 // the folder plugin once; the teeth run against the imported module instance.
@@ -17,7 +18,8 @@ const drain = async (): Promise<void> => {
 const eventInput = (event: string, data: unknown, now = 0): void => SL.__feed({ source: { kind: 'event', event } as Source, ok: true, data, now })
 const tokens = (turnId: string, n: number) => ({ turnId, usage: { input_tokens: n, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
 const clone = (v: unknown): any => JSON.parse(JSON.stringify(v))
-const total = (m: Map<string, unknown>, k: string): number | undefined => (m.get(k) as { sum?: { total: number } } | undefined)?.sum?.total
+// the newest snapshot of the session of the logical key `sess:<id>`, both forms (#551 §3.10)
+const total = (m: Map<string, unknown>, k: string): number | undefined => (sessValue(m, k.slice('sess:'.length)) as { sum?: { total: number } } | undefined)?.sum?.total
 const SNAP = (sum: number, seq: number): Record<string, unknown> => ({
   sum: { total: sum, in: sum, out: 0, cache: 0 },
   seenTurns: [],
@@ -109,6 +111,21 @@ const start = async (persisted = new Map<string, unknown>(), id = 'A'): Promise<
   await drain()
   return { h, $, persisted }
 }
+// #551 §3.10: the read-back re-puts only when this environment's own
+// publication is gone — one lands, a reload restores the previous-version
+// `seed` above it, and another process's prune takes the publication
+const reloadOver = async (seed: Record<string, unknown>): Promise<{ $: any; persisted: Map<string, unknown> }> => {
+  const persisted = new Map<string, unknown>()
+  const first = await start(persisted)
+  eventInput('turn.complete', tokens('w0', 1))
+  await end(first.h, first.$)
+  const own = sessKeys(persisted, 'A')
+  expect(own.length).toBe(1)
+  persisted.set('sess:A', seed)
+  const { $ } = await start(persisted)
+  for (const k of own) persisted.delete(k)
+  return { $, persisted }
+}
 
 // ---------- Н1: the boundSess result is always marked ----------
 
@@ -123,14 +140,12 @@ test('S4F11 Н1: a legacy requeue keeps the capture image and one agent survives
       seenTurns: [raw],
       agents: { map: [[raw, { ...REC }]], done: [raw] },
     }
-    const persisted = new Map<string, unknown>([['sess:A', seed]])
-    const { $ } = await start(persisted)
-    // an older body of the same origin forces the read-back requeue of the
+    // the own publication gone at the read-back forces the requeue of the
     // newest known value (the learned legacy copy)
-    persisted.set('sess:A', { ...SNAP(1, 41_999_995_000), origin: '' })
+    const { $, persisted } = await reloadOver(seed)
     $.t += 16000
     await gather($)
-    const v = persisted.get('sess:A') as any
+    const v = sessValue(persisted, 'A') as any
     expect(v.norm).toBe(1)
     expect(v.agents.map[0][0]).toBe(image)
     expect(v.agents.done[0]).toBe(image)
@@ -162,7 +177,7 @@ test('S4F11 Н1: a marked snapshot with an over-long id is bounded to the captur
     // store-limit violation (FIX8 Ф4) and must take the capture image
     expect(famLive(FAMILIES[0]).agents.map.has(image)).toBe(true)
     await end(h, $)
-    const v = persisted.get('sess:A') as any
+    const v = sessValue(persisted, 'A') as any
     expect(v.agents.map[0][0]).toBe(image)
     expect(v.agents.map[0][0].length).toBe(200)
     expect(v.seenTurns[0]).toBe(image)
@@ -293,12 +308,10 @@ test('S4F11 Н5: two legacy keys bounded to one image merge on the first entry w
     const long = 'k'.repeat(220)
     const image = snapshotText(long)
     const seed = { ...SNAP(50, 42_000_000_000), origin: '', extra: { [image]: 'A', [long]: 'B' } }
-    const persisted = new Map<string, unknown>([['sess:A', seed]])
-    const { $ } = await start(persisted)
-    persisted.set('sess:A', { ...SNAP(1, 41_999_995_000), origin: '' })
+    const { $, persisted } = await reloadOver(seed)
     $.t += 16000
     await gather($)
-    const v = persisted.get('sess:A') as any
+    const v = sessValue(persisted, 'A') as any
     expect(Object.keys(v.extra).length).toBe(1)
     expect(v.extra[image]).toBe('A')
     const recs = diags('session-snapshot-key-merge')
@@ -321,32 +334,37 @@ const startWall = async (persisted: Map<string, unknown>, wall: number): Promise
   return { h, $, persisted }
 }
 
-const nPhase = async (plantedN: number, sum: number): Promise<{ persisted: Map<string, unknown>; $: any }> => {
+const nPhase = async (plantedN: number, sum: number): Promise<{ persisted: Map<string, unknown>; $: any; restored: unknown }> => {
   SL.__setOrigin('zzz')
   const S = EPOCH * 1000
   const seed = { ...SNAP(50, S), origin: 'zzz', n: 1, norm: 1 }
   const persisted = new Map<string, unknown>([['sess:A', seed]])
   const { $ } = await startWall(persisted, EPOCH)
-  persisted.set('sess:A', { ...SNAP(sum, S), origin: 'zzz', n: plantedN, norm: 1 })
+  // a body echoing this origin at the same seq, under a key of its own (#551 §3.10)
+  persisted.set(v3Key(NS_SESS, 'A', EXT_WRITER, 1), { ...SNAP(sum, S), origin: 'zzz', n: plantedN, norm: 1, session: 'A' })
   $.t += 16000
   await gather($)
-  return { persisted, $ }
+  // the next restore orders both by the module's own (seq, origin, n)
+  SL.__resetState()
+  SL.__setOrigin('zzz')
+  await startWall(persisted, EPOCH)
+  return { persisted, $, restored: famLive(FAMILIES[0]).sum?.total }
 }
 
 test('S4F11 Н6: a body with n NaN is ordered as zero and the own landed n wins', async () => {
   SL.__resetState()
   try {
-    const { persisted } = await nPhase(NaN, 51)
-    expect(total(persisted, 'sess:A')).toBe(50)
+    const { persisted, restored } = await nPhase(NaN, 51)
+    expect({ stored: total(persisted, 'sess:A'), restored }).toEqual({ stored: 50, restored: 50 })
   } finally { SL.__resetState() }
 })
 
 test('S4F11 Н6: a body with n 1e308 is ordered as zero and cannot fence the key', async () => {
   SL.__resetState()
   try {
-    const { persisted } = await nPhase(1e308, 53)
-    expect(total(persisted, 'sess:A')).toBe(50)
-    const v = persisted.get('sess:A') as any
+    const { persisted, restored } = await nPhase(1e308, 53)
+    expect({ stored: total(persisted, 'sess:A'), restored }).toEqual({ stored: 50, restored: 50 })
+    const v = sessValue(persisted, 'A') as any
     expect(Number.isSafeInteger(v.n) && v.n >= 1).toBe(true)
   } finally { SL.__resetState() }
 })
@@ -477,7 +495,7 @@ test('S4F11b К3: a restored cyclic agent record feeds no family-feed freeze (Р
     await h['session.end']($, {}, async () => { endCalled = true; return {} })
     await drain()
     expect(endCalled).toBe(true)
-    const v = persisted.get('sess:A')
+    const v = sessValue(persisted, 'A')
     expect(JSON.stringify(v).includes('"ag"')).toBe(true)
   } finally { SL.__resetState() }
 })
