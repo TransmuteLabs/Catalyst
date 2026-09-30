@@ -1,0 +1,208 @@
+# id	tooth	platform	file	find (literal, exactly once in file)	replace
+M1-marker-ancestor-off	T8	all	runlimits.py	    if pid not in chain:	    if False:
+M1b-marker-argv-off	T8	all	runlimits.py	    if pid not in published_supervisors([pid], registry, my_uid(env), procs):	    if False:
+M2-mem-watch-off	T1	darwin	runlimits.py	if rss_kb > cap_kb and not mute_mem:	if False:
+M2b-mem-watch-off-under-kernel-limit	T1b	linux	runlimits.py	if rss_kb > cap_kb and not mute_mem:	if False:
+M3-time-watch-off	T2	all	runlimits.py	if now - self.t0 > cap_s and not mute_time:	if False:
+M4-linux-without-kernel-limit	T13	linux	runlimits.py	kernel = self.plat == "linux"	kernel = False
+M4b-scope-check-off	T13	linux	runlimits.py	        return self.check_scope(line[0][3:])	        return None
+M5-nested-subtree-counted	T9	all	runlimits.py	        if pid in skip:	        if False:
+M6-pool-wider	T10	all	runlimits.py	ThreadPoolExecutor(max_workers=max_parallel(profile))	ThreadPoolExecutor(max_workers=max_parallel(profile) + 1)
+M6b-table-constant	T12	all	runlimits.py	"unit": {"mem_mb": 6144	"unit": {"mem_mb": 4096
+M7a-bash-prologue-89	T11	all	NOTES.md	>&2; exit 89; fi	>&2; exit 0; fi
+M7b-python-prologue-89	T11	all	NOTES.md	sys.exit(89)	sys.exit(0)
+M7c-node-prologue-89	T11	all	NOTES.md	process.exit(89); }	process.exit(0); }
+M8-census-closure-off	T18	all	census-guard.py	for line, tgt in edges.get(p, ()):	for line, tgt in ():
+M9-census-comment-filter-off	T19	all	census-guard.py	code = STRIP[kind](text)	code = text.split("\n")
+M10-ps-failure-swallowed	T21	all	runlimits.py	                    return self.lost_measure(e)	                    continue
+M10b-ps-probe-before-start-off	T21	all	runlimits.py	            return self.refuse("cannot measure: %s (child not started)" % e)	            pass
+M11-teeth-profile-in-combat	T22	all	runlimits.py	elif name == "teeth" and test_mode(env):	elif name == "teeth":
+M12-sigterm-escalation-off	T15	all	runlimits.py	                    self.escalate_at = time.time() + GRACE_S	                    self.escalate_at = time.time() + 1e9
+M13-rotation-off	T23	all	runlimits.py	if os.path.exists(path) and os.path.getsize(path) >= rotate:	if False:
+M14-journal-failure-raises	T23	all	runlimits.py	        sys.stderr.write("RUNLIMITS: journal write failed: %s: %s\n" % (path, e))	        raise
+M15-kernel-kill-unverified-line-off	T24	all	runlimits.py	if rc == -signal.SIGKILL and not killed_by_us:	if False:
+M16-census-marker-anywhere	T17	all	census-guard.py	m = MARKER_RE.match(ln)	m = re.search(r"RUNLIMITS-PROLOGUE v1 profile=(\S+)", ln)
+M17-census-python-sibling-import-off	T18	all	census-guard.py	            for name in py_sibling_imports(code[i]):	            for name in ():
+M18-oom-kill-not-86	T14	linux	runlimits.py	if cause == "oom":	if False:
+M19-survivor-sweep-off	T26	all	runlimits.py	        targets = self.leftovers(remembered)	        targets = {}
+M20-darwin-own-process-group-off	T26	darwin	runlimits.py	            popen_kw["preexec_fn"] = os.setpgrp	            pass
+M21-darwin-last-snapshot-route-off	T26	darwin	runlimits.py	            if pid != self.child.pid and pid in procs and procs[pid][4] == st:	            if False:
+M22-linux-scope-route-off	T26	linux	runlimits.py	        roots.update(p for p in self.scope_pids() if p in procs)	        pass
+M23-parent-watch-off	T25	all	runlimits.py	            if not self.detached and os.getppid() != self.ppid0:	            if False:
+M24-node-signal-forwarding-off	T25	all	runlimits.mjs	process.on(s, () => { c.kill(s); });	void s;
+M25-darwin-tty-handoff-off	T26	darwin	runlimits.py	                self.tty_take()	                pass
+M26-census-declared-ignored	T27	all	census-guard.py	        declared = load_declared(decl_path) if decl_path else []	        declared = []
+M27-census-stale-declaration-off	T27	all	census-guard.py	            if not os.path.isfile(full):	            if False:
+M28-census-exclusion-ignored	T28	all	census-guard.py	        if g is not None and p not in decl_ok:	        if False:
+M29-census-stale-exclusion-off	T28	all	census-guard.py	        if not hits:	        if False:
+M30-census-hidden-declared-off	T28	all	census-guard.py	            list_viol.append("VIOLATION %s:%d: exclusion hides declared entry %s (%s)" % (decl_path, n, p, g))	            pass
+M31-sweep-kill-masks-foreign-sigkill	T24	all	runlimits.py	if rc == -signal.SIGKILL and not killed_by_us:	if rc == -signal.SIGKILL and not self.sent_kill:
+M32-kernel-timeout-not-87	T31	linux	runlimits.py	if cause == "timeout":	if False:
+M33-oom-descendant-line-off	T32	linux	runlimits.py	        if rc == -signal.SIGKILL:	        if True:
+M34-parent-gone-escalation-off	T25	all	runlimits.py	            self.kill_sparing_nested(lambda: self.recheck(targets), self.signal_tree, t_term)	            self.child.wait(); return
+M35-detach-ignored	T25	all	runlimits.py	self.detached = env.get("RUNLIMITS_DETACH") == "1"	self.detached = False
+M36-darwin-job-control-off	T33	darwin	runlimits.py	                self.job_control()	                pass
+M37-leftover-reap-off	T34	linux	runlimits.py	            for unit in units:	            for unit in ():
+M38-leftover-owner-check-off	T34	linux	runlimits.py	    return start is not None and start != want	    return True
+M39-teeth-no-scope-runs-all	T29	all	runlimits-teeth.sh	[ "$WANT" != " " ] || nothing_run	[ "$WANT" != " " ] || WANT=" $KNOWN "
+M40-teeth-all-accepted	T29	all	runlimits-teeth.sh	    case " $KNOWN " in *" $t "*) ;; *) nothing_run ;; esac	    case "$t" in all) WANT=" $KNOWN "; continue ;; esac; case " $KNOWN " in *" $t "*) ;; *) nothing_run ;; esac
+M41-teeth-unknown-skipped	T29	all	runlimits-teeth.sh	    case " $KNOWN " in *" $t "*) ;; *) nothing_run ;; esac	    case " $KNOWN " in *" $t "*) ;; *) continue ;; esac
+M42-teeth-list-runs	T29	all	runlimits-teeth.sh	        --list) LIST=1; shift ;;	        --list) SCOPE=$(echo $KNOWN | tr ' ' ','); shift ;;
+M43-mutate-no-scope-runs-all	T30	all	mutate.sh	[ "$WANT" != " " ] || nothing_run	[ "$WANT" != " " ] || WANT=" $KNOWN "
+M44-mutate-all-accepted	T30	all	mutate.sh	    case " $KNOWN " in *" $m "*) ;; *) nothing_run ;; esac	    case "$m" in all) WANT=" $KNOWN "; continue ;; esac; case " $KNOWN " in *" $m "*) ;; *) nothing_run ;; esac
+M45-mutate-unknown-skipped	T30	all	mutate.sh	    case " $KNOWN " in *" $m "*) ;; *) nothing_run ;; esac	    case " $KNOWN " in *" $m "*) ;; *) continue ;; esac
+M46-mutate-list-runs	T30	all	mutate.sh	        --list) LIST=1; shift ;;	        --list) SCOPE=$(echo $KNOWN | tr ' ' ','); shift ;;
+M47-teeth-int-trap-off	T35	all	runlimits-teeth.sh	trap 'exit 130' INT; trap 'exit 129' HUP;	trap 'exit 129' HUP;
+M48-teeth-cleanup-tree-kill-off	T35	all	runlimits-teeth.sh	kill_loads; kill_tree "$LPY" $$ "$STOP_S";	kill_loads;
+M49-mutate-cleanup-tree-kill-off	T35	all	mutate.sh	kill_tree "$PY" $$ "$STOP_S";	:;
+M50-mutate-teeth-foreground	T35	all	mutate.sh	>"$out" 2>"$err" &	>"$out" 2>"$err"; return $?; :
+M51-teeth-stop-wait-6s	T36	all	runlimits-teeth.sh	kill_loads; kill_tree "$LPY" $$ "$STOP_S";	kill_loads; kill_tree "$LPY" $$ 6;
+M52-mutate-stop-wait-6s	T36	all	mutate.sh	kill_tree "$PY" $$ "$STOP_S";	kill_tree "$PY" $$ 6;
+M53-bounded-stop-wait-8s	T36	all	runlimits-teeth.sh	BGRACE=$((STOP_S + 5))	BGRACE=8
+M54-nested-stop-spare-off	T37	linux	runlimits.py	NESTED_STOP_S = 2 * GRACE_S + UNIT_SETTLE_S + 5	NESTED_STOP_S = 0
+M55-escalate-spare-off	T37	linux	runlimits.py	self.signal_tree, self.term_t)	self.signal_tree, self.term_t - NESTED_STOP_S)
+M56-terminate-spare-off	T37	linux	runlimits.py	self.recheck(targets), self.signal_tree, t_term)	self.recheck(targets), self.signal_tree, t_term - NESTED_STOP_S)
+M57-sweep-spare-off	T37	linux	runlimits.py	self.kill_sparing_nested(live, self.signal_pids, t_term)	self.kill_sparing_nested(live, self.signal_pids, t_term - NESTED_STOP_S)
+M58-stop-guard-off	T38	linux	runlimits.py	                if self.stop_guard(left):	                if False:
+M59-stop-guard-mem-off	T38	linux	runlimits.py	        if rss_kb > self.spec["mem_mb"] * 1024 and not knob(self.env, "RUNLIMITS_TEST_NO_MEM_WATCH"):	        if False:
+M60-stop-guard-time-off	T38	linux	runlimits.py	        if (elapsed > self.spec["runtime_s"] and self.stop_cause != "time"	        if (False
+M61-nested-by-argv	T39	linux	runlimits.py	        sups = published_supervisors(targets, self.registry, my_uid(self.env), procs)	        sups = [p for p in targets if p in procs and re.match(r"^\S+(?:\s+-\S+)*\s+(?:.*/)?runlimits\.py --wrap(?:\s|$)", procs[p][2])]
+M62-mark-start-unchecked	T39	linux	runlimits.py	            if p not in procs or procs[p][4] not in marks[p] or procs[p][5][:1] in ("T", "Z"):	            if p not in procs or procs[p][5][:1] in ("T", "Z"):
+M63-darwin-start-off	T40	darwin	runlimits.py	        return darwin_start(pid, env)	        return None
+M64-budget-by-argv	T42	linux	runlimits.py	                sups = published_supervisors(list(procs), self.registry, my_uid(self.env), procs)	                sups = {p for p in procs if re.match(r"^\S+(?:\s+-\S+)*\s+(?:.*/)?runlimits\.py --wrap(?:\s|$)", procs[p][2])}
+M65-terminate-window-off	T41	linux	runlimits.py	live = self.recheck(targets)	live = {}
+M66-sweep-window-off	T41	linux	runlimits.py	if self.window_guard(left):	if False:
+M67-escalation-window-off	T41	linux	runlimits.py	if self.window_guard(live, procs):	if False:
+M68-post-exit-window-off	T41	linux	runlimits.py	live = self.recheck(self.term_targets)	live = {}
+M69-window-growth-off	T41	linux	runlimits.py	if rss_kb <= base_kb * WINDOW_GROWTH:	if True:
+M70-mem-stop-window-by-cap	T41	linux	runlimits.py	if self.stop_cause == "mem":	if False:
+M71-active-by-argv	T43	all	runlimits.py	    if pid not in published_supervisors([pid], registry, my_uid(env), procs):	    if not re.match(r"^\S+(?:\s+-\S+)*\s+(?:.*/)?runlimits\.py --wrap(?:\s|$)", procs[pid][2]):
+M72-registry-by-gettempdir	T44	all	runlimits.py	        names = os.listdir(registry)	        names, registry = os.listdir(tempfile.gettempdir()), tempfile.gettempdir()
+M73-registry-silent-fallback	T45	all	runlimits.py	        raise RegistryError("RUNLIMITS_REGISTRY %s%s: %s" % (where or path, " (from gettempdir())" if default else "", why))	        return tempfile.gettempdir()
+M74-registry-not-exported	T46	all	runlimits.py	        child_env["RUNLIMITS_REGISTRY"] = self.registry	        pass
+M75-ancestor-keep-off	T47	all	runlimits.py	            keep |= anc	            pass
+M76-ancestor-window-off	T48	all	runlimits.py	for p in keep if p in left and in_window)	for p in keep if p in left)
+M77-last-tree-overwrite-back	T49	linux	runlimits.py	        kept = {p: s for p, s in self.last_tree.items() if p in procs and procs[p][4] == s}	        kept = {}
+M78-registry-uid-only	T50	linux	runlimits.py	            elif st.st_uid not in (0, my_uid(env)):	            elif st.st_uid != my_uid(env):
+M79-default-unchecked	T51	all	runlimits.py	        path = tempfile.gettempdir()	        path = tempfile.gettempdir(); return path
+M80-mark-uid-off	T102	all	runlimits.py	            if stat.S_ISDIR(st.st_mode) and st.st_uid == uid:	            if stat.S_ISDIR(st.st_mode):
+M81-registry-link-any-owner	T55	all	runlimits.py	            if st.st_uid not in (0, uid):	            if False:
+M82-registry-link-refused	T54	all	runlimits.py	            if st.st_uid not in (0, uid):	            if True:
+M83-a1-reparented-uncounted	T57	all	runlimits.py	    for pid, st in last_tree.items():	    for pid, st in {}.items():
+M84-a2-reuse-believed	T58	linux	runlimits.py	            if pid not in out and pid in procs and procs[pid][4] == st:	            if pid not in out and pid in procs:
+M85-a2-orphans-dropped	T59	linux	runlimits.py	            if pid not in out and pid in procs and procs[pid][4] == st:	            if False:
+M86-a3-stop-measures-first	T60	all	runlimits.py	        left = self.terminate("unavailable", measured=False, why=e)	        left = []  # M86: no stop without a measure
+M87-a4-job-stop-off	T61	darwin	runlimits.py	        for pid in held:	        for pid in ():
+M88-a5-foreign-dir-accepted	T62	all	runlimits.py	            elif st.st_uid not in (0, my_uid(env)):	            elif False:
+M89-a5-writable-nonsticky-accepted	T63	all	runlimits.py	            elif (st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)) and not (st.st_mode & stat.S_ISVTX):	            elif False:
+M90-a6-links-unchecked	T64	all	runlimits.py	        if stat.S_ISLNK(st.st_mode):	        if False:
+M91-a6-unresolved-exported	T65	all	runlimits.py	    return resolved, None, None	    return path, None, None
+M92-a7-unreadable-start-dead	T66	linux	runlimits.py	    return start is not None and start != want	    return start != want
+M93-a8-unverified-off	T67	linux	runlimits.py	        if cause is None and self.plat == "linux" and rc != -signal.SIGKILL:	        if False:
+M94-a9-victim-child	T68	linux	runlimits.py	{"oom_victim": "unattributed", "child_exit": code}	{"oom_victim": "child", "child_exit": code}
+M95-a10-rotation-lock-off	T69	all	runlimits.py	            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)	            pass
+M96-a11-stopped-mark-believed	T70	all	runlimits.py	            if p not in procs or procs[p][4] not in marks[p] or procs[p][5][:1] in ("T", "Z"):	            if p not in procs or procs[p][4] not in marks[p]:
+M97-a12-reap-at-stop-off	T34,T71	linux	runlimits.py	        for name in names:	        for name in ():
+M98-a13-profile-unchecked	T72	all	runlimits.py	        if want["mem_mb"] < act["mem_mb"] or want["runtime_s"] < act["runtime_s"]:	        if False:
+M99-a14-test-mode-marker-off	T74	all	runlimits.py	        st = os.lstat(os.path.join(d, ".runlimits-test"))	        return True  # M99: the marker no longer required
+M100-a15-env-scan-off	T75	darwin	runlimits.py	                    if self.env_ticks % ENV_SCAN_TICKS == 0:	                    if False:
+M101-b1-teeth-glob-scope	T76	all	runlimits-teeth.sh	set -f	set +f
+M102-b1-mutate-glob-scope	T77	all	mutate.sh	set -f	set +f
+M103-b2-scope-overwrites	T78	all	runlimits-teeth.sh	        --scope) [ $# -ge 2 ] || nothing_run; SCOPE="$SCOPE${SCOPE:+,}$2"; shift 2 ;;	        --scope) [ $# -ge 2 ] || nothing_run; SCOPE=$2; shift 2 ;;
+M104-b3-other-plat-runs	T80	all	runlimits-teeth.sh	if [ $EXPECTED -eq 0 ]; then	if False; then
+M105-b4-subskips-uncounted	T81	all	runlimits-teeth.sh	subskip() { echo "SUBSKIP $1: $2"; SUBSKIPS=$((SUBSKIPS+1)); }	subskip() { echo "SUBSKIP $1: $2"; }
+M106-c1-py-string-marker	T82	all	census-guard.py	    comments = whole_comment_lines(kind, text)	    comments = set(range(len(raw)))
+M107-c1-js-template-marker	T83	all	census-guard.py	    comments = whole_comment_lines(kind, text)	    comments = set(range(len(raw)))
+M108-c1-sh-heredoc-marker	T84	all	census-guard.py	    comments = whole_comment_lines(kind, text)	    comments = set(range(len(raw)))
+M109-c2-declared-not-seeding	T85	all	census-guard.py	            entry[p] = (1, "declared %s (%s:%d)" % (decl_ok[p][1], decl_path, decl_ok[p][0]))	            pass
+M110-c3-oversize-allowed	T86	all	census-guard.py	    for p, size in sorted(oversize):	    for p, size in ():
+M111-t3-peak-zeroed	T3	all	runlimits.py	                self.peak_kb = max(self.peak_kb, rss_kb)	                self.peak_kb = 0
+M112-t4-sh-prologue-off	T4	all	NOTES.md	source "$_rl/runlimits.sh"; runlimits_enter @PROFILE@ "$@"	: # prologue off
+M113-t5-py-prologue-off	T5	all	NOTES.md	sys.path.insert(0, _rl_h); import runlimits; runlimits.enter("@PROFILE@")	pass
+M114-t6-mjs-prologue-off	T6	all	NOTES.md	await (await import(_rlU(_rlJ(_rlH, 'runlimits.mjs')).href)).enter('@PROFILE@');	;
+M115-t7-ancestor-unrecognized	T7	all	runlimits.py	    chain = ancestors(procs, os.getppid())	    chain = []
+M116-t16-marker-unrecognized	T16	all	census-guard.py	        if i in comments:	        if False:
+M117-t20-allowlist-off	T20	all	census-guard.py	            raise Refusal("allowlist %s:%d: no reason after a TAB" % (path, n))	            pass  # M117: reason check off
+M118-t53-mark-stat-not-lstat	T53	all	runlimits.py	                st = os.lstat(os.path.join(registry, n))	                st = os.stat(os.path.join(registry, n))
+M119-e1-union-with-repeats	T90	all	runlimits.py	                seen.add(q)	                pass
+M120-e2-longer-runtime-covered	T88	all	runlimits.py	want["runtime_s"] < act["runtime_s"]	want["runtime_s"] > act["runtime_s"]
+M121-e3-ps-before-the-kill	T60	all	runlimits.py	        self.signal_unmeasured(signal.SIGKILL)	        ps_start(ps_path(self.env), self.child.pid); self.signal_unmeasured(signal.SIGKILL)
+M122-e4-stopped-not-recorded	T91	darwin	runlimits.py	        self.record_stopped(held)	        pass  # M122: stopped not recorded
+M123-e5-sweep-scan-failure-swallowed	T92	darwin	runlimits.py	            if sweeping:	            if False:
+M124-e6-marker-owner-unchecked	T96	all	runlimits.py	    return ps_start(real_ps(), int(owner[0])) == int(owner[1])	    return True  # M124: the owner's liveness unchecked
+M125-e7-darwin-start-bin-ps	T97	darwin	runlimits.py	    ps = ps_path(env)	    ps = "/bin/ps"
+M126-e8-tree-gone-start-unchecked	T98	all	runlimits.py	procs[pid][4] == st for pid, st in targets.items()	True for pid, st in targets.items()
+M127-e8-leftovers-start-unchecked	T99	all	runlimits.py	self.child.pid and pid in procs and procs[pid][4] == st:	self.child.pid and pid in procs:
+M128-e9-env-scan-rare	T75	darwin	runlimits.py	ENV_SCAN_TICKS = 10	ENV_SCAN_TICKS = 40
+M129-e14-js-escaped-newline-swallowed	T93	all	census-guard.py	        if c == "\\" and nx == "\n" and state in ("'", '"', "`"):	        if False:
+M130-e14-heredoc-letters-only	T94	all	census-guard.py	    m = HEREDOC_OP.match(s)	    m = re.match(r"<<(-?)[ \t]*(?=['\"]?[A-Za-z_])", s)
+M131-e15-declared-judged-everywhere	T95	all	census-guard.py	            elif not any(full.startswith(r.rstrip(os.sep) + os.sep) for r in real_roots):	            elif False:
+M132-r1-footprint-to-rss	T100	darwin	runlimits.py	            total += max(rss, fp // 1024)	            total += rss
+M133-r1-startup-check-off	T101	darwin	runlimits.py	            why = footprint_unavailable(self.env)	            why = None
+M134-a12-reap-at-start-off	T103	all	runlimits.py	        self.reap_leftovers()  # T34: dead owners at start	        pass  # M134: no reap at start
+M135-a12-reap-at-stop-off	T71	linux	runlimits.py	        self.reap_leftovers()  # A12: stop path	        pass  # M135: no reap on the stop path
+M136-a12-reap-at-exit-off	T103	all	runlimits.py	        self.reap_leftovers()  # A12: exit path	        pass  # M136: no reap on the exit path
+M137-r6-unverified-not-written	T60	darwin	runlimits.py	            self.record_marks_file("unverified", {p: self.last_tree[p] for p in left})	            pass  # M137: unverified not written
+M138-r6-unverified-not-read	T60	darwin	runlimits.py	self.kill_unverified(path, procs)	True
+M139-r7-start-reread-off	T104	all	runlimits.py	                st = proc_start(pid, self.env)	                st = None
+M140-r8-subfails-unread	T105	all	runlimits-teeth.sh	FAILED=$((FAILED + SUBFAILS))	:
+M141-r1-kernel-attribution-off	T106	linux	runlimits.py	if self.oom_seen > oom_prev:	if False:
+M142-r4-instrument-fail-judged	T108	all	mutate.sh	    if [ -n "$inst" ]; then	    if false; then
+M143-r4-stderr-judged	T108	all	mutate.sh	>"$out" 2>"$err" &	>"$out" 2>&1 &
+M144-r5-unreadable-start-dropped	T109	all	runlimits.py	            elif now is None:	            elif False:
+M145-r5-unrecorded-start-not-written	T110	darwin	runlimits.py	{p: self.last_tree[p] for p in left})	{p: self.last_tree[p] for p in left if self.last_tree[p] is not None})
+M146-r5-token-unchecked	T110	darwin	runlimits.py	if isinstance(scan, str) or pid not in scan:	if isinstance(scan, str):
+M147-r6-refused-kill-drops-record	T109	all	runlimits.py	            if not self.sigkill_unverified(pid):	            if not self.sigkill_unverified(pid) and False:
+M148-r7-reread-outside-tree	T111	all	runlimits.py	                if pid not in cur:	                if False:
+M149-r8-start-mismatch-killed	T109	all	runlimits.py	            elif now != st:	            elif False:
+M150-r9-footprint-unread-not-journalled	T112	darwin	runlimits.py	                self.footprint_unread.add(p)	                pass
+M151-r9-esrch-counts-rss	T113	darwin	runlimits.py	            if fp is None and err == errno.ESRCH:	            if False:
+M152-r9-unread-line-off	T112	darwin	runlimits.py	sys.stderr.write("RUNLIMITS: %s: phys_footprint unread for %d: %s; rss used\n" % (self.label, p, err))	pass
+M153-r10-call-error-escapes	T114	darwin	runlimits.py	    except Exception as call_error:	    except ZeroDivisionError as call_error:
+M154-r12-direct-sublog-counted-twice	T115	linux	runlimits-teeth.sh	[ "$BASH_SUBSHELL" -gt 0 ] && echo "$TOOTH $1" >>"$TMP/subfails"	echo "$TOOTH $1" >>"$TMP/subfails"
+M155-each-alone-whole-scope	T116	all	runlimits-teeth.sh	"$BASHBIN" "$SELF" --scope "$t" >"$TMP/alone-$t.out" 2>&1 &	"$BASHBIN" "$SELF" --scope "$SCOPE_STR" >"$TMP/alone-$t.out" 2>&1 &
+M156-each-alone-failure-uncounted	T116	all	runlimits-teeth.sh	        if [ $arc -eq 0 ]; then AP=$((AP+1)); echo "alone PASS $t"	        if true; then AP=$((AP+1)); echo "alone PASS $t"
+M157-row-baseline-red-counted	T108	all	mutate.sh	    if [ $base_rc -ne 0 ]; then	    if false; then
+M158-unheld-dedup-off	T117	all	runlimits.py	                    if pid not in self.named_unheld:	                    if True:
+M159-unheld-line-off	T117	all	runlimits.py	sys.stderr.write("RUNLIMITS: %s: remembered %d not held: outside the tree, start not recorded\n" % (self.label, pid))	pass
+M160-signal-field-off	T118	all	runlimits.py	            rec["signal"] = self.got_signal	            pass
+M161-signal-on-own-143	T119	all	runlimits.py	        rc = self.child.returncode	        rc = self.child.returncode; self.got_signal = self.got_signal or ("TERM" if rc == 143 else None)
+M162-signal-clears-limit	T120	all	runlimits.py	            rec["signal"] = self.got_signal	            rec["signal"] = self.got_signal; rec["limit"] = None
+M163-trap-host-spare-off	T121,T122	all	runlimits.py	                spared.update(self.trap_own(procs, left, keep | {self.child.pid}))	                pass
+M164-trap-newborn-parent-unchecked	T125	all	runlimits.py	                if procs[pid][0] in own:	                if True:
+M165-trap-spare-leaf-profiles	T15	all	runlimits.py	self.child.returncode is None and self.profile == "runner"	self.child.returncode is None and True
+M166-trap-ps-lost-dropped-at-guard	T123	linux	runlimits.py	if host and self.stop_ps is not None and self.cgroup else {}	if False else {}
+M167-trap-ps-lost-dropped-at-recheck	T123	linux	runlimits.py	and (procs is not None or self.cgroup)	and procs is not None
+M168-trap-window-unbounded	T126	all	runlimits.py	host = in_window and self.child.returncode is None	host = self.child.returncode is None
+M169-trap-cgroup-kill-before-host-exit	T121	linux	runlimits.py	            send(signal.SIGKILL, {p: c for p, c in left.items() if p not in spared})	            self.cgroup_kill(); send(signal.SIGKILL, {p: c for p, c in left.items() if p not in spared})
+M170-trap-newborns-not-spared	T126	all	runlimits.py	or not self.born_after(pid, procs[pid][4]):	or True:
+M171-unmeasured-trap-host-not-spared	T127	linux	runlimits.py	if self.cgroup and self.profile == "runner":	if False:
+M172-born-ref-at-sigterm-not-first-signal	T128	all	runlimits.py	            self.note_term(targets=targets)	            if signum != signal.SIGINT: self.note_term(targets=targets)
+M173-proc-start-shift	T129	linux	runlimits.py	start = btime + int(fields[19]) // hz	start = btime + int(fields[19]) // hz + 1
+M174-proc-fallback-off	T130,T131	linux	runlimits.py	if knob(env, "RUNLIMITS_TEST_PROC_UNREADABLE") == "1":	if True:
+M175-mutate-reused-pid-killed	T133	all	mutate.sh	same = {p for p, start in first.items() if p in rows and rows[p][2] == start}	same = set(first)
+M176-teeth-reused-pid-killed	T134	all	runlimits-teeth.sh	same = {p for p, start in first.items() if p in rows and rows[p][2] == start}	same = set(first)
+M177-fixture-reused-pid-killed	T135	all	runlimits-teeth.sh	same_fixture = {p for p, start in first.items() if p in rows and rows[p][2] == start}	same_fixture = set(first)
+M178-d7-window-unbounded	T132	linux	runlimits.py	while self.child.poll() is None and time.time() < t_term + NESTED_STOP_S:	while self.child.poll() is None:
+M179-d7-window-doubled	T132	linux	runlimits.py	while self.child.poll() is None and time.time() < t_term + NESTED_STOP_S:	while self.child.poll() is None and time.time() < t_term + 2 * NESTED_STOP_S:
+M180-supervisor-wait-failure-ignored	T136	all	runlimits-teeth.sh	if ! wait_dead "$sp" $((NST + 10)) "$st" "$(cat "$tg.sup.start")"; then	if wait_dead "$sp" $((NST + 10)) "$st" "$(cat "$tg.sup.start")"; false; then
+M181-newborn-wait-failure-ignored	T137	all	runlimits-teeth.sh	if ! wait_file "$tg.gc" 5; then	if wait_file "$tg.gc" 5; false; then
+M182-linux-start-ps-first	T140	linux	runlimits.py	return proc_table([pid], env).get(pid, (None,) * 5)[4]	return ps_start(ps_path(env), pid) or proc_table([pid], env).get(pid, (None,) * 5)[4]
+M183-proc-loss-before-mark	T123	linux	runlimits.py	start_env.pop("RUNLIMITS_TEST_PROC_UNREADABLE", None)	pass
+M184-s2-scope-membership-off	T123b	linux	runlimits.py	elif pid in scope:	elif False:
+M185-s3-single-ps-off	T123s	linux	runlimits.py	elif not self.ps_lost and ps_start(ps_path(self.env), pid) == st:	elif False:
+M186-e3-ps-after-lost-measure	T146	linux	runlimits.py	elif not self.ps_lost and ps_start(ps_path(self.env), pid) == st:	elif ps_start(ps_path(self.env), pid) == st:
+M187-saved-identity-check-off	T138	all	runlimits-teeth.sh	if same_pid "$2" "$3"; then	if :; then
+M188-stop-view-scope-only	T141	linux	runlimits.py	return proc_table(sorted(pids | set(self.scope_pids())), self.env)	return proc_table(self.scope_pids(), self.env)
+M189-proc-opening-raw-error	T143	linux	runlimits.py	raise PsError("cannot open /proc: %s" % e) from e	raise OSError("cannot open /proc: %s" % e) from e
+M190-early-refusal-bare-wait	T139	all	runlimits-teeth.sh	R12="instrument: fixture never started: $(tr '\n' ' ' <"$tg.err" | head -c 300)"	R12="instrument: fixture never started: $(tr '\n' ' ' <"$tg.err" | head -c 300)"; kill12 "$tg"; wait "$sp"
+M191-recheck-proc-start-off	T140	linux	runlimits.py	def recheck(self, remembered):	def recheck(self, remembered, proc_start=lambda *_: None):
+M192-leftovers-proc-start-off	T140	linux	runlimits.py	def leftovers(self, remembered):	def leftovers(self, remembered, proc_start=lambda *_: None):
+M193-teeth-term-trap-off	T35	all	runlimits-teeth.sh	trap 'exit 129' HUP; trap 'exit 143' TERM	trap 'exit 129' HUP; :
+M194-wait-empty-start-adopted	T142	all	runlimits-teeth.sh	st=${4-$(pstart "$1")} current	st=${4:-$(pstart "$1")} current
+M195-abort-before-launcher	T139	all	runlimits-teeth.sh	abort_failed=1	return 1
+M196-held-load-private-registry	T144	linux	runlimits-teeth.sh	env = dict(os.environ, RUNLIMITS_LOG_DIR=sys.argv[2], RUNLIMITS_REGISTRY=r.registry_dir(os.environ))	env = dict(os.environ, RUNLIMITS_LOG_DIR=sys.argv[2], RUNLIMITS_REGISTRY=str(work))
+M197-bounded-alive-recheck-off	T138	all	runlimits-teeth.sh	|| alive "$BPID"; then	; then
+M198-refusal-forms-glued	T145	all	runlimits-teeth.sh	R12="subject refused at start: $sref"	R12="instrument: fixture never started: $sref"
+M199-refusal-any-label	T145	all	runlimits-teeth.sh	sref=$(awk -v p="RUNLIMITS: $tag refused: " 'index($0, p) == 1 { print; exit }' "$tg.err")	sref=$(grep -m1 '^RUNLIMITS: [^ ]* refused: ' "$tg.err")
+M200-inner-as-subject	T145	all	runlimits-teeth.sh	R12="inner supervisor refused at start: $iref"	R12="subject refused at start: $iref"
