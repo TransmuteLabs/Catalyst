@@ -1,0 +1,13 @@
+{
+  "hostVersion": "2.1.285",
+  "imageSha256": "33dad1ec615a2e08cc78b494f05c110e49916de2c79d78ec8799ebf46b233d29",
+  "cases": [
+    { "name": "bom", "bytesHex": "efbbbf41", "codePoints": [65279, 65] },
+    { "name": "inv", "bytesHex": "41e228a1", "codePoints": [65, 65533, 40, 65533] },
+    { "name": "over", "bytesHex": "41c0af", "codePoints": [65, 65533, 65533] },
+    { "name": "sur", "bytesHex": "41eda080", "codePoints": [65, 65533, 65533, 65533] },
+    { "name": "max", "bytesHex": "41f4908080", "codePoints": [65, 65533, 65533, 65533, 65533] },
+    { "name": "four", "bytesHex": "41f09f9880", "codePoints": [65, 128512] },
+    { "name": "trunc", "bytesHex": "41e282", "codePoints": [65, 65533] }
+  ]
+}

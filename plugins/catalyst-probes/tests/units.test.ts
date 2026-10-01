@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.52")
+  expect(MOD_VERSION).toBe("0.1.55")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1622,13 +1622,12 @@ const FORM_CFG_335 = [
   'legalize = "zzz-legalize"',
   'git_commit = "zzz-git-commit"',
   'git_commit_ok = "zzz-git-commit-ok"',
-  'git_msg = "zzz-git-msg"',
   'git_push = "zzz-git-push"',
   'git_push_ok = "zzz-git-push-ok"',
   'git_force = "zzz-git-force"',
   'trailer_a = "zzz-trailer-a"',
   'trailer_b = "zzz-trailer-b"',
-  'write_redirect = "zzz-write-redirect"',
+  'write_target = "zzz-write-redirect"',
   'heredoc = "zzz-heredoc"',
 ].join("\n") + "\n"
 
@@ -3284,6 +3283,7 @@ function mod$393(o: {
           throw new Error("EIO: scripted write refusal for " + p)
         }
         writes.push({ path: String(p), text: String(text) })
+        if (String(p).includes('/form/records/')) (o.files || (o.files = {}))[String(p)] = String(text)
       },
     },
     store: {
@@ -3340,7 +3340,7 @@ function mod$393(o: {
       },
     }
   }
-  return { $, writes, storeSets, storeDeletes, store, everyCbs, afterCbs, toasts, setNow: (n: number) => { now = n }, getNow: () => now }
+  return { $, writes, files: o.files || (o.files = {}), storeSets, storeDeletes, store, everyCbs, afterCbs, toasts, setNow: (n: number) => { now = n }, getNow: () => now }
 }
 
 function subs393(): Array<{ ev: string; matcher: any; fn: any }> {
@@ -6028,10 +6028,10 @@ test("#489-B1 Z7 ruleText: нечитаемый text_file не мемоизир�
   expect(String(second.description), "повторное чтение не заморожено пустой строкой").toContain("RULE-Z7")
 })
 
-test("#489-B1 Z8 form: нечитаемый путь Edit и >> не даёт события, отсутствующий >> судит тело", async () => {
+test("#489-B1 Z8 form: Edit не судит нечитаемое тело, Bash даёт F и откат", async () => {
   await drainFold393()
   const formZ8 = FORM_CFG_335
-    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('write_target = "zzz-write-redirect"', () => String.raw`write_target = '\.md$'`)
     .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
   const homeE = "/probes-z8e-b1"
   const editPath = "/z8e-b1/report.md"
@@ -6054,14 +6054,24 @@ test("#489-B1 Z8 form: нечитаемый путь Edit и >> не даёт с
   const bashPath = "/z8b-b1/report.md"
   const cmdU = "cat >> " + bashPath + " <<'EOF'\nzzz-legalize\nEOF"
   const mB = mod$393({
-    files: { [homeB + "/probes.toml"]: formZ8 },
+    files: { [homeB + "/probes.toml"]: formZ8 + '\n[probe.form.act]\nF = "cancel"\n', [bashPath]: "old" },
     env: { CLAUDE_PROBES_DIR: homeB, PWD: "/work-z8b-b1", CLAUDE_FORM: "1" },
     now: 200_080_000,
     fail: { fsReadErr: [bashPath] },
   })
-  await hook393(subs393(), "tool.call")(mB.$, { tool: "Bash", command: cmdU }, async (e: any) => e)
+  const outB = await hook393(subs393(), "tool.call")(mB.$, { tool: "Bash", command: cmdU }, formNext393(mB, { [bashPath]: "zzz-legalize\n" }, "Darwin"))
   const linesB = shards393(mB.writes, "/form/journal.jsonl.shard.")
-  expect(linesB.some((r: any) => r.outcome === "refuse"), ">> нечитаемого файла не судит тело").toBe(false)
+  expect(linesB.some((r: any) => r.outcome === "refuse" && r.cls.includes("F")), "Z8 unreadable post is F").toBe(true)
+  expect(linesB.some((r: any) => Array.isArray(r.cls) && r.cls.includes("C1")), "Z8 unreadable body is not judged").toBe(false)
+  expect(typeof outB.deny, "Z8 unreadable denial").toBe("string")
+  expect(linesB.filter((r: any) => r.outcome === "error" && r.verdict === "rollback failed: " + bashPath).length, "Z8 rollback failure journaled").toBe(1)
+  expect(String(outB.deny), "Z8 model reads form refusal").toContain("Form probe refused")
+  expect(String(outB.deny), "Z8 model reads rollback failure").toContain("rollback failed: " + bashPath)
+  const unreadB = mB.writes.filter(w => w.path.includes("/form/records/")).flatMap(w => JSON.parse(String(w.text)).refuse || []).find(r => r.c === "F")
+  expect(String(unreadB?.q), "Z8 unreadable cause named").toContain("target unreadable after write")
+  expect(String(unreadB?.q), "Z8 EIO retained").toContain("EIO")
+  expect(String(unreadB?.src), "Z8 unreadable path named").toContain(bashPath)
+  expect(mB.files[bashPath], "Z8 readable-stat unreadable-text restored").toBe("old")
   expect(lostN393("form-path-read") + linesB.filter((r: any) => r.lost && r.lost["form-path-read"]).length,
     ">> нечитаемого файла назван").toBeGreaterThanOrEqual(1)
 
@@ -6074,7 +6084,7 @@ test("#489-B1 Z8 form: нечитаемый путь Edit и >> не даёт с
     env: { CLAUDE_PROBES_DIR: homeC, PWD: "/work-z8c-b1", CLAUDE_FORM: "1" },
     now: 200_090_000,
   })
-  await hook393(subs393(), "tool.call")(mC.$, { tool: "Bash", command: cmdC }, async (e: any) => e)
+  await hook393(subs393(), "tool.call")(mC.$, { tool: "Bash", command: cmdC }, formNext393(mC, { [gonePath]: "zzz-legalize\n" }))
   const lines = shards393(mC.writes, "/form/journal.jsonl.shard.")
   expect(lines.some((r: any) => r.outcome === "refuse"), ">> отсутствующего файла судит тело").toBe(true)
 })
@@ -6456,37 +6466,52 @@ test("#455-B1-FIX1 W7 memo: threw пустой строкой присутств
   expect(recs[0].threw).toBe("")
 })
 
-test("#489-B1-FIX1 W9 form: >> нечитаемого файла — warn target-unreadable", async () => {
+test("#489-B1-FIX1 W9 form: нечитаемый post — F с EIO, путь и откат", async () => {
   await drainFold393()
   const formZ8 = FORM_CFG_335
-    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('write_target = "zzz-write-redirect"', () => String.raw`write_target = '\.md$'`)
     .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
   const home = "/probes-w9-b1"
   const fp = "/w9-b1/report.md"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: formZ8 },
+    files: { [home + "/probes.toml"]: formZ8 + '\n[probe.form.act]\nF = "cancel"\n', [fp]: "old" },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w9-b1", CLAUDE_FORM: "1" },
     now: 210_070_000,
     fail: { fsReadErr: [fp] },
   })
   const cmd = "cat >> " + fp + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [fp]: "zzz-legalize\n" }, "Darwin"))
   const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "warn" && Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0)).toBe(true)
-  const recs = m.writes
-    .filter(w => w.path.indexOf("/form/records/") >= 0)
-    .map(w => JSON.parse(String(w.text)))
-  const warn = recs.length ? (recs[0].warn || []).filter((w: any) => w.c === "target-unreadable") : []
-  expect(warn.length).toBeGreaterThan(0)
-  expect(warn[0].n).toBe(0)
-  expect(typeof warn[0].q).toBe("string")
-  expect(String(warn[0].q).length > 0 && String(warn[0].q).indexOf("EIO") >= 0, "q несёт причину нечитаемости").toBe(true)
-  expect(String(warn[0].src)).toContain(fp)
+  expect(lines.some((r: any) => r.outcome === "refuse" && r.cls.includes("F")), "W9 unreadable post is F").toBe(true)
+  expect(lines.filter((r: any) => r.outcome === "error" && r.verdict === "rollback failed: " + fp).length, "W9 rollback failure journaled").toBe(1)
+  const recs = formRecordsFinal393(m)
+  const refusal = recs.flatMap(r => r.refuse || []).find(r => r.c === "F" && String(r.q).includes("target unreadable after write"))
+  expect(!!refusal, "W9 named unreadable refusal").toBe(true)
+  expect(refusal.n).toBe(0)
+  expect(String(refusal.q), "W9 EIO retained").toContain("EIO")
+  expect(String(refusal.src), "W9 path retained").toContain(fp)
+  expect(typeof out.deny, "W9 F cancel denies").toBe("string")
+  expect(m.files[fp], "W9 bytes restored").toBe("old")
+  expect(lostN393("form-path-read") + lines.filter((r: any) => r.lost && r.lost["form-path-read"]).length, "W9 loss named").toBeGreaterThanOrEqual(1)
 })
+
+function formRecordsFinal393(m: any): any[] {
+  return Object.entries(m.files).filter(([path]) => path.includes('/form/records/')).map(([, text]) => JSON.parse(String(text)))
+}
+function formNext393(m: any, post: Record<string, string>, platform = "Linux"): (e: any) => Promise<any> {
+  const files = m.files
+  m.$.fs.list = async (dir: string) => {
+    const prefix = dir.replace(/\/$/, "") + "/"
+    if (!Object.keys(files).some(p => p.startsWith(prefix))) throw new Error("ENOENT " + dir)
+    return Object.keys(files).filter(p => p.startsWith(prefix) && !p.slice(prefix.length).includes("/")).map(p => ({ name: p.slice(prefix.length), kind: "file" }))
+  }
+  ioFix2_510({ state: {}, platform }).setup(m, files, [], () => false)
+  return async (e: any) => { Object.assign(files, post); return e }
+}
 
 function formRedirect393(): string {
   return FORM_CFG_335
-    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('write_target = "zzz-write-redirect"', () => String.raw`write_target = '\.md$'`)
     .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
 }
 
@@ -6536,7 +6561,8 @@ test("#489-B1-FIX2 V2a form: два >> — нечитаемый, затем чи
   const b = "/v2a-fix2/b/report.md"
   const m = mod$393({
     files: {
-      [home + "/probes.toml"]: formRedirect393(),
+      [home + "/probes.toml"]: formRedirect393() + '\n[probe.form.act]\nF = "cancel"\nC1 = "cancel"\n',
+      [a]: "old",
       [b]: "kept\n",
     },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-v2a-fix2", CLAUDE_FORM: "1" },
@@ -6544,10 +6570,12 @@ test("#489-B1-FIX2 V2a form: два >> — нечитаемый, затем чи
     fail: { fsReadErr: [a] },
   })
   const cmd = "cat >> " + a + "\ncat >> " + b + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [a]: "", [b]: "kept\nzzz-legalize\n" }, "Darwin"))
   const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "refuse"), "читаемая цель судится").toBe(true)
-  expect(lines.some((r: any) => Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0), "нечитаемая цель — warn").toBe(true)
+  expect(lines.some((r: any) => r.outcome === "refuse" && r.cls.includes("C1") && r.cls.includes("F")), "V2a body and unreadable classes coexist").toBe(true)
+  expect(typeof out.deny, "V2a denies").toBe("string")
+  expect(m.files[a], "V2a unreadable restored").toBe("old")
+  expect(m.files[b], "V2a body restored").toBe("kept\n")
 })
 
 test("#489-B1-FIX2 V2b form: два >> — читаемый с zzz-legalize, затем нечитаемый", async () => {
@@ -6557,7 +6585,8 @@ test("#489-B1-FIX2 V2b form: два >> — читаемый с zzz-legalize, з�
   const b = "/v2b-fix2/b/report.md"
   const m = mod$393({
     files: {
-      [home + "/probes.toml"]: formRedirect393(),
+      [home + "/probes.toml"]: formRedirect393() + '\n[probe.form.act]\nF = "cancel"\nC1 = "cancel"\n',
+      [a]: "old",
       [b]: "kept\n",
     },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-v2b-fix2", CLAUDE_FORM: "1" },
@@ -6565,10 +6594,12 @@ test("#489-B1-FIX2 V2b form: два >> — читаемый с zzz-legalize, з�
     fail: { fsReadErr: [a] },
   })
   const cmd = "cat >> " + b + " <<'EOF'\nzzz-legalize\nEOF\ncat >> " + a
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [a]: "", [b]: "kept\nzzz-legalize\n" }, "Darwin"))
   const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "refuse")).toBe(true)
-  expect(lines.some((r: any) => Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0)).toBe(true)
+  expect(lines.some((r: any) => r.outcome === "refuse" && r.cls.includes("C1") && r.cls.includes("F")), "V2b body and unreadable classes coexist").toBe(true)
+  expect(typeof out.deny, "V2b denies").toBe("string")
+  expect(m.files[a], "V2b unreadable restored").toBe("old")
+  expect(m.files[b], "V2b body restored").toBe("kept\n")
 })
 
 test("#489-B1-FIX2 V2c form: одна цель, heredoc до redirect — тело судится", async () => {
@@ -6581,7 +6612,7 @@ test("#489-B1-FIX2 V2c form: одна цель, heredoc до redirect — тел
     now: 220_030_000,
   })
   const cmd = "cat <<'EOF' >> " + f + "\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [f]: "zzz-legalize\n" }))
   const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
   expect(lines.some((r: any) => r.outcome === "refuse"), "буквальная форма <<'EOF' >> file держит тело").toBe(true)
 })
@@ -6816,13 +6847,13 @@ test("#489-B1-FIX3 F1 form: второе тело не прячется за п�
     now: 230_000_000,
   })
   const cmd = "cat >> " + a + " <<'EOF'\nordinary\nEOF\ncat >> " + b + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
-  const recs = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [a]: "log\nordinary\n", [b]: "kept\nzzz-legalize\n" }))
+  const recs = formRecordsFinal393(m)
   expect(formLines393(m.writes).some((r: any) => r.outcome === "refuse")).toBe(true)
   expect(recs.some((r: any) => (r.refuse || []).some((x: any) => x.c === "C1" && String(x.src).indexOf(b) >= 0)), "C1 по b/report.md").toBe(true)
 })
 
-test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути", async () => {
+test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути (D7c)", async () => {
   await drainFold393()
   const home = "/probes-f2a-fix3"
   const c = "/f2a-fix3/c/report.md"
@@ -6837,15 +6868,15 @@ test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути"
     now: 230_010_000,
   })
   const cmd = "cat >> /f2a-fix3/a/log.txt <<'EOF'\nA\nEOF\ncat >> /f2a-fix3/b/log.txt <<'EOF'\nB\nEOF\ncat >> " + c + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { "/f2a-fix3/a/log.txt": "a\nA\n", "/f2a-fix3/b/log.txt": "b\nB\n", [c]: "c\nzzz-legalize\n" }))
   expect(formLines393(m.writes).some((r: any) => r.outcome === "refuse"), "тело C судится").toBe(true)
 
   await drainFold393()
   const homeT = "/probes-f2t-fix3"
   const rep = "/f2t-fix3/r/report.md"
   const teeCfg = formCombat393().replace(
-    'write_redirect = ">>\\s+(\\S+)"',
-    'write_redirect = "(?:>>\\s+|tee\\s+-a\\s+)(\\S+)"',
+    String.raw`write_target = '\.md$'`,
+    () => String.raw`write_target = '''\.md$'''`,
   )
   const mt = mod$393({
     files: { [homeT + "/probes.toml"]: teeCfg, [rep]: "old\n", ["/f2t-fix3/x.log"]: "x\n" },
@@ -6853,22 +6884,25 @@ test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути"
     now: 230_020_000,
   })
   const tee = "cat <<'EOF' | tee -a /f2t-fix3/x.log | tee -a " + rep + "\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(mt.$, { tool: "Bash", command: tee }, async (e: any) => e)
+  await hook393(subs393(), "tool.call")(mt.$, { tool: "Bash", command: tee }, formNext393(mt, { [rep]: "old\nzzz-legalize\n", "/f2t-fix3/x.log": "x\nzzz-legalize\n" }))
   expect(formLines393(mt.writes).some((r: any) => r.outcome === "refuse"), "tee -a судит report").toBe(true)
 
   await drainFold393()
   const homeD = "/probes-f2d-fix3"
   const same = "/f2d-fix3/report.md"
   const md = mod$393({
-    files: { [homeD + "/probes.toml"]: formRedirect393(), [same]: "old\n" },
+    files: { [homeD + "/probes.toml"]: formRedirect393() + '\n[probe.form.act]\nC1 = "cancel"\n', [same]: "old\n" },
     env: { CLAUDE_PROBES_DIR: homeD, PWD: "/work-f2d-fix3", CLAUDE_FORM: "1" },
     now: 230_030_000,
   })
   const twice = "cat >> " + same + " <<'EOF'\nzzz-legalize\nEOF\ncat >> " + same + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(md.$, { tool: "Bash", command: twice }, async (e: any) => e)
+  const outD = await hook393(subs393(), "tool.call")(md.$, { tool: "Bash", command: twice }, formNext393(md, { [same]: "old\nzzz-legalize\nzzz-legalize\n" }))
   const recs = md.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
-  const c1 = recs.reduce((n: number, r: any) => n + (r.refuse || []).filter((x: any) => x.c === "C1").length, 0)
-  expect(c1, "один путь дважды — два события").toBe(2)
+  const c1 = recs.reduce((n: number, r: any) => n + (r.refuse || []).filter((x: any) => x.c === "C1" && x.src === "Bash:" + same).length, 0)
+  expect(c1, "D7c: candidate path judged once").toBe(1)
+  expect(recs.flatMap((r: any) => r.refuse || []).some((r: any) => r.c === "C1" && r.src === "Bash:" + same), "D7c: own target refusal").toBe(true)
+  expect(typeof outD.deny, "D7c: model receives denial").toBe("string")
+  expect(md.files[same], "D7c: both appends rolled back").toBe("old\n")
 })
 
 test("#489-B1-FIX3 F5 brief_ref: второй вызов не наследует lastIndex", async () => {
@@ -6886,7 +6920,7 @@ test("#489-B1-FIX3 F5 brief_ref: второй вызов не наследует
   })
   const hook = hook393(subs393(), "tool.call")
   await hook(m.$, { tool: "Agent", prompt: paths.join(" "), subagent_type: "scout" }, async (e: any) => e)
-  const judged = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).flatMap(w => JSON.parse(String(w.text)).refuse || []).filter((r: any) => r.c === "C1").map((r: any) => r.src)
+  const judged = formRecordsFinal393(m).flatMap(r => r.refuse || []).filter((r: any) => r.c === "C1").map((r: any) => r.src)
   expect(judged, "F5 первые четыре пути").toEqual(paths.slice(0, 4).map(p => "Agent:" + p))
   const before = formLines393(m.writes).length
   await hook(m.$, { tool: "Agent", prompt: one, subagent_type: "scout" }, async (e: any) => e)
@@ -6948,7 +6982,7 @@ test("#489-B1-FIX3 F4 form: пустые совпадения и суррога�
   const home = "/probes-f4-fix3"
   const clef = String.fromCodePoint(0x1D11E)
   const cfg = formRedirect393()
-    .replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = "()"')
+    .replace(String.raw`write_target = '\.md$'`, 'write_target = "()"')
     .replace(/heredoc = "[\s\S]*"/, 'heredoc = "()"')
     .replace('brief_ref = "zzz-brief-ref"', 'brief_ref = "x*"')
   const m = mod$393({
@@ -6958,7 +6992,7 @@ test("#489-B1-FIX3 F4 form: пустые совпадения и суррога�
   })
   let thrown = ""
   try {
-    await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: "echo " + clef }, async (e: any) => e)
+    await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: "echo " + clef }, formNext393(m, {}))
     await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: clef, subagent_type: "scout" }, async (e: any) => e)
   } catch (x) { thrown = String(x) }
   expect(thrown, "вызов завершается").toBe("")
@@ -6966,20 +7000,14 @@ test("#489-B1-FIX3 F4 form: пустые совпадения и суррога�
 })
 
 async function formFix4(id: string, command: string, cfg = formCombat393(), files: Record<string, string> = {}) {
-  await clear393()
-  await drainFold393()
-  const home = "/probes-fix4-" + id
-  const m = mod$393({
-    files: { [home + "/probes.toml"]: cfg, ...files },
-    env: { CLAUDE_PROBES_DIR: home, PWD: "/fix4", CLAUDE_FORM: "1" },
-    now: 240_000_000,
-  })
-  const reads: string[] = []
-  const orig = m.$.fs.read
-  m.$.fs.read = async (p: string) => { reads.push(p); return orig(p) }
-  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command }, async () => ({ ran: true }))
-  const records = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
-  return { m, reads, out, records, rows: formLines393(m.writes) }
+  const path = "/fix4/r/report.md"
+  const bodies: Record<string, string> = {
+    f15: "ordinary\n", f16b: "zzz-legalize\n", f16c: "zzz-legalize\n",
+    f4b: String.fromCodePoint(0x1D11E) + "\n", f18: "noise\n",
+    f19: (files[path] || "") + "ordinary\n",
+  }
+  const post = id in bodies ? { [path]: bodies[id] } : {}
+  return form510("fix4-" + id, command, { cfg, files, post, cwd: "/fix4" })
 }
 
 test("#489-B1-FIX4 F15 bodies belong to their operator line", async () => {
@@ -7009,9 +7037,10 @@ test("#489-B1-FIX4 F16c continued operator line", async () => {
 // место занимает L18.
 
 test("#489-B1-FIX4 F4b empty matches preserve a later target", async () => {
-  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = ">>\\s*(\\S+\\.md)|(?:)"')
+  const cfg = formCombat393().replace(String.raw`write_target = '\.md$'`, String.raw`write_target = '\.md$|(?:)'`)
   const r = await formFix4("f4b", "echo " + String.fromCodePoint(0x1D11E) + " >> r/report.md <<'EOF'\nzzz-legalize\nEOF", cfg)
-  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F4b later target judged").toBe(true)
+  expect(r.postReads, "F4b later target judged from actual output").toContain("/fix4/r/report.md")
+  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F4b echo does not copy its stdin").toBe(false)
 })
 
 test("#489-B1-FIX4 F17 safeText reads each accessor once", () => {
@@ -7045,7 +7074,7 @@ test("#489-B1-FIX4 F17 model envelope fields read once", () => {
 })
 
 test("#489-B1-FIX4 F18 empty target capture is skipped", async () => {
-  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = ">>\\s*(\\S+\\.md)|noise"')
+  const cfg = formCombat393().replace(String.raw`write_target = '\.md$'`, String.raw`write_target = '\.md$|noise'`)
   const r = await formFix4("f18", "echo noise >> r/report.md <<'EOF'\nzzz-legalize\nEOF", cfg)
   expect(r.reads.filter(p => p === "/fix4/r/report.md").length, "F18 one target read").toBe(1)
   expect(r.reads.some(p => p.endsWith("/undefined")), "F18 no undefined read").toBe(false)
@@ -7055,7 +7084,7 @@ test("#489-B1-FIX4 F18 empty target capture is skipped", async () => {
 })
 
 test("#489-B1-FIX4 F19 tee includes existing target", async () => {
-  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = "tee\\s+-a\\s+(\\S+)"')
+  const cfg = formCombat393().replace(String.raw`write_target = '\.md$'`, () => String.raw`write_target = '''\.md$'''`)
   const r = await formFix4("f19", "cat <<'EOF' | tee -a r/report.md\nordinary\nEOF", cfg, { "/fix4/r/report.md": "zzz-legalize\n" })
   expect(r.rows.some((r: any) => r.outcome === "refuse"), "F19 tee reads cur").toBe(true)
 })
@@ -7157,20 +7186,15 @@ function snap5($: any, e: any, site: string): any {
 }
 
 async function formFix5(id: string, command: string, cfg = formCombat393(), files: Record<string, string> = {}) {
-  await clear393()
-  await drainFold393()
-  const home = "/probes-fix5-" + id
-  const m = mod$393({
-    files: { [home + "/probes.toml"]: cfg, ...files },
-    env: { CLAUDE_PROBES_DIR: home, PWD: "/fix5", CLAUDE_FORM: "1" },
-    now: 270_000_000,
-  })
-  const reads: string[] = []
-  const orig = m.$.fs.read
-  m.$.fs.read = async (p: string) => { reads.push(p); return orig(p) }
-  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command }, async () => ({ ran: true }))
-  const records = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
-  return { m, reads, out, records, rows: formLines393(m.writes) }
+  const post: Record<string, string> = {}
+  if (["l1", "l2", "l4", "l5", "l12", "l13", "l15", "l16", "l17", "l18", "z16"].includes(id)) post["/fix5/r/report.md"] = (files["/fix5/r/report.md"] || "") + TRIG5 + "\n"
+  if (["l21", "l27", "l28"].includes(id)) {
+    post["/fix5/r/1report.md"] = id === "l21" ? "ok\n" : "hi\n"
+    post["/fix5/r/2report.md"] = TRIG5 + "\n"
+  }
+  if (id === "l3") { post["/fix5/r/report.md"] = "ok \\\n"; post["/fix5/a/notes.md"] = TRIG5 + "\n" }
+  if (id === "w2") post["/fix5/r/report.md"] = (files["/fix5/r/report.md"] || "") + "clean\n"
+  return form510("fix5-" + id, command, { cfg, files, post })
 }
 
 // Hunt-требование волны: refuse обязан прийти ОТ НУЖНОЙ цели, а не от соседней.
@@ -7185,11 +7209,10 @@ function refusedOn5(r: any, target: string): boolean {
 function formGit6(): string {
   const out = formCombat393()
     .replace('git_commit = "zzz-git-commit"', String.raw`git_commit = '(?<![\w.-])git\s+commit(?![\w-])'`)
-    .replace('git_commit_ok = "zzz-git-commit-ok"', String.raw`git_commit_ok = '(?<!\S)--only(?!\S)'`)
-    .replace('git_msg = "zzz-git-msg"', String.raw`git_msg = '''(?<!\S)-m\s*(?:"([^"]*)"|'([^']*)'|(\S+))'''`)
+    .replace('git_commit_ok = "zzz-git-commit-ok"', () => String.raw`git_commit_ok = '^(?:--only|-o)$'`)
     .replace('trailer_a = "zzz-trailer-a"', "trailer_a = '^Session:'")
     .replace('trailer_b = "zzz-trailer-b"', "trailer_b = '^Co-Authored-By:'")
-  for (const stub of ["zzz-git-commit", "zzz-git-msg", "zzz-trailer-a", "zzz-trailer-b"]) {
+  for (const stub of ["zzz-git-commit", "zzz-trailer-a", "zzz-trailer-b"]) {
     if (out.indexOf(stub) >= 0) throw new Error("formGit6: заглушка не заменена: " + stub)
   }
   return out
@@ -7200,11 +7223,10 @@ function gitF6(r: any): string[] {
     .filter((x: any) => x.c === "F").map((x: any) => String(x.q))
 }
 
-// CONSTRAINT (#489-B1-FIX6 F4): write_redirect — дословно канон :172.
+// CONSTRAINT (#489-B1-FIX6 F4): write_target — дословно канон :172.
 function formTee6(): string {
-  const out = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"',
-    String.raw`write_redirect = '''(?:>>?|tee(?:\s+-a)?)\s*["']?([^\s"'<>|;&]+\.md)'''`)
-  if (out.indexOf("tee(?:") < 0) throw new Error("formTee6: заглушка write_redirect не заменена")
+  const out = formCombat393()
+  if (!out.includes(String.raw`write_target = '\.md$'`)) throw new Error("formTee6: канон write_target отсутствует")
   return out
 }
 
@@ -7303,12 +7325,16 @@ test("#489-B1-FIX5 L10: `<<` внутри арифметики -- сдвиг, н
   expect(s.heredocs.length).toBe(0)
 })
 
-test("#489-B1-FIX5 L11: закон Z5 -- все тела строки судятся для каждой цели строки", async () => {
+test("#489-B1-FIX5 L11: закон Z5 -- все тела строки судятся для каждой цели строки (D7a)", async () => {
   const cmd = "cat <<A >> r/report.md ; cat <<B > a/notes.md\nok\nA\n" + TRIG5 + "\nB"
-  const s = scan5(cmd)
-  expect(s.heredocs.length).toBe(2)
-  const r = await formFix5("l11", cmd)
-  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L11: тело второго heredoc судится и для первой цели").toBe(true)
+  expect(scan5(cmd).heredocs.length).toBe(2)
+  const before = "original\u0000bytes\r\n"
+  const r = await form510("l11", cmd, { cfg: CANCEL510().replace('report_path = "report[.]md$"', 'report_path = "(report|notes)[.]md$"'), files: { "/fix5/r/report.md": before }, materialize: true })
+  expect(refusedOn5(r, "Bash:/fix5/a/notes.md"), "D7a B: own offending target").toBe(true)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "D7a B: no cross-body refusal").toBe(false)
+  expect(r.files["/fix5/r/report.md"], "D7a B: append survives").toBe(before + "ok\n")
+  expect(r.files["/fix5/a/notes.md"], "D7a B: new offending file removed").toBe(undefined)
+  expect(typeof r.out.deny, "D7a B: result denied").toBe("string")
 })
 
 test("#489-B1-FIX5 L12: `2>&1` между оператором и целью не режет логическую строку", async () => {
@@ -7954,11 +7980,21 @@ test("#489-B1-FIX7c C44: отрицание `!` перед данными", asyn
 
 test("#489-B1-FIX6 W1: голый `tee` усекает цель", async () => {
   const cmd = "cat <<'EOF' | tee r/report.md\nclean\nEOF"
-  const r = await formFix5("w1", cmd, formTee6(), { "/fix5/r/report.md": TRIG5 + "\n" })
-  expect(r.reads).not.toContain("/fix5/r/report.md")
+  const r = await form510("w1", cmd, { cfg: formTee6(), files: { "/fix5/r/report.md": TRIG5 + "\n" }, post: { "/fix5/r/report.md": "clean\n" } })
+  expect(r.preReads, "D7b W1: no old-content read before next").not.toContain("/fix5/r/report.md")
+  expect(r.postReads, "D7b W1: actual-content read after next").toContain("/fix5/r/report.md")
+  expect(r.files["/fix5/r/report.md"], "D7b W1: truncation materialized").toBe("clean\n")
   expect(refusedOn5(r, "Bash:/fix5/r/report.md")).toBe(false)
 })
 
+test("#510 D7b W1-with-backup", async () => {
+  const path = "/fix5/r/report.md"
+  const cmd = "cat <<'EOF' | tee r/report.md\nclean\nEOF"
+  const r = await form510("w1-with-backup", cmd, { cfg: CANCEL510(), files: { [path]: TRIG5 + "\n" }, post: { [path]: "clean\n" } })
+  expect(r.proc.some((argv: string[]) => argv[0] === "/bin/cp" && argv[argv.length - 2] === path && argv[argv.length - 1].includes("/form-backup/")), "D7b with backup: target backup copy witnessed").toBe(true)
+  expect(r.preReads, "D7b with backup: no old-content read before next").not.toContain(path)
+  expect(r.postReads, "D7b with backup: actual-content read after next").toContain(path)
+})
 test("#489-B1-FIX6 W2: `tee -a` дописывает (положительный контроль W1)", async () => {
   const cmd = "cat <<'EOF' | tee -a r/report.md\nclean\nEOF"
   const r = await formFix5("w2", cmd, formTee6(), { "/fix5/r/report.md": TRIG5 + "\n" })
@@ -8281,8 +8317,8 @@ const PROBE10: Array<[string, string, boolean]> = [
 const formGit10 = (): string => {
   const cfg = formGit6()
     .replace('git_push = "zzz-git-push"', String.raw`git_push = '(?<![\w.-])git\s+push(?![\w-])'`)
-    .replace('git_push_ok = "zzz-git-push-ok"', String.raw`git_push_ok = '(?<!\S)origin\s+[\w./-]+:[\w./-]+(?!\S)'`)
-    .replace('git_force = "zzz-git-force"', String.raw`git_force = '(?<!\S)(?:--force(?:-with-lease)?|-f)(?!\S)'`)
+    .replace('git_push_ok = "zzz-git-push-ok"', () => String.raw`git_push_ok = '^origin [\w./-]+:[\w./-]+$'`)
+    .replace('git_force = "zzz-git-force"', () => String.raw`git_force = '^(?:--force(?:-with-lease(?:=.*)?)?|-f)$'`)
   if (cfg.indexOf("zzz-git-push") >= 0 || cfg.indexOf("zzz-git-force") >= 0) throw new Error("push stub not replaced")
   return cfg
 }
@@ -8305,6 +8341,1157 @@ test("#497 Z497 form: мир без ключа `heredoc` -- проба суди�
   const f = gitF6(r)
   expect(f.length > 0, "Z497 push из тела heredoc осуждён").toBe(true)
   expect(r.rows.some((x: any) => x.outcome === "refuse"), "Z497 исход refuse").toBe(true)
+})
+
+// CONSTRAINT: next и cp/rm меняют независимый снимок файлов; проверка отката
+// сравнивает содержимое, а не факт вызова двери.
+async function form510(id: string, command: string, opts: any = {}) {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-510-" + id
+  const files: Record<string, string> = { [home + "/probes.toml"]: opts.cfg || formGit10(), ...(opts.files || {}) }
+  const proc: string[][] = []
+  const dirs = fixtureDirs4_510(opts, files, opts.links), links: any = {}, modes: any = {}, attrs: any = {}
+  const m = mod$393({ files, env: { HOME: "/home510", PWD: opts.cwd || "/fix5", CLAUDE_PROBES_DIR: home, CLAUDE_FORM: "1", ...(opts.env || {}) }, now: 510_000_000 })
+  m.$.fs.list = async (dir: string) => {
+    const prefix = dir.replace(/\/$/, "") + "/"
+    const entries = new Map<string, any>()
+    for (const path of Object.keys(files).filter(p => p.startsWith(prefix))) {
+      const rest = path.slice(prefix.length), name = rest.split("/")[0]
+      if (name) entries.set(name, { name, kind: rest.includes("/") ? "dir" : "file", isLink: false })
+    }
+    if (!entries.size) throw new Error("ENOENT " + dir)
+    return [...entries.values()]
+  }
+  m.$.fs.stat = async (p: string, init: any) => {
+    if (!(p in files)) {
+      if (dirs.includes(p)) return { kind: 'dir', size: 0, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: p } : {}) }
+      throw new Error("ENOENT " + p)
+    }
+    return { kind: "file", size: opts.large === p ? 4 * 1024 * 1024 + 1 : unescape(encodeURIComponent(files[p])).length, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: p } : {}) }
+  }
+  const read = m.$.fs.read
+  const reads: string[] = [], preReads: string[] = [], postReads: string[] = []
+  let afterNext = false
+  m.$.fs.read = async (p: string, init: any) => {
+    reads.push(p)
+    ;(afterNext ? postReads : preReads).push(p)
+    if ((opts.unread || []).includes(p)) throw new Error("EACCES " + p)
+    const text = await read(p)
+    return init?.as === "bytes" ? { base64: bytes510(text) } : text
+  }
+  m.$.process = { run: async (argv: string[]) => {
+    proc.push(argv.slice())
+    const dst = argv.at(-1)!
+    if (argv[0] === '/bin/cp' && ((opts.failBackup && dst.includes('/form-backup/')) || (opts.failRollback && !dst.includes('/form-backup/')))) return { exitCode: 13, stderr: 'EACCES: directory not writable' }
+    if (argv[0] === '/usr/bin/uname') return { exitCode: 0, stdout: 'Linux' }
+    if (argv[0] === '/usr/bin/sha256sum') return { exitCode: 0, stdout: sha256hex(files[dst]) + '  ' + dst + '\n' }
+    const result = commandModel4_510(argv, files, links, dirs, modes, attrs, 'Linux')
+    if (!result) throw new Error('unexpected process command')
+    return result
+  } }
+  let ran = 0
+  opts.state = { files, proc }
+  if (opts.setup) opts.setup(m, files, proc, () => afterNext)
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command, tool_use_id: id }, async () => {
+    afterNext = true
+    ran++
+    if (opts.materialize) {
+      let cursor = command.indexOf("\n") + 1
+      const line = command.slice(0, cursor)
+      for (const match of line.matchAll(/cat\s+<<([A-Z]+)\s+(>>?)\s+(\S+)/g)) {
+        const end = command.indexOf("\n" + match[1], cursor)
+        if (end < 0) throw new Error("fixture delimiter missing")
+        const body = command.slice(cursor, end + 1)
+        const path = "/fix5/" + match[3]
+        files[path] = (match[2] === ">>" ? files[path] || "" : "") + body
+        // CONSTRAINT: каталог, созданный командой, существует только после next -- регистрация здесь, не при построении фикстуры.
+        const parts = path.split("/").filter(Boolean)
+        for (let i = 0; i < parts.length; i++) {
+          const ancestor = "/" + parts.slice(0, i).join("/")
+          if (!dirs.includes(ancestor)) dirs.push(ancestor)
+        }
+        cursor = end + match[1].length + 2
+      }
+    }
+    Object.assign(files, opts.post || {})
+    if (opts.onNext) opts.onNext(files)
+    if (opts.throwNext) throw new Error("scripted next failure")
+    return { result: { stdout: "done" } }
+  })
+  const records = formRecordsFinal393(m)
+  return { m, reads, preReads, postReads, out, records, rows: formLines393(m.writes), files, proc, ran }
+}
+
+const SNAP510 = "/home510/.claude/shell-snapshots/snapshot-zsh-1.sh"
+const ALIAS510 = [
+  "alias -- g=git", "alias -- gc='git commit --verbose'", "alias -- gpf!='git push --force'",
+  "alias -- gwip='git commit --no-verify --message wip'", "alias -- lead='git '",
+  "alias -- cm=commit", "alias -- cycle=cycle", "alias -- loopa=loopb", "alias -- loopb=loopa",
+  "f510 () {\n git commit -m function\n}",
+].join("\n")
+const CMD510: Array<[string, string, boolean, string?]> = [
+  ["D1-alias-only", "gc --only -m x", false],
+  ["D1-alias-refuse", "gc -m x", true, "git commit: нет "],
+  ["D1-force", "gpf! origin a:b", true, "git push --force"],
+  ["D1-passthrough", "g commit -m x", true, "git commit: нет "],
+  ["D1-wip", "gwip", true, "git commit: нет "],
+  ["D1-trailing", "lead cm -m x", true, "git commit: нет "],
+  ["D1-cycle", "cycle", false],
+  ["D1-mutual-cycle", "loopa", false],
+  ["D1-function", "f510", true, "git commit: нет "],
+  ["D2-static", "A=commit; git $A -m x", true, "git commit: нет "],
+  ["D2-bash-split", "A='commit -m x'; git $A", true, "git commit: нет "],
+  ["D2-unknown", "git $X", true, "subcommand not static"],
+  ["D2-command", "$G commit -m x", true, "git commit: нет "],
+  ["D2-prefix", "A=commit git $A --only -m x; git $A", true, "subcommand not static"],
+  ["D2-subshell", "A=status; (A=commit); git $A", false],
+  ["D2-nested-scope", "A=status; (A=commit; (git $A --only -m x))", false],
+  ["D3-group", "git com(mit|X) -m y", true, "git commit: нет "],
+  ["D3-group-only", "git (commit|nope) --only -m y", false],
+  ["D3-command", "gi? commit -m x", true, "git commit: нет "],
+  ["D3-only-glob", "git commit --onl? -m x", true, "git commit: нет "],
+  ["D4-extglob", "echo @(a|b) ; git commit -m x", true, "git commit: нет "],
+  ["D4-word-group", "echo x(a|b) ; git commit -m x", true, "git commit: нет "],
+  ["D5-message-option", "git commit -m --only", true, "git commit: нет "],
+  ["D5-nested-message", 'bash -c \'git commit -m "x --only"\'', true, "git commit: нет "],
+  ["D5-short", "git commit -o -m x", false],
+  ["D5-cluster", "git commit -ao -m x", false],
+  ["D5-attached-message", "git commit -mo", true, "git commit: нет "],
+  ["D5-end-options", "git commit -m x -- --only", true, "git commit: нет "],
+  ["D5-file-stdin", "git commit --only -F - <<'MSG'\nx\nMSG", false],
+  ["D5-file", "git commit --only -F msg.txt", false],
+  ["D5-reuse", "git commit --only -C HEAD -m x", true, "message undeterminable"],
+  ["D5-file-dynamic", "git commit --only -F $P -m x", true, "message undeterminable"],
+  ["D5-file-unreadable", "git commit --only -F absent.txt -m x", true, "message undeterminable"],
+  ["D5b-cluster", "git push -uf origin a:b", true, "git push -uf"],
+  ["D5b-lease", "git push --force-with-lease=x origin a:b", true, "git push --force-with-lease=x"],
+  ["D5b-pair", "git push origin a:b", false],
+  ["D5b-plus", "git push origin +a:b", true, "git push: нет "],
+  ["D9-row1", "A='commit --only -m x'; git $A", false],
+  ["D9-row9", "=git commit --only -m x", false],
+  ["D9-row10", "git @(commit|X) --only -m x", false],
+]
+for (const [id, cmd, refuse, detail] of CMD510) {
+  test("#510 " + id, async () => {
+    const r = await form510(id, cmd, { files: { [SNAP510]: ALIAS510, "/fix5/msg.txt": "message" } })
+    const f = gitF6(r)
+    expect(f.length > 0, id + ": own F verdict").toBe(refuse)
+    if (detail) expect(f.join("\n"), id + ": own reason").toContain(detail)
+    if (id === "D1-alias-only") expect(r.rows.some((x: any) => x.outcome === "pass"), "D1 alias judged once").toBe(true)
+  })
+}
+
+test("#510 D1-values", async () => {
+  const r = await form510("values", "gc --only -m x", { files: { [SNAP510]: "alias -- gc='git commit'", "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": "alias -- gc='git push --force'" } })
+  expect(gitF6(r).length > 0, "D1 every snapshot value judged").toBe(true)
+})
+test("#510 D1-bash-function-wrapped", async () => {
+  const encoded = "ZmJhc2UgKCkgewogIGdpdCBjb21taXQgLW0geHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4\neHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eAp9Cg=="
+  const snapshot = 'eval "$(echo \'' + encoded + '\' | base64 -d)" > /dev/null 2>&1'
+  const r = await form510("bash-function-wrapped", "fbase", { files: { "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": snapshot } })
+  expect(gitF6(r).length > 0, "D1 wrapped bash function: own F verdict").toBe(true)
+})
+
+test("#510 D1-bash-function-unwrapped", async () => {
+  const encoded = "ZmJhc2UgKCkgewogIGdpdCBjb21taXQgLW0geHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eAp9Cg=="
+  const snapshot = 'eval "$(echo \'' + encoded + '\' | base64 -d)" > /dev/null 2>&1'
+  const r = await form510("bash-function-unwrapped", "fbase", { files: { "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": snapshot } })
+  expect(gitF6(r).length > 0, "D1 unwrapped bash function: own F verdict").toBe(true)
+})
+test("#510 D1-bash-function-crlf", async () => {
+  const encoded = "ZmJhc2UgKCkgewogIGdpdCBjb21taXQgLW0geHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4\r\neHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eAp9Cg=="
+  const snapshot = 'eval "$(echo \'' + encoded + '\' | base64 -d)" > /dev/null 2>&1'
+  const r = await form510("bash-function-crlf", "fbase", { files: { "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": snapshot } })
+  expect(gitF6(r).length > 0, "D1 CRLF bash function: own F verdict").toBe(true)
+})
+test("#510 D1-base64-normalization", () => {
+  const normalize = (registerModule393 as any).formBase64Payload
+  expect(typeof normalize, "D1 base64 normalization helper exists").toBe("function")
+  expect(normalize("QU\r\nJD @\t"), "D1 base64 normalization removes only CR/LF").toBe("QUJD @\t")
+})
+test("#510 D1-bash-function-invalid-symbol", async () => {
+  const snapshot = 'eval "$(echo \'ZmJhc2UgKCkgewogIGdpdCBjb21taXQgLW0geAo@KfQ==\' | base64 -d)" > /dev/null 2>&1'
+  const path = "/home510/.claude/shell-snapshots/snapshot-bash-2.sh"
+  const r = await form510("bash-function-invalid-symbol", "fbase", { files: { [path]: snapshot } })
+  expect(gitF6(r), "D1 invalid symbol: function not taken").toEqual([])
+  const warnings = r.records.flatMap((record: any) => record.warn || []).filter((warning: any) => warning.c === "form-alias-source-unreadable")
+  expect(warnings.length, "D1 invalid symbol: one named warning").toBe(1)
+  expect(warnings[0].q, "D1 invalid symbol: source named").toBe("snapshot-bash-2.sh")
+})
+test("#510 D1-bash-function-decode-failed", async () => {
+  const snapshot = 'eval "$(echo \'/w==\' | base64 -d)" > /dev/null 2>&1'
+  const r = await form510("bash-function-decode-failed", "fbase", { files: { "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": snapshot } })
+  expect(gitF6(r), "D1 decode failure: function not taken").toEqual([])
+  const warnings = r.records.flatMap((record: any) => record.warn || []).filter((warning: any) => warning.c === "form-alias-source-unreadable")
+  expect(warnings.length, "D1 decode failure: one named warning").toBe(1)
+})
+
+test("#510 D1-unreadable", async () => {
+  const r = await form510("unreadable", "true", { files: { [SNAP510]: "unreadable" }, unread: [SNAP510] })
+  expect(r.records.flatMap((x: any) => x.warn || []).some((x: any) => x.c === "form-alias-source-unreadable"), "D1 unreadable snapshot warning").toBe(true)
+})
+test("#510 D1-depth", async () => {
+  const snapshot = Array.from({ length: 10 }, (_, i) => "alias -- a" + i + "=a" + (i + 1)).join("\n")
+  const r = await form510("depth", "a0", { files: { [SNAP510]: snapshot } })
+  expect(gitF6(r).join("\n"), "D1 alias depth is refusal").toContain("alias expansion too deep")
+})
+for (const [id, cmd] of [["D4-segments-ext", "echo @(a|b) ; git commit -m x"], ["D4-segments-group", "echo x(a|b) ; git commit -m x"]]) {
+  test("#510 " + id, () => {
+    const segments = scan5(cmd).segments().filter((x: any) => cmd.slice(x[0], x[1]).trim())
+    expect(segments.length, id + ": two simple commands").toBe(2)
+  })
+}
+const WRITE510: Array<[string, string, string[]]> = [
+  ["D6-tee-ai", "tee -ai r/report.md", ["/fix5/r/report.md"]],
+  ["D6-tee-append", "tee --append -- r/report.md s/report.md", ["/fix5/r/report.md", "/fix5/s/report.md"]],
+  ["D6-tee-p", "tee -p r/report.md", ["/fix5/r/report.md"]],
+  ["D6-clobber", "cat >| r/report.md", ["/fix5/r/report.md"]],
+  ["D6-all-append", "cat &>> r/report.md", ["/fix5/r/report.md"]],
+  ["D6-fd", "cat 2> r/report.md", ["/fix5/r/report.md"]],
+  ["D6-glob", "cat > r/repor*.md", ["/fix5/r/report.md"]],
+  ["D6-cwd", "cd sub && cat > r/report.md", ["/fix5/sub/r/report.md"]],
+]
+for (const [id, cmd, paths] of WRITE510) {
+  test("#510 " + id, async () => {
+    const files: Record<string, string> = {}, post: Record<string, string> = {}
+    for (const p of paths) { files[p] = "before\n"; post[p] = TRIG5 }
+    const r = await form510(id, cmd, { files, post })
+    for (const p of paths) expect(refusedOn5(r, "Bash:" + p), id + ": own target " + p).toBe(true)
+  })
+}
+test("#510 D6-dynamic-cwd", async () => {
+  const r = await form510("dynamic-cwd", "cd $D && cat > r/report.md")
+  expect(r.records.flatMap((x: any) => x.warn || []).some((x: any) => x.c === "form-cwd-unknown"), "D6 unknown cwd warning").toBe(true)
+})
+test("#510 D6-group-target", async () => {
+  const fn = (registerModule393 as any).formTargets
+  expect(typeof fn, "D6 target lexer export").toBe("function")
+  const targets = await fn({ fs: { list: async () => [{ name: "readme.mdN", kind: "file" }] } }, "echo hi > readme.md(N)", "/fix5", "/home510")
+  expect(targets.map((x: any) => x.path), "D6 zsh grouped filename resolved").toContain("/fix5/readme.mdN")
+})
+const CANCEL510 = () => formGit10() + '\n[probe.form.act]\nC1 = "cancel"\nA1 = "cancel"\nF = "cancel"\n'
+for (const created of [false, true]) {
+  test("#510 D7-rollback-" + (created ? "new" : "existing"), async () => {
+    const path = "/fix5/r/report.md", before = "original\u0000bytes\r\n"
+    const r = await form510("rollback-" + created, "cat src > r/report.md", { cfg: CANCEL510(), files: created ? {} : { [path]: before }, post: { [path]: TRIG5 } })
+    expect(typeof r.out.deny, "D7 model reads deny after rollback").toBe("string")
+    expect(r.files[path], "D7 byte-exact old state").toBe(created ? undefined : before)
+    expect(Object.keys(r.files).filter(p => p.includes("/form-backup/")), "D7 copies removed").toEqual([])
+  })
+}
+test("#510 D7-log-only", async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("log-only", "cat src > r/report.md", { files: { [path]: "before" }, post: { [path]: TRIG5 } })
+  expect(r.files[path], "D7 log_only does not roll back").toBe(TRIG5)
+  expect(refusedOn5(r, "Bash:" + path), "D7 actual contents recorded").toBe(true)
+  expect(Object.keys(r.files).filter(p => p.includes("/form-backup/")), "D7 cleanup log_only").toEqual([])
+})
+test("#510 D7-log-only-with-backup", async () => {
+  const path = "/fix5/r/report.md"
+  const command = "cat src > r/report.md"
+  const cfg = formGit10() + '\n[probe.form.act]\nF = "cancel"\n'
+  const r = await form510("log-only-with-backup", command, { cfg, files: { [path]: "before" }, post: { [path]: TRIG5 } })
+  const classes = [...new Set(r.records.flatMap((x: any) => x.refuse || []).filter((x: any) => x.src === "Bash:" + path).map((x: any) => x.c))].sort()
+  expect(classes, "D7 log_only backup refusal classes are exactly C1").toEqual(["C1"])
+  expect(r.files[path], "D7 log_only class does not roll back even with a backup").toBe(TRIG5)
+  expect(refusedOn5(r, "Bash:" + path), "D7 log_only backup actual contents recorded").toBe(true)
+  expect(Object.keys(r.files).filter(p => p.includes("/form-backup/")), "D7 log_only backup copies removed").toEqual([])
+  const cancel = await form510("log-only-with-backup-cancel", command, { cfg: cfg + 'C1 = "cancel"\n', files: { [path]: "before" }, post: { [path]: TRIG5 } })
+  expect(cancel.files[path], "D7 cancel class reaches actual rollback with the same backup input").toBe("before")
+  expect(Object.keys(cancel.files).filter(p => p.includes("/form-backup/")), "D7 cancel backup copies removed").toEqual([])
+})
+test("#510 D7-exact-heredoc", async () => {
+  const r = await form510("exact-heredoc", "cat > r/report.md <<'END'\n" + TRIG5 + "\nEND", { cfg: CANCEL510() })
+  expect(r.ran, "D7 exact heredoc denied before next").toBe(0)
+  expect(typeof r.out.deny, "D7 pre-execution deny").toBe("string")
+})
+test("#510 D7-backup-failed", async () => {
+  const r = await form510("backup-failed", "cat src > r/report.md", { cfg: CANCEL510(), files: { "/fix5/r/report.md": "before" }, failBackup: true })
+  expect(r.ran, "D7 cannot execute without backup").toBe(0)
+  expect(String(r.out.deny), "D7 unwritable backup directory").toContain("form-backup-failed")
+})
+test("#510 D7-rollback-failed", async () => {
+  const r = await form510("rollback-failed", "cat src > r/report.md", { cfg: CANCEL510(), files: { "/fix5/r/report.md": "before" }, post: { "/fix5/r/report.md": TRIG5 }, failRollback: true })
+  expect(String(r.out.deny), "D7 failed restoration is explicit").toContain("rollback failed:")
+})
+test("#510 D7-too-large", async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("too-large", "cat src > r/report.md", { cfg: CANCEL510(), files: { [path]: "before" }, post: { [path]: TRIG5 }, large: path })
+  expect(r.records.flatMap((x: any) => x.refuse || []).map((x: any) => x.q).join("\n"), "D7 actual file size gate").toContain("target too large to judge")
+})
+
+test("#510 D7c F2 mirror: second append reaches actual judgment", async () => {
+  const path = "/fix5/r/report.md"
+  const cmd = "cat <<A >> r/report.md ; cat <<B >> r/report.md\nok\nA\n" + TRIG5 + "\nB"
+  const r = await form510("f2-mirror", cmd, { cfg: CANCEL510(), files: { [path]: "old\n" }, materialize: true })
+  expect(refusedOn5(r, "Bash:" + path), "D7c mirror: second body judged").toBe(true)
+  expect(typeof r.out.deny, "D7c mirror: model receives denial").toBe("string")
+  expect(r.files[path], "D7c mirror: both appends rolled back").toBe("old\n")
+})
+
+test("#510 D7a L11 mirror: append owns its body", async () => {
+  const before = "original\u0000bytes\r\n"
+  const cmd = "cat <<A >> r/report.md ; cat <<B > a/notes.md\n" + TRIG5 + "\nA\nok\nB"
+  const r = await form510("l11-mirror", cmd, { cfg: CANCEL510().replace('report_path = "report[.]md$"', 'report_path = "(report|notes)[.]md$"'), files: { "/fix5/r/report.md": before }, materialize: true })
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "D7a A: own append refusal").toBe(true)
+  expect(refusedOn5(r, "Bash:/fix5/a/notes.md"), "D7a A: no cross-body refusal").toBe(false)
+  expect(r.files["/fix5/r/report.md"], "D7a A: byte-exact rollback").toBe(before)
+  expect(r.files["/fix5/a/notes.md"], "D7a A: ordinary body survives").toBe("ok\n")
+  expect(typeof r.out.deny, "D7a A: result denied").toBe("string")
+})
+test("#510 D7 exception cleanup", async () => {
+  const opts: any = { cfg: CANCEL510(), files: { "/fix5/r/report.md": "before" }, throwNext: true }
+  let thrown = ""
+  try { await form510("exception", "cat src > r/report.md", opts) } catch (x) { thrown = String(x) }
+  expect(thrown, "D7 next exception propagated").toContain("scripted next failure")
+  expect(opts.state.proc.some((argv: string[]) => argv[0] === "/bin/cp"), "D7 exception test had a backup").toBe(true)
+  expect(Object.keys(opts.state.files).filter(p => p.includes("/form-backup/")), "D7 finally removed backup").toEqual([])
+})
+
+const FIX2_COMMAND510: Array<[string, string, boolean, string?]> = [
+  ["F1-u", "git commit -uno -m x", true],
+  ["F1-au", "git commit -auno -m x", true],
+  ["F1-S", "git commit -So -m x", true],
+  ["F1-only-u", "git commit -o -u -m x", false],
+  ["F2-editor", "git commit --only", true, "message undeterminable"],
+  ["F2-e", "git commit -o -e -m x", true, "message undeterminable"],
+  ["F2-t", "git commit -o -t template", true, "message undeterminable"],
+  ["F2-amend", "git commit -o --amend", true, "message undeterminable"],
+  ["F2-fixup", "git commit -o --fixup HEAD -m x", true, "message undeterminable"],
+  ["F2-fixup-eq", "git commit -o --fixup=amend:HEAD -m x", true, "message undeterminable"],
+  ["F2-squash", "git commit -o --squash HEAD -m x", true, "message undeterminable"],
+  ["F2-squash-eq", "git commit -o --squash=HEAD -m x", true, "message undeterminable"],
+  ["F2-amend-static", "git commit -o --amend -m x", false],
+  ["F5-delete-ref", "git push origin a:b :d", true],
+  ["F5-force-ref", "git push origin a:b +c:d", true],
+  ["F5-mirror", "git push --mirror origin", true],
+  ["F5-delete", "git push --delete origin x", true],
+  ["F5-all", "git push --all origin a:b", true],
+  ["F5-tags", "git push --tags origin a:b", true],
+]
+for (const [id, command, refused, reason] of FIX2_COMMAND510) test("#510 FIX2 " + id, async () => {
+  const r = await form510("fix2-" + id, command)
+  expect(gitF6(r).length > 0, id + " own verdict").toBe(refused)
+  if (reason) expect(gitF6(r).join("\n"), id + " own reason").toContain(reason)
+})
+test("#510 FIX2 F6 trailing chain", async () => {
+  const r = await form510("fix2-chain", "lead mid tail -m x", { files: { [SNAP510]: "alias -- lead='git '\nalias -- mid=' '\nalias -- tail=commit" } })
+  expect(gitF6(r).length > 0, "F6 own verdict").toBe(true)
+})
+test("#510 FIX2 F7 config snapshot", async () => {
+  const r = await form510("fix2-config", "custom -m x", { env: { CLAUDE_CONFIG_DIR: "/custom510" }, files: { "/custom510/shell-snapshots/snapshot-zsh-1.sh": "alias -- custom='git commit'" } })
+  expect(gitF6(r).length > 0, "F7 own verdict").toBe(true)
+})
+test("#510 FIX2 F8 git cwd cumulative", async () => {
+  const text = "x\nSession: s\nintervening\nCo-Authored-By: c\n"
+  const r = await form510("fix2-gitcwd", "git -C a -C b commit -o -F msg", { files: { "/fix5/a/b/msg": text, "/fix5/msg": "ordinary" } })
+  expect(gitF6(r).join("\n"), "F8 judged cumulative file").toContain("не соседние")
+})
+for (const op of [">>!", "2>>!", "&>>!", "&>!"]) test("#510 FIX2 F3 " + op, async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("fix2-redirect-" + op, "cat src " + op + " r/report.md", { cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 } })
+  expect(typeof r.out.deny, "F3 own denial " + op).toBe("string")
+  expect(r.files[path], "F3 own restoration " + op).toBe("old")
+})
+for (const option of ["--", "-P", "-L", "-q", "-s"]) test("#510 FIX2 F9 cd " + option, async () => {
+  const path = "/fix5/sub/r/report.md"
+  const r = await form510("fix2-cd-" + option, "cd " + option + " sub; cat src > r/report.md", { cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 } })
+  expect(typeof r.out.deny, "F9 own denial " + option).toBe("string")
+  expect(r.files[path], "F9 own restoration " + option).toBe("old")
+})
+for (const command of ["cd; cat src > r/report.md", "cd -; cat src > r/report.md"]) test("#510 FIX2 F9 unknown " + command, async () => {
+  const r = await form510("fix2-unknown-cd", command)
+  expect(r.records.flatMap((x: any) => x.warn || []).map((x: any) => x.c), "F9 named unknown cwd").toContain("form-cwd-unknown")
+})
+test("#510 FIX2 F4 pipeline isolated", async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("fix2-pipe-base", "cd sub | cat src > r/report.md", { cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 } })
+  expect(r.files[path], "F4 base target restored").toBe("old")
+  expect(typeof r.out.deny, "F4 base refusal").toBe("string")
+})
+test("#510 FIX2 F4 pipeline union", async () => {
+  const a = "/fix5/r/report.md", b = "/fix5/sub/r/report.md"
+  const r = await form510("fix2-pipe-union", "cat x | cd sub; cat src > r/report.md", { cfg: CANCEL510(), files: { [a]: "old-a", [b]: "old-b" }, post: { [a]: TRIG5, [b]: TRIG5 } })
+  expect(r.files[a], "F4 bash candidate restored").toBe("old-a")
+  expect(r.files[b], "F4 zsh candidate restored").toBe("old-b")
+})
+test("#510 FIX2 F10 stderr heredoc", async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("fix2-stderr", "cat 2> r/report.md <<'END'\n" + TRIG5 + "\nEND", { cfg: CANCEL510(), post: { [path]: "" } })
+  expect(r.ran, "F10 next runs").toBe(1)
+  expect(r.files[path], "F10 actual empty target").toBe("")
+  expect(r.out.deny, "F10 no pre-denial").toBe(undefined)
+})
+for (const target of ["$FILE", "`target`", "$(target)"]) test("#510 FIX2 F11 dynamic " + target, async () => {
+  const r = await form510("fix2-dynamic", "cat src > " + target)
+  expect(r.records.flatMap((x: any) => x.warn || []).map((x: any) => x.c), "F11 named dynamic target " + target).toContain("form-target-dynamic")
+})
+for (const [id, command] of [
+  ["cp", "cp src r/report.md"], ["cp-t", "cp -t r src/report.md"], ["cp-long", "cp --target-directory=r src/report.md"],
+  ["mv", "mv -- src r/report.md"], ["install", "install -m 644 src r/report.md"], ["dd", "dd if=src of=r/report.md"],
+  ["sed", "sed -i 's/a/b/' r/report.md"], ["sed-long", "sed --in-place=.bak -e 's/a/b/' -- r/report.md"],
+  ["perl", "perl -i -pe 's/a/b/' r/report.md"], ["truncate", "truncate -s 0 -- r/report.md"], ["ln", "ln -sf src r/report.md"],
+]) test("#510 FIX2 F21 writer " + id, async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("fix2-writer-" + id, command, { cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 } })
+  expect(typeof r.out.deny, "F21 own denial " + id).toBe("string")
+  expect(r.files[path], "F21 own restoration " + id).toBe("old")
+})
+test("#510 FIX2 F22 canon missing", async () => {
+  const r = await form510("fix2-canon", "echo x", { cfg: CANCEL510().replace(/^write_target = .*\n/m, "") })
+  expect(r.records.flatMap((x: any) => x.refuse || []).map((x: any) => x.q).join("\n"), "F22 missing key named").toContain("form-canon-key-missing write_target")
+  expect(typeof r.out.deny, "F22 actionable missing canon").toBe("string")
+})
+
+function bytes510(text: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  const bytes = Array.from(unescape(encodeURIComponent(text))).map(c => c.charCodeAt(0))
+  let out = ""
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0)
+    out += alphabet[(n >>> 18) & 63] + alphabet[(n >>> 12) & 63] + (i + 1 < bytes.length ? alphabet[(n >>> 6) & 63] : "=") + (i + 2 < bytes.length ? alphabet[n & 63] : "=")
+  }
+  return out
+}
+function ioFix2_510(opts: any): any {
+  const links = { ...(opts.links || {}) }, attrs = { ...(opts.attrs || {}) }, modes: any = {}
+  opts.io = { links, attrs, modes }
+  opts.setup = (m: any, files: any, proc: any, post: () => boolean) => {
+    const normalize = (path: string) => {
+      const parts: string[] = []
+      for (const part of path.split("/")) { if (part === "..") parts.pop(); else if (part && part !== ".") parts.push(part) }
+      return "/" + parts.join("/")
+    }
+    const referent = (p: string): string => {
+      for (let i = 0; i < 32 && p in links; i++) p = normalize(links[p].startsWith("/") ? links[p] : p.slice(0, p.lastIndexOf("/") + 1) + links[p])
+      return p
+    }
+    const dirs = fixtureDirs4_510(opts, files, links)
+    const oldRead = m.$.fs.read, oldWrite = m.$.fs.write
+    let interleaved = false
+    m.$.fs.read = async (p: string, init: any) => {
+      if (post() && opts.unreadRead && p === "/fix5/r/report.md") throw new Error("EACCES read " + p)
+      const real = referent(p)
+      if (init?.as === "bytes") return { base64: bytes510(await oldRead(real)) }
+      return oldRead(real)
+    }
+    m.$.fs.stat = async (p: string, init: any) => {
+      if (post() && opts.unreadStat && p === "/fix5/r/report.md") throw new Error("EACCES stat " + p)
+      const real = referent(p)
+      if (dirs.includes(real)) return { kind: 'dir', size: 0, mtimeMs: 42, isLink: p in links, ...(init?.resolve ? { realPath: real } : {}) }
+      if (!(real in files) && !(p in links)) throw new Error('ENOENT ' + p)
+      return { kind: real in files ? 'file' : 'other', size: opts.sizes?.[p] || (files[real] ? unescape(encodeURIComponent(files[real])).length : 0), mtimeMs: 42, isLink: p in links, ...(init?.resolve && real in files ? { realPath: real } : {}) }
+    }
+    m.$.fs.write = async (p: string, text: any) => {
+      const result = await oldWrite(p, text)
+      if (post() && p.includes("/form/records/") && opts.interleave && !interleaved) { interleaved = true; opts.interleave(files, links) }
+      return result
+    }
+    if (!m.$.process) m.$.process = {}
+    m.$.process.run = async (argv: string[]) => {
+      proc.push(argv.slice())
+      const dst = argv[argv.length - 1]
+      if (argv[0] === "/usr/bin/uname") return { exitCode: 0, stdout: opts.platform || "Linux" }
+      if (argv[0] === "/usr/bin/readlink") return dst in links ? { exitCode: 0, stdout: links[dst] + "\n" } : { exitCode: 1, stdout: "" }
+      if (argv[0] === '/bin/mkdir' && opts.failMkdir) return { exitCode: 1 }
+      if (argv[0] === '/bin/cp' && opts.failBackup && dst.includes('/form-backup/')) return { exitCode: 13 }
+      if (argv[0] === '/usr/bin/sha256sum' || argv[0] === '/usr/bin/shasum') return { exitCode: 0, stdout: sha256hex(files[referent(dst)]) + '  ' + dst + '\n' }
+      const result = commandModel4_510(argv, files, links, dirs, modes, attrs, opts.platform || 'Linux')
+      if (!result) throw new Error('FIX2 fixture unexpected command ' + argv[0])
+      return result
+    }
+    opts.state.m = m
+  }
+  return opts
+}
+for (const [id, unreadStat, changed, warning] of [
+  ["F12a-a", false, false, ""], ["F12a-b", true, false, "form-rollback-skipped-unfingerprintable"],
+  ["F12a-c", false, true, "form-rollback-skipped-changed"],
+] as Array<[string, boolean, boolean, string]>) test("#510 FIX2 " + id, async () => {
+  const path = "/fix5/r/report.md", opts = ioFix2_510({ cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 }, unreadRead: true, unreadStat,
+    interleave: changed ? (files: any) => { files[path] = "external-size-changed" } : undefined })
+  const r = await form510(id, "cat src > r/report.md", opts)
+  expect(typeof r.out.deny, id + " denies unreadable post").toBe("string")
+  expect(r.files[path], id + " compare restore result").toBe(changed ? "external-size-changed" : unreadStat ? TRIG5 : "old")
+  if (warning) expect(r.rows.map((x: any) => JSON.stringify(x)).join("\n"), id + " named skipped record").toContain(warning)
+})
+test("#510 FIX2 F13 exception restoration", async () => {
+  const path = "/fix5/r/report.md", opts = ioFix2_510({ cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 }, throwNext: true })
+  let error = ""
+  try { await form510("fix2-exception", "cat src > r/report.md", opts) } catch (x) { error = String(x) }
+  expect(error, "F13 original exception propagated").toContain("scripted next failure")
+  expect(opts.state.files[path], "F13 bytes restored before cleanup").toBe("old")
+})
+for (const fresh of [false, true]) test("#510 FIX2 F15 changed " + (fresh ? "new" : "existing"), async () => {
+  const path = "/fix5/r/report.md", changed = TRIG5.replace("zzz", "xxx")
+  const r = await form510("fix2-change-" + fresh, "cat src > r/report.md", ioFix2_510({ cfg: CANCEL510(), files: fresh ? {} : { [path]: "old" }, post: { [path]: TRIG5 }, interleave: (files: any) => { files[path] = changed } }))
+  expect(typeof r.out.deny, "F15 denial remains").toBe("string")
+  expect(r.files[path], "F15 different bytes same size mtime untouched").toBe(changed)
+  expect(r.rows.map((x: any) => JSON.stringify(x)).join("\n"), "F15 named changed record").toContain("form-rollback-skipped-changed")
+})
+test("#510 FIX2 F14 dangling link", async () => {
+  const path = "/fix5/r/report.md", real = "/fix5/r/original.md", opts = ioFix2_510({ cfg: CANCEL510(), links: { [path]: "original.md" }, post: { [real]: TRIG5 } })
+  const r = await form510("fix2-dangling", "cat src > r/report.md", opts)
+  expect(r.ran, "F14 dangling write actually materialized").toBe(1)
+  expect(typeof r.out.deny, "F14 dangling denial").toBe("string")
+  expect(opts.io.links[path], "F14 original link survives").toBe("original.md")
+  expect(r.files[real], "F14 absent original referent restored").toBe(undefined)
+})
+test("#510 FIX2 F14 retarget link", async () => {
+  const path = "/fix5/r/report.md", real = "/fix5/r/original.md", other = "/fix5/r/other.md"
+  const opts: any = { cfg: CANCEL510(), links: { [path]: "original.md" }, files: { [real]: "original", [other]: "other" }, post: { [other]: TRIG5 } }
+  ioFix2_510(opts)
+  opts.onNext = () => { opts.io.links[path] = "other.md" }
+  const r = await form510("fix2-retarget", "cat src > r/report.md", opts)
+  expect(typeof r.out.deny, "F14 retarget denial").toBe("string")
+  expect(r.proc.some(argv => argv[0] === "/bin/ln" && argv[argv.length - 2] === "original.md" && argv[argv.length - 1] === path), "F14 retarget restore branch").toBe(true)
+  expect(warnings3_510(r), "F14 retarget readable referent").not.toContain("form-rollback-skipped-unfingerprintable")
+  expect(opts.io.links[path], "F14 original link restored").toBe("original.md")
+  expect(r.files[real], "F14 original referent bytes").toBe("original")
+  expect(r.files[other], "F14 no old bytes into different referent").toBe(TRIG5)
+})
+for (const platform of ["Linux", "Darwin"]) test("#510 FIX2 F16 attributes " + platform, async () => {
+  const path = "/fix5/r/report.md", opts = ioFix2_510({ cfg: CANCEL510(), platform, files: { [path]: "old" }, attrs: { [path]: { "user.form510": "old-attribute" } }, post: { [path]: TRIG5 } })
+  opts.onNext = () => { opts.io.attrs[path] = { "user.form510": "new-attribute" } }
+  await form510("fix2-attrs-" + platform, "cat src > r/report.md", opts)
+  expect(opts.io.attrs[path], "F16 attributes restored " + platform).toEqual({ "user.form510": "old-attribute" })
+})
+test("#510 FIX2 F17 private copies", async () => {
+  const path = "/fix5/r/report.md", opts = ioFix2_510({ cfg: CANCEL510(), files: { [path]: "old" } })
+  const r = await form510("fix2-private", "cat src > r/report.md", opts)
+  expect(r.proc.some(argv => argv[0] === "/bin/mkdir" && argv.includes("700")), "F17 directory explicitly private").toBe(true)
+  expect(Object.values(opts.io.modes).every(mode => mode === "700"), "F17 modes private").toBe(true)
+})
+test("#510 FIX2 F17 mkdir failure", async () => {
+  const path = "/fix5/r/report.md", r = await form510("fix2-mkdir", "cat src > r/report.md", ioFix2_510({ cfg: CANCEL510(), files: { [path]: "old" }, failMkdir: true }))
+  expect(r.ran, "F17 checked mkdir status").toBe(0)
+  expect(String(r.out.deny), "F17 mkdir exit named").toContain("mkdir exit")
+  expect(r.proc.some((argv: string[]) => argv[0] === "/bin/chmod"), "F17 no chmod after mkdir failure").toBe(false)
+  expect(String(r.out.deny), "F17 named backup failure").toContain("form-backup-failed")
+})
+test("#510 FIX2 F18 log only no copy", async () => {
+  const path = "/fix5/r/report.md", r = await form510("fix2-logonly", "cat src > r/report.md", ioFix2_510({ files: { [path]: "old" }, post: { [path]: TRIG5 }, failBackup: true }))
+  expect(r.ran, "F18 log only runs despite copy refusal").toBe(1)
+  expect(r.proc.filter(argv => argv[0] === "/bin/cp"), "F18 no copies for log only").toEqual([])
+  expect(refusedOn5(r, "Bash:" + path), "F18 post judgment still observed").toBe(true)
+})
+for (const logOnly of [false, true]) test("#510 FIX2 F20 paths " + logOnly, async () => {
+  const files: any = {}
+  for (let i = 0; i < 257; i++) files["/fix5/r/" + i + "/report.md"] = "old"
+  const r = await form510("fix2-path-cap-" + logOnly, "cat src > r/*/report.md", { cfg: logOnly ? formGit10() : CANCEL510(), files })
+  expect(r.ran, "F20 candidate cap next action").toBe(logOnly ? 1 : 0)
+  expect(gitF6(r).join("\n"), "F20 path cap named").toContain("form-fanout-exceeded")
+})
+test("#510 FIX2 F20 variants", async () => {
+  const files: any = {}
+  for (let i = 0; i < 65; i++) files["/home510/.claude/shell-snapshots/snapshot-zsh-cap" + i + ".sh"] = "alias -- fan='echo " + i + "'"
+  const r = await form510("fix2-variant-cap", "fan", { cfg: CANCEL510(), files })
+  expect(r.ran, "F20 variant cap before next").toBe(0)
+  expect(gitF6(r).join("\n"), "F20 variant cap named").toContain("form-fanout-exceeded")
+})
+test("#510 FIX2 F20 backup volume", async () => {
+  const files: any = {}, sizes: any = {}, commands: string[] = []
+  for (let i = 0; i < 9; i++) { const path = "/fix5/r/" + i + "/report.md"; files[path] = "old"; sizes[path] = 4 * 1024 * 1024; commands.push("cat src > r/" + i + "/report.md") }
+  const r = await form510("fix2-backup-cap", commands.join("; "), ioFix2_510({ cfg: CANCEL510(), files, sizes }))
+  expect(r.ran, "F20 volume cap before next").toBe(0)
+  expect(r.out.deny, "F20 volume cap named").toContain("form-backup-failed")
+  expect(r.out.deny, "F20 volume cap reason").toContain("backup volume exceeded")
+})
+
+test("#510 FIX2 F19 post observer", async () => {
+  const path = "/fix5/r/report.md", calls: any[] = []
+  const opts = ioFix2_510({ cfg: CANCEL510() + '\n[probe.after510]\non = ["PostToolUse"]\nact = "log_only"\nmodels = ["mock510"]\nshow = ["tool"]\n', files: { [path]: "old", "/probes-510-fix2-after/after510/prompt.md": "Observe tool result." }, post: { [path]: TRIG5 } })
+  const setup = opts.setup
+  opts.setup = (...args: any[]) => { setup(...args); args[0].$.model.complete = async (request: any) => { calls.push(request); return "OK: observed" } }
+  const r = await form510("fix2-after", "cat src > r/report.md", opts)
+  await settle393()
+  expect(typeof r.out.deny, "F19 form still denies").toBe("string")
+  expect(calls.length, "F19 other post observer sees result").toBe(1)
+})
+
+test("#510 FIX2 F21 directory operands", async () => {
+  let cfg = CANCEL510()
+  const targetKey = String.raw`write_target = '\.md$'`, reportKey = 'report_path = "report[.]md$"'
+  expect(cfg.split(targetKey).length - 1, "F21 directory write_target anchor exactly once").toBe(1)
+  cfg = cfg.replace(targetKey, () => String.raw`write_target = '/[ab]$'`)
+  expect(cfg.split(reportKey).length - 1, "F21 directory report_path anchor exactly once").toBe(1)
+  cfg = cfg.replace(reportKey, () => String.raw`report_path = '/[ab]$'`)
+  const opts = ioFix2_510({ cfg, files: { "/fix5/r/a": "old", "/fix5/r/b": "old" }, post: { "/fix5/r/a": TRIG5 } })
+  const setup = opts.setup
+  opts.setup = (...args: any[]) => {
+    setup(...args)
+    const stat = args[0].$.fs.stat
+    args[0].$.fs.stat = async (path: string, init: any) => path === "/fix5/r" ? { kind: "dir", size: 0, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: path } : {}) } : stat(path, init)
+  }
+  const r = await form510("fix2-directory", "cp a b r/", opts)
+  expect(r.reads, "F21 directory child a candidate").toContain("/fix5/r/a")
+})
+test("#510 FIX2 F12b absent glob literal", async () => {
+  const r = await form510("fix2-absent-glob", "cat src > r/*/report.md", { cfg: CANCEL510(), files: { "/fix5/r/a/report.md": "ordinary" } })
+  expect(gitF6(r).join("\n"), "F12b absent literal is not unreadable").not.toContain("target unreadable after write")
+  expect(r.out.deny, "F12b unchanged absence has no judgment").toBe(undefined)
+})
+for (const link of [false, true]) test("#510 FIX2 F12b deletion " + (link ? "link" : "file"), async () => {
+  const path = "/fix5/r/report.md", real = link ? "/fix5/r/original.md" : path
+  const opts = ioFix2_510({ cfg: CANCEL510(), files: { [real]: "old" }, links: link ? { [path]: "original.md" } : {} })
+  opts.onNext = (files: any) => { if (link) delete opts.io.links[path]; else delete files[path] }
+  const r = await form510("fix2-deletion-" + link, "cat src > r/report.md", opts)
+  expect(typeof r.out.deny, "F12b deletion denies").toBe("string")
+  expect(gitF6(r).join("\n"), "F12b deletion is not unreadable").not.toContain("target unreadable after write")
+  expect(r.files[real], "F12b deletion restores bytes").toBe("old")
+  if (link) expect(opts.io.links[path], "F12b deletion restores link").toBe("original.md")
+})
+test("#510 FIX2 F22 once per module", async () => {
+  const logs: string[] = []
+  const r = await form510("fix2-canon-once", "echo x", {
+    cfg: CANCEL510().replace(/^trailer_a = .*\n/m, ""),
+    setup: (m: any) => { m.$.ui.log = async (text: string) => { logs.push(text) } },
+  })
+  const second = await hook393(subs393(), "tool.call")(r.m.$, { tool: "Bash", command: "echo y" }, async () => ({}))
+  expect(typeof r.out.deny, "F22 first missing key denies").toBe("string")
+  expect(typeof second.deny, "F22 second missing key denies").toBe("string")
+  expect(logs.filter(text => text === "form-canon-key-missing trailer_a").length, "F22 exactly one module log").toBe(1)
+})
+test("#510 FIX2 F14 two-level link", async () => {
+  const path = "/fix5/r/report.md", middle = "/fix5/r/middle.md", real = "/fix5/r/original.md", other = "/fix5/r/other.md"
+  const opts = ioFix2_510({ cfg: CANCEL510(), links: { [path]: "middle.md", [middle]: "original.md" }, files: { [real]: "old", [other]: "other" }, post: { [other]: TRIG5 } })
+  opts.onNext = () => { opts.io.links[middle] = "other.md" }
+  const r = await form510("fix2-two-level", "cat src > r/report.md", opts)
+  expect(r.ran, "F14 two-level write runs").toBe(1)
+  expect(typeof r.out.deny, "F14 two-level denies actual referent").toBe("string")
+  expect(r.proc.some(argv => argv[0] === "/bin/ln" && argv[argv.length - 2] === "middle.md" && argv[argv.length - 1] === path), "F14 two-level restore branch").toBe(true)
+  expect(warnings3_510(r), "F14 two-level readable referent").not.toContain("form-rollback-skipped-unfingerprintable")
+  expect(opts.io.links[middle], "F14 two-level changed middle remains external").toBe("other.md")
+  expect(opts.io.links[path], "F14 two-level original link spelling").toBe("middle.md")
+  expect(r.files[real], "F14 two-level original terminal bytes").toBe("old")
+  expect(r.files[other], "F14 two-level different referent untouched").toBe(TRIG5)
+})
+
+test("#510 FIX4 F14 equal-size retarget", async () => {
+  const path = "/fix5/r/report.md", real = "/fix5/r/original.md", other = "/fix5/r/other.md", original = "originalABCD"
+  expect(original.length, "F14 equal-size fixture").toBe(TRIG5.length)
+  const opts = ioFix2_510({ cfg: CANCEL510(), links: { [path]: "original.md" }, files: { [real]: original, [other]: "other" }, post: { [other]: TRIG5 } })
+  const setup = opts.setup, independent: string[] = []
+  opts.setup = (...args: any[]) => {
+    setup(...args)
+    const read = args[0].$.fs.read
+    args[0].$.fs.read = async (p: string, init: any) => {
+      if (args[3]() && p === real && init?.as === "bytes") independent.push(p)
+      return read(p, init)
+    }
+  }
+  opts.onNext = () => { opts.io.links[path] = "other.md" }
+  const r = await form510("fix4-equal-retarget", "cat src > r/report.md", opts)
+  expect(typeof r.out.deny, "F14 equal-size denial").toBe("string")
+  expect(independent.length > 0, "F14 equal-size independent referent read").toBe(true)
+  expect(r.proc.some(argv => argv[0] === "/bin/ln" && argv[argv.length - 2] === "original.md" && argv[argv.length - 1] === path), "F14 equal-size restore branch").toBe(true)
+  expect(warnings3_510(r), "F14 equal-size readable referent").not.toContain("form-rollback-skipped-unfingerprintable")
+  expect(opts.io.links[path], "F14 equal-size original link restored").toBe("original.md")
+  expect(r.files[real], "F14 equal-size original bytes").toBe(original)
+  expect(r.files[other], "F14 equal-size other bytes unchanged").toBe(TRIG5)
+})
+
+function ioFix3_510(opts: any): any {
+  ioFix2_510(opts)
+  const setup = opts.setup
+  opts.setup = (m: any, files: any, proc: any, post: () => boolean) => {
+    setup(m, files, proc, post)
+    const stat = m.$.fs.stat, read = m.$.fs.read, run = m.$.process.run, write = m.$.fs.write
+    const map = (p: string) => opts.prefix ? p.replace(/^\/fix5\/d(?=\/|$)/, '/fix5/' + opts.prefix.dir) : p
+    m.$.fs.stat = async (p: string, init: any) => {
+      if (opts.dirs?.includes(p) || Object.keys(files).some(t => t.startsWith(map(p).replace(/\/$/, '') + '/'))) return { kind: 'dir', size: 0, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: map(p + '/').replace(/\/$/, '') } : {}) }
+      const result = await stat(map(p), init)
+      return post() && opts.sizes?.[p] === 4194304 ? { ...result, size: unescape(encodeURIComponent(files[map(p)])).length } : result
+    }
+    m.$.fs.read = (p: string, init: any) => read(map(p), init)
+    m.$.fs.write = async (p: string, text: any) => { files[p] = String(text); return write(p, text) }
+    m.$.process.run = async (argv: string[]) => {
+      const v = argv.map(map), dst = v.at(-1)!, src = v.at(-2)!
+      if (v[0] === '/bin/mv' && opts.failMove) { proc.push(v.slice()); return { exitCode: 1 } }
+      if (v[0] === '/usr/bin/sha256sum' || v[0] === '/usr/bin/shasum') {
+        proc.push(v.slice())
+        if (opts.throwHash) throw new Error('scripted hash command refusal')
+        return { exitCode: opts.failHash ? 1 : 0, stdout: opts.badHash ? 'invalid' : sha256hex(files[dst]) + '  ' + dst + '\n' }
+      }
+      if (v[0] === '/bin/chmod' && opts.failChmod) { proc.push(v.slice()); return { exitCode: 1 } }
+      if (v[0] === '/bin/cp' && opts.failPreserve && (v.includes('--preserve=all') || v.includes('-p'))) { proc.push(v.slice()); return { exitCode: 1 } }
+      if (v[0] === '/bin/cp' && opts.failRestoreCopy && dst.includes('.form-restore.')) { proc.push(v.slice()); files[dst] = 'partial'; return { exitCode: 1 } }
+      return run(v)
+    }
+  }
+  return opts
+}
+const warnings3_510 = (r: any) => r.records.flatMap((x: any) => x.warn || []).map((x: any) => x.q).join('\n')
+const final3_510 = (r: any) => {
+  const path = r.m.writes.filter((w: any) => w.path.includes('/form/records/')).at(-1)?.path
+  return path ? JSON.parse(r.files[path]) : null
+}
+test('#510 FIX3 G1 terminal-link', async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/r/original.md', b = '/fix5/r/other.md'
+  const o = ioFix3_510({ cfg: CANCEL510(), files: { [a]: 'ORIGINAL', [b]: 'OTHER' }, links: { [p]: 'original.md' }, post: { [b]: TRIG5 } })
+  o.onNext = (f: any) => { delete f[a]; o.io.links[a] = 'other.md' }
+  const r = await form510('fix3-terminal', 'cat src > r/report.md', o)
+  expect(o.io.links[a], 'G1 terminal becomes regular file').toBe(undefined)
+  expect(r.files[a], 'G1 terminal bytes restored').toBe('ORIGINAL')
+  expect(r.files[b], 'G1 other bytes not restored through link').toBe(TRIG5)
+  expect(warnings3_510(r), 'G2 terminal unrestored warning').toContain('form-rollback-unrestored ' + b)
+})
+test('#510 FIX3 G2 prefix-retarget', async () => {
+  const a = '/fix5/a/report.md', b = '/fix5/b/report.md', prefix = { dir: 'a' }
+  const o = ioFix3_510({ cfg: CANCEL510(), prefix, files: { [a]: 'ORIGINAL', [b]: 'OTHER' }, post: { [b]: 'OTHER\n' + TRIG5 } })
+  o.onNext = () => { prefix.dir = 'b' }
+  const r = await form510('fix3-prefix', 'cat src > /fix5/d/report.md', o)
+  expect(r.files[b], 'G2 retargeted bytes remain').toBe('OTHER\n' + TRIG5)
+  expect(warnings3_510(r), 'G2 retargeted warning').toContain('form-rollback-skipped-retargeted /fix5/d/report.md')
+})
+test('#510 FIX3 G2 middle-retarget', async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/r/original.md', b = '/fix5/r/other.md', mid = '/fix5/r/middle.md'
+  const o = ioFix3_510({ cfg: CANCEL510(), files: { [a]: 'ORIGINAL', [b]: 'OTHER' }, links: { [p]: 'middle.md', [mid]: 'original.md' }, post: { [b]: TRIG5 } })
+  o.onNext = () => { o.io.links[mid] = 'other.md' }
+  const r = await form510('fix3-middle', 'cat src > r/report.md', o)
+  expect(r.files[b], 'G2 middle other bytes remain').toBe(TRIG5)
+  expect(warnings3_510(r), 'G2 middle unrestored warning').toContain('form-rollback-unrestored ' + b)
+})
+for (const count of [8, 9]) test('#510 FIX3 G3 volume-' + count, async () => {
+  const files: any = {}, sizes: any = {}, post: any = {}, commands: string[] = []
+  for (let i = 0; i < count; i++) { const p = '/fix5/r/' + i + '/report.md'; files[p] = 'old-' + i; sizes[p] = 4194304; post[p] = TRIG5; commands.push('cat src > ' + p) }
+  const r = await form510('fix3-volume-' + count, commands.join('; '), ioFix3_510({ cfg: formGit10() + '\n[probe.form.act]\nF="log_only"\nC1="cancel"\n', files, sizes, post }))
+  expect(r.ran, 'G3 volume execution ' + count).toBe(count === 9 ? 0 : 1)
+  if (count === 9) { expect(r.out.deny, 'G3 volume failure named').toContain('form-backup-failed'); expect(r.out.deny, 'G3 volume reason named').toContain('backup volume exceeded') }
+  for (const p of Object.keys(files)) expect(r.files[p], 'G3 original preserved ' + p).toBe(files[p])
+})
+test('#510 FIX3 G3 file-null-backup', async () => {
+  const p = '/fix5/r/report.md', o = ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 } })
+  const setup = o.setup
+  o.setup = (...args: any[]) => { setup(...args); const run = args[0].$.process.run; args[0].$.process.run = async (v: string[]) => { if (v[0] === '/bin/cp' && v.at(-1)?.includes('/form-backup/')) { return { exitCode: 0 } }; return run(v) } }
+  const post = (registerModule393 as any).formPost
+  expect(typeof post, 'G3 direct rollback entry exists').toBe('function')
+  const r = await form510('fix3-null', 'true', o)
+  const state = { p: { cfg: (registerModule393 as any).parseToml(CANCEL510()).probe.form }, targets: [{ path: p }], backups: [{ path: p, kind: 'file', backup: null, parentReal: '/fix5/r', real: p }], skipped: [], before: new Map([[p, 'file']]), copyFlag: '--preserve=all' }
+  r.files[p] = TRIG5
+  const denial = await post(r.m.$, state, { HOME: '/home510' }, { globalHome: '/probes-510-fix3-null', cwd: '/fix5' }, { tool: 'Bash', tool_use_id: 'null-direct' })
+  expect(String(denial), 'G3 missing backup rollback fails').toContain('rollback failed')
+  expect(r.files[p], 'G3 missing backup leaves file intact').toBe(TRIG5)
+})
+test('#510 FIX3 G4 before-fingerprint', async () => {
+  const p = '/fix5/r/report.md', external = TRIG5.replace('zzz', 'xxx')
+  const o = ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => { setup(m, f, proc, after); const read = m.$.fs.read; let changed = false; m.$.fs.read = async (t: string, init: any) => { const result = await read(t, init); if (after() && t === p && !changed) { changed = true; f[p] = external }; return result } }
+  const r = await form510('fix3-before', 'cat src > r/report.md', o)
+  expect(r.files[p], 'G4 external bytes preserved').toBe(external)
+  expect(warnings3_510(r), 'G4 changed warning').toContain('form-rollback-skipped-changed')
+})
+test('#510 FIX3 G5 final-refuse-record', async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix3-record', 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 }, interleave: (f: any) => { f[p] = TRIG5.replace('zzz', 'xxx') } }))
+  const rec = final3_510(r)
+  expect(rec.kind, 'G5 final kind remains REFUSE').toBe('REFUSE')
+  expect(rec.refuse.some((x: any) => x.c === 'C1'), 'G5 final refusal retained').toBe(true)
+  expect(rec.warn.some((x: any) => x.c === 'form-rollback-skipped-changed'), 'G5 final warning merged').toBe(true)
+})
+for (const platform of ['Linux', 'Darwin']) test('#510 FIX3 G6 large-digest ' + platform, async () => {
+  const p = '/fix5/r/report.md', external = TRIG5.replace('zzz', 'xxx')
+  const r = await form510('fix3-large-' + platform, 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), platform, files: { [p]: 'old' }, sizes: { [p]: 5 * 1024 * 1024 }, post: { [p]: TRIG5 }, interleave: (f: any) => { f[p] = external } }))
+  expect(r.files[p], 'G6 full digest preserves external ' + platform).toBe(external)
+  expect(warnings3_510(r), 'G6 changed warning ' + platform).toContain('form-rollback-skipped-changed')
+})
+for (const failHash of [true, false, 'throw']) test('#510 FIX3 G6 hash-refusal ' + failHash, async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix3-hash-' + failHash, 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), failHash: failHash === true, badHash: failHash === false, throwHash: failHash === 'throw', files: { [p]: 'old' }, sizes: { [p]: 5 * 1024 * 1024 }, post: { [p]: TRIG5 } }))
+  expect(r.files[p], 'G6 hash refusal leaves bytes').toBe(TRIG5)
+  expect(warnings3_510(r), 'G6 hash refusal named').toContain('form-rollback-skipped-unfingerprintable')
+})
+test('#510 FIX3 G7 perl-script', async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix3-perl', 'perl -pi script/report.md r/report.md', ioFix3_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'G7 script is not candidate').toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'G7 data file is candidate').toBe(true)
+})
+for (const kind of ['paths', 'variants']) test('#510 FIX3 G8 boundary-' + kind, async () => {
+  const files: any = {}
+  if (kind === 'paths') for (let i = 0; i < 256; i++) files['/fix5/r/' + i + '/report.md'] = 'ordinary'
+  else for (let i = 0; i < 64; i++) files['/home510/.claude/shell-snapshots/snapshot-zsh-bound' + i + '.sh'] = 'alias -- fan="echo ' + i + '"'
+  const r = await form510('fix3-boundary-' + kind, kind === 'paths' ? Object.keys(files).map(p => 'cat src > ' + p).join('; ') : 'fan', ioFix3_510({ cfg: CANCEL510(), files }))
+  expect(r.ran, 'G8 exact boundary runs ' + kind).toBe(1)
+})
+for (const refusal of ['chmod', 'preserve']) test('#510 FIX3 platform-refusal ' + refusal, async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix3-platform-' + refusal, 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, failChmod: refusal === 'chmod', failPreserve: refusal === 'preserve' }))
+  expect(r.ran, 'platform refusal before next ' + refusal).toBe(0)
+  expect(r.out.deny, 'platform backup failure ' + refusal).toContain('form-backup-failed')
+})
+for (const failure of ['move', 'copy']) test('#510 FIX3 G1 cleanup-' + failure, async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix3-cleanup-' + failure, 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 }, failMove: failure === 'move', failRestoreCopy: failure === 'copy' }))
+  expect(r.out.deny, 'G1 restore failure explicit ' + failure).toContain('rollback failed')
+  expect(Object.keys(r.files).filter(p => p.includes('.form-restore.')), 'G1 restore temp removed ' + failure).toEqual([])
+})
+
+function rawBase64_510(bytes: number[]): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0)
+    out += alphabet[(n >>> 18) & 63] + alphabet[(n >>> 12) & 63] + (i + 1 < bytes.length ? alphabet[(n >>> 6) & 63] : '=') + (i + 2 < bytes.length ? alphabet[n & 63] : '=')
+  }
+  return out
+}
+for (const encoding of ['utf8', 'invalid', 'bom']) test('#510 FIX3 G4 decode-' + encoding, async () => {
+  const p = '/fix5/r/report.md', suffix = encoding === 'utf8' ? ' Ж😀' : encoding === 'invalid' ? '�(�' : '﻿'
+  const text = encoding === 'bom' ? suffix + TRIG5 : TRIG5 + suffix
+  const raw = encoding === 'invalid' ? Array.from(TRIG5).map(c => c.charCodeAt(0)).concat([0xe2, 0x28, 0xa1]) : Array.from(unescape(encodeURIComponent(text))).map(c => c.charCodeAt(0))
+  const o = ioFix3_510({ files: { [p]: 'old' }, post: { [p]: text } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const read = m.$.fs.read, stat = m.$.fs.stat
+    m.$.fs.read = async (t: string, init: any) => after() && t === p ? init?.as === 'bytes' ? { base64: rawBase64_510(raw) } : text : read(t, init)
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return after() && t === p ? { ...s, size: raw.length } : s }
+  }
+  const r = await form510('fix3-decode-' + encoding, 'cat src > r/report.md', o)
+  const readText = await r.m.$.fs.read(p)
+  expect(r.records.flatMap((x: any) => x.refuse || []).find((x: any) => x.c === 'C1')?.q, 'G4 judged text equals readText ' + encoding).toBe(readText)
+})
+test('#510 FIX3 G4 changed-during-read', async () => {
+  const p = '/fix5/r/report.md', o = ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const read = m.$.fs.read, stat = m.$.fs.stat
+    let readPost = false
+    m.$.fs.read = async (t: string, init: any) => { const v = await read(t, init); if (after() && t === p) readPost = true; return v }
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return after() && t === p && readPost ? { ...s, mtimeMs: 43 } : s }
+  }
+  const r = await form510('fix3-during', 'cat src > r/report.md', o)
+  expect(gitF6(r).join('\n'), 'G4 changed during judgement named').toContain('target changed during judgement')
+  expect(warnings3_510(r), 'G4 unstable read unfingerprintable').toContain('form-rollback-skipped-unfingerprintable')
+  expect(r.files[p], 'G4 unstable read is not restored').toBe(TRIG5)
+})
+
+const COMMAND_CASES4_510: Array<[string, string[], number]> = [
+  ['cp-dir', ['/bin/cp', '--', '/model/src', '/model/dir'], 0],
+  ['cp-linkdir', ['/bin/cp', '--', '/model/src', '/model/linkdir'], 0],
+  ['cp-missing', ['/bin/cp', '--', '/model/missing', '/model/dst'], 1],
+  ['cp-dangling', ['/bin/cp', '--', '/model/src', '/model/dangling'], 1],
+  ['mv-dir', ['/bin/mv', '-f', '--', '/model/src', '/model/dir'], 0],
+  ['mv-linkdir', ['/bin/mv', '-f', '--', '/model/src', '/model/linkdir'], 0],
+  ['mv-missing', ['/bin/mv', '-f', '--', '/model/missing', '/model/dst'], 1],
+  ['mv-dangling', ['/bin/mv', '-f', '--', '/model/src', '/model/dangling'], 0],
+  ['mv-T-dir', ['/bin/mv', '-f', '-T', '--', '/model/src', '/model/dir'], 1],
+  ['mv-T-linkdir', ['/bin/mv', '-f', '-T', '--', '/model/src', '/model/linkdir'], 0],
+  ['ln-dir', ['/bin/ln', '-s', '-f', '--', 'src', '/model/dir'], 0],
+  ['ln-linkdir', ['/bin/ln', '-s', '-f', '--', 'src', '/model/linkdir'], 0],
+  ['ln-missing', ['/bin/ln', '-s', '-f', '--', 'missing', '/model/dst'], 0],
+  ['ln-dangling', ['/bin/ln', '-s', '-f', '--', 'src', '/model/dangling'], 0],
+  ['ln-T-dir', ['/bin/ln', '-s', '-f', '-T', '--', 'src', '/model/dir'], 1],
+  ['ln-T-linkdir', ['/bin/ln', '-s', '-f', '-T', '--', 'src', '/model/linkdir'], 0],
+  ['mkdir-file', ['/bin/mkdir', '-p', '--', '/model/src'], 1],
+  ['mkdir-dir', ['/bin/mkdir', '-p', '--', '/model/dir'], 0],
+  ['mkdir-dangling', ['/bin/mkdir', '-p', '--', '/model/dangling'], 1],
+  ['rm-dir', ['/bin/rm', '-f', '--', '/model/dir'], 1],
+  ['rm-linkdir', ['/bin/rm', '-f', '--', '/model/linkdir'], 0],
+  ['rm-missing', ['/bin/rm', '-f', '--', '/model/missing'], 0],
+  ['rm-dangling', ['/bin/rm', '-f', '--', '/model/dangling'], 0],
+  ['chmod-dir', ['/bin/chmod', '700', '--', '/model/dir'], 0],
+  ['chmod-linkdir', ['/bin/chmod', '700', '--', '/model/linkdir'], 0],
+  ['chmod-missing', ['/bin/chmod', '700', '--', '/model/missing'], 1],
+  ['chmod-dangling', ['/bin/chmod', '700', '--', '/model/dangling'], 1],
+]
+for (const [name, argv, rc] of COMMAND_CASES4_510) test('#510 FIX4 G20 command-' + name, async () => {
+  const o = ioFix3_510({ files: { '/model/src': 'SOURCE' }, dirs: ['/model', '/model/dir'], links: { '/model/linkdir': 'dir', '/model/dangling': 'missing' } })
+  const r = await form510('g20-' + name, 'true', o)
+  const got = await r.m.$.process.run(argv)
+  expect(got.exitCode, 'G20 command rc ' + name).toBe(rc)
+})
+
+function fixtureDirs4_510(opts: any, files: any, links: any = {}): string[] {
+  const dirs = opts.dirs || (opts.dirs = ['/', '/fix5', '/fix5/r', '/fix5/sub', '/fix5/sub/r'])
+  for (const p of [...Object.keys(files), ...Object.keys(links)]) {
+    let parent = p.slice(0, p.lastIndexOf('/')) || '/'
+    for (;;) {
+      if (!dirs.includes(parent)) dirs.push(parent)
+      if (parent === '/') break
+      parent = parent.slice(0, parent.lastIndexOf('/')) || '/'
+    }
+  }
+  return dirs
+}
+function commandModel4_510(argv: string[], files: any, links: any, dirs: string[], modes: any, attrs: any, platform: string): any {
+  const normalize = (p: string) => {
+    const parts: string[] = []
+    for (const part of p.split('/')) { if (part === '..') parts.pop(); else if (part && part !== '.') parts.push(part) }
+    return '/' + parts.join('/')
+  }
+  const resolve = (p: string): string => {
+    p = normalize(p)
+    for (let n = 0; n < 32; n++) {
+      const pieces = p.split('/'); let changed = false
+      for (let i = 1; i < pieces.length; i++) {
+        const prefix = pieces.slice(0, i + 1).join('/')
+        if (prefix in links) { p = normalize((links[prefix].startsWith('/') ? links[prefix] : prefix.slice(0, prefix.lastIndexOf('/') + 1) + links[prefix]) + '/' + pieces.slice(i + 1).join('/')); changed = true; break }
+      }
+      if (!changed) return p
+    }
+    throw new Error('ELOOP model')
+  }
+  const cmd = argv[0], src = argv.at(-2)!, originalDst = argv.at(-1)!
+  const parent = (p: string) => p.slice(0, p.lastIndexOf('/')) || '/'
+  const path = normalize(originalDst)
+  const exists = (p: string) => p in files || p in links || dirs.includes(p)
+  const force = argv.includes('-f'), noDirectory = argv.includes('-T') || argv.includes('--no-target-directory')
+  const noLinkDirectory = noDirectory || (platform === 'Darwin' && argv.includes('-h'))
+  if (cmd === '/bin/mkdir') {
+    let current = ''
+    for (const part of path.split('/').filter(Boolean)) {
+      current += '/' + part
+      const real = resolve(current)
+      if ((exists(current) || exists(real)) && !dirs.includes(real)) return { exitCode: 1 }
+      if (!dirs.includes(real)) { if (!argv.includes('-p') && current !== path) return { exitCode: 1 }; dirs.push(real) }
+      else if (current === path && !argv.includes('-p')) return { exitCode: 1 }
+    }
+    if (argv.includes('-m')) modes[path] = argv[argv.indexOf('-m') + 1]
+    return { exitCode: 0 }
+  }
+  if (cmd === '/bin/chmod') {
+    const real = resolve(path)
+    if (!(real in files) && !dirs.includes(real)) return { exitCode: 1 }
+    modes[real] = argv[1]; return { exitCode: 0 }
+  }
+  if (cmd === '/bin/rm') {
+    if (dirs.includes(path) && !(path in links)) return { exitCode: 1 }
+    if (!exists(path) && !force) return { exitCode: 1 }
+    delete links[path]; delete files[path]; delete attrs[path]; delete modes[path]
+    return { exitCode: 0 }
+  }
+  if (!['/bin/cp', '/bin/mv', '/bin/ln'].includes(cmd)) return null
+  const source = cmd === '/bin/ln' ? src : cmd === '/bin/cp' ? resolve(src) : normalize(src)
+  if (cmd !== '/bin/ln' && !exists(source)) return { exitCode: 1 }
+  let dest = path
+  if (dirs.includes(path) || (!noLinkDirectory && dirs.includes(resolve(path)))) {
+    if (noDirectory) return { exitCode: 1 }
+    dest = normalize(resolve(path) + '/' + src.split('/').at(-1))
+  }
+  if (!dirs.includes(resolve(parent(dest)))) return { exitCode: 1 }
+  if (cmd === '/bin/ln') {
+    if (!argv.includes('-s')) return { exitCode: 1 }
+    if (dirs.includes(dest) || (exists(dest) && !force)) return { exitCode: 1 }
+    delete files[dest]; delete links[dest]; links[dest] = src
+    return { exitCode: 0 }
+  }
+  if (cmd === '/bin/cp') {
+    if (dest in links && !exists(resolve(dest))) return { exitCode: 1 }
+    dest = resolve(dest)
+    if (dirs.includes(source) || dirs.includes(dest) || source === dest) return { exitCode: 1 }
+    files[dest] = files[source]
+    attrs[dest] = argv.includes('--preserve=all') || (platform === 'Darwin' && argv.includes('-p')) ? attrs[source] : undefined
+    if (argv.includes('--preserve=all') || argv.includes('-p')) modes[dest] = modes[source]
+  } else {
+    if (source === dest) return { exitCode: 0 }
+    if (dirs.includes(dest)) return { exitCode: 1 }
+    delete links[dest]; delete files[dest]
+    if (source in links) { links[dest] = links[source]; delete links[source] } else { files[dest] = files[source]; delete files[source] }
+    attrs[dest] = attrs[source]; delete attrs[source]; modes[dest] = modes[source]; delete modes[source]
+  }
+  return { exitCode: 0 }
+}
+
+function ioFix4_510(opts: any): any {
+  ioFix3_510(opts)
+  const setup = opts.setup
+  opts.dirs = opts.dirs || []
+  opts.setup = (m: any, files: any, proc: any, after: any) => {
+    setup(m, files, proc, after)
+    const stat = m.$.fs.stat
+    m.$.fs.stat = async (p: string, init: any) => {
+      if (opts.dirs.includes(p)) return { kind: 'dir', size: 0, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: p } : {}) }
+      const result = await stat(p, init)
+      if (result.kind === 'dir' && !opts.dirs.includes(p) && p !== '/' && p !== '/fix5' && !Object.keys(files).some(t => t.startsWith(p.replace(/\/$/, '') + '/'))) throw new Error('ENOENT ' + p)
+      return result
+    }
+  }
+  return opts
+}
+for (const order of ['file-first', 'link-first']) test('#510 FIX4 G10 overlap-' + order, async () => {
+  const p = '/fix5/r/report.md', l = '/fix5/alias/report.md', external = TRIG5 + ' B'
+  const o = ioFix4_510({ cfg: CANCEL510(), dirs: ['/fix5/alias'], files: { [p]: 'ORIGINAL' }, links: { [l]: '../r/report.md' }, post: { [p]: TRIG5 + ' A' } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const read = m.$.fs.read; let changed = false
+    m.$.fs.read = async (t: string, init: any) => { const result = await read(t, init); if (after() && t === l && init?.as === 'bytes' && !changed) { changed = true; f[p] = external }; return result }
+  }
+  const paths = order === 'file-first' ? [p, l] : [l, p]
+  const r = await form510('fix4-g10-' + order, paths.map(t => 'cat src > ' + t).join('; '), o)
+  expect(r.files[p], 'G10 external bytes ' + order).toBe(external)
+  expect(warnings3_510(r), 'G10 conflict warning ' + order).toContain('form-rollback-skipped-changed')
+})
+for (const mode of ['mv-linkdir', 'ln-linkdir', 'mv-dir']) test('#510 FIX4 G11 ' + mode, async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/r/original.md', d = '/fix5/foreign'
+  const link = mode.startsWith('ln')
+  const o = ioFix4_510({ cfg: CANCEL510(), files: { [link ? a : p]: 'ORIGINAL' }, dirs: [d], links: link ? { [p]: 'original.md' } : {}, post: { [link ? a : p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const run = m.$.process.run
+    m.$.process.run = async (v: string[]) => {
+      if ((v[0] === '/bin/mv' || v[0] === '/bin/ln') && v.at(-1) === p) {
+        delete f[p]
+        if (mode === 'mv-dir') o.dirs.push(p); else o.io.links[p] = d
+        if (!v.includes('-T') && !v.includes('-h')) {
+          proc.push(v.slice()); const dst = d + '/' + v.at(-2)!.split('/').at(-1)
+          if (v[0] === '/bin/mv') { f[dst] = f[v.at(-2)!]; delete f[v.at(-2)!] } else o.io.links[dst] = v.at(-2)!
+          return { exitCode: 0 }
+        }
+        if (mode === 'mv-dir') { proc.push(v.slice()); return { exitCode: 1 } }
+      }
+      return run(v)
+    }
+  }
+  const r = await form510('fix4-g11-' + mode, 'cat src > ' + p, o)
+  expect(Object.keys(r.files).filter(t => t.startsWith(d + '/')), 'G11 foreign directory untouched ' + mode).toEqual([])
+  expect(Object.keys(r.files).filter(t => t.includes('.form-restore.')), 'G11 no restore temp ' + mode).toEqual([])
+  if (mode === 'mv-dir') expect(r.out.deny, 'G11 directory failure named').toContain('rollback failed')
+  else if (link) expect(o.io.links[p], 'G11 restored link').toBe('original.md')
+  else expect(r.files[p], 'G11 restored regular bytes').toBe('ORIGINAL')
+})
+for (const kind of ['file', 'link']) test('#510 FIX4 G11 post-check-' + kind, async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/r/original.md', isLink = kind === 'link'
+  const o = ioFix4_510({ cfg: CANCEL510(), files: { [isLink ? a : p]: 'ORIGINAL' }, links: isLink ? { [p]: 'original.md' } : {}, post: { [isLink ? a : p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after); const run = m.$.process.run
+    m.$.process.run = async (v: string[]) => {
+      const result = await run(v)
+      if (result.exitCode === 0 && v.at(-1) === p && v[0] === (isLink ? '/bin/ln' : '/bin/mv')) { if (isLink) o.io.links[p] = 'other.md'; else f[p] = 'EXTERNAL' }
+      return result
+    }
+  }
+  const r = await form510('fix4-check-' + kind, 'cat src > ' + p, o)
+  expect(r.out.deny, 'G11 postcheck reason ' + kind).toContain('destination changed during restore')
+  expect(r.rows.some((x: any) => x.level === 'error'), 'G11 postcheck journal ' + kind).toBe(true)
+})
+for (const retarget of [false, true]) test('#510 FIX4 G12 missing-parent-' + retarget, async () => {
+  const p = '/fix5/newdir/report.md', external = '/fix5/foreign/report.md'
+  const o = ioFix4_510({ cfg: CANCEL510(), files: { '/fix5/src': 'src', [external]: 'FOREIGN' } }), setup = o.setup
+  o.onNext = (f: any) => { o.dirs.push('/fix5/newdir'); f[p] = TRIG5 }
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const stat = m.$.fs.stat, write = m.$.fs.write; let changed = false
+    m.$.fs.write = async (t: string, data: any) => { const result = await write(t, data); if (retarget && after() && t.includes('/form/records/')) changed = true; return result }
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return changed && t === '/fix5/newdir' ? { ...s, isLink: true, realPath: '/fix5/foreign' } : s }
+  }
+  const r = await form510('fix4-missing-' + retarget, 'mkdir -p newdir; cat src > newdir/report.md', o)
+  expect(r.ran, 'G12 command runs ' + retarget).toBe(1)
+  expect(o.dirs.includes('/fix5/newdir'), 'G12 directory remains ' + retarget).toBe(true)
+  expect(r.files[external], 'G12 foreign bytes ' + retarget).toBe('FOREIGN')
+  if (retarget) expect(warnings3_510(r), 'G12 retarget warning').toContain('form-rollback-skipped-retargeted')
+  else expect(r.files[p], 'G12 new file removed').toBe(undefined)
+})
+test('#510 FIX4 G13 temp-parent', async () => {
+  const a = '/fix5/a/report.md', b = '/fix5/b/report.md', prefix = { dir: 'a' }
+  const o = ioFix3_510({ cfg: CANCEL510(), prefix, files: { [a]: 'ORIGINAL', [b]: 'FOREIGN' }, post: { [a]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => { setup(m, f, proc, after); const run = m.$.process.run; m.$.process.run = async (v: string[]) => { const result = await run(v); if (v[0] === '/bin/cp' && v.at(-1)?.includes('.form-restore.')) prefix.dir = 'b'; return result } }
+  const r = await form510('fix4-temp', 'cat src > /fix5/d/report.md', o)
+  expect(Object.keys(r.files).filter(t => t.includes('.form-restore.')), 'G13 temp cleaned physical parent').toEqual([])
+  expect(r.files[b], 'G13 foreign unchanged').toBe('FOREIGN')
+})
+test('#510 FIX4 G14 new-file-warning', async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix4-new-warning', 'cat src > ' + p, ioFix4_510({ cfg: CANCEL510(), dirs: ['/fix5/r'], post: { [p]: TRIG5 } }))
+  expect(r.ran, 'G14 command runs').toBe(1)
+  expect(r.files[p], 'G14 new file removed').toBe(undefined)
+  expect(warnings3_510(r), 'G14 no unrestored warning').not.toContain('form-rollback-unrestored')
+})
+for (const arg of ['-mbytes', '-Mstrict', '-Ilib', '-F:', '-x', '-Cexample', '-0e', '-de', '-De', '-le']) test('#510 FIX4 G15 perl-' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix4-perl-' + arg, 'perl -pi ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'G15 script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'G15 data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-lpi', '-0pi', '-pli', '-0777pi', '-l0pi', '-0x1Fpi', '-dpi']) test('#510 FIX6 perl typed ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix6-perl-' + arg, 'perl ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'FIX6 typed script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'FIX6 typed data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-00pi', '-pie', '-l7pi', '-Mstrict -pi', '-0x1F -pi']) test('#510 FIX7 perl must-flag ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix7-perl-' + arg, 'perl ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'FIX7 must-flag script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'FIX7 must-flag data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-0xi', '-0xpi']) test('#510 FIX8 perl hex-empty ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix8-perl-' + arg, 'perl ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'FIX8 hex-empty script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'FIX8 hex-empty data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-i.e -n', '-i.f -n']) test('#510 FIX8 sed in-place suffix ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix8-sed-' + arg, 'sed ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'FIX8 sed suffix script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'FIX8 sed suffix data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-Ci', '-Di', '-ei', '-Ei', '-Fi', '-Ii', '-mi', '-Mi', '-xi', '-d:pi']) test('#510 FIX6 perl value ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix6-perlv-' + arg, 'perl ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && (v.at(-2) === s || v.at(-2) === p)), 'FIX6 value no candidate ' + arg).toBe(false)
+})
+for (const platform of ['Linux', 'Darwin']) test('#510 FIX4 G16 argv-' + platform, async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix4-hash-' + platform, 'cat src > ' + p, ioFix3_510({ cfg: CANCEL510(), platform, files: { [p]: 'old' }, sizes: { [p]: 5 * 1024 * 1024 }, post: { [p]: TRIG5 } }))
+  const expected = platform === 'Linux' ? ['/usr/bin/sha256sum', '--', p] : ['/usr/bin/shasum', '-a', '256', '--', p]
+  const hashes = r.proc.filter(v => /\/(sha256sum|shasum)$/.test(v[0]))
+  expect(hashes.length >= 2, 'G16 judgement and comparison hash ' + platform).toBe(true)
+  for (const argv of hashes) expect(argv, 'G16 exact argv ' + platform).toEqual(expected)
+})
+for (const size of [8, 30 * 1024 * 1024]) test('#510 FIX4 G18 per-target-' + size, async () => {
+  const b = '/fix5/brief.md', p = '/fix5/r/report.md'
+  const cfg = formGit10().replace('brief_path = "^zzz-brief-path"', () => 'brief_path = "brief[.]md$"') + '\n[probe.form.act]\nF="log_only"\nA1="log_only"\nA2="log_only"\nA3="log_only"\nC1="cancel"\n'
+  const r = await form510('fix4-classes-' + size, 'cat src > ' + b + '; cat src > ' + p, ioFix4_510({ cfg, files: { [b]: 'brief', [p]: 'old' }, sizes: { [b]: size, [p]: 4 * 1024 * 1024 }, post: { [p]: TRIG5 } }))
+  expect(r.ran, 'G18 runs without brief budget ' + size).toBe(1)
+  expect(r.proc.filter(v => v[0] === '/bin/cp' && v.at(-1)?.includes('/form-backup/')).map(v => v.at(-2)), 'G18 only report copied ' + size).toEqual([p])
+})
+for (const branch of ['file', 'link', 'parent']) test('#510 FIX4 G19 ' + branch, async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/a/original.md', linked = branch !== 'file'
+  const o = ioFix4_510({ cfg: CANCEL510(), files: { [linked ? a : p]: 'ORIGINAL' }, links: linked ? { [p]: a } : {}, dirs: ['/fix5/r'], post: { [linked ? a : p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after); const run = m.$.process.run, stat = m.$.fs.stat; let changed = false
+    m.$.process.run = async (v: string[]) => { const result = await run(v); if ((branch === 'file' && v[0] === '/bin/cp' && v.at(-1)?.includes('.form-restore.')) || (linked && v[0] === '/bin/mv' && v.at(-1) === a)) { changed = true; if (branch !== 'parent') { delete f[p]; delete o.io.links[p]; o.dirs.push(p) } }; return result }
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return changed && branch === 'parent' && t === '/fix5/r' && init?.resolve ? { ...s, realPath: '/fix5/foreign' } : s }
+  }
+  const r = await form510('fix4-branch-' + branch, 'cat src > ' + p, o)
+  const code = branch === 'parent' ? 'form-rollback-skipped-retargeted' : 'form-rollback-skipped-nonfile'
+  expect(warnings3_510(r), 'G19 branch warning ' + branch).toContain(code)
+  if (branch !== 'parent') expect(o.dirs.includes(p), 'G19 directory intact ' + branch).toBe(true)
+})
+
+// G17-HOST-DECODE-BEGIN
+const HOST_DECODE_510 = {
+  "hostVersion": "2.1.285",
+  "imageSha256": "33dad1ec615a2e08cc78b494f05c110e49916de2c79d78ec8799ebf46b233d29",
+  "cases": [
+    { "name": "bom", "bytesHex": "efbbbf41", "codePoints": [65279, 65] },
+    { "name": "inv", "bytesHex": "41e228a1", "codePoints": [65, 65533, 40, 65533] },
+    { "name": "over", "bytesHex": "41c0af", "codePoints": [65, 65533, 65533] },
+    { "name": "sur", "bytesHex": "41eda080", "codePoints": [65, 65533, 65533, 65533] },
+    { "name": "max", "bytesHex": "41f4908080", "codePoints": [65, 65533, 65533, 65533, 65533] },
+    { "name": "four", "bytesHex": "41f09f9880", "codePoints": [65, 128512] },
+    { "name": "trunc", "bytesHex": "41e282", "codePoints": [65, 65533] }
+  ]
+}
+// G17-HOST-DECODE-END
+for (const sample of HOST_DECODE_510.cases) test('#510 G17 host-decode-' + sample.name, async () => {
+  const p = '/fix5/r/report.md', expected = String.fromCodePoint(...sample.codePoints)
+  const raw = Array.from(sample.bytesHex.matchAll(/../g), x => parseInt(x[0], 16))
+  const prefix = Array.from(TRIG5).map(c => c.charCodeAt(0))
+  const o = ioFix3_510({ files: { [p]: 'old' }, post: { [p]: TRIG5 + expected } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const read = m.$.fs.read, stat = m.$.fs.stat
+    m.$.fs.read = (t: string, init: any) => after() && t === p && init?.as === 'bytes' ? { base64: rawBase64_510(prefix.concat(raw)) } : read(t, init)
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return after() && t === p ? { ...s, size: prefix.length + raw.length } : s }
+  }
+  const r = await form510('g17-' + sample.name, 'cat src > r/report.md', o)
+  const judged = r.records.flatMap((x: any) => x.refuse || []).find((x: any) => x.c === 'C1')?.q
+  expect(typeof judged, 'G17 C1 record ' + sample.name).toBe('string')
+  expect(Array.from(judged.slice(TRIG5.length) as string).map(c => c.codePointAt(0)), 'G17 host codepoints ' + sample.name).toEqual(sample.codePoints)
 })
 
 // --- #509: лестница без потолка, терминальная ступень исчерпанной клетки -------

@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.52"
+export const MOD_VERSION = "0.1.55"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -41,8 +41,8 @@ const FORM_REQ = [
   "arm_line","arm_ellipsis","arm_cmd","arm_remote","arm_log","witness_remote",
   "witness_worker","open_door","negation","rule_line","path_line",
   "decision_head","decision_basis","decision_referent","legalize",
-  "git_commit","git_commit_ok","git_msg","git_push","git_push_ok","git_force",
-  "trailer_a","trailer_b","write_redirect",
+  "git_commit","git_commit_ok","git_push","git_push_ok","git_force",
+  "trailer_a","trailer_b","write_target",
 ]
 
 // CONSTRAINT: часы поверхности ЖДУТ и читаются ТОЛЬКО отсюда. Часы стали
@@ -189,10 +189,9 @@ export function failoverLadderBind(fo: any, subagentType: string, classId: strin
   return empty
 }
 
-// CONSTRAINT (#509-FIX1 E1): ОДНА нормализация имени модели для мода и прибора
-// (ladder-policy.py norm_model_id): trim, нижний регистр, снятие суффикса
-// окна "[1m]"/"[2m]". Второй дом правила развёл бы вердикты мода и прибора на
-// одном входе.
+// CONSTRAINT (#509-FIX1 E1): ОДНА нормализация имени модели в моде: trim,
+// нижний регистр, снятие суффикса окна "[1m]"/"[2m]". Второй дом правила
+// развёл бы вердикты сравнений на одном входе.
 // CONSTRAINT (#509-FIX3 AR-4): нормализованный id -- ТОЛЬКО для сравнений
 // (допуск, план, терминал, метки, фильтр #226). В next уходит строка как
 // написана: окно 1M и бета хоста ставятся только по суффиксу в строке модели.
@@ -214,14 +213,14 @@ export function isAnthropicModelId(x: any): boolean {
 export function failoverTerminal(fo: any): { model: string; effort: string; effortBad: string; absent: string } {
   const raw = fo && typeof fo === "object" ? fo.terminal : undefined
   if (raw === undefined || raw === null) return { model: "", effort: "", effortBad: "", absent: "ключ terminal не объявлен" }
-  // CONSTRAINT: пустота меряется после trim -- тот же признак, что у прибора (ladder-policy.py правило-6).
+  // CONSTRAINT: пустота меряется после trim.
   if (typeof raw === "string" && !raw.trim()) return { model: "", effort: "", effortBad: "", absent: "ключ terminal пуст" }
   const r = Array.isArray(raw) ? null : parseRungItem(raw)
   const norm = r ? normModelId(r.model) : ""
   if (!norm) return { model: "", effort: "", effortBad: "", absent: "форма terminal негодна" }
   if (TERMINAL_ALIASES.indexOf(norm) >= 0) return { model: "", effort: "", effortBad: "", absent: "terminal-alias-refused" }
-  // CONSTRAINT (#509-FIX1 E3): не-Anthropic терминал прибор красит (правило-6),
-  // мод его отвергает той же границей -- иначе вердикты на одном входе разошлись бы.
+  // CONSTRAINT (#509-FIX1 E3): терминал лестницы -- только Anthropic-носитель;
+  // не-Anthropic терминал отвергается.
   if (!isAnthropicModelId(norm)) return { model: "", effort: "", effortBad: "", absent: "terminal-not-anthropic" }
   return { model: String((r as RungItem).model), effort: r && r.effort || "", effortBad: r && r.effortBad || "", absent: "" }
 }
@@ -2003,12 +2002,6 @@ async function readText($: any, path: string): Promise<{ text: string | null; un
   }
 }
 
-async function readTextNull($: any, path: string, site?: string): Promise<string | null> {
-  const r = await readText($, path)
-  if (r.unreadable && site) noteLost(site, new Error(path + ": " + r.unreadable), $)
-  return r.text
-}
-
 let journalWriteErr = ""
 let journalErrSeq = 0
 
@@ -2554,8 +2547,8 @@ export function probeIndexReset(): void {
   probeNotMain = []
 }
 
-function probeListens(p: any, env: any): boolean {
-  if (!p || p.kind !== "consult") return false
+function probeListens(p: any, env: any, withForm = false): boolean {
+  if (!p || (p.kind !== "consult" && !(withForm && p.kind === "form"))) return false
   if (p.cfg && p.cfg.enabled === false) return false
   return armStateOf(p, env).state === "armed"
 }
@@ -3459,7 +3452,7 @@ function formKind(p: string, t: string, c: any): string | null {
   return null
 }
 
-function formEval(ev: any, c: any): { refuse: any[]; warn: any[] } {
+async function formEval(ev: any, c: any): Promise<{ refuse: any[]; warn: any[] }> {
   const W: any = { A4: 1, C2: 1 }
   const Rf: any[] = []
   const Wr: any[] = []
@@ -3541,23 +3534,23 @@ function formEval(ev: any, c: any): { refuse: any[]; warn: any[] } {
       F("B", h + 1, ls[h])
   }
   if (ev.kind === "command") {
-    // CONSTRAINT (#489-B1-FIX6 F2): сообщение и --only судятся по ПРОСТОЙ КОМАНДЕ
-    // своего git commit; `-m "$(cat <<'X' … X)"` даёт тело heredoc; без `-m`
-    // сообщением служит последний heredoc команды (stdin для `-F -`; bash берёт последний `<<`).
-    // CONSTRAINT (#489-B1-FIX7 F-4/F-7): `git commit` судится как команда, если он
-    // не в комментарии, не в данных (DATA_CMDS) и не в тексте сообщения живого
-    // git commit того же отрезка; тело heredoc не-данных судится рекурсивно как
-    // свой текст команды. У живого commit `--only` и `-m` берутся только из кода:
-    // кавычки, комментарии и тела heredoc вычеркнуты — кавычный "--only" даёт
-    // ложный отказ, это безопасное направление.
+    // CONSTRAINT: message values, pathspecs and redirection targets are not
+    // options. Nested executable text remains subject to the three-level bound.
     // CONSTRAINT (#494 FIX10): вложенный текст (тело исполняемого heredoc, строка
     // в кавычках вне данных и вне сообщения живого commit) судится рекурсивно как
     // своя команда: `bash -c "echo --only ; git commit"` — две команды, а не одна.
     // Глубже трёх уровней суд не идёт, и это отказ, не пропуск.
-    const judge = (tx: string, lvl: number): void => {
+    const judge = async (tx: string, lvl: number): Promise<void> => {
+      if (ev.sources) {
+        const issues: any[] = []
+        const variants = formExpand(tx, ev.sources, issues, [], 0, lvl)
+        for (const issue of issues) F(issue.c, issue.n, issue.q)
+        if (variants.some(v => v !== tx)) { for (const variant of variants) await judge(variant, lvl); return }
+      }
       const gc = [...tx.matchAll(K(c.git_commit, "gu", "git_commit"))].map((m) => m.index as number)
       const scan = shellScan(tx)
-      const tokAll = gitSubWords(tx, scan, "commit")
+      const calls = gitCalls(tx, scan, ev.cwd || "", ev.home || "")
+      const tokAll = [...new Set(calls.filter(g => g.sub === "commit" || g.sub === "unknown").map(g => g.at))]
       // CONSTRAINT (#494 FIX10c): слова не заходят в инертный текст, а регулярка не
       // видит `"git" commit`, `g\it commit`, `git -C . commit` — кавычка или тело
       // heredoc, чей текст как команда несёт коммит, даёт попадание внутри себя,
@@ -3597,7 +3590,7 @@ function formEval(ev: any, c: any): { refuse: any[]; warn: any[] } {
         if (gitSubDeep(h.body, "push", 0)) addPush(h.bodyStart)
       }
       if (!gc.length && !tokAll.length && !pushAt.length) return
-      const allMs = [...tx.matchAll(K(c.git_msg, "gu", "git_msg"))]
+      const commitSeen = new Set<number>()
       const bodyOf = (at: number): Heredoc | undefined =>
         scan.heredocs.find((h) => h.bodyStart <= at && at < h.bodyEnd)
       const masked = (s: number, e: number): string => {
@@ -3677,33 +3670,47 @@ function formEval(ev: any, c: any): { refuse: any[]; warn: any[] } {
             continue
           }
         }
-        const seg = isLive ? masked(s, e) : tx.slice(s, e)
-        if (!K(c.git_commit_ok, "u", "git_commit_ok").test(seg))
-          F("F", 1, "git commit: нет " + c.git_commit_ok)
-        const own = scan.heredocs.filter((h) => h.op >= s && h.op < e)
-        const parts: string[] = []
-        for (let mi = 0; mi < allMs.length; mi++) {
-          const m = allMs[mi]
-          const at = m.index as number
-          if (at < s || at >= e) continue
-          if (isLive) {
-            if (scan.inert(at)) continue
-            const [ms, me] = scan.cmdOf(at)
-            if (ms !== s || me !== e) continue
+        if (commitSeen.has(s)) continue
+        commitSeen.add(s)
+        const own = scan.heredocs.filter(h => h.op >= s && h.op < e)
+        for (const call of calls.filter(call => scan.cmdOf(call.at)[0] === s && call.sub !== "push")) {
+          if (call.sub === "unknown") { F("F", 1, "git: subcommand not static"); continue }
+          const parsed = gitOptions(call.args, "commit")
+          if (!parsed.options.some(o => o.literal && K(c.git_commit_ok, "u", "git_commit_ok").test(o.name))) F("F", 1, "git commit: нет " + c.git_commit_ok)
+          const parts: string[] = []
+          let undeterminable = false
+          for (const option of parsed.options) {
+            const value = option.value
+            if (["-C", "-c", "--reuse-message", "--reedit-message", "-e", "--edit", "-t", "--template", "--fixup", "--squash"].includes(option.name)) { undeterminable = true; continue }
+            if (["-m", "--message"].includes(option.name)) {
+              const bodies = value ? own.filter(h => h.op >= value.at && h.op < value.end) : []
+              if (bodies.length) parts.push(bodies[bodies.length - 1].body)
+              else if (value && !value.dyn) parts.push(value.text)
+              else undeterminable = true
+            }
+            if (["-F", "--file"].includes(option.name)) {
+              if (!value || value.dyn || value.glob) { undeterminable = true; continue }
+              if (value.text === "-") {
+                if (own.length) parts.push(own[own.length - 1].body)
+                else undeterminable = true
+              } else if (call.cwd !== null && ev.readMessage) {
+                const got = await ev.readMessage(resolvePath(value.text, ev.home || "", call.cwd))
+                if (got.text === null || got.unreadable) undeterminable = true
+                else parts.push(got.text)
+              } else undeterminable = true
+            }
           }
-          const inner = own.filter((h) => h.op >= at && h.op < at + m[0].length)
-          parts.push(inner.length ? inner.map((h) => h.body).join("\n") : (m[1] ?? m[2] ?? m[3] ?? ""))
-        }
-        const ct = parts.length ? parts.join("\n\n") : (own.length ? own[own.length - 1].body : "")
-        if (ct) {
-          const cm = ct.split("\n")
-          let ia = -1, ib = -1
-          for (let i = 0; i < cm.length; i++) {
-            if (ia < 0 && K(c.trailer_a, "mu", "trailer_a").test(cm[i])) ia = i
-            if (ib < 0 && K(c.trailer_b, "mu", "trailer_b").test(cm[i])) ib = i
+          if (undeterminable || !parts.length) F("F", 1, "git commit: message undeterminable")
+          const ct = parts.join("\n\n")
+          if (ct) {
+            const cm = ct.split("\n")
+            let ia = -1, ib = -1
+            for (let i = 0; i < cm.length; i++) {
+              if (ia < 0 && K(c.trailer_a, "mu", "trailer_a").test(cm[i])) ia = i
+              if (ib < 0 && K(c.trailer_b, "mu", "trailer_b").test(cm[i])) ib = i
+            }
+            if (ia >= 0 && ib >= 0 && Math.abs(ia - ib) !== 1) F("F", ia + 1, "трейлеры Session: и Co-Authored-By: не соседние")
           }
-          if (ia >= 0 && ib >= 0 && Math.abs(ia - ib) !== 1)
-            F("F", ia + 1, "трейлеры Session: и Co-Authored-By: не соседние")
         }
       }
       // CONSTRAINT (#494 FIX10c): push судится по сегменту своей команды на каждом уровне, как commit; сырой текст всей команды давал ложный отказ на кавычке и чужом -f.
@@ -3730,15 +3737,18 @@ function formEval(ev: any, c: any): { refuse: any[]; warn: any[] } {
         }
         if (pushSeen.indexOf(s) >= 0) continue
         pushSeen.push(s)
-        const seg = masked(s, e)
-        if (!K(c.git_push_ok, "u", "git_push_ok").test(seg)) F("F", 1, "git push: нет " + c.git_push_ok)
-        if (K(c.git_force, "u", "git_force").test(seg)) F("F", 1, tx.slice(s, e))
+        for (const call of calls.filter(call => scan.cmdOf(call.at)[0] === s && call.sub === "push")) {
+          const parsed = gitOptions(call.args, "push")
+          const remote = parsed.positional[0]
+          if (!remote || remote.dyn || remote.glob || parsed.positional.length < 2 || !parsed.positional.slice(1).every(w => !w.dyn && !w.glob && K(c.git_push_ok, "u", "git_push_ok").test(remote.text + " " + w.text)) || parsed.options.some(o => ["--mirror", "--delete", "-d", "--all", "--tags"].includes(o.name))) F("F", 1, "git push: нет " + c.git_push_ok)
+          if (parsed.options.some(o => o.literal && K(c.git_force, "u", "git_force").test(o.name))) F("F", 1, tx.slice(s, e))
+        }
       }
       const inner = nested.map((h) => h.body).concat(nestedQ.map((q) => q.text))
-      if (lvl < 3) for (let k = 0; k < inner.length; k++) judge(inner[k], lvl + 1)
+      if (lvl < 3) for (let k = 0; k < inner.length; k++) await judge(inner[k], lvl + 1)
       else if (inner.length) F("F", 1, "git: вложение глубже 3 уровней не судится")
     }
-    judge(t, 0)
+    await judge(t, 0)
   }
   return { refuse: Rf, warn: Wr }
 }
@@ -4538,7 +4548,7 @@ function formActsOnTool(tool: string): boolean {
 // Catalyst-CC-Patch/tools/heredoc-anchor.py:52-66. Ключ cfg.heredoc снят с
 // чтения: ни один потребитель больше его не трогает (снятие из канона -- #497).
 export type Heredoc = {
-  op: number; delim: string; strip: boolean
+  op: number; delim: string; strip: boolean; quoted: boolean
   lineStart: number; lineEnd: number
   bodyStart: number; bodyEnd: number; body: string; terminated: boolean
 }
@@ -4831,6 +4841,11 @@ export function shellScan(cmd: string): ShellScan {
       i += 2
       continue
     }
+    // CONSTRAINT: группа аргумента — одно слово; её | не разделяет команды.
+    if (c === "(" && !top.dbl && (!cmdPos(i) || "?*+@!".includes(cmd[i - 1] || "\u0000")) && cmd[i + 1] !== ")") {
+      i = shellGroupEnd(cmd, i)
+      continue
+    }
     // CONSTRAINT (#489-B1-FIX6 F2): `>&`, `<&`, `&>` и `>|` — перенаправления, не разделители.
     // CONSTRAINT (#489-B1-FIX7 F-2): внутри `[[ … ]]` `&&` и `||` — операторы выражения.
     if (!top.dbl && (c === ";" ||
@@ -4921,7 +4936,7 @@ export function shellScan(cmd: string): ShellScan {
       const w = delimWord(q)
       if (w.delim !== "") {
         const h: Heredoc = {
-          op: i, delim: w.delim, strip,
+          op: i, delim: w.delim, strip, quoted: /['"\\]/.test(cmd.slice(q, w.next)),
           lineStart: d0Start, lineEnd: n,
           bodyStart: n, bodyEnd: n, body: "", terminated: false,
         }
@@ -5031,68 +5046,386 @@ function funcDef(seg: string): boolean {
   return /^[^\s<>|;&()]+\s*\(\s*\)/.test(cmdHead(seg))
 }
 
-type ShWord = { at: number; text: string; dyn: boolean }
+type ShWord = {
+  at: number; end: number; text: string; raw: string; dyn: boolean; glob: boolean
+  role: "command" | "argument" | "assignment" | "redirection" | "target"
+  split: boolean; quoted: boolean
+}
 
-// CONSTRAINT (#494 FIX10 AR-5): слова кода отрезка так, как их склеит bash:
-// кавычки и `\` снимаются, `$…` и подстановки делают слово неизвестным (dyn).
-function shellWords(tx: string, lo: number, hi: number, scan: ShellScan): ShWord[] {
+function shellGroupEnd(tx: string, at: number): number {
+  let depth = 1, quote = "", p = at + 1
+  for (; p < tx.length; p++) {
+    const c = tx[p]
+    if (c === "\\") { p++; continue }
+    if (quote) { if (c === quote) quote = ""; continue }
+    if (c === "'" || c === '"') { quote = c; continue }
+    if (c === "(") depth++
+    if (c === ")" && --depth === 0) return p + 1
+    if (c !== ")") depth += 0
+  }
+  return p
+}
+
+function shellGlob(text: string): RegExp {
+  let out = "", depth = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if ("?*+@!".includes(c) && text[i + 1] === "(") {
+      if (c === "!") { out += ".*"; i = shellGroupEnd(text, i + 1) - 1; continue }
+      out += c === "@" ? "@?" : c === "+" ? "\\+?" : ""
+      continue
+    }
+    if (c === "*") out += ".*"
+    else if (c === "?") out += "."
+    else if (c === "(") { out += "(?:"; depth++ }
+    else if (c === ")" && depth) { out += ")"; depth-- }
+    else if (c === "|" && depth) out += "|"
+    else if (c === "[") {
+      const end = text.indexOf("]", i + 1)
+      if (end > i + 1) { out += "[" + text.slice(i + 1, end).replace(/^!/, "^") + "]"; i = end }
+      else out += "\\["
+    } else out += c.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")
+  }
+  while (depth-- > 0) out += ")"
+  return new RegExp("^(?:" + out + ")$")
+}
+
+function shellMatch(w: ShWord, text: string): boolean {
+  if (w.dyn) return false
+  return w.glob ? shellGlob(w.text).test(text) : w.text === text
+}
+
+// CONSTRAINT: redirection operands cannot become git options or commands.
+function shellWords(tx: string, lo: number, hi: number, scan: ShellScan, vars: Record<string, string> = {}): ShWord[] {
   const out: ShWord[] = []
-  const brk = (ch: string): boolean => ch === " " || ch === "\t" || ch === "\n" || ";&|<>()".indexOf(ch) >= 0
-  const skip = (q: number): boolean =>
-    scan.comment(q) || scan.heredocs.some((h) => h.bodyStart <= q && q < h.bodyEnd)
-  let p = lo
+  const brk = (ch: string): boolean => /[\s;&|<>)]/.test(ch)
+  const skip = (q: number): boolean => scan.comment(q) || scan.heredocs.some(h => h.bodyStart <= q && q < h.bodyEnd)
+  let p = lo, head = true, target = false
+  const value = (raw: string): { text: string; dyn: boolean; split: boolean } => {
+    let dyn = false, split = false
+    const text = raw.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g, (m, a, b) => {
+      const k = a || b
+      if (!(k in vars)) { dyn = true; return m }
+      if (/[ \t\n]/.test(vars[k])) split = true
+      return vars[k]
+    })
+    if (/[$`]/.test(text)) dyn = true
+    return { text, dyn, split }
+  }
   while (p < hi) {
-    if (brk(tx[p]) || skip(p)) { p++; continue }
+    if (skip(p) || /[\s;|)]/.test(tx[p]) || (tx[p] === "&" && tx[p + 1] !== ">")) { p++; continue }
+    const rd = /^(?:\d*)?(?:&>>!?|&>!?|>>!?|>\||>!|>&|>|<<<|<<-?|<&|<)/.exec(tx.slice(p, hi))
+    if (rd) {
+      out.push({ at: p, end: p + rd[0].length, text: rd[0], raw: rd[0], dyn: false, glob: false, split: false, quoted: false, role: "redirection" })
+      p += rd[0].length; target = true; continue
+    }
+    if (tx[p] === "(" && (p === lo || scan.cmdOf(p)[1] === p)) { p++; continue }
     const at = p
-    let text = ""
-    let dyn = false
+    let text = "", dyn = false, glob = false, split = false, quoted = false
     while (p < hi && !brk(tx[p]) && !skip(p)) {
       const ch = tx[p]
-      if (ch === "\\") { if (tx[p + 1] !== "\n") text += tx[p + 1] ?? ""; p += 2; continue }
+      if (ch === "\\") { if (tx[p + 1] !== "\n") text += tx[p + 1] ?? ""; p += 2; quoted = true; continue }
       const q = (ch === "'" || ch === '"' || (ch === "$" && tx[p + 1] === "'")) ? scan.quoteFrom(p) : undefined
       if (q) {
-        text += q.text
-        if (q.kind === "dq" && /[$`]/.test(q.raw)) dyn = true
-        p = q.e + 1
-        continue
+        const v = q.kind === "dq" ? value(q.text) : { text: q.text, dyn: false, split: false }
+        text += v.text; dyn ||= v.dyn; quoted = true; p = q.e + 1; continue
       }
       if (ch === "$" || ch === "`") {
-        dyn = true
         const f = scan.frameFrom(p)
-        p = f ? f.hi + 1 : p + 1
-        continue
+        if (f) { dyn = true; text += tx.slice(p, f.hi + 1); p = f.hi + 1; continue }
+        const m = /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/.exec(tx.slice(p))
+        const v = value(m ? m[0] : ch)
+        text += v.text; dyn ||= v.dyn; split ||= v.split; p += m ? m[0].length : 1; continue
       }
-      text += ch
-      p++
+      if (ch === "(") { const e = Math.min(hi, shellGroupEnd(tx, p)); text += tx.slice(p, e); glob = true; p = e; continue }
+      if ("*?[".includes(ch)) glob = true
+      text += ch; p++
     }
-    out.push({ at, text, dyn })
+    if (p === at) { p++; continue }
+    let role: ShWord["role"] = target ? "target" : head && /^[A-Za-z_][A-Za-z0-9_]*=/.test(text) ? "assignment" : head ? "command" : "argument"
+    if (role === "command" && ["then", "do", "else", "elif", "if", "while", "until", "time", "!", "{"].includes(text)) role = "argument"
+    else if (role === "command") head = false
+    target = false
+    out.push({ at, end: p, raw: tx.slice(at, p), text, dyn, glob, split, quoted, role })
   }
   return out
 }
 
-// CONSTRAINT (#494 FIX10 AR-5): неизвестное слово (`$G`, `$(which git)`) на месте
-// `git` или его опции считается возможным — судится лишний раз, не пропускается.
-function gitSubWords(tx: string, scan: ShellScan, sub: string): number[] {
-  const out: number[] = []
-  const segs = scan.segments()
-  for (let si = 0; si < segs.length; si++) {
-    const ws = shellWords(tx, segs[si][0], segs[si][1], scan)
-    for (let k = 0; k < ws.length; k++) {
-      const w = ws[k]
-      if (!w.dyn && w.text.slice(w.text.lastIndexOf("/") + 1) !== "git") continue
-      let j = k + 1
-      while (j < ws.length && (ws[j].dyn || ws[j].text.startsWith("-")))
-        j += !ws[j].dyn && GIT_OPT_ARG.indexOf(ws[j].text) >= 0 ? 2 : 1
-      if (j < ws.length && !ws[j].dyn && ws[j].text === sub && out.indexOf(w.at) < 0) out.push(w.at)
+type ShellView = { s: number; e: number; words: ShWord[]; cwd: string | null }
+function shellScope(tx: string, scan: ShellScan, at: number): string {
+  const fid = scan.frameOf(at)
+  const opens: number[] = []
+  for (let p = scan.frames[fid].lo; p < at; p++) {
+    if (scan.inert(p)) continue
+    if (tx[p] === "(") {
+      if (scan.cmdOf(p)[1] === p) opens.push(p)
+      else p = shellGroupEnd(tx, p) - 1
+    } else if (tx[p] === ")" && opens.length) opens.pop()
+  }
+  return fid + "/" + opens.join("/")
+}
+
+// CONSTRAINT: prefix assignments never enter the persistent scope map.
+function shellViews(tx: string, scan: ShellScan, cwd = "", home = ""): ShellView[] {
+  type State = { vars: Record<string, string>; cwd: string | null }
+  const clone = (state: State): State => ({ vars: { ...state.vars }, cwd: state.cwd })
+  const unique = (states: State[]): State[] => states.filter((state, i) => states.findIndex(other => JSON.stringify(other) === JSON.stringify(state)) === i)
+  const scopes = new Map<string, State[]>([["0/", [{ vars: {}, cwd }]]])
+  const pipelines = new Map<string, State[]>()
+  const out: ShellView[] = []
+  for (const [s, e] of scan.segments().sort((a, b) => a[0] - b[0])) {
+    const raw = shellWords(tx, s, e, scan)
+    if (!raw.length) continue
+    const key = shellScope(tx, scan, raw[0].at)
+    if (!scopes.has(key)) {
+      const parentKey = key.slice(0, key.lastIndexOf("/")) + "/"
+      scopes.set(key, (scopes.get(parentKey) || scopes.get("0/")!).map(clone))
+    }
+    const pipeOut = tx[e] === "|" && tx[e + 1] !== "|" && tx[e - 1] !== "|"
+    if (pipeOut && !pipelines.has(key)) pipelines.set(key, scopes.get(key)!.map(clone))
+    const before = pipelines.get(key) || scopes.get(key)!
+    const after: State[] = []
+    for (const input of before) {
+      const state = clone(input), vars = { ...state.vars }
+      for (const w of raw) {
+        if (w.role !== "assignment") break
+        const parsed = shellWords(tx, w.at, w.end, scan, vars)[0]
+        const eq = parsed.text.indexOf("=")
+        const name = parsed.text.slice(0, eq)
+        if (parsed.dyn) delete vars[name]
+        else vars[name] = parsed.text.slice(eq + 1)
+      }
+      const words = shellWords(tx, s, e, scan, vars)
+      if (words.every(w => w.role === "assignment")) state.vars = vars
+      out.push({ s, e, words, cwd: state.cwd })
+      const bash = words.flatMap(w => w.split && !w.quoted ? w.text.split(/[ \t\n]+/).filter(Boolean).map(text => ({ ...w, text, split: false })) : [w])
+      if (bash.map(w => w.text).join("\u0000") !== words.map(w => w.text).join("\u0000")) out.push({ s, e, words: bash, cwd: state.cwd })
+      const cmd = words.find(w => w.role === "command")
+      if (cmd && !cmd.dyn && (cmd.text === "cd" || cmd.text === "pushd")) {
+        const args = words.slice(words.indexOf(cmd) + 1).filter(w => w.role === "argument")
+        let i = 0
+        while (args[i] && !args[i].dyn && /^-(?:[PLqs]+)$/.test(args[i].text)) i++
+        if (args[i]?.text === "--") i++
+        const arg = args[i]
+        state.cwd = arg && !arg.dyn && !arg.glob && arg.text !== "-" && state.cwd !== null ? formResolve(arg.text, home, state.cwd) : null
+      }
+      after.push(state)
+    }
+    if (!pipeOut) {
+      scopes.set(key, unique(pipelines.has(key) ? before.concat(after) : after))
+      pipelines.delete(key)
     }
   }
   return out
+}
+
+type GitCall = { at: number; sub: string; args: ShWord[]; cwd: string | null }
+function gitCalls(tx: string, scan: ShellScan, cwd = "", home = ""): GitCall[] {
+  const out: GitCall[] = []
+  for (const view of shellViews(tx, scan, cwd, home)) {
+    const ws = view.words.filter(w => w.role !== "assignment" && w.role !== "redirection" && w.role !== "target")
+    for (let k = 0; k < ws.length; k++) {
+      const w = ws[k]
+      const base = { ...w, text: w.text.slice(w.text.lastIndexOf("/") + 1).replace(/^=/, "") }
+      if (!w.dyn && !shellMatch(base, "git")) continue
+      let j = k + 1, baseCwd = view.cwd
+      while (j < ws.length && !ws[j].dyn && ws[j].text.startsWith("-") && ws[j].text !== "--") {
+        const option = ws[j]
+        if (option.text === "-C" || option.text.startsWith("-C")) {
+          const dir = option.text === "-C" ? ws[j + 1] : { ...option, text: option.text.slice(2) }
+          baseCwd = dir && !dir.dyn && !dir.glob && baseCwd !== null ? (dir.text ? formResolve(dir.text, home, baseCwd) : baseCwd) : null
+        }
+        j += GIT_OPT_ARG.includes(option.text) ? 2 : 1
+      }
+      if (ws[j]?.text === "--") j++
+      if (j >= ws.length) continue
+      if (ws[j].dyn) {
+        out.push({ at: w.at, sub: "unknown", args: ws.slice(j + 1), cwd: baseCwd })
+        if (j + 1 < ws.length && !ws[j + 1].dyn) for (const sub of ["commit", "push"]) if (shellMatch(ws[j + 1], sub)) out.push({ at: w.at, sub, args: ws.slice(j + 2), cwd: baseCwd })
+      } else for (const sub of ["commit", "push"]) if (shellMatch(ws[j], sub)) out.push({ at: w.at, sub, args: ws.slice(j + 1), cwd: baseCwd })
+    }
+  }
+  return out
+}
+
+function gitSubWords(tx: string, scan: ShellScan, sub: string): number[] {
+  return [...new Set(gitCalls(tx, scan).filter(g => g.sub === sub || (sub === "commit" && g.sub === "unknown")).map(g => g.at))]
 }
 
 // CONSTRAINT (#494 FIX10c): один дом детекции вложенного `git <sub>` для входа в суд
 // и для попаданий внутри кавычек и тел heredoc: слова не заходят в инертный текст,
 // поэтому каждая кавычка и тело разбираются как своя команда. Глубина 8 — предел
 // разбора, не предел суда (суд глубже 3 уровней отказывает сам).
+type GitOption = { name: string; value?: ShWord; literal: boolean }
+function gitOptions(words: ShWord[], sub: string): { options: GitOption[]; positional: ShWord[] } {
+  const options: GitOption[] = [], positional: ShWord[] = []
+  const shortArg = sub === "commit" ? "mFCct" : "or"
+  const longArg = sub === "commit" ? ["message", "file", "reuse-message", "reedit-message", "author", "date", "cleanup", "template", "fixup", "squash", "trailer", "pathspec-from-file"] : ["repo", "receive-pack", "exec", "push-option"]
+  let ended = false
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]
+    if (!ended && !w.dyn && !w.glob && w.text === "--") { ended = true; continue }
+    if (ended || !w.text.startsWith("-") || w.text === "-") { positional.push(w); continue }
+    if (w.text.startsWith("--")) {
+      const eq = w.text.indexOf("=")
+      const name = eq < 0 ? w.text : w.text.slice(0, eq)
+      const takes = longArg.includes(name.slice(2))
+      const value = takes ? eq >= 0 ? { ...w, text: w.text.slice(eq + 1) } : words[++i] : undefined
+      options.push({ name: takes ? name : w.text, value, literal: !w.dyn && !w.glob })
+      continue
+    }
+    for (let j = 1; j < w.text.length; j++) {
+      const name = "-" + w.text[j]
+      if (sub === "commit" && "uS".includes(w.text[j])) {
+        const value = j + 1 < w.text.length ? { ...w, text: w.text.slice(j + 1) } : undefined
+        options.push({ name, value, literal: !w.dyn && !w.glob }); break
+      }
+      if (shortArg.includes(w.text[j])) {
+        const value = j + 1 < w.text.length ? { ...w, text: w.text.slice(j + 1) } : words[++i]
+        options.push({ name, value, literal: !w.dyn && !w.glob }); break
+      }
+      options.push({ name, literal: !w.dyn && !w.glob })
+    }
+  }
+  return { options, positional }
+}
+
+type FormSources = { aliases: Map<string, string[]>; functions: Map<string, string[]>; warn: any[] }
+function formFunctionBodies(text: string): Array<[string, string]> {
+  const out: Array<[string, string]> = []
+  const rx = /^([A-Za-z_][A-Za-z0-9_!-]*)\s*\(\)\s*\{/gm
+  for (const m of text.matchAll(rx)) {
+    const start = (m.index || 0) + m[0].length
+    let depth = 1, quote = "", p = start
+    for (; p < text.length; p++) {
+      const c = text[p]
+      if (c === "\\") { p++; continue }
+      if (quote) { if (c === quote) quote = ""; continue }
+      if (c === "'" || c === '"' || c === "`") { quote = c; continue }
+      if (c === "#") { const e = text.indexOf("\n", p); p = e < 0 ? text.length : e; continue }
+      if (c === "{") depth++
+      else if (c === "}" && --depth === 0) break
+    }
+    if (!depth) out.push([m[1], text.slice(start, p)])
+  }
+  return out
+}
+export function formBase64Payload(text: string): string {
+  return text.replace(/[\r\n]/g, "")
+}
+
+function formBase64(text: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  const bytes: number[] = []
+  let n = 0, bits = 0
+  for (const c of text) {
+    const v = alphabet.indexOf(c)
+    if (v < 0) continue
+    n = (n << 6) | v; bits += 6
+    if (bits >= 8) { bits -= 8; bytes.push((n >> bits) & 255) }
+  }
+  return decodeURIComponent(bytes.map(n => "%" + n.toString(16).padStart(2, "0")).join(""))
+}
+async function formSources($: any, home: string, config = ""): Promise<FormSources> {
+  const sources: FormSources = { aliases: new Map(), functions: new Map(), warn: [] }
+  const dir = (config || home + "/.claude") + "/shell-snapshots"
+  let entries: any
+  try { entries = await $.fs.list(dir) } catch (x) {
+    if (!fleetEnoent(x)) sources.warn.push({ c: "form-alias-source-unreadable", n: 0, q: "shell-snapshots", src: "Bash:command" })
+    return sources
+  }
+  const add = (map: Map<string, string[]>, name: string, text: string) => {
+    const values = map.get(name) || []
+    if (!values.includes(text)) values.push(text)
+    map.set(name, values)
+  }
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const name = String(entry?.name || "")
+    if (!/^snapshot-(?:zsh|bash)-[^/]+\.sh$/.test(name)) continue
+    const got = await readText($, dir + "/" + name)
+    if (got.unreadable || got.text === null) { sources.warn.push({ c: "form-alias-source-unreadable", n: 0, q: name, src: "Bash:command" }); continue }
+    const text = got.text
+    for (const line of text.split("\n")) {
+      const m = /^alias -- ([^=\s]+)=(.*)$/.exec(line)
+      if (!m) continue
+      const scan = shellScan(m[2])
+      const words = shellWords(m[2], 0, m[2].length, scan)
+      if (words.length === 1 && !words[0].dyn) add(sources.aliases, m[1], words[0].text)
+    }
+    const bodies = formFunctionBodies(text)
+    for (const m of text.matchAll(/^eval "\$\(echo '([A-Za-z0-9+/=\r\n]+)' \| base64 -d\)"/gm)) {
+      try { bodies.push(...formFunctionBodies(formBase64(formBase64Payload(m[1])))) } catch (x) { sources.warn.push({ c: "form-alias-source-unreadable", n: 0, q: name, src: "Bash:command" }) }
+    }
+    for (const m of text.matchAll(/^eval "\$\(echo '([^']*)' \| base64 -d\)"/gm)) {
+      if (!/^[A-Za-z0-9+/=\r\n]+$/.test(m[1])) sources.warn.push({ c: "form-alias-source-unreadable", n: 0, q: name, src: "Bash:command" })
+    }
+    for (const [name, body] of bodies) add(sources.functions, name, body)
+  }
+  return sources
+}
+
+// CONSTRAINT: alias recursion belongs to the substituted value, not to later
+// independent commands; an expanded segment is never also judged in raw form.
+function formExpand(text: string, sources: FormSources, warn: any[], seen: string[] = [], depth = 0, funcDepth = 0): string[] {
+  let overflow = false
+  const push = (list: string[], value: string): void => {
+    if (list.includes(value)) return
+    if (list.length >= FORM_VARIANTS_MAX) {
+      overflow = true
+      if (!warn.some(w => w.q === "form-fanout-exceeded variants")) warn.push({ c: "F", n: 0, q: "form-fanout-exceeded variants", src: "Bash:command", refuse: true })
+    } else list.push(value)
+  }
+  const scan = shellScan(text)
+  const replacements: Array<{ s: number; e: number; values: string[] }> = []
+  for (const [s, e] of scan.segments()) {
+    const ws = shellWords(text, s, e, scan)
+    const w = ws.find(w => w.role === "command")
+    if (!w || w.dyn) continue
+    const aliases = !w.quoted && !seen.includes(w.text) ? sources.aliases.get(w.text) : undefined
+    const funcs = sources.functions.get(w.text)
+    if (!aliases && !funcs) continue
+    if (aliases && depth >= 8) { warn.push({ c: "F", n: 1, q: "alias expansion too deep", src: "Bash:command", refuse: true }); continue }
+    if (!aliases && funcDepth >= 3) { warn.push({ c: "F", n: 1, q: "git: вложение глубже 3 уровней не судится", src: "Bash:command", refuse: true }); continue }
+    const values: string[] = []
+    for (const value of aliases || funcs || []) {
+      if (overflow) break
+      const suffix = text.slice(w.end, e)
+      if (aliases && /\s$/.test(value)) {
+        const expandNext = (index: number, from: number, used: string[], level: number): string[] => {
+          const next = ws[index]
+          const extra = next && !next.quoted && !next.dyn && sources.aliases.get(next.text)
+          if (!extra || used.includes(next.text)) return [text.slice(from, e)]
+          if (level >= 8) { warn.push({ c: "F", n: 1, q: "alias expansion too deep", src: "Bash:command", refuse: true }); return [text.slice(from, e)] }
+          const tails: string[] = []
+          for (const v of extra) {
+            if (overflow) break
+            for (const expanded of formExpand(v, sources, warn, used.concat(next.text), level + 1, funcDepth)) {
+              const rest = /\s$/.test(v) ? expandNext(index + 1, next.end, used.concat(next.text), level + 1) : [text.slice(next.end, e)]
+              for (const tail of rest) push(tails, text.slice(from, next.at) + expanded + tail)
+            }
+          }
+          return tails
+        }
+        for (const expanded of formExpand(value, sources, warn, seen.concat(w.text), depth + 1, funcDepth)) {
+          for (const tail of expandNext(ws.indexOf(w) + 1, w.end, seen.concat(w.text), depth + 1)) push(values, text.slice(s, w.at) + expanded + tail)
+        }
+        continue
+      }
+      for (const expanded of formExpand(value, sources, warn, aliases ? seen.concat(w.text) : seen, aliases ? depth + 1 : depth, aliases ? funcDepth : funcDepth + 1)) {
+        push(values, text.slice(s, w.at) + (aliases ? expanded : "(" + expanded + ")") + (aliases ? suffix : ""))
+      }
+    }
+    replacements.push({ s, e, values })
+  }
+  let variants = [text]
+  for (const replacement of replacements.sort((a, b) => b.s - a.s)) {
+    const next: string[] = []
+    for (const t of variants) for (const v of replacement.values) push(next, t.slice(0, replacement.s) + v + t.slice(replacement.e))
+    variants = next
+  }
+  return variants
+}
+
 function gitSubDeep(tx: string, sub: string, lvl: number): boolean {
   const scan = shellScan(tx)
   if (gitSubWords(tx, scan, sub).length) return true
@@ -5102,26 +5435,490 @@ function gitSubDeep(tx: string, sub: string, lvl: number): boolean {
   return false
 }
 
-// CONSTRAINT (#489-B1-FIX6 F4): `>` и `tee` без `-a`/`--append` усекают цель,
-// суд идёт по одному телу. Форма с опциями готовит R к расширению канона (#502).
-function isAppend(op: string): boolean {
-  if (/^>>/.test(op)) return true
-  const m = /^tee((?:\s+-[-\w]+)*)/.exec(op)
-  if (!m) return false
-  return /\s(?:-[A-Za-z]*a[A-Za-z]*|--append)(?=\s|$)/.test(m[1])
+type FormTarget = { path: string; word: ShWord; append: boolean; body?: Heredoc; unknown: boolean }
+const FORM_FILE_BYTES_MAX = 4 * 1024 * 1024
+const FORM_TARGETS_MAX = 256
+const FORM_VARIANTS_MAX = 64
+const FORM_BACKUP_BYTES_MAX = 8 * FORM_FILE_BYTES_MAX
+type FormMissingParent = { ancestor: string; real: string; tail: string[] }
+type FormSaved = { path: string; kind: "file" | "link" | "absent"; backup: string | null; parentReal: string; parentMissing?: FormMissingParent; real?: string; link?: string; referent?: string; referentState?: FormSaved }
+type FormFingerprint = { size: number; mtime: number; kind: string; real?: string; link?: string; digest?: string; sha256?: string }
+type FormState = { p: any; targets: FormTarget[]; backups: FormSaved[]; skipped: string[]; before: Map<string, string>; fanout?: number; copyFlag?: string }
+
+function formResolve(path: string, home: string, cwd: string): string {
+  const parts: string[] = []
+  const resolved = resolvePath(path, home, cwd)
+  for (const part of resolved.split("/")) {
+    if (!part || part === ".") continue
+    if (part === "..") parts.pop()
+    else parts.push(part)
+  }
+  return "/" + parts.join("/")
 }
 
-async function runForm($: any, p: any, env: any, world: any, ev: any): Promise<string | null> {
+function isAppend(words: ShWord[]): boolean {
+  return words.some(w => !w.dyn && !w.glob && (w.text === "--append" || /^-[^-]*a/.test(w.text)))
+}
+
+export async function formTargets($: any, command: string, cwd: string, home: string): Promise<FormTarget[]> {
+  const scan = shellScan(command)
+  const targets: FormTarget[] = []
+  const add = async (word: ShWord, view: ShellView, append: boolean, exact: boolean) => {
+    const own = scan.heredocs.filter(h => h.op >= view.s && h.op < view.e)
+    const body = exact && !append && own.length && own[own.length - 1].quoted && own[own.length - 1].terminated ? own[own.length - 1] : undefined
+    if (word.dyn || (view.cwd === null && !word.text.startsWith("/") && !word.text.startsWith("~/"))) {
+      targets.push({ path: "", word, append, body, unknown: true }); return
+    }
+    const path = formResolve(word.text, home, view.cwd || cwd)
+    const candidates = [path]
+    if (word.glob) {
+      const parts = path.split("/").filter(Boolean)
+      let dirs = [""]
+      for (let i = 0; i < parts.length; i++) {
+        const names: string[] = []
+        for (const dir of dirs) {
+          if (!/[?*[(]/.test(parts[i])) { names.push(dir + "/" + parts[i]); continue }
+          let entries: any
+          try { entries = await $.fs.list(dir || "/") } catch (x) { if (!fleetEnoent(x)) noteLost("form-target-list", x, $); continue }
+          for (const entry of Array.isArray(entries) ? entries : []) {
+            const name = String(entry?.name || "")
+            if (name.includes("/") || name === "." || name === "..") continue
+            if (shellGlob(parts[i]).test(name)) names.push(dir + "/" + name)
+          }
+        }
+        dirs = names
+      }
+      candidates.push(...dirs)
+    }
+    for (const candidate of [...new Set(candidates)]) targets.push({ path: candidate, word, append, body: word.glob ? undefined : body, unknown: false })
+  }
+  for (const view of shellViews(command, scan, cwd, home)) {
+    const ws = view.words
+    const cmd = ws.find(w => w.role === "command")
+    const dataWriter = !!cmd && !cmd.dyn && (cmd.text === "cat" || cmd.text === "tee")
+    for (let i = 0; i < ws.length; i++) {
+      const w = ws[i], next = ws[i + 1]
+      if (w.role !== "redirection" || !next || next.role !== "target") continue
+      if (!/^(?:\d*)?(?:&>>!?|&>!?|>>!?|>\||>!|>&|>)$/.test(w.text)) continue
+      if (/>&$/.test(w.text) && !next.dyn && /^[0-9-]+$/.test(next.text)) continue
+      const stdout = /^(?:1)?(?:&>>!?|&>!?|>>!?|>\||>!|>)$/.test(w.text)
+      await add(next, view, />>/.test(w.text), stdout && dataWriter && !ws.some(w => w.role === "argument" && !w.text.startsWith("-")))
+    }
+    if (cmd && !cmd.dyn && cmd.text === "tee") {
+      const operands: ShWord[] = [], options: ShWord[] = []
+      let ended = false
+      for (const w of ws.slice(ws.indexOf(cmd) + 1).filter(w => w.role === "argument")) {
+        if (!ended && w.text === "--" && !w.dyn) { ended = true; continue }
+        if (!ended && w.text.startsWith("-") && w.text !== "-") options.push(w)
+        else operands.push(w)
+      }
+      for (const operand of operands) await add(operand, view, isAppend(options), true)
+    }
+    if (cmd && !cmd.dyn) {
+      const writer = cmd.text.slice(cmd.text.lastIndexOf("/") + 1)
+      const args = ws.slice(ws.indexOf(cmd) + 1).filter(w => w.role === "argument")
+      if (writer === "dd") {
+        for (const w of args) if (w.text.startsWith("of=")) await add({ ...w, text: w.text.slice(3) }, view, false, false)
+      } else if (["cp", "mv", "install", "sed", "perl", "truncate", "ln"].includes(writer)) {
+        const operands: ShWord[] = []
+        const flags = new Set<string>()
+        let ended = false, directory: ShWord | undefined, script = false
+        const shortArgs = writer === "sed" ? "ef" : writer === "perl" ? "CDeEFiImMx" : writer === "truncate" ? "sr" : writer === "install" ? "tSmog" : "tS"
+        const longArgs = ["target-directory", "suffix", "mode", "owner", "group", "context", "size", "reference", "expression", "file"]
+        for (let i = 0; i < args.length; i++) {
+          const w = args[i]
+          if (!ended && !w.dyn && w.text === "--") { ended = true; continue }
+          if (ended || !w.text.startsWith("-") || w.text === "-") { operands.push(w); continue }
+          if (w.text.startsWith("--")) {
+            const eq = w.text.indexOf("="), name = (eq < 0 ? w.text : w.text.slice(0, eq)).slice(2)
+            flags.add(name)
+            if (longArgs.includes(name)) {
+              const value = eq >= 0 ? { ...w, text: w.text.slice(eq + 1) } : args[++i]
+              if (name === "target-directory") directory = value
+              if (["expression", "file"].includes(name)) script = true
+            }
+          } else for (let j = 1; j < w.text.length; j++) {
+            const ch = w.text[j]; flags.add(ch)
+            // perl reads a typed value after -0 (hex) and -d (module tail); a letter after the hex digits is a new switch, and perl 5.40.2 gives -x the rest of the word as its directory (-0x1Fpi: "Can't chdir to 1Fpi"), so the hex arm only adds candidates; R does not consume the octal value of -0/-l or a -d tail without ':'/'=': the digits fall through as inert flags and each letter after them is read as its own switch, which gives perl 5.40.2's candidates on every perl-diff row (-l7pi edits in place).
+            if (writer === "perl" && "0d".includes(ch)) {
+              const typed = ch === "0" ? /^(?:[xX][0-9a-fA-F]*)?/ : /^(?:[:=][\s\S]*)?/
+              j += w.text.slice(j + 1).match(typed)![0].length
+              continue
+            }
+            if (shortArgs.includes(ch)) {
+              const value = j + 1 < w.text.length ? { ...w, text: w.text.slice(j + 1) } : writer !== "perl" || "eEI".includes(ch) ? args[++i] : undefined
+              if (ch === "t") directory = value
+              if ("ef".includes(ch)) script = true
+              break
+            }
+            if ((writer === "sed" || writer === "perl") && ch === "i") break
+          }
+        }
+        if (["cp", "mv", "install", "ln"].includes(writer)) {
+          if (writer !== "ln" || ((flags.has("s") || flags.has("symbolic")) && (flags.has("f") || flags.has("force")))) {
+            let dest = directory || operands[operands.length - 1]
+            if (dest) {
+              let isDir = !!directory
+              if (!isDir && !flags.has("T") && !flags.has("no-target-directory") && !dest.dyn && !dest.glob && view.cwd !== null) {
+                try { isDir = (await $.fs.stat(formResolve(dest.text, home, view.cwd))).kind === "dir" } catch (x) { if (!fleetEnoent(x)) noteLost("form-writer-stat", x, $) }
+              }
+              if (isDir) for (const source of directory ? operands : operands.slice(0, -1)) await add({ ...dest, text: dest.text.replace(/\/$/, "") + "/" + source.text.slice(source.text.lastIndexOf("/") + 1), dyn: dest.dyn || source.dyn, glob: dest.glob || source.glob }, view, false, false)
+              else await add(dest, view, false, false)
+            }
+          }
+        } else if (writer === "truncate" || flags.has("i") || flags.has("in-place")) {
+          const paths = ((writer === "sed" && !script) || (writer === "perl" && !flags.has("e") && !flags.has("E"))) ? operands.slice(1) : operands
+          for (const operand of paths) await add(operand, view, false, false)
+        }
+      }
+    }
+  }
+  return targets.filter((t, i) => targets.findIndex(other => other.path === t.path && other.word.at === t.word.at) === i)
+}
+
+async function formLink($: any, path: string): Promise<string> {
+  const result = await $.process.run(["/usr/bin/readlink", path], { timeoutMs: 5000 })
+  if (result?.exitCode !== 0 || typeof result.stdout !== "string") throw new Error("readlink failed: " + path)
+  return result.stdout.replace(/\n$/, "")
+}
+async function formPlatform($: any): Promise<string> {
+  const platform = await $.process.run(["/usr/bin/uname", "-s"], { timeoutMs: 5000 })
+  const name = String(platform?.stdout || "").trim()
+  if (platform?.exitCode !== 0 || !["Linux", "Darwin"].includes(name)) throw new Error("platform unavailable for preserving copy")
+  return name
+}
+function formParent(path: string): string { return path.slice(0, path.lastIndexOf("/")) || "/" }
+async function formParentReal($: any, path: string): Promise<string> {
+  const stat = await $.fs.stat(formParent(path), { resolve: true })
+  if (typeof stat.realPath !== "string" || !stat.realPath) throw new Error("parent realPath unavailable: " + path)
+  return stat.realPath
+}
+async function formSaveParent($: any, path: string): Promise<{ parentReal: string; parentMissing?: FormMissingParent }> {
+  let ancestor = formParent(path)
+  const tail: string[] = []
+  for (;;) {
+    try {
+      const stat = await $.fs.stat(ancestor, { resolve: true })
+      if (stat.kind !== "dir" || typeof stat.realPath !== "string" || !stat.realPath) throw new Error("parent realPath unavailable: " + path)
+      return { parentReal: formResolve(tail.join("/"), "", stat.realPath), ...(tail.length ? { parentMissing: { ancestor, real: stat.realPath, tail } } : {}) }
+    } catch (x) {
+      if (!fleetEnoent(x) || ancestor === "/") throw x
+      tail.unshift(ancestor.slice(ancestor.lastIndexOf("/") + 1))
+      ancestor = formParent(ancestor)
+    }
+  }
+}
+async function formParentUnchanged($: any, saved: FormSaved): Promise<boolean> {
+  try {
+    if (await formParentReal($, saved.path) !== saved.parentReal) return false
+    if (saved.parentMissing) {
+      let path = saved.parentMissing.ancestor
+      const ancestor = await $.fs.stat(path, { resolve: true })
+      if (ancestor.realPath !== saved.parentMissing.real) return false
+      for (const part of saved.parentMissing.tail) {
+        path = formResolve(part, "", path)
+        const stat = await $.fs.stat(path)
+        if (stat.kind !== "dir" || stat.isLink) return false
+      }
+    }
+    return true
+  } catch (x) { if (fleetEnoent(x)) return false; throw x }
+}
+function formDecodeBytes(base64: string): { text: string; length: number } {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  const bytes: number[] = []
+  let n = 0, bits = 0
+  for (const c of base64) {
+    const v = alphabet.indexOf(c)
+    if (v < 0) continue
+    n = (n << 6) | v; bits += 6
+    if (bits >= 8) { bits -= 8; bytes.push((n >> bits) & 255) }
+  }
+  // CONSTRAINT: fs text reads replace invalid UTF-8 and retain a leading BOM.
+  const text: string[] = []
+  for (let i = 0; i < bytes.length;) {
+    const a = bytes[i++]
+    if (a < 0x80) { text.push(String.fromCharCode(a)); continue }
+    const width = a >= 0xc2 && a <= 0xdf ? 2 : a >= 0xe0 && a <= 0xef ? 3 : a >= 0xf0 && a <= 0xf4 ? 4 : 0
+    if (!width) { text.push("�"); continue }
+    let cp = a & (width === 2 ? 31 : width === 3 ? 15 : 7), used = 1
+    for (; used < width && i < bytes.length; used++) {
+      const b = bytes[i]
+      const min = used === 1 && a === 0xe0 ? 0xa0 : used === 1 && a === 0xf0 ? 0x90 : 0x80
+      const max = used === 1 && a === 0xed ? 0x9f : used === 1 && a === 0xf4 ? 0x8f : 0xbf
+      if (b < min || b > max) break
+      cp = (cp << 6) | (b & 63); i++
+    }
+    text.push(used === width ? String.fromCodePoint(cp) : "�")
+  }
+  return { text: text.join(""), length: bytes.length }
+}
+async function formFingerprint($: any, path: string, digest: boolean, allowAbsent = false, knownStat?: any, knownBytes?: string): Promise<FormFingerprint | null> {
+  let stat = knownStat
+  if (!stat) try { stat = await $.fs.stat(path) } catch (x) {
+    return allowAbsent && fleetEnoent(x) ? { size: 0, mtime: 0, kind: "absent" } : null
+  }
+  let resolved: any
+  try { resolved = await $.fs.stat(path, { resolve: true }) } catch (x) { return null }
+  const fingerprint: FormFingerprint = { size: stat.size, mtime: stat.mtimeMs, kind: stat.isLink ? "link:" + stat.kind : stat.kind, real: resolved.realPath }
+  if (stat.isLink) try { fingerprint.link = await formLink($, path) } catch (x) { return null }
+  if (digest) {
+    if (stat.size > FORM_FILE_BYTES_MAX) {
+      try {
+        const linux = await formPlatform($) === "Linux"
+        const result = await $.process.run(linux ? ["/usr/bin/sha256sum", "--", path] : ["/usr/bin/shasum", "-a", "256", "--", path], { timeoutMs: 5000 })
+        const output = String(result?.stdout || "").replace(/\n$/, "")
+        if (result?.exitCode !== 0 || !/^[a-fA-F0-9]{64}  /.test(output) || output.slice(66) !== path) return null
+        fingerprint.sha256 = output.slice(0, 64).toLowerCase()
+      } catch (x) { return null }
+    } else {
+      const bytes = knownBytes === undefined ? await $.fs.read(path, { as: "bytes" }) : { base64: knownBytes }
+      if (!bytes || typeof bytes.base64 !== "string") throw new Error("form byte read has no base64: " + path)
+      // CONSTRAINT: full byte encoding is collision-free; metadata alone is only Ф12a's unreadable fallback.
+      fingerprint.digest = bytes.base64
+    }
+  }
+  return fingerprint
+}
+async function formRestoreObject($: any, state: FormState, saved: FormSaved, warn: (code: string, path: string) => void): Promise<boolean> {
+  if (!await formParentUnchanged($, saved)) { warn("form-rollback-skipped-retargeted", saved.path); return false }
+  if (saved.kind === "absent") {
+    const result = await $.process.run(["/bin/rm", "-f", "--", saved.path], { timeoutMs: 5000 })
+    if (result?.exitCode !== 0) throw new Error("restore exit " + String(result?.exitCode))
+    return true
+  }
+  if (!saved.backup) throw new Error("missing backup: " + saved.path)
+  const temp = saved.parentReal.replace(/\/$/, "") + "/." + saved.path.slice(saved.path.lastIndexOf("/") + 1) + ".form-restore." + crypto.randomUUID()
+  let misplaced = ""
+  try {
+    const copied = await $.process.run(["/bin/cp", state.copyFlag!, "--", saved.backup, temp], { timeoutMs: 5000 })
+    if (copied?.exitCode !== 0) throw new Error("restore copy exit " + String(copied?.exitCode))
+    let current: any = null
+    try { current = await $.fs.stat(saved.path) } catch (x) { if (!fleetEnoent(x)) throw x }
+    if (current?.kind === "dir" && !current.isLink) { warn("form-rollback-skipped-nonfile", saved.path); return false }
+    if (!await formParentUnchanged($, saved)) { warn("form-rollback-skipped-retargeted", saved.path); return false }
+    const destinationFlag = await formPlatform($) === "Linux" ? "-T" : "-h"
+    const moved = await $.process.run(["/bin/mv", "-f", destinationFlag, "--", temp, saved.path], { timeoutMs: 5000 })
+    if (moved?.exitCode !== 0) throw new Error("restore move exit " + String(moved?.exitCode))
+    const restored = await $.fs.stat(saved.path)
+    if (restored.kind === "dir") {
+      const resolved = await $.fs.stat(saved.path, { resolve: true })
+      if (resolved.realPath) misplaced = resolved.realPath.replace(/\/$/, "") + "/" + temp.slice(temp.lastIndexOf("/") + 1)
+    }
+    const actual = !restored.isLink && restored.kind === "file" ? await formFingerprint($, saved.path, true, false, restored) : null
+    const expected = await formFingerprint($, saved.backup, true)
+    if (!actual || !expected || actual.digest !== expected.digest || actual.sha256 !== expected.sha256) throw new Error("destination changed during restore")
+    return true
+  } finally {
+    for (const path of [temp, ...(misplaced ? [misplaced] : [])]) try {
+      const removed = await $.process.run(["/bin/rm", "-f", "--", path], { timeoutMs: 5000 })
+      if (removed?.exitCode !== 0) noteLost("form-restore-cleanup", new Error(path + ": rm exit " + String(removed?.exitCode)), $)
+    } catch (x) { noteLost("form-restore-cleanup", x, $) }
+  }
+}
+async function formBackup($: any, state: FormState, world: any, env: any, ev: any, budget: { bytes: number }): Promise<string | null> {
+  if (state.fanout) return null
+  for (const target of state.targets) {
+    try {
+      const stat = await $.fs.stat(target.path)
+      state.before.set(target.path, stat.isLink ? "link" : stat.kind)
+    } catch (x) { state.before.set(target.path, fleetEnoent(x) ? "absent" : "unknown") }
+  }
+  let prepared = false
+  for (const target of state.targets) {
+    const classes = new Set<string>(["F"])
+    if (K(state.p.cfg.brief_path, "u", "brief_path").test(target.path)) for (const cls of ["A1", "A2", "A3"]) classes.add(cls)
+    if (K(state.p.cfg.report_path, "u", "report_path").test(target.path)) classes.add("C1")
+    if (![...classes].some(cls => ["cancel", "refuse"].includes(formActOf(state.p.cfg, cls)))) continue
+    if (state.backups.some(b => b.path === target.path)) continue
+    try {
+      let stat: any = null
+      try { stat = await $.fs.stat(target.path, { resolve: true }) } catch (x) { if (!fleetEnoent(x)) throw x }
+      const saved: FormSaved = { path: target.path, kind: !stat ? "absent" : stat.isLink ? "link" : "file", backup: null, ...await formSaveParent($, target.path), real: stat?.realPath }
+      state.backups.push(saved)
+      let copyFrom = target.path
+      if (saved.kind === "link") {
+        saved.link = await formLink($, target.path)
+        saved.referent = stat.realPath || formResolve(saved.link, "", formParent(target.path))
+        copyFrom = saved.referent
+        try { stat = await $.fs.stat(copyFrom, { resolve: true }) } catch (x) { if (fleetEnoent(x)) stat = null; else throw x }
+        saved.referentState = { path: copyFrom, kind: stat ? "file" : "absent", backup: null, ...await formSaveParent($, copyFrom), real: stat?.realPath }
+      }
+      if (!stat) continue
+      if (stat.kind !== "file") throw new Error("not a regular referent: " + copyFrom)
+      budget.bytes += stat.size
+      if (budget.bytes > FORM_BACKUP_BYTES_MAX) throw new Error("backup volume exceeded")
+      if (!prepared) {
+        state.copyFlag = await formPlatform($) === "Linux" ? "--preserve=all" : "-p"
+        const dir = world.globalHome + "/form-backup"
+        const made = await $.process.run(["/bin/mkdir", "-p", "-m", "700", "--", dir], { timeoutMs: 5000 })
+        if (made?.exitCode !== 0) throw new Error("mkdir exit " + String(made?.exitCode))
+        const privateDir = await $.process.run(["/bin/chmod", "700", "--", dir], { timeoutMs: 5000 })
+        if (privateDir?.exitCode !== 0) throw new Error("chmod exit " + String(privateDir?.exitCode))
+        prepared = true
+      }
+      saved.backup = world.globalHome + "/form-backup/" + crypto.randomUUID()
+      if (saved.referentState) saved.referentState.backup = saved.backup
+      const result = await $.process.run(["/bin/cp", state.copyFlag!, "--", copyFrom, saved.backup], { timeoutMs: 5000 })
+      if (result?.exitCode !== 0) throw new Error("cp exit " + String(result?.exitCode))
+    } catch (x) { return "form-backup-failed: " + target.path + ": " + safeText(x) }
+  }
+  return null
+}
+
+async function formCleanup($: any, states: FormState[]): Promise<void> {
+  for (const state of states) for (const saved of state.backups) {
+    if (!saved.backup) continue
+    try {
+      const result = await $.process.run(["/bin/rm", "-f", "--", saved.backup], { timeoutMs: 5000 })
+      if (result?.exitCode !== 0) noteLost("form-backup-cleanup", new Error(saved.backup + ": rm exit " + String(result?.exitCode)), $)
+    } catch (x) { noteLost("form-backup-cleanup", x, $) }
+  }
+}
+
+export async function formPost($: any, state: FormState, env: any, world: any, ev: any): Promise<string | null> {
+  if (state.fanout) return null
+  const events: any[] = [], failures: any[] = [], warns: any[] = [], rollback = new Set<string>()
+  const judged = new Map<string, FormFingerprint | null>()
+  const conflicts = new Set<string>()
+  const remember = (path: string, fingerprint: FormFingerprint | null) => {
+    if (judged.has(path)) {
+      if (JSON.stringify(judged.get(path)) !== JSON.stringify(fingerprint)) conflicts.add(path)
+    } else judged.set(path, fingerprint)
+  }
+  const actionable = (refuse: any[]) => refuse.some(r => ["cancel", "refuse"].includes(formActOf(state.p.cfg, r.c)))
+  for (const target of state.targets) {
+    let stat: any, got: any, bytes: string | undefined, problem = "", digest = true, absent = false, unstable = false
+    try { stat = await $.fs.stat(target.path) } catch (x) {
+      if (fleetEnoent(x)) absent = true
+      else { problem = "target unreadable after write: " + safeText(x); noteLost("form-path-read", x, $) }
+    }
+    if (stat?.size > FORM_FILE_BYTES_MAX) problem = "target too large to judge"
+    else if (stat) {
+      try {
+        const raw = await $.fs.read(target.path, { as: "bytes" })
+        if (!raw || typeof raw.base64 !== "string") throw new Error("form byte read has no base64: " + target.path)
+        bytes = raw.base64
+        const decoded = formDecodeBytes(bytes)
+        got = { text: decoded.text }
+        const after = await $.fs.stat(target.path)
+        if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || decoded.length !== stat.size) {
+          problem = "target changed during judgement"; unstable = true
+        }
+      } catch (x) {
+        if (fleetEnoent(x)) absent = true
+        else {
+          problem = "target unreadable after write: " + safeText(x)
+          digest = false
+          noteLost("form-path-read", x, $)
+        }
+      }
+    }
+    if (absent) {
+      if (state.before.get(target.path) === "absent") continue
+      problem = "target removed after write"
+    }
+    if (problem) {
+      const refusal = { c: "F", n: 0, q: problem, src: "Bash:" + target.path }
+      failures.push(refusal)
+      if (actionable([refusal])) rollback.add(target.path)
+    } else {
+      const kind = formKind(target.path, got.text, state.p.cfg)
+      if (kind) {
+        const event = { kind, text: got.text, label: "Bash:" + target.path, judged: await formEval({ kind, text: got.text }, state.p.cfg) }
+        events.push(event)
+        if (actionable(event.judged.refuse)) rollback.add(target.path)
+      }
+    }
+    if (!rollback.has(target.path)) continue
+    let fingerprint: FormFingerprint | null = absent && !stat ? { size: 0, mtime: 0, kind: "absent" } : null
+    if (stat && !unstable) {
+      try { fingerprint = await formFingerprint($, target.path, digest && !absent, false, stat, bytes) } catch (x) {
+        failures.push({ c: "F", n: 0, q: "target unreadable after write", src: "Bash:" + target.path })
+        fingerprint = await formFingerprint($, target.path, false, false, stat)
+      }
+    }
+    remember(target.path, fingerprint)
+    const saved = state.backups.find(saved => saved.path === target.path)
+    if (saved?.referent && saved.referent !== target.path) {
+      let referent: FormFingerprint | null = null
+      let reused = false
+      if (fingerprint && !absent) try {
+        const resolved = await $.fs.stat(target.path, { resolve: true })
+        const referentStat = await $.fs.stat(saved.referent)
+        if (resolved.realPath === saved.referent && resolved.size === stat?.size && resolved.mtimeMs === stat?.mtimeMs && referentStat.size === resolved.size && referentStat.mtimeMs === resolved.mtimeMs) {
+          referent = await formFingerprint($, saved.referent, digest, true, referentStat, bytes)
+          reused = true
+        }
+      } catch (x) {}
+      if (!reused) {
+        try { referent = await formFingerprint($, saved.referent, true, true) } catch (x) { referent = await formFingerprint($, saved.referent, false, true) }
+      }
+      remember(saved.referent, referent)
+    }
+  }
+  const denial = await runForm($, state.p, env, world, { ...ev, formPost: events, formRefuse: failures, formWarn: warns, formSkipped: state.skipped })
+  let failed = ""
+  const skipWarnings: any[] = []
+  const warn = (code: string, path: string) => skipWarnings.push({ c: code, n: 0, q: code + " " + path, src: "Bash:" + path })
+  for (const saved of state.backups) {
+    if (!rollback.has(saved.path)) continue
+    try {
+      const condemnedTarget = judged.get(saved.path)
+      const expectedReal = saved.real || formResolve(saved.path.slice(saved.path.lastIndexOf("/") + 1), "", saved.parentReal)
+      if (condemnedTarget?.real && condemnedTarget.real !== expectedReal) warn("form-rollback-unrestored", condemnedTarget.real)
+      const objects = [saved, ...(saved.referentState ? [saved.referentState] : [])]
+      if (objects.some(object => conflicts.has(object.path))) { warn("form-rollback-skipped-changed", saved.path); continue }
+      let retargeted = false
+      for (const object of objects) if (!await formParentUnchanged($, object)) { warn("form-rollback-skipped-retargeted", object.path); retargeted = true }
+      if (retargeted) continue
+      let skip = ""
+      for (const path of [...new Set([saved.path, ...(saved.referent ? [saved.referent] : [])])]) {
+        const condemned = judged.get(path)
+        if (!condemned) { skip = "form-rollback-skipped-unfingerprintable"; break }
+        let current: FormFingerprint | null = null
+        try { current = await formFingerprint($, path, condemned.digest !== undefined || condemned.sha256 !== undefined, condemned.kind === "absent") } catch (x) { current = null }
+        if (!current || JSON.stringify(current) !== JSON.stringify(condemned)) { skip = "form-rollback-skipped-changed"; break }
+      }
+      if (skip) { warn(skip, saved.path); continue }
+      if (saved.kind === "link") {
+        if (!saved.referentState) throw new Error("missing referent state: " + saved.path)
+        if (!await formRestoreObject($, state, saved.referentState, warn)) continue
+        if (!await formParentUnchanged($, saved)) { warn("form-rollback-skipped-retargeted", saved.path); continue }
+        let current: any = null
+        try { current = await $.fs.stat(saved.path) } catch (x) { if (!fleetEnoent(x)) throw x }
+        if (current?.kind === "dir" && !current.isLink) { warn("form-rollback-skipped-nonfile", saved.path); continue }
+        const destinationFlag = await formPlatform($) === "Linux" ? "-T" : "-h"
+        const linked = await $.process.run(["/bin/ln", "-s", "-f", destinationFlag, "--", saved.link!, saved.path], { timeoutMs: 5000 })
+        if (linked?.exitCode !== 0) throw new Error("link restore exit " + String(linked?.exitCode))
+        const restored = await $.fs.stat(saved.path)
+        if (!restored.isLink || await formLink($, saved.path) !== saved.link) throw new Error("destination changed during restore")
+      } else await formRestoreObject($, state, saved, warn)
+    } catch (x) {
+      const verdict = "rollback failed: " + saved.path + (safeText(x).includes("destination changed during restore") ? ": destination changed during restore" : "")
+      failed += (failed ? "; " : "") + verdict
+      noteLost("form-rollback", x, $)
+      try { await appendJournal($, world.globalHome + "/form/journal.jsonl", { outcome: "error", level: "error", verdict, probe: "form" }) } catch (y) { noteLost("form-rollback-journal", y, $) }
+    }
+  }
+  if (skipWarnings.length) await runForm($, state.p, env, world, { ...ev, formPost: [], formWarn: skipWarnings, formMergeWarnings: true })
+  const refusal = denial ? denial + (skipWarnings.length ? "; " + skipWarnings.map(w => w.q).join("; ") : "") : ""
+  return [refusal, failed].filter(Boolean).join("; ") || null
+}
+
+const formCanonLogged = new Set<string>()
+async function runForm($: any, p: any, env: any, world: any, ev: any, states?: FormState[]): Promise<string | null> {
   const cfg = p.cfg
   const tool = String((ev && ev.tool) || "")
   if (!formActsOnTool(tool)) return null
-  for (let i = 0; i < FORM_REQ.length; i++) {
-    if (typeof cfg[FORM_REQ[i]] !== "string" || !cfg[FORM_REQ[i]]) {
-      return null
+  const missing = FORM_REQ.filter(key => typeof cfg[key] !== "string" || !cfg[key])
+  if (typeof cfg.path_lines_min !== "number") missing.push("path_lines_min")
+  if (missing.length) {
+    for (const key of missing) if (!formCanonLogged.has(key)) {
+      formCanonLogged.add(key)
+      try { await $.ui.log("form-canon-key-missing " + key) } catch (x) { noteLost("form-canon-log", x, $) }
     }
-  }
-  if (typeof cfg.path_lines_min !== "number") {
-    return null
+    ev = { ...ev, formRefuse: missing.map(key => ({ c: "F", n: 0, q: "form-canon-key-missing " + key, src: tool })) }
   }
   const evs: any[] = []
   const sk: string[] = []
@@ -5139,7 +5936,9 @@ async function runForm($: any, p: any, env: any, world: any, ev: any): Promise<s
     if (k) evs.push({ kind: k, text: t, label: tool + ":" + fp })
     else sk.push(fp)
   }
-  if (tool === "Agent" || tool === "Task" || tool === "SendMessage") {
+  if (missing.length) {
+    // CONSTRAINT: incomplete canon must not enter regex-dependent judgments.
+  } else if (tool === "Agent" || tool === "Task" || tool === "SendMessage") {
     const tx = String((ev && (ev.prompt || ev.message || ev.text)) || "")
     const pu: string[] = []
     for (const m of tx.matchAll(K(cfg.brief_ref, "gu", "brief_ref"))) {
@@ -5169,58 +5968,54 @@ async function runForm($: any, p: any, env: any, world: any, ev: any): Promise<s
       if (k) evs.push({ kind: k, text: post, label: "Edit:" + fp })
       else sk.push(fp)
     }
+  } else if (ev.formPost) {
+    evs.push(...ev.formPost)
+    unreadWarns.push(...(ev.formWarn || []))
+    sk.push(...(ev.formSkipped || []))
   } else {
     const cmd = String((ev && ev.command) || "")
-    // CONSTRAINT: тело принадлежит цели своей строки оператора глубины 0
-    // (закон Z5, ADJUDICATION: B1-FIX3); несколько тел одной строки судятся
-    // для каждой цели строки -- консервативно, пинит L11. Цель внутри тела,
-    // кавычки, комментарий, арифметика и `$'…'` инертны: текст, не запись.
-    const scan = shellScan(cmd)
-    const hits = [...cmd.matchAll(K(cfg.write_redirect, "gu", "write_redirect"))]
-      .filter((m) => m[0].length > 0 && !!m[1] && !scan.inert(m.index as number))
-    for (let hi = 0; hi < hits.length; hi++) {
-      const wr = hits[hi]
-      const index = wr.index as number
-      const bodies = scan.heredocs
-        .filter((h) => h.lineStart === scan.lineOf(index)[0]).map((h) => h.body)
-      const bodyList = bodies.length ? bodies : [""]
-      const fp = resolvePath(String(wr[1]), env.HOME, world.cwd)
-      let cur: string | null = null
-      let append = false
-      if (isAppend(wr[0])) {
-        const curR = await readText($, fp)
-        if (curR.unreadable) {
-          noteUnread(fp, "Bash:" + fp, curR.unreadable)
+    const sources = await formSources($, env.HOME, env.CONFIG_DIR)
+    unreadWarns.push(...sources.warn)
+    const variants = formExpand(cmd, sources, unreadWarns)
+    const targets: FormTarget[] = [], candidatePaths = new Set<string>()
+    for (const variant of variants) {
+      for (const target of await formTargets($, variant, world.cwd, env.HOME)) {
+        if (target.unknown) {
+          const code = target.word.dyn ? "form-target-dynamic" : "form-cwd-unknown"
+          unreadWarns.push({ c: code, n: 0, q: code + " " + target.word.text, src: "Bash:target" })
           continue
         }
-        cur = curR.text
-        append = true
-      }
-      let anyKind = false
-      for (let bi = 0; bi < bodyList.length; bi++) {
-        const body = bodyList[bi]
-        const post = append
-          ? (cur === null ? "" : cur) + ((cur && cur.length && !cur.endsWith("\n")) ? "\n" : "") + body
-          : body
-        const k = formKind(fp, post, cfg)
-        if (k) {
-          evs.push({ kind: k, text: post, label: "Bash:" + fp })
-          anyKind = true
+        candidatePaths.add(target.path)
+        if (!K(cfg.write_target, "u", "write_target").test(target.path)) continue
+        const kind = formKind(target.path, target.body ? target.body.body : "", cfg)
+        if (!kind) { sk.push(target.path); continue }
+        if (!targets.some(t => t.path === target.path)) targets.push(target)
+        // CONSTRAINT: только точное полное содержимое даёт пред-суд; append судится после next.
+        if (target.body) {
+          const judged = await formEval({ kind, text: target.body.body }, cfg)
+          if (judged.refuse.some(r => ["cancel", "refuse"].includes(formActOf(cfg, r.c)))) evs.push({ kind, text: target.body.body, label: "Bash:" + target.path, judged })
         }
       }
-      if (!anyKind) sk.push(fp)
     }
-    // CONSTRAINT (#494 FIX10 AR-5): вход в суд команды — и по разбору слов, иначе
-    // `"git" commit` и `git -C . push` не доходят до formEval вовсе.
-    if (/git\s+(?:commit|push)\b/.test(cmd) || gitSubDeep(cmd, "commit", 0) || gitSubDeep(cmd, "push", 0))
-      evs.push({ kind: "command", text: cmd, label: "Bash:command" })
+    const fanout = candidatePaths.size > FORM_TARGETS_MAX ? candidatePaths.size : undefined
+    if (fanout) {
+      unreadWarns.push({ c: "F", n: 0, q: "form-fanout-exceeded " + fanout, src: "Bash:command", refuse: true })
+      if (!["cancel", "refuse"].includes(formActOf(cfg, "F"))) unreadWarns.push({ c: "form-post-skipped-fanout", n: 0, q: "form-post-skipped-fanout " + fanout, src: "Bash:command" })
+    }
+    if ((targets.length || fanout) && states) states.push({ p, targets, backups: [], skipped: sk.slice(), before: new Map(), fanout })
+    if (variants.some(text => gitCalls(text, shellScan(text), world.cwd, env.HOME).some(call => ["commit", "push", "unknown"].includes(call.sub)) || gitSubDeep(text, "commit", 0) || gitSubDeep(text, "push", 0))) evs.push({ kind: "command", text: cmd, label: "Bash:command", cwd: world.cwd, home: env.HOME, sources,
+      readMessage: async (path: string) => {
+        const got = await readText($, path)
+        return got
+      },
+    })
   }
-  if (!evs.length && !unreadWarns.length) return null
-  const rf: any[] = []
-  const wn: any[] = unreadWarns.slice()
+  if (!evs.length && !unreadWarns.length && !ev.formRefuse?.length) return null
+  const rf: any[] = (ev.formRefuse || []).concat(unreadWarns.filter(issue => issue.refuse))
+  const wn: any[] = unreadWarns.filter(issue => !issue.refuse)
   const cls: string[] = []
   for (let i = 0; i < evs.length; i++) {
-    const r2 = formEval(evs[i], cfg)
+    const r2 = evs[i].judged || await formEval(evs[i], cfg)
     for (let j = 0; j < r2.refuse.length; j++) rf.push(Object.assign({}, r2.refuse[j], { src: evs[i].label }))
     for (let j = 0; j < r2.warn.length; j++) wn.push(Object.assign({}, r2.warn[j], { src: evs[i].label }))
   }
@@ -5281,12 +6076,23 @@ async function runForm($: any, p: any, env: any, world: any, ev: any): Promise<s
     // выведено разбором строки: разбор склейки -- второй дом формата.
     const formRec: any = { ev: tool, cls, refuse: rf, warn: wn, vd, kind: upper, rest: vd.slice(upper.length + 2) }
     if (formJournalErr) formRec.journalErr = formJournalErr
-    try { await $.fs.write(recPath, JSON.stringify(formRec)) } catch (x) { noteLost("form-record", x, $) }
+    try {
+      if (ev.formMergeWarnings) {
+        const previous = await readText($, recPath)
+        if (previous.unreadable || previous.text === null) throw new Error("form record unavailable for warning merge: " + recPath)
+        const record = JSON.parse(previous.text)
+        // CONSTRAINT: rollback warnings share the original evidence; kind/refuse/vd are immutable here.
+        record.warn = (record.warn || []).concat(wn)
+        record.cls = [...new Set((record.cls || []).concat(cls))]
+        if (formJournalErr) record.journalErr = formJournalErr
+        await $.fs.write(recPath, JSON.stringify(record))
+      } else await $.fs.write(recPath, JSON.stringify(formRec))
+    } catch (x) { noteLost("form-record", x, $) }
   }
   if (vk === "refuse") {
     let cancel = false
     for (let i = 0; i < rf.length; i++) {
-      if (formActOf(cfg, rf[i].c) === "cancel") cancel = true
+      if (["cancel", "refuse"].includes(formActOf(cfg, rf[i].c))) cancel = true
     }
     if (cancel) {
       const reason = cls.map((c) => formTextOf(cfg, c)).join("; ")
@@ -6927,6 +7733,7 @@ async function toolCallProbed($: any, e: any, next: any, isAgent: boolean, aid: 
   } catch (x) { live = null; lstArr = null; noteLost("agent-list", x, $) }
 
   let hardDeny: string | null = null
+  const formStates: FormState[] = []
   // CONSTRAINT: ключ кэпа сессионный -- бессрочный кросс-сессионный ключ
   // навсегда хоронил ветку nudge/log_only; окно и слияние -- capSeed/capTake.
   let capRaw: any = undefined
@@ -6953,7 +7760,7 @@ async function toolCallProbed($: any, e: any, next: any, isAgent: boolean, aid: 
         if (d && !hardDeny) hardDeny = d
         continue
       }
-      const d = await runForm($, p, env, world, ev)
+      const d = await runForm($, p, env, world, ev, formStates)
       if (d && !hardDeny) hardDeny = d
       continue
     }
@@ -7195,27 +8002,53 @@ async function toolCallProbed($: any, e: any, next: any, isAgent: boolean, aid: 
   const post: any[] = []
   for (let i = 0; i < world.probes.length; i++) {
     const p = world.probes[i]
-    if (!probeListens(p, env) || p.on.indexOf("PostToolUse") < 0) continue
+    if (!probeListens(p, env, true)) continue
+    if (p.kind === "form") {
+      if (formStates.some(state => state.p === p)) post.push(p)
+      continue
+    }
+    if (p.on.indexOf("PostToolUse") < 0) continue
     if ((p.mainLoopOnly && isAgent) || p.act === "cancel" || p.pending) continue
     post.push(p)
   }
   const qPending = aKey === null ? undefined : nudgeQueue.get(aKey)
   if (!post.length && !(qPending && qPending.length)) return next(e)
-  const res = await next(e)
-  if (post.length && epoch === epCall) {
-    const tp = await nowMs($)
-    for (let i = 0; i < post.length; i++) {
-      if (epoch !== epCall) break
-      await probeEvaluate($, packed, post[i], {
-        event: "PostToolUse", ev, input: ev, lst: lstArr, now: tp, aid: isAgent ? aid : undefined, ep: epCall,
-        toolResult: res && typeof res === "object" ? res.result : res,
-      })
+  try {
+    const backupBudget = { bytes: 0 }
+    for (const state of formStates) {
+      const failure = await formBackup($, state, world, env, ev, backupBudget)
+      if (failure) return { deny: failure }
     }
+    let res: any, nextError: any, nextThrew = false
+    try { res = await next(e) } catch (x) { nextError = x; nextThrew = true }
+    let formDeny: string | null = null
+    // CONSTRAINT: откат принадлежит своему вызову даже при смене эпохи и исключении next.
+    try {
+      for (const state of formStates) {
+        const denial = await formPost($, state, env, world, ev)
+        if (denial && !formDeny) formDeny = denial
+      }
+    } finally { if (nextThrew) throw nextError }
+    if (post.length && epoch === epCall) {
+      const tp = await nowMs($)
+      for (let i = 0; i < post.length; i++) {
+        if (epoch !== epCall) break
+        if (post[i].kind === "form") continue
+        await probeEvaluate($, packed, post[i], {
+          event: "PostToolUse", ev, input: ev, lst: lstArr, now: tp, aid: isAgent ? aid : undefined, ep: epCall,
+          toolResult: res && typeof res === "object" ? res.result : res,
+        })
+      }
+    }
+    if (formDeny) return { deny: formDeny }
+    const fanoutWarnings = formStates.filter(state => state.fanout).map(state => "form-post-skipped-fanout " + state.fanout)
+    if (fanoutWarnings.length) res = { ...(res && typeof res === "object" ? res : { result: res }), context: (Array.isArray(res?.context) ? res.context : res?.context == null ? [] : [String(res.context)]).concat(fanoutWarnings) }
+    // CONSTRAINT: эпоха сменилась за время вызова -- очередь уже новой сессии.
+    if (aKey === null || epoch !== epCall) return res
+    return nudgeDeliverContext($, aKey, res)
+  } finally {
+    await formCleanup($, formStates)
   }
-  // CONSTRAINT: эпоха сменилась за время вызова -- очередь уже новой сессии:
-  // к результату инструмента прежней она не прикладывается.
-  if (aKey === null || epoch !== epCall) return res
-  return nudgeDeliverContext($, aKey, res)
 }
 
 // CONSTRAINT: история запусков -- для счёта окна idle-watch: прополка по

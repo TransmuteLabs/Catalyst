@@ -1,7 +1,6 @@
-// CONSTRAINT (#509-FIX1 E3): ОДНА таблица входов [failover].terminal для мода
-// (units.test.ts) и прибора (tests/scripts/ladder-policy.py --self-check).
-// Прибор читает JSON между маркерами BEGIN-JSON/END-JSON; строка вне JSON между
-// маркерами роняет его зуб паритета. Вердикт: green -- терминал принят и
+// CONSTRAINT (#509-FIX1 E3): таблица входов [failover].terminal для мода
+// (units.test.ts). Между маркерами BEGIN-JSON/END-JSON -- только JSON.
+// Вердикт: green -- терминал принят и
 // вызываем, red -- отвергнут. Строка {"absent": true} -- ключа нет. Входы без
 // [pins]: паритет судится на словаре эффорта мода (EFFORTS в register.ts).
 export const TERMINAL_PARITY_509: any[] =

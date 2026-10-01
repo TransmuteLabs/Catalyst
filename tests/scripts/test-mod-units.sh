@@ -93,7 +93,7 @@ UNITS="$TESTS_DIR/units.test.ts"
 
 # Пин числа зубов: молча выпавший тест обязан быть виден. Поднимается ВМЕСТЕ с
 # добавлением тестов, в этой же строке -- другого дома у числа нет.
-EXPECTED_TESTS=1011
+EXPECTED_TESTS=1272
 
 # --- прибор ------------------------------------------------------------------
 
@@ -314,6 +314,7 @@ if doc.get("success") is not True or errors:
 if not notes:
     refuse(3, "НЕ ИЗМЕРЕНО: у элемента contents[] с type == hooks заметок нет (ПУСТО != НОЛЬ)")
 
+# host 2.1.285 truncates each validate note to 1000 chars before --json; the tail is pinned only by the "[+N chars]" length.
 if notes != snapshot:
     print("ПОВЕРХНОСТЬ_МОДА_РАЗОШЛАСЬ: живая выдача против снимка %s" % snapshot_path, file=sys.stderr)
     for i in range(max(len(notes), len(snapshot))):

@@ -69,11 +69,9 @@
 ../../../Catalyst-programs/2026-09-19-status-mod/logs-S4F5/rawfails.py	runner	запуск интерпретатором как CLI, пролог — фаза B
 ../../../Catalyst/tests/scripts/test-dispatch-gate.sh	runner	запускается как процесс: исполняемый бит, шебанг /usr/bin/env bash (ценз R4)
 ../../../Catalyst/tests/scripts/test-dispatch-stats.sh	runner	запускается как процесс: исполняемый бит, шебанг /usr/bin/env bash (ценз R5)
-../../../Catalyst/tests/scripts/test-effort-layers.sh	runner	запускается как процесс: шебанг /usr/bin/env bash (ценз R6)
 ../../../Catalyst/tests/scripts/test-judge-bridge.sh	runner	запускается как процесс: шебанг /usr/bin/env bash (ценз R7)
 ../../../Catalyst/tests/scripts/test-judge-ladder-live.sh	runner	запускается как процесс: шебанг /usr/bin/env bash (ценз R8)
 ../../../Catalyst/tests/scripts/test-judge-serves.sh	runner	запускается как процесс: исполняемый бит, шебанг /usr/bin/env bash (ценз R9)
-../../../Catalyst/tests/scripts/test-ladder-policy.sh	runner	запускается как процесс: шебанг /usr/bin/env bash (ценз R10)
 ../../../Catalyst/tests/scripts/test-mod-event-names.sh	runner	запускается как процесс: исполняемый бит, шебанг /usr/bin/env bash (ценз R11)
 ../../../Catalyst/tests/scripts/test-plugin-freshness.sh	runner	запускается как процесс: исполняемый бит, шебанг /usr/bin/env bash (ценз R12)
 ../../../Catalyst/tests/scripts/test-plugin-gate.sh	runner	запускается как процесс: исполняемый бит, шебанг /usr/bin/env bash (ценз R13)

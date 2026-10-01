@@ -428,7 +428,7 @@ rmap_against() {   # <каталог дерева> -> 0 зелёно; причи
   local map_out map_rc want_names got_names reach_ok f b
   map_out=$(bash "$dir/tests/stand-scope.sh" --paths "$pf" 2>"$WORK/.rmap-err")
   map_rc=$?
-  want_names="$(printf 'dispatch-gate\ndispatch-stats\neffort-layers\njudge-bridge\njudge-ladder-live\njudge-serves\nladder-policy\nmod-event-names\nmod-units\nplugin-freshness\nplugin-gate\nplugin-ship\nrender-tree\nrun-all\nrun-hook-forwarding\nscripts\nswe-request\nlint\n' | sort)"
+  want_names="$(printf 'dispatch-gate\ndispatch-stats\nform-host-parity\njudge-bridge\njudge-ladder-live\njudge-serves\nmod-event-names\nmod-units\nplugin-freshness\nplugin-gate\nplugin-ship\nrender-tree\nrun-all\nrun-hook-forwarding\nscripts\nswe-request\nlint\n' | sort)"
   got_names="$(printf '%s' "$map_out" | tr ',' '\n' | sort)"
   reach_ok=1
   for f in "$dir"/tests/scripts/test-*.sh; do
