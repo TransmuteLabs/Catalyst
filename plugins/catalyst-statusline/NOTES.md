@@ -213,9 +213,14 @@ rule. A v1 `sess:<id>` is deleted only past MARK_KEEP by its `seq / 1000` age,
 so a future v1 remains read-only. A publication another process makes between
 the read and delete stays.
 AR-2b / Q3 / R2-1: immediately after the cadence gate, prune synchronously
-claims the generation's in-flight flag before any await. Triggers during a pass
-return without parking or queuing; a finally releases the flag, and a new
-generation starts with no pass in flight. Prune reads its own clock through the
+claims the generation's in-flight flag and a module-counter pass token before
+any await. Each keys/get/delete call is bounded by STORE_HANG_MS; settlements
+update the pass pulse with the process clock. Triggers during a live pass return
+without parking or queuing. If an after callback is dropped, the next trigger
+past the pulse deadline replaces the hung token and starts a new pass. Await
+continuations and the bounded delete entry require the current generation and
+token; a replaced or stopped pass cannot act. Finally releases only its own
+token's flag, and a new generation starts with no pass in flight. Prune reads its own clock through the
 request-ticketed `readClock`. Every time-dependent verdict of that pass uses
 that local clock: window membership, ranking and v1 age. Before the capacity
 gate, every session v3 payload is read once and checked by the reader's schema;
@@ -231,9 +236,36 @@ of `pruneAt`, and one `prune-clock-unavailable` diagnostic per generation; the
 next trigger retries. Only a successful pass clock advances the existing
 STORE_HANG_MS cadence. Clock answers must be finite positive numbers;
 `clock.after(STORE_HANG_MS)` bounds each `clock.now` read, and a refused timer
-refuses the read without an unbounded wait. Success and refusal both advance
-the applied request ticket; an older result cannot change the latest clock
-failure state, and a reply after the deadline cannot apply.
+refuses the read without an unbounded wait. Pending reads also carry a request
+token and process-clock pulse. A subsequent clock request or an entry into the
+start/restore, settled-restore, timer/action queue, recovery, verify or effort
+gate rejects reads past that pulse deadline, even when after dropped its
+callback. This fallback requires a subsequent trigger; it does not add a timer.
+Success and refusal both advance the applied request ticket; an older result
+cannot change the latest clock failure state, and a reply after the deadline
+cannot apply. The deadline has its own rejection handler: a synchronous now
+throw before the race is created, combined with a refused cancel and a later
+timer callback, leaves no unhandled deadline rejection.
+
+FIX5 R1/R2/R6: a clean prune closes both refusal and hung episodes. A damage
+`delete` that rejects without reaching its deadline retains the per-key
+`store-damage` diagnostic and does not stop the next key in the pass; only the
+private `PruneDeadline` rejection stops damage cleanup. Generation changes are
+recorded as `stale-session snapshot prune` at every `current()` check; token
+replacement within the same generation stays silent. The unread StoreIO damage
+closure and the token assignment overwritten synchronously at replacement have
+been removed.
+FIX6b Р8′: in the out-of-window and capacity stages a delete refused before its deadline is said in the `session-snapshot-prune` episode and the pass goes on (no other key is deleted in its place); a deadline in a stage stops the pass and wins over its refusals; a pass with any refused delete, damage deletes included, ends only the hung episode.
+Ключ с отказом, чей digest до вытеснения стал действующим, выпадает из вытесняемых (`aged` до чтений или `evicted` после них), и вытеснение берёт на один свежий ключ больше — это правильная ёмкость.
+
+FIX5 R4: after the success request-order gate, a stale generation cannot have `clockFailed=true`: that flag requires a newer applied refusal ticket, which would have returned at the order gate; the removed live-return branch was a no-op (single removal: 907 pass / 0 fail).
+Доказательство опирается на монотонность `clockReqSeq` / `clockAppliedSeq` между поколениями; продакшн её держит (`register → wipeState` счётчики не трогает, `hooks/statusline.ts:6669–6671`); стендовый шов `__resetState` (`hooks/statusline.ts:7226–7228`) её снимает — путь только стенда.
+
+FIX5 R5: the first refresh await boundary is independently held by U25
+(`U16-first-only`), not masked by the second boundary on every input. The U16/U27
+pair remains; U28 independently holds the rearm boundary. U25 still rejects a
+superseded success changing the new state's failure flag at the request-order
+line, independently of the removed success live-return branch.
 
 The io-null queue-parking branches have been removed (AR-9.5). The only
 `sessEnqueue` callers are `sessWrite`, whose item carries `ioOf($)`, and

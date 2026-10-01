@@ -505,7 +505,7 @@ test('#521 tooth 11 (Р11, timer cancels): a refused cancel of a source timer is
       session: { id: async () => 'A', cwd: async () => '/work/demo', root: async () => '/work/demo' },
       plugin: { name: 'catalyst-statusline', root: '/stand' },
       ui: { log: async () => undefined, invalidate: () => undefined, status: () => undefined },
-      clock: { now: async () => 1000, every: () => ({ cancel() {} }) },
+      clock: { now: async () => 1000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
       env: { get: async () => '' },
       fs: { read: async () => '' },
       process: { run: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }) },

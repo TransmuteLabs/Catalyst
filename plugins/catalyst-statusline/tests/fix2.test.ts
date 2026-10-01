@@ -402,7 +402,7 @@ test('R11: one env.get per name per pass is shared by every family that declared
   })
   try {
     await __runEnvSources(
-      { env: { get: async (name: string) => { got.push(name); return 'probe-' + name } }, clock: { now: async () => 0 } } as never,
+      { env: { get: async (name: string) => { got.push(name); return 'probe-' + name } }, clock: { now: async () => 0, after: () => ({ cancel() {} }) } } as never,
       [fam('a'), fam('b')] as never,
     )
     expect(got).toEqual(['PWD'])

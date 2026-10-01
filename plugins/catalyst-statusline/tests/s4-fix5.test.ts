@@ -621,11 +621,20 @@ test('S4F5 Р3 a settled write cancels its watchdog; one that fires after the se
     $.clock.now = () => { nowCalls++; return readNow() }
     await SL.restoreAfterReload($, {} as never)
     await drain()
+    let storeCalls = 0
+    const phaseStore = $.store
+    $.store = {
+      ...phaseStore,
+      keys: () => { storeCalls++; return phaseStore.keys() },
+      get: (key: string) => { storeCalls++; return phaseStore.get(key) },
+      delete: (key: string) => { storeCalls++; return phaseStore.delete(key) },
+    }
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
     expect($.timers.every((t: Timer) => t.cancelled === true)).toBe(true)
     expect($.timers.filter((t: Timer) => t.ms === 3000).length).toBe(1)
-    expect($.timers.filter((t: Timer) => t.ms === 15000).length).toBe(nowCalls + 1)
+    expect($.timers.filter((t: Timer) => t.ms === 15000).length).toBe(nowCalls + 1 + storeCalls)
+    expect(storeCalls).toBeGreaterThanOrEqual(1)
     // a host that refuses the cancel: the watchdog fires after its write settled
     $.clock.after = (ms: number, fn: () => void) => {
       $.timers.push({ ms, fn, cancelled: false })

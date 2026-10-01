@@ -141,7 +141,7 @@ test('F7: an arm-refusal diagnostic stays bounded', async () => {
   })
   try {
     await SL.__syncSourceTimers({
-      clock: { now: async () => 5000 },
+      clock: { now: async () => 5000, after: () => ({ cancel() {} }) },
       ui: { log: () => undefined, invalidate: () => undefined },
     } as never)
     const refused = SL.__diag().filter((d) => d.key.startsWith('timer-'))
@@ -762,7 +762,7 @@ test('S1-FIX5 T12: a refused debug log does not lose the record', async () => {
   const logs: string[] = []
   let failed = false
   const $ = {
-    clock: { now: async () => 70000 },
+    clock: { now: async () => 70000, after: () => ({ cancel() {} }) },
     ui: { log: (t: string) => { if (!failed) { failed = true; throw new Error('log-refused') } logs.push(t) }, invalidate: () => undefined },
   }
   const clockRuns: Array<() => void> = []
@@ -1287,7 +1287,7 @@ test('S1-FIX6 U16: a refresh across register is dropped', async () => {
   SL.__resetState()
   const { on } = startHandlers()
   const clock = gateOf()
-  const stand = { ...fullStand(), clock: { now: async () => { await clock.p; return 5000 }, every: () => ({ cancel() {} }) } }
+  const stand = { ...fullStand(), clock: { now: async () => { await clock.p; return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.register(on as never, OPT_HUD as never)
     const refreshing = SL.__refresh(stand as never)
@@ -2101,8 +2101,8 @@ test('S1-FIX7 U25: a stale clock resolve cannot clear the failed clock of the ne
   const gate = gateOf()
   const OPTS = { ...OPT_HUD, numDuration: 'clock' }
   let first = true
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p } return 5000 }, every: () => ({ cancel() {} }) } }
-  const poison = { ...optStand(recStore({})), clock: { now: async (): Promise<number> => { throw new Error('no-clock') }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p } return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
+  const poison = { ...optStand(recStore({})), clock: { now: async (): Promise<number> => { throw new Error('no-clock') }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.register(on as never, OPTS as never)
     const refreshing = SL.__refresh($ as never)
@@ -2133,7 +2133,7 @@ test('S1-FIX7 U26: a stale refused clock read says nothing and poisons nothing',
   const { on } = startHandlers()
   const gate = gateOf()
   let first = true
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p; throw new Error('late-refused') } return 5000 }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p; throw new Error('late-refused') } return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.register(on as never, OPT_HUD as never)
     const refreshing = SL.__refresh($ as never)
@@ -2161,7 +2161,7 @@ test('S1-FIX7 U27: a stale refresh cannot reap the live timer of the new state',
   const gate = gateOf()
   const OPTS = { ...OPT_HUD, numDuration: 'clock', details: 'off' }
   let clockCalls = 0
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 1) { await gate.p; return 9000 } return 5000 }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 1) { await gate.p; return 9000 } return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.__setArmEvery(() => ({ cancel() {} }))
     SL.register(on as never, OPTS as never)
@@ -2201,7 +2201,7 @@ test('S1-FIX7 U28: a refresh that went stale inside the rearm sync ships nothing
   const $ = {
     ...base,
     ui: { ...base.ui, log: (t: string): void => { logs.push(t) } },
-    clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 4) { await gate.p; return 7000 } if (clockCalls === 3) return 7000; return 5000 }, every: () => ({ cancel() {} }) },
+    clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 4) { await gate.p; return 7000 } if (clockCalls === 3) return 7000; return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
   }
   try {
     SL.__setArmEvery(() => { throw new Error('arm-refused') })

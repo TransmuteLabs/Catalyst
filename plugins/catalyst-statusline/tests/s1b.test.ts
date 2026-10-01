@@ -56,7 +56,7 @@ test('Y5: ver and the E119 current are ONE claude --version run for both familie
   __resetState()
   const cmds: string[] = []
   const $: unknown = {
-    clock: { now: async () => 0, every: () => { throw new Error('direct clock.every') } },
+    clock: { now: async () => 0, every: () => { throw new Error('direct clock.every') }, after: () => ({ cancel() {} }) },
     process: {
       run: async (argv: string[]) => {
         cmds.push(argv.join(' '))
@@ -116,7 +116,7 @@ test('Y7: the core reads every family env name through its literal; NEON_API_KEY
   ;(external as { reduce: unknown }).reduce = tap(origExt)
   try {
     __resetState()
-    await __runEnvSources({ env: { get: async (name: string) => values[name] }, clock: { now: async () => 0 } } as never)
+    await __runEnvSources({ env: { get: async (name: string) => values[name] }, clock: { now: async () => 0, after: () => ({ cancel() {} }) } } as never)
     const envInputs = captured.filter((i) => (i as { source?: { kind?: string } }).source?.kind === 'env')
     const repoEnv = envInputs.find((i) => JSON.stringify((i as { source?: { names?: string[] } }).source?.names ?? []).includes('NEON_API_KEY')) as { data?: Record<string, unknown> }
     expect(repoEnv).toBeDefined()

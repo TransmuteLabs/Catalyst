@@ -125,7 +125,6 @@ type StoreIO = {
   keys: () => Promise<string[]>
   del: (key: string) => Promise<void>
   clock: () => Promise<ClockRead & { ms: number }>
-  damage: (g: number, key: string, why: string) => Promise<boolean>
 }
 // `atEnd`: the item was started by session.end and that hook still waits for
 // it (Р6); `settle` releases that wait. `sent`: the host really took the
@@ -724,18 +723,36 @@ function byStamp(a: { t: number; saveId: string }, b: { t: number; saveId: strin
 type ClockRead = { ok: boolean; reason?: unknown }
 let clockReqSeq = 0
 let clockAppliedSeq = 0
+type ClockFlight = { token: number; pulse: number; refuse: (reason: unknown) => void }
+const clockFlights = new Map<number, ClockFlight>()
+
+// CONSTRAINT (P2): a dropped after callback cannot hold a caller's queue or
+// memo; the next trigger measures the deadline by the process clock.
+function sweepClockHung(): void {
+  const t = now()
+  for (const [token, flight] of clockFlights) {
+    if (t - flight.pulse <= STORE_HANG_MS) continue
+    clockFlights.delete(token)
+    flight.refuse(new Error('clock.now висит > 15 с'))
+  }
+}
 
 // CONSTRAINT (R2-2…R2-5): only finite positive answers are clocks; clock.after
 // bounds now by STORE_HANG_MS. A late reply cannot apply after the race ended.
 // Success and refusal share the request order; callers with reading own the diagnosis.
 async function readClock($: EngineInterface, reading?: ClockRead): Promise<number> {
+  sweepClockHung()
   const g = S.gen
   const request = ++clockReqSeq
   if (reading !== undefined) { reading.ok = false; reading.reason = 'clock.now answered no finite positive number' }
   let timer: { cancel: () => void } | null = null
+  let flight: ClockFlight | undefined
   try {
     let refuse!: (reason: unknown) => void
     const deadline = new Promise<never>((_resolve, reject) => { refuse = reject })
+    void deadline.catch(() => undefined)
+    flight = { token: request, pulse: now(), refuse }
+    clockFlights.set(request, flight)
     timer = $.clock.after(STORE_HANG_MS, () => refuse(new Error('clock.now висит > 15 с')))
     const t = await Promise.race([$.clock.now(), deadline])
     if (!(typeof t === 'number' && Number.isFinite(t) && t > 0)) throw new Error('clock.now answered no finite positive number: ' + safeText(t))
@@ -744,8 +761,6 @@ async function readClock($: EngineInterface, reading?: ClockRead): Promise<numbe
     if (request <= clockAppliedSeq) return clockMs
     clockMs = t
     clockAppliedSeq = request
-    // the clock flags belong to the state that asked; a newer state reads its own (SPEC §13.4)
-    if (!live(g)) return clockMs
     // clockFailed is a picture input: only the transitions dirty it, a steady
     // read must not block the clock-tick skip (FIX2c п.3)
     if (S.clockFailed) markPicture()
@@ -756,12 +771,15 @@ async function readClock($: EngineInterface, reading?: ClockRead): Promise<numbe
     if (live(g) && reading === undefined) failDiag('warn', 'clock-now', 'clock.now refused: ' + safeText(x))
     if (request <= clockAppliedSeq) return clockMs
     clockAppliedSeq = request
+    // CONSTRAINT (Q2, R2-4): the clock failure flag belongs to the state that asked; an old generation's refusal leaves the new state's flag alone
     if (!live(g)) return clockMs
     if (!S.clockFailed) markPicture()
     S.clockFailed = true
   } finally {
+    if (clockFlights.get(request) === flight) clockFlights.delete(request)
     try { timer?.cancel() } catch {
-      // CONSTRAINT: a refused cancel can only reject a race already settled.
+      // CONSTRAINT: deadline rejection is handled even when a synchronous now
+      // refusal prevented the race from being created.
     }
   }
   return clockMs
@@ -1205,6 +1223,8 @@ type State = {
   // now() of the last prune of the `sess:` keys (FIX6 Р4)
   pruneAt: number | null
   pruneInFlight: boolean
+  pruneToken: number
+  prunePulse: number
 }
 
 // CONSTRAINT (S1-FIX3 F6): the declaration-time value of the WHOLE state —
@@ -1273,6 +1293,8 @@ function freshState(): State {
     episodes: new Set(),
     pruneAt: null,
     pruneInFlight: false,
+    pruneToken: 0,
+    prunePulse: 0,
   }
 }
 
@@ -2328,6 +2350,7 @@ function isSnap(x: unknown): x is DraftSnap {
 // CONSTRAINT (#363 L1/L2): $ travels only into functions declared at the top
 // of this file; the timer bootstrap is one of them.
 function ensureStarted($: EngineInterface, defer = false): void {
+  sweepClockHung()
   if (S.started) return
   S.started = true // the ONLY place timers are created; render never restarts them
   const g = S.gen
@@ -2360,6 +2383,7 @@ function ensureStarted($: EngineInterface, defer = false): void {
 }
 
 function ensureRestore($: EngineInterface): void {
+  sweepClockHung()
   if (S.restored) return
   S.restored = true
   clearStatus($)
@@ -2823,6 +2847,7 @@ async function syncBody($: EngineInterface, g: number): Promise<void> {
 }
 
 function syncSourceTimers($: EngineInterface): Promise<void> {
+  sweepClockHung()
   // CONSTRAINT: the generation is the caller's, taken at the queueing — a job
   // queued behind another would otherwise start as the newer state's own
   const g = S.gen
@@ -3015,6 +3040,7 @@ function refreshQuietly($: EngineInterface): Promise<void> {
 // control — a press on a tree drawn by an older state acts on nothing and the
 // pane is redrawn by the state now current (SPEC §13.4)
 function act($: EngineInterface, g: number, operation: () => Promise<unknown>): void {
+  sweepClockHung()
   // picker presses run one after another; a failure becomes a notice, never a
   // lost picker (SPEC §14.12)
   S.actions = S.actions.then(() => S.restoring).then(() => {
@@ -3965,6 +3991,7 @@ async function rebindPicker($: EngineInterface, g: number, to: string): Promise<
 }
 
 async function settledRestore(): Promise<void> {
+  sweepClockHung()
   let seen: Promise<void>
   do {
     seen = S.restoring
@@ -5460,6 +5487,7 @@ function restoreSession($: EngineInterface, session: string): Promise<void> {
   const recovery = S.recovery
   if (recovery.session === '') recovery.session = session
   if (base.session === '') S.famStates.set(FAMILIES[0]!, { ...base, session })
+  sweepClockHung()
   if (recovery.status !== 'pending') return Promise.resolve()
   if (recovery.reading) return recovery.reading
   const g = S.gen
@@ -5690,7 +5718,6 @@ function ioOf($: EngineInterface): StoreIO {
       const ms = await readClock($, reading)
       return { ...reading, ms }
     },
-    damage: (g, key, why) => dropDamaged($, g, key, why),
   }
 }
 
@@ -6183,6 +6210,7 @@ function staleVerifyDiag(key: string, outcome: 'read' | 'refused', text: string)
 // through this gather's `$`; one read-back of a key at a time, one hanging
 // past STORE_HANG_MS is reported once per episode
 function verifyStore($: EngineInterface): void {
+  sweepClockHung()
   const key = currentKey()
   if (key === '') return
   const landed = LANDED.get(key)
@@ -6301,20 +6329,66 @@ function verifyStore($: EngineInterface): void {
 // The current key and a key with a slot, farewell or unsettled store.set here
 // are never deleted; a refusal is one warn per episode, a clean pass ends it.
 let pruneReadDepth = 0
+let pruneSeq = 0
 
-function pruneStore(io: StoreIO): void {
+function pruneStore(raw: StoreIO): void {
   const t = now()
-  if (S.pruneInFlight || (S.pruneAt !== null && t - S.pruneAt < STORE_HANG_MS)) return
+  const hung = S.pruneInFlight && t - S.prunePulse > STORE_HANG_MS
+  if (hung) {
+    episodeDiag('warn', 'session-snapshot-prune-hung', STORE_SESS, 'snapshot prune висит > 15 с; a new pass replaces it')
+    S.pruneInFlight = false
+  }
+  if (S.pruneInFlight || (!hung && S.pruneAt !== null && t - S.pruneAt < STORE_HANG_MS)) return
   S.pruneInFlight = true
+  S.prunePulse = t
+  const token = S.pruneToken = ++pruneSeq
   const g = S.gen
+  let stopped = false
+  let clean = true
+  const current = (): boolean => {
+    if (!live(g)) { staleDrop('session snapshot prune'); return false }
+    return S.pruneToken === token && !stopped
+  }
+  class PruneDeadline extends Error {}
+  const bounded = async <T>(call: string, invoke: () => Promise<T>): Promise<T> => {
+    if (!current()) throw new Error('prune pass replaced')
+    let timer: { cancel: () => void } | null = null
+    let reject!: (reason: unknown) => void
+    const deadline = new Promise<never>((_resolve, refuse) => { reject = refuse })
+    void deadline.catch(() => undefined)
+    try {
+      timer = raw.arm(() => { reject(new PruneDeadline(call + ' висит > 15 с')) })
+      const value = await Promise.race([invoke(), deadline])
+      if (!current()) throw new Error('prune pass replaced')
+      S.prunePulse = now()
+      return value
+    } catch (err) {
+      if (current()) S.prunePulse = now()
+      throw err
+    } finally {
+      try { timer?.cancel() } catch { /* CONSTRAINT: the deadline has its own rejection handler. */ }
+    }
+  }
+  const io: StoreIO = {
+    ...raw,
+    keys: () => bounded('store.keys', () => raw.keys()),
+    get: key => bounded('store.get', () => raw.get(key)),
+    del: key => bounded('store.delete', () => raw.del(key)).catch((err: unknown) => { if (!(err instanceof PruneDeadline)) clean = false; throw err }),
+  }
   // CONSTRAINT (AR-2c): only the synchronous store.get entry belongs to this
   // marker; an unrelated read while prune awaits must remain observable.
   const read = (key: string): Promise<unknown> => {
     pruneReadDepth++
     try { return io.get(key) } finally { pruneReadDepth-- }
   }
+  const say = (call: string, err: unknown): void => {
+    if (!current()) return
+    episodeDiag('warn', 'session-snapshot-prune', STORE_SESS, 'the sess: keys could not be pruned: ' + call + ' refused: ' + errorText(err) + '; a landed write past 15 s tries again')
+  }
   const refused = (call: string, err: unknown): void => {
-    if (live(g)) episodeDiag('warn', 'session-snapshot-prune', STORE_SESS, 'the sess: keys could not be pruned: ' + call + ' refused: ' + errorText(err) + '; a landed write past 15 s tries again')
+    if (!current()) return
+    say(call, err)
+    stopped = true
   }
   // CONSTRAINT (#551 D2, D1): the sessions are groups — the digest segment of a
   // publication, the session of a `sess:<id>` key of the previous version; a
@@ -6331,7 +6405,7 @@ function pruneStore(io: StoreIO): void {
   }
   const pass = async (): Promise<void> => {
     const reading = await io.clock()
-    if (!live(g)) return staleDrop('session snapshot prune')
+    if (!current()) return
     // CONSTRAINT (Q3): every time-dependent verdict uses this pass's clock;
     // clock refusal permits only schema-damage deletion and does not spend the cadence.
     const passClock = reading.ms
@@ -6343,7 +6417,7 @@ function pruneStore(io: StoreIO): void {
     } catch (err) {
       return refused('store.keys', err)
     }
-    if (!live(g)) return staleDrop('session snapshot prune')
+    if (!current()) return
     const groups = new Map<string, string[]>()
     for (const k of Array.isArray(keys) ? keys : []) {
       if (typeof k !== 'string') continue
@@ -6358,7 +6432,7 @@ function pruneStore(io: StoreIO): void {
     try {
       await Promise.all([...new Set([...groups.values()].flat())].filter((key) => key.startsWith(NS_SESS + '.')).map(async (key) => {
         const value = await read(key)
-        if (!live(g)) return
+        if (!current()) return
         let bad: string | null = null
         let ord = ZERO
         if (value !== undefined) {
@@ -6370,7 +6444,16 @@ function pruneStore(io: StoreIO): void {
           }
         }
         if (bad !== null) {
-          await io.damage(g, key, bad)
+          if (!current()) return
+          try {
+            await io.del(key)
+            if (!current()) return
+            failDiag('info', 'store-damage', key + ': повреждённая запись, ' + bad + ' — запись удалена', 'store-damage:' + key)
+          } catch (err) {
+            if (!current()) return
+            if (err instanceof PruneDeadline) return refused('store.delete', err)
+            failDiag('info', 'store-damage', key + ': повреждённая запись, ' + bad + ' — запись не учитывается, удалить её не удалось: ' + errorText(err), 'store-damage:' + key)
+          }
           v3Reads.set(key, { key, ord: ZERO, present: false, v1: false })
           return
         }
@@ -6379,17 +6462,25 @@ function pruneStore(io: StoreIO): void {
     } catch (err) {
       return refused('store.get', err)
     }
-    if (!live(g)) return staleDrop('session snapshot prune')
+    if (!current()) return
     const deleted = new Set<string>()
+    // CONSTRAINT (#551 Р8′): a stage's hang stops the pass and wins over its refusals; a refusal is
+    // said in the prune episode and the pass goes on — no other key is deleted in its place
+    const stageDone = (results: PromiseSettledResult<unknown>[]): boolean => {
+      const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      const hang = failed.find((r) => r.reason instanceof PruneDeadline)
+      if (hang !== undefined) { refused('store.delete', hang.reason); return false }
+      if (failed[0] !== undefined) say('store.delete', failed[0].reason)
+      return true
+    }
     if (reading.ok) {
       const outside = [...v3Reads.values()].filter((r) => r.present && clockBeyond(r.ord, passClock) > 0)
       const results = await Promise.allSettled(outside.map(async (r) => {
         deleted.add(r.key)
         await io.del(r.key)
       }))
-      if (!live(g)) return staleDrop('session snapshot prune')
-      const refusal = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
-      if (refusal !== undefined) return refused('store.delete', refusal.reason)
+      if (!current()) return
+      if (!stageDone(results)) return
     }
     const excess = groups.size - SESS_KEEP
     if (reading.ok && excess > 0) {
@@ -6409,7 +6500,7 @@ function pruneStore(io: StoreIO): void {
       } catch (err) {
         return refused('store.get', err)
       }
-      if (!live(g)) return staleDrop('session snapshot prune')
+      if (!current()) return
       // CONSTRAINT (#551 D8): v1 is read only; deleted only past MARK_KEEP by its own age (NOTES)
       const goes = (r: Read): boolean => r.present && (!r.v1 || (r.ord.seq > 0 && passClock - r.ord.seq / SEQ_PER_MS > MARK_KEEP))
       // CONSTRAINT (FIX6 Р4 ME): a session kept only after the reads is kept — the rule is read again here
@@ -6420,16 +6511,20 @@ function pruneStore(io: StoreIO): void {
         for (const r of a.reads) if (goes(r) && (evicted.has(a.digest) || clockBeyond(r.ord, passClock) > 0 || cmpRead(r.ord, a.max, passClock) < 0)) drop.push(r)
       }
       const results = await Promise.allSettled(drop.filter((a) => !deleted.has(a.key)).map(async (a) => io.del(a.key)))
-      if (!live(g)) return staleDrop('session snapshot prune')
-      const refusal = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
-      if (refusal !== undefined) return refused('store.delete', refusal.reason)
+      if (!current()) return
+      if (!stageDone(results)) return
     }
-    endEpisode(STORE_SESS, ['session-snapshot-prune'])
+    // CONSTRAINT (#551 Р8′): only a pass without a refused delete is clean; a refused one ends the hang episode, not the refusal one
+    if (!clean) return endEpisode(STORE_SESS, ['session-snapshot-prune-hung'])
+    endEpisode(STORE_SESS, ['session-snapshot-prune', 'session-snapshot-prune-hung'])
   }
   void quiet('snapshot-prune', async () => {
     try { await pass() } finally {
-      // CONSTRAINT (R2-1): an old pass cannot release a new generation's pass.
-      if (live(g)) S.pruneInFlight = false
+      // CONSTRAINT (P1): neither a replaced pass nor an old generation releases its successor.
+      if (live(g) && S.pruneToken === token) {
+        stopped = true
+        S.pruneInFlight = false
+      }
     }
   })
 }
@@ -6542,6 +6637,7 @@ function writeSession($: EngineInterface, atEnd = false): Pending | null {
 const EFFORT_SOURCE: Source = { kind: 'session', call: 'config' }
 
 function seedEffort($: EngineInterface): Promise<void> {
+  sweepClockHung()
   if (S.effortSeeded) return Promise.resolve()
   if (S.effortSeed !== null) return S.effortSeed
   const g = S.gen

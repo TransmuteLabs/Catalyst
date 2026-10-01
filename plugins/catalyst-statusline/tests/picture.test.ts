@@ -184,7 +184,7 @@ for (const [name, input] of [
 // The final tick reads the same refused clock, so no other mark can rescue it.
 test('R10-clockFailed-set: a refusal after recovery dirties with no new diagnostic', async () => {
   await picture(async (p) => {
-    const bad = { clock: { now: async () => { throw new Error('picture clock') } } }
+    const bad = { clock: { now: async () => { throw new Error('picture clock') }, after: () => ({ cancel() {} }) } }
     await SL.__pictureReadClock(bad as never)
     await p.tick()
     await SL.__pictureReadClock(bad as never)
@@ -257,7 +257,7 @@ test('R10-nonclock-tick: an unchanged cmd source tick builds a picture', async (
     return { cancel() {} }
   })
   const $ = {
-    clock: { now: async () => 70000 },
+    clock: { now: async () => 70000, after: () => ({ cancel() {} }) },
     ui: { log: () => undefined, invalidate: () => undefined },
     process: { run: async () => ({ exitCode: 0, stdout: 'feature/hover\n', stderr: '' }) },
     fs: { read: async () => '' },
@@ -402,7 +402,7 @@ test('R10-viewport-live: AbovePrompt follows live bodyColumns without a build', 
     Text: (props: Record<string, unknown>) => ({ type: 'Text', props, children: props['children'] }),
   }
   const $ = {
-    clock: { now: async () => 70000, every: () => ({ cancel() {} }) },
+    clock: { now: async () => 70000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
     ui: { log: async () => undefined, invalidate: () => undefined, status: () => undefined, toast: () => undefined, resolve: async () => table },
     store: { get: async () => undefined, set: async () => undefined, delete: async () => undefined },
     session: { id: async () => 'vp', cwd: async () => '/work/demo', root: async () => '/work/demo', usage: async () => ({ context: { tokens: 1, window: 2 }, rateLimits: [], cost: { usd: 0 } }), model: async () => 'm', turns: async () => 0, messages: async () => [] },

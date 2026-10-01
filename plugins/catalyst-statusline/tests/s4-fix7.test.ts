@@ -74,15 +74,6 @@ const fullStand = (persisted = new Map<string, unknown>(), id = 'A'): any => {
   seam.__setNow?.(() => stand.t)
   return stand
 }
-const fireWatchdogs = (stand: { timers: Timer[] }): number => {
-  let fired = 0
-  for (const t of stand.timers.splice(0)) {
-    if (t.cancelled || t.ms !== 15000) continue
-    fired++
-    t.fn()
-  }
-  return fired
-}
 const handlers = (): Record<string, any> => {
   const h: Record<string, any> = {}
   SL.register(((event: string, fn: unknown) => { h[event] = fn }) as never, {} as never)
