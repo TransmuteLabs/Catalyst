@@ -1,6 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
+import { FAMILIES } from '../hooks/data'
 import type { Source } from '../hooks/data/types'
+import { EXT_WRITER, NS_SESS, isSessKey, sessKeys, sessValue, v3Key } from './world'
 
 // CONSTRAINT (measured, the header of template.test.ts): the kit loads the
 // folder plugin once; the teeth run against the imported module instance.
@@ -16,7 +18,8 @@ const drain = async (): Promise<void> => {
 const eventInput = (event: string, data: unknown, now = 0): void => SL.__feed({ source: { kind: 'event', event } as Source, ok: true, data, now })
 const tokens = (turnId: string, n: number) => ({ turnId, usage: { input_tokens: n, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
 const clone = (v: unknown): any => JSON.parse(JSON.stringify(v))
-const total = (m: Map<string, unknown>, k: string): number | undefined => (m.get(k) as { sum?: { total: number } } | undefined)?.sum?.total
+// the newest snapshot of the session of the logical key `sess:<id>`, both forms (#551 §3.10)
+const total = (m: Map<string, unknown>, k: string): number | undefined => (sessValue(m, k.slice('sess:'.length)) as { sum?: { total: number } } | undefined)?.sum?.total
 const deferred = <T,>() => {
   let resolve!: (v: T) => void
   let reject!: (e: unknown) => void
@@ -108,7 +111,7 @@ test('S4F6 Р1 episode write: refusals of one key give one record until a write 
     const { h, $, persisted } = await start()
     let refuse = true
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && refuse) throw new Error('store down')
+      if (isSessKey(k, 'A') && refuse) throw new Error('store down')
       persisted.set(k, clone(v))
     }
     const counts: number[] = []
@@ -137,7 +140,7 @@ test('S4F6 Р1 episode hung: hangs of one key give one record until a write of i
     const { h, $, persisted } = await start()
     let slow = deferred<void>()
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') await slow.promise
+      if (isSessKey(k, 'A')) await slow.promise
       persisted.set(k, clone(v))
     }
     const counts: number[] = []
@@ -170,7 +173,7 @@ test('S4F6 Р1 (б): a hung write of the newest value that lands late counts as 
     const gate = deferred<void>()
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await gate.promise
+      if (isSessKey(k, 'A') && ++n === 1) await gate.promise
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('a1', 100), 60000)
@@ -179,7 +182,7 @@ test('S4F6 Р1 (б): a hung write of the newest value that lands late counts as 
     await drain()
     gate.resolve()
     await drain()
-    const seq = (persisted.get('sess:A') as { seq: number }).seq
+    const seq = (sessValue(persisted, 'A') as { seq: number }).seq
     await gather($)
     await gather($)
     expect({ n, landed: seam.__sessQueue().landed, farewell: seam.__sessQueue().farewell }).toEqual({ n: 1, landed: [['sess:A', seq]], farewell: [] })
@@ -193,7 +196,7 @@ test('S4F6 Р1 late refusal: a hung write refused late is an ordinary retry with
     const gate = deferred<void>()
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) {
+      if (isSessKey(k, 'A') && ++n === 1) {
         await gate.promise
         throw new Error('store down')
       }
@@ -217,7 +220,7 @@ test('S4F6 Р1′ (а): a store slower than the watchdog holds at most two unset
     const { h, $ } = await start()
     let n = 0
     $.store.set = async (k: string) => {
-      if (k === 'sess:A') {
+      if (isSessKey(k, 'A')) {
         n++
         await new Promise<void>(() => {})
       }
@@ -240,7 +243,7 @@ test('S4F6 Р1′ (б) (FIX8 Ф1): once one of the two unsettled writes settles,
     const gates = [deferred<void>(), deferred<void>()]
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') {
+      if (isSessKey(k, 'A')) {
         const i = n++
         if (i < 2) await gates[i]!.promise
       }
@@ -272,7 +275,7 @@ test('S4F6 Р1′ (в): a value queued behind the second unsettled write waits w
     const { h, $ } = await start()
     let n = 0
     $.store.set = async (k: string) => {
-      if (k === 'sess:A') {
+      if (isSessKey(k, 'A')) {
         n++
         await new Promise<void>(() => {})
       }
@@ -290,7 +293,9 @@ test('S4F6 Р1′ (в): a value queued behind the second unsettled write waits w
   } finally { SL.__resetState() }
 })
 
-test('S4F6 AR4: a late landing of a wiped generation calls nothing through its $; the next gather of the live one writes the newest value', async () => {
+// #551 §3.10: the late landing is a publication of its own — it covers nothing,
+// the newest value stands; the next landing of the live generation deletes it
+test('S4F6 AR4: a late landing of a wiped generation calls nothing through its $; the newest value stands and the next live landing removes it', async () => {
   SL.__resetState()
   try {
     const persisted = new Map<string, unknown>()
@@ -303,7 +308,7 @@ test('S4F6 AR4: a late landing of a wiped generation calls nothing through its $
     let first = true
     $.store.set = async (k: string, v: unknown) => {
       count()
-      if (k === 'sess:A' && first) {
+      if (isSessKey(k, 'A') && first) {
         first = false
         await gate.promise
       }
@@ -331,8 +336,12 @@ test('S4F6 AR4: a late landing of a wiped generation calls nothing through its $
     await drain()
     await drain()
     const afterLanding = total(persisted, 'sess:A')
+    const pubsAfterLanding = sessKeys(persisted, 'A').length
     await gather($2)
-    expect({ oldCalls, afterLanding, stored: total(persisted, 'sess:A') }).toEqual({ oldCalls: 0, afterLanding: 100, stored: 5 })
+    eventInput('turn.complete', tokens('n2', 2), 70500)
+    await end(h2, $2)
+    await drain()
+    expect({ oldCalls, afterLanding, pubsAfterLanding, stored: total(persisted, 'sess:A'), pubs: sessKeys(persisted, 'A').length }).toEqual({ oldCalls: 0, afterLanding: 5, pubsAfterLanding: 2, stored: 7, pubs: 1 })
   } finally { SL.__resetState() }
 })
 
@@ -345,7 +354,7 @@ test('S4F6 Р2 (а): a refused clock.now and a watchdog the host never fires —
     $.clock.now = async () => { throw new Error('clock refused') }
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await new Promise<void>(() => {})
+      if (isSessKey(k, 'A') && ++n === 1) await new Promise<void>(() => {})
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('a1', 100), 60000)
@@ -365,7 +374,7 @@ test('S4F6 Р2 (б) sweep: $.clock.now going back each gather does not hold the 
     $.wall = 61000
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await new Promise<void>(() => {})
+      if (isSessKey(k, 'A') && ++n === 1) await new Promise<void>(() => {})
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('a1', 100), 60000)
@@ -390,7 +399,7 @@ test('S4F6 Р2 (б) window: $.clock.now going back each gather does not move the
     await end(h, $)
     let reads = 0
     const get = $.store.get
-    $.store.get = async (k: string) => { if (k === 'sess:A') reads++; return get(k) }
+    $.store.get = async (k: string) => { if (isSessKey(k, 'A')) reads++; return get(k) }
     const counts: number[] = []
     for (const step of [0, 10000, 6000]) {
       $.t += step
@@ -411,7 +420,7 @@ test('S4F6 X4 away: a refused farewell of a session switched away from, supersed
     const gate = deferred<void>()
     let park = false
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && park) {
+      if (isSessKey(k, 'A') && park) {
         park = false
         await gate.promise
         throw new Error('store down')
@@ -438,7 +447,8 @@ test('S4F6 X4 away: a refused farewell of a session switched away from, supersed
   } finally { SL.__resetState() }
 })
 
-test('S4F6 Р3 re-put: a late landing below the newest value re-puts it through the settled flight\'s own call', async () => {
+// #551 §3.10: the late landing puts nothing again through the settled flight's call — one publication of the session stays
+test('S4F6 Р3 re-put: a late landing below the newest value puts nothing again; one publication stays', async () => {
   SL.__resetState()
   try {
     const persisted = new Map<string, unknown>()
@@ -449,7 +459,7 @@ test('S4F6 Р3 re-put: a late landing below the newest value re-puts it through 
     const gate = deferred<void>()
     let n2 = 0
     $2.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n2 === 1) await gate.promise
+      if (isSessKey(k, 'A') && ++n2 === 1) await gate.promise
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('a2', 10), 60500)
@@ -459,7 +469,7 @@ test('S4F6 Р3 re-put: a late landing below the newest value re-puts it through 
     const $3 = fullStand(persisted)
     let n3 = 0
     $3.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') n3++
+      if (isSessKey(k, 'A')) n3++
       persisted.set(k, clone(v))
     }
     await gather($3)
@@ -467,7 +477,7 @@ test('S4F6 Р3 re-put: a late landing below the newest value re-puts it through 
     gate.resolve()
     await drain()
     await drain()
-    expect({ n2, n3, stored: total(persisted, 'sess:A') }).toEqual({ n2: 2, n3: 1, stored: 110 })
+    expect({ n2, n3, stored: total(persisted, 'sess:A'), pubs: sessKeys(persisted, 'A').length }).toEqual({ n2: 1, n3: 1, stored: 110, pubs: 1 })
   } finally { SL.__resetState() }
 })
 
@@ -485,14 +495,15 @@ test('S4F6 Р3 idle: a key with no slot, no farewell and not the current session
   } finally { SL.__resetState() }
 })
 
-test('S4F6 Р3 hung: a key with a hung flight stays in LANDED — its late landing below the newest value is followed by it', async () => {
+// #551 §3.10: the late landing below the newest value deletes itself — no re-put
+test('S4F6 Р3 hung: a key with a hung flight stays in LANDED — its late landing below the newest value deletes itself', async () => {
   SL.__resetState()
   try {
     const { h, $, persisted } = await start()
     const gate = deferred<void>()
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await gate.promise
+      if (isSessKey(k, 'A') && ++n === 1) await gate.promise
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('a1', 100), 60000)
@@ -507,7 +518,7 @@ test('S4F6 Р3 hung: a key with a hung flight stays in LANDED — its late landi
     gate.resolve()
     await drain()
     await drain()
-    expect({ n, stored: total(persisted, 'sess:A') }).toEqual({ n: 3, stored: 150 })
+    expect({ n, stored: total(persisted, 'sess:A'), pubs: sessKeys(persisted, 'A').length }).toEqual({ n: 2, stored: 150, pubs: 1 })
   } finally { SL.__resetState() }
 })
 
@@ -518,7 +529,7 @@ test('S4F6 Р3 cap: LANDED holds at most 32 keys, the smallest seq goes first', 
     for (let i = 0; i < 34; i++) persisted.set('sess:S' + i, SNAP(i, (1000 + i) * 1000))
     const { $ } = await start(persisted, 'S0')
     $.store.set = async (k: string, v: unknown) => {
-      if (k.startsWith('sess:')) throw new Error('store down')
+      if (isSessKey(k)) throw new Error('store down')
       persisted.set(k, clone(v))
     }
     for (let i = 1; i < 34; i++) {
@@ -533,20 +544,28 @@ test('S4F6 Р3 cap: LANDED holds at most 32 keys, the smallest seq goes first', 
 
 // ---------------------------------------------------------------- Р4
 
-test('S4F6 Р4 (а): a landed write of the current session prunes the store to 32 sess keys, the oldest by seq, never the current', async () => {
+// CONSTRAINT (#551 D2, D8): the prune groups snapshots by session; a
+// `sess:<id>` key of the previous version younger than MARK_KEEP is never
+// pruned (s551-protocol T14) — the seeds are another environment's publications
+const extSess = (id: string, i: number): string => v3Key(NS_SESS, id, EXT_WRITER, i + 1)
+const seedExt = (persisted: Map<string, unknown>, id: string, i: number, sum: number, seq: number): void => {
+  persisted.set(extSess(id, i), { ...SNAP(sum, seq), session: id })
+}
+
+test('S4F6 Р4 (а): a landed write of the current session prunes the store to 32 sessions, the oldest by seq, never the current', async () => {
   SL.__resetState()
   try {
     const persisted = new Map<string, unknown>()
-    for (let i = 0; i < 40; i++) persisted.set('sess:K' + i, SNAP(i, (1000 + i) * 1000))
+    for (let i = 0; i < 40; i++) seedExt(persisted, 'K' + i, i, i, (1000 + i) * 1000)
     persisted.set('other', 1)
     const { h, $ } = await start(persisted)
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
     await drain()
-    const sess = [...persisted.keys()].filter((k) => k.startsWith('sess:'))
-    const gone = Array.from({ length: 40 }, (_, i) => 'sess:K' + i).filter((k) => !persisted.has(k))
-    expect({ size: sess.length, current: persisted.has('sess:A'), gone, other: persisted.get('other') }).toEqual({
-      size: 32, current: true, gone: Array.from({ length: 9 }, (_, i) => 'sess:K' + i), other: 1,
+    const sess = [...persisted.keys()].filter((k) => isSessKey(k))
+    const gone = Array.from({ length: 40 }, (_, i) => i).filter((i) => !persisted.has(extSess('K' + i, i))).map((i) => 'K' + i)
+    expect({ size: sess.length, current: sessKeys(persisted, 'A').length, gone, other: persisted.get('other') }).toEqual({
+      size: 32, current: 1, gone: Array.from({ length: 9 }, (_, i) => 'K' + i), other: 1,
     })
   } finally { SL.__resetState() }
 })
@@ -555,13 +574,13 @@ test('S4F6 Р4 (а) current: the current key is never pruned, the oldest by seq 
   SL.__resetState()
   try {
     const persisted = new Map<string, unknown>()
-    for (let i = 0; i < 40; i++) persisted.set('sess:K' + i, SNAP(i, (100000 + i) * 1000))
+    for (let i = 0; i < 40; i++) seedExt(persisted, 'K' + i, i, i, (100000 + i) * 1000)
     const { h, $ } = await start(persisted)
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
     await drain()
-    const gone = Array.from({ length: 40 }, (_, i) => 'sess:K' + i).filter((k) => !persisted.has(k))
-    expect({ current: total(persisted, 'sess:A'), gone }).toEqual({ current: 100, gone: Array.from({ length: 9 }, (_, i) => 'sess:K' + i) })
+    const gone = Array.from({ length: 40 }, (_, i) => i).filter((i) => !persisted.has(extSess('K' + i, i))).map((i) => 'K' + i)
+    expect({ current: total(persisted, 'sess:A'), gone }).toEqual({ current: 100, gone: Array.from({ length: 9 }, (_, i) => 'K' + i) })
   } finally { SL.__resetState() }
 })
 
@@ -569,7 +588,7 @@ test('S4F6 Р4 (б): a refused delete of the prune is one warn per episode', asy
   SL.__resetState()
   try {
     const persisted = new Map<string, unknown>()
-    for (let i = 0; i < 40; i++) persisted.set('sess:K' + i, SNAP(i, (1000 + i) * 1000))
+    for (let i = 0; i < 40; i++) seedExt(persisted, 'K' + i, i, i, (1000 + i) * 1000)
     const { h, $ } = await start(persisted)
     $.store.delete = async () => { throw new Error('delete refused') }
     eventInput('turn.complete', tokens('a1', 100), 60000)
@@ -591,7 +610,7 @@ test('S4F6 Р4 (в): an agent description is stored at most 200 characters long'
     const { h, $, persisted } = await start()
     await h['agent.spawn']($, { description: 'd'.repeat(1000) }, async () => ({ agentId: 'ag1' }))
     await drain()
-    const map = (persisted.get('sess:A') as { agents: { map: [string, { desc: string }][] } }).agents.map
+    const map = (sessValue(persisted, 'A') as { agents: { map: [string, { desc: string }][] } }).agents.map
     expect(map.map(([id, r]) => [id, r.desc.length <= 200])).toEqual([['ag1', true]])
   } finally { SL.__resetState() }
 })
@@ -607,11 +626,16 @@ test('S4F6 Р5: an equal seq of another origin is ordered the same way in both p
       const { h, $, persisted } = await start()
       eventInput('turn.complete', tokens('a1', 100), 60000)
       await end(h, $)
-      const mine = persisted.get('sess:A') as Record<string, unknown>
-      persisted.set('sess:A', { ...clone(mine), origin: them, sum: { total: 7, in: 7, out: 0, cache: 0 } })
+      // the other process publishes the same seq under a key of its own (#551 §3.10)
+      const mine = sessValue(persisted, 'A') as Record<string, unknown>
+      persisted.set(v3Key(NS_SESS, 'A', EXT_WRITER, 1), { ...clone(mine), origin: them, sum: { total: 7, in: 7, out: 0, cache: 0 } })
       await gather($)
       await drain()
-      winners.push(String((persisted.get('sess:A') as { origin?: unknown }).origin))
+      // the restore of a fresh state takes the newest of both by (seq, origin)
+      SL.__resetState()
+      await start(persisted)
+      const restored = ((SL.__stateSnapshot()['famStates'] as Array<[unknown, any]>).find(([fam]) => fam === FAMILIES[0])![1]).sum?.total
+      winners.push(restored === 7 ? them : restored === 100 ? us : 'none:' + String(restored))
     } finally { SL.__resetState() }
   }
   expect(winners).toEqual(['b', 'b'])
@@ -628,7 +652,7 @@ test('S4F6 Р6 (а): session.end returns after its write lands, within the sleep
     const sleep = deferred<unknown>()
     $.process.run = async (argv: unknown, init: unknown) => { runs.push([argv, init]); return sleep.promise }
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') await gate.promise
+      if (isSessKey(k, 'A')) await gate.promise
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('a1', 100), 60000)
@@ -649,7 +673,7 @@ test('S4F6 Р6 (б): a hung write holds session.end only until the sleep, with t
     const { h, $ } = await start()
     const sleep = deferred<unknown>()
     $.process.run = async () => sleep.promise
-    $.store.set = async (k: string) => { if (k === 'sess:A') await new Promise<void>(() => {}) }
+    $.store.set = async (k: string) => { if (isSessKey(k, 'A')) await new Promise<void>(() => {}) }
     eventInput('turn.complete', tokens('a1', 100), 60000)
     let ended = false
     void h['session.end']($, {}, async () => ({})).then(() => { ended = true })
@@ -668,7 +692,7 @@ test('S4F6 Р6 (в): a write refused while session.end waits carries the ended-s
     const { h, $ } = await start()
     const sleep = deferred<unknown>()
     $.process.run = async () => sleep.promise
-    $.store.set = async (k: string) => { if (k === 'sess:A') throw new Error('store down') }
+    $.store.set = async (k: string) => { if (isSessKey(k, 'A')) throw new Error('store down') }
     eventInput('turn.complete', tokens('a1', 100), 60000)
     let ended = false
     void h['session.end']($, {}, async () => ({})).then(() => { ended = true })
@@ -684,7 +708,7 @@ test('S4F6 Р6 (г): after a refused process.run the clock bound releases sessio
   try {
     const { h, $ } = await start()
     $.process.run = async () => { throw new Error('run refused') }
-    $.store.set = async (k: string) => { if (k === 'sess:A') await new Promise<void>(() => {}) }
+    $.store.set = async (k: string) => { if (isSessKey(k, 'A')) await new Promise<void>(() => {}) }
     eventInput('turn.complete', tokens('a1', 100), 60000)
     let ended = false
     void h['session.end']($, {}, async () => ({})).then(() => { ended = true })
@@ -710,7 +734,7 @@ test('S4F6 Р7: a hung farewell of the current session is retried as the session
     await gather($)
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await new Promise<void>(() => {})
+      if (isSessKey(k, 'A') && ++n === 1) await new Promise<void>(() => {})
       persisted.set(k, clone(v))
     }
     $.session.id = async () => 'A'
@@ -734,7 +758,7 @@ test('S4F6 Р8: one read-back of a key at a time; one hanging past 15 s is one w
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
     let reads = 0
-    $.store.get = async (k: string) => { if (k === 'sess:A') { reads++; await new Promise<void>(() => {}) } return undefined }
+    $.store.get = async (k: string) => { if (isSessKey(k, 'A')) { reads++; await new Promise<void>(() => {}) } return undefined }
     const counts: number[] = []
     for (const step of [0, 16000, 16000]) {
       $.t += step

@@ -26,46 +26,52 @@ const COMMAND = 'statusline-mod'
 const PANE_ID = 'statusline'
 const LINE_SPLIT = ' ;; '
 const SEG_SPLIT = '||'
-// CONSTRAINT (#521 FIX6 Р9): every move of a bare key below reads it, then deletes it with no compare ($.store has none) — a write of the previous version to that bare key in between is lost; running alongside the previous version is not supported (NOTES.md)
-// CONSTRAINT (#521 FIX4 Ф2): one open flag per open, STORE_OPEN + ':' + its
-// token, `{session, token, t}`; «open in session X» = some flag names X. A
-// close deletes only its own key. The bare key is the pre-FIX4 flag, moved to
-// its token key by a restore of the session it names (#521 FIX5 Ч1)
+// CONSTRAINT (#551 D8): v1 is read only; deleted only past MARK_KEEP by its own age (NOTES)
+// The previous versions' records: the open flag STORE_OPEN + ':' + token
+// `{session, token, e, n, at}` and the bare pre-FIX4 flag; the close marks of
+// 0.5.1 (STORE_OPEN_CLOSED + ':' + session, `{t}`, read as e = 0, n = t) and of
+// FIX9 (STORE_OPEN_CLOSED_V2 + ':' + session + ':' + e + ':' + n — the key is the
+// mark, a value that says otherwise is damage, #551 FIX9c Р13); the epoch key;
+// the draft keys and the bare slot; the save marks, undo records and their bare keys
 const STORE_OPEN = 'statusline.open.v1'
-// CONSTRAINT (#521 FIX8b Р1): a close marks the panel's SESSION,
-// STORE_OPEN_CLOSED + ':' + session, `{t}` — the close's instant — before its
-// flags are deleted. A flag write begun in an earlier state or environment
-// may land after the delete, under a token the closing state never knew; a
-// flag of session S is open only while its `t` is past S's mark — the restore
-// deletes the others and keeps the mark. Every flag write is stamped past
-// the latest close this environment knows (flagStamp, lastCloseT), and a
-// close is stamped past the latest one before it. The mark ages out with the
-// flags (DRAFT_KEEP_MS). Not a prefix of STORE_OPEN + ':' — a mark is never read as a flag
 const STORE_OPEN_CLOSED = 'statusline.open-closed.v1'
-// CONSTRAINT (#521 FIX2 Р13): a draft lives under STORE_DRAFT + ':' + its
-// session; the bare key is the pre-FIX2 single slot, read once for transfer
+const STORE_OPEN_CLOSED_V2 = 'statusline.open-closed.v2'
+const STORE_EPOCH = 'statusline.epoch.v1'
 const STORE_DRAFT = 'statusline.draft.v1'
 const DRAFT_KEEP_MS = 7 * 24 * 3600 * 1000
-// CONSTRAINT (#521 FIX5 Ч3): the open panel's flag and draft are re-stamped at
-// least this often — well inside DRAFT_KEEP_MS, so another process's prune
-// never reaches a live panel
+// CONSTRAINT (#521 FIX5 Ч3): the open panel's flag and draft are published
+// again at least this often — well inside FLAG_TTL
 const KEEP_ALIVE_MS = 24 * 3600 * 1000
-// CONSTRAINT (#521 FIX5 Ч1, FIX6 Р1): the moved bare flag's token is this
-// prefix + the session it names — a second mover of the same session writes
-// the same key, a mover of another session its own
+// #551 D5: a flag restores while −CLOCK_SKEW ≤ now − at < FLAG_TTL
+const FLAG_TTL = 3 * KEEP_ALIVE_MS
+const CLOCK_SKEW = 5 * 60 * 1000
+const MARK_KEEP = DRAFT_KEEP_MS
+// the owner of a flag or mark a delete left
+const FLAG_EXPIRES = 'перестаёт открывать панель через ' + String(FLAG_TTL / 86400000) + ' суток после последней записи и удаляется при открытии панели, кроме записей сессии, чья панель сейчас открыта'
+const MARK_EXPIRES = 'удаляется при открытии панели, если старше ' + String(MARK_KEEP / 86400000) + ' дней и не закрывает действующего флага своей сессии, кроме записей сессии, чья панель сейчас открыта'
+// the bare pre-FIX4 flag is read as the open 'v1:' + this prefix + the session it names, order (0, 0)
 const LEGACY_TOKEN = 'legacy-'
-// AR6: one key per session, `sess:<id>` — a snapshot of another session is
-// never read. CONSTRAINT (FIX6 Р4): the plugin store is one 4 MiB file shared
-// by every process and session of the user (d.ts:2909-2940); a landed write of
-// the current session's key prunes the `sess:` keys to the SESS_KEEP newest by
-// (seq, origin), never the current key nor a key this process still writes
+// the previous versions' snapshot key, `sess:<id>`; the logical key of a
+// session in the write queue's maps
 const STORE_SESS = 'sess:'
-// CONSTRAINT (#521 FIX4 Ф3): the save mark and the undo record live one per
-// save, `<base>:<saveId>` with its own stamp `t`; a save writes and deletes only
-// its own keys, and no array is held across an await. The bare keys are the
-// pre-FIX4 single mark and undo array, laid out by saveId once
 const STORE_SAVING = 'statusline.saving.v1'
 const STORE_UNDO = 'statusline.undo.v1'
+// CONSTRAINT (#551 D2): a record under these namespaces is set once under its key; a delete names the key read or confirmed, never one built from an open, a token, a pointer or a session
+// CONSTRAINT (#551 D3): no clock-only writer id — without crypto.randomUUID every publication is refused
+// CONSTRAINT (#551 D9): |key| = |ns| + 17·scoped + 54 ≤ 96; no mark is deleted to make room
+// A key is `<ns>[.<fnv64hex(session)>]:<writerId>:<seq16>`; the session lives
+// in the value, the digest only filters a listing (NOTES.md)
+const NS_OPEN = 'statusline.open.v3'
+const NS_MARK = 'statusline.open-closed.v3'
+const NS_EPOCH = 'statusline.epoch.v3'
+const NS_DRAFT = 'statusline.draft.v3'
+const NS_SAVING = 'statusline.saving.v3'
+const NS_UNDO = 'statusline.undo.v3'
+const NS_SESS = 'statusline.sess.v3'
+const SCOPED_NS = new Set([NS_OPEN, NS_MARK, NS_DRAFT, NS_SESS])
+const ALL_NS = [NS_OPEN, NS_MARK, NS_EPOCH, NS_DRAFT, NS_SAVING, NS_UNDO, NS_SESS]
+// the host refuses a get or set of a longer key (2.1.283 / 2.1.284 store)
+const KEY_MAX = 256
 const STORE_LASTGOOD = 'statusline.lastgood.v1'
 const STORE_THEMES = 'statusline.themes.v1'
 const SEGMENT_KEY = 'seg:'
@@ -83,11 +89,12 @@ const WIDTH_FALLBACK = 80
 // CONSTRAINT (FIX5 Р3/Р4): the session write queue is module-level, not in S,
 // but a host reload is a new environment whose maps start empty (d.ts:2946-2947:
 // a hot reload cancels the pending waits with the old environment) —
-// a flight of the old environment is out of reach, its late landing is seen
-// only by the read-back of the key (Д3). What this code bounds is wipeState
-// (register, __resetState): it clears the maps and raises the generation; a
-// flight of an older generation moves no accounting, and its late landing
-// below a newer known value is followed by that value again (Д2).
+// a flight of the old environment is out of reach; its late landing is a
+// publication under its own key, below the newer ones the restore reads
+// (#551 §3.10). What this code bounds is wipeState (register, __resetState):
+// it clears the maps and raises the generation; a flight of an older
+// generation moves no accounting, and its landing is deleted by the next
+// landing of the live generation (SESS_PUBS).
 // CONSTRAINT (FIX5 Р1, FIX6 Р5): every value of a `sess:<id>` key carries
 // `seq`, taken when the state is captured, and `origin`, the id of the module
 // instance that captured it; values are ordered by (seq, origin), a value
@@ -109,14 +116,15 @@ type WriteOwner =
   | { kind: 'session'; recovery: Recovery; g: number }
   | { kind: 'farewell'; g: number }
 // `$` may not be put in an object (the resolver law): the item carries the
-// enqueuing call's own `$` as closures over it (Р3); null = none of a live
-// generation, the gather that runs it lends its own (FIX6b AR4)
+// enqueuing call's own `$` as closures over it (Р3). Every queued item has its own io.
 type StoreIO = {
-  put: (key: string, value: unknown) => Promise<void>
+  // the answer: the key the value landed under (#551 §3.10)
+  put: (key: string, value: unknown) => Promise<string>
   arm: (fn: () => void) => { cancel: () => void }
   get: (key: string) => Promise<unknown>
   keys: () => Promise<string[]>
   del: (key: string) => Promise<void>
+  clock: () => Promise<ClockRead & { ms: number }>
 }
 // `atEnd`: the item was started by session.end and that hook still waits for
 // it (Р6); `settle` releases that wait. `sent`: the host really took the
@@ -125,7 +133,7 @@ type WriteItem = {
   value: SessValue
   ord: Ord
   owner: WriteOwner
-  io: StoreIO | null
+  io: StoreIO
   atEnd: boolean
   sent: boolean
   settle: () => void
@@ -650,14 +658,61 @@ function stampMs(): number {
   return clockMs > 0 ? Math.floor(clockMs) : Date.now()
 }
 
-// CONSTRAINT (#521 FIX2 Р14/Р27): a save's saveId and an open's token — the
-// stamp and a module counter, unique within this environment. CONSTRAINT
-// (#521 FIX4 Ф3): the counter is zero-padded — the undo records of one stamp
-// order by the saveId string
-let stampN = 0
-function stampId(): string {
-  return String(stampMs()) + '-' + String(++stampN).padStart(8, '0')
+// #551 D3: one writer id per environment (module instance); null — no
+// crypto.randomUUID of the UUID form, and every publication is refused
+const UUID_FORM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+function newWriterId(): string | null {
+  try {
+    const id = (crypto as unknown as { randomUUID?: () => unknown }).randomUUID?.()
+    return typeof id === 'string' && UUID_FORM.test(id) ? id : null
+  } catch {
+    // CONSTRAINT (#521 Р11): runs at module load, before S exists — the refusal is said at the first publication (store-writer-id)
+    return null
+  }
 }
+let writerId = newWriterId()
+// CONSTRAINT (#551 D3, FIX4 Ф3): one counter per environment for every key and
+// id, zero-padded to 16 digits — the records of one stamp order by the id
+// string; lastAt only grows (#551 D5). A wipe leaves both
+let pubSeq = 0
+let lastAt = 0
+const pad16 = (n: number): string => String(n).padStart(16, '0')
+const NO_WRITER = 'no writer id: crypto.randomUUID is absent or answered another form'
+const SEQ_SPENT = 'the publication counter of this environment is spent'
+
+function nextPubSeq(): number {
+  if (writerId === null) {
+    failDiag('warn', 'store-writer-id', NO_WRITER + '; nothing of the panel\'s open state, drafts, saves or snapshots is stored by this process')
+    throw new Error(NO_WRITER)
+  }
+  if (pubSeq >= Number.MAX_SAFE_INTEGER) {
+    failDiag('warn', 'store-seq-spent', SEQ_SPENT + '; nothing of the panel\'s open state, drafts, saves or snapshots is stored by this process')
+    throw new Error(SEQ_SPENT)
+  }
+  return ++pubSeq
+}
+
+// an open's openId, a save's saveId, a new theme's id: this writer and the next count; null — refused (said)
+function newId(): string | null {
+  try {
+    const seq = nextPubSeq()
+    return String(writerId) + ':' + pad16(seq)
+  } catch {
+    return null
+  }
+}
+
+type Ticket = { key: string; at: number; seq: number }
+// CONSTRAINT (#551 D5): at is taken in the synchronous run of the set, after the session's marks were read
+// Throws when refused (said); the caller calls $.store.set in the same run
+function ticket(ns: string, session?: string): Ticket {
+  const seq = nextPubSeq()
+  lastAt = Math.max(lastAt, stampMs())
+  const key = ns + (session !== undefined ? '.' + fnv64hex(session) : '') + ':' + String(writerId) + ':' + pad16(seq)
+  return { key, at: lastAt, seq }
+}
+
+const seqOfKey = (key: string): number => Number(key.slice(-16))
 
 // the order of the undo records and the save marks: by stamp, then by saveId
 function byStamp(a: { t: number; saveId: string }, b: { t: number; saveId: string }): number {
@@ -665,25 +720,67 @@ function byStamp(a: { t: number; saveId: string }, b: { t: number; saveId: strin
   return a.saveId < b.saveId ? -1 : a.saveId > b.saveId ? 1 : 0
 }
 
-async function readClock($: EngineInterface): Promise<number> {
+type ClockRead = { ok: boolean; reason?: unknown }
+let clockReqSeq = 0
+let clockAppliedSeq = 0
+type ClockFlight = { token: number; pulse: number; refuse: (reason: unknown) => void }
+const clockFlights = new Map<number, ClockFlight>()
+
+// CONSTRAINT (P2): a dropped after callback cannot hold a caller's queue or
+// memo; the next trigger measures the deadline by the process clock.
+function sweepClockHung(): void {
+  const t = now()
+  for (const [token, flight] of clockFlights) {
+    if (t - flight.pulse <= STORE_HANG_MS) continue
+    clockFlights.delete(token)
+    flight.refuse(new Error('clock.now висит > 15 с'))
+  }
+}
+
+// CONSTRAINT (R2-2…R2-5): only finite positive answers are clocks; clock.after
+// bounds now by STORE_HANG_MS. A late reply cannot apply after the race ended.
+// Success and refusal share the request order; callers with reading own the diagnosis.
+async function readClock($: EngineInterface, reading?: ClockRead): Promise<number> {
+  sweepClockHung()
   const g = S.gen
+  const request = ++clockReqSeq
+  if (reading !== undefined) { reading.ok = false; reading.reason = 'clock.now answered no finite positive number' }
+  let timer: { cancel: () => void } | null = null
+  let flight: ClockFlight | undefined
   try {
-    const t = await $.clock.now()
-    if (typeof t === 'number' && Number.isFinite(t)) {
-      clockMs = t
-      // the clock flags belong to the state that asked; a newer state reads its own (SPEC §13.4)
-      if (!live(g)) return clockMs
-      // clockFailed is a picture input: only the transitions dirty it, a steady
-      // read must not block the clock-tick skip (FIX2c п.3)
-      if (S.clockFailed) markPicture()
-      S.clockFailed = false
-      return clockMs
-    }
+    let refuse!: (reason: unknown) => void
+    const deadline = new Promise<never>((_resolve, reject) => { refuse = reject })
+    void deadline.catch(() => undefined)
+    flight = { token: request, pulse: now(), refuse }
+    clockFlights.set(request, flight)
+    timer = $.clock.after(STORE_HANG_MS, () => refuse(new Error('clock.now висит > 15 с')))
+    const t = await Promise.race([$.clock.now(), deadline])
+    if (!(typeof t === 'number' && Number.isFinite(t) && t > 0)) throw new Error('clock.now answered no finite positive number: ' + safeText(t))
+    if (reading !== undefined) reading.ok = true
+    // CONSTRAINT (Q2, R2-4): the latest applied request owns both the clock and its failure flag.
+    if (request <= clockAppliedSeq) return clockMs
+    clockMs = t
+    clockAppliedSeq = request
+    // clockFailed is a picture input: only the transitions dirty it, a steady
+    // read must not block the clock-tick skip (FIX2c п.3)
+    if (S.clockFailed) markPicture()
+    S.clockFailed = false
+    return clockMs
   } catch (x) {
+    if (reading !== undefined) reading.reason = x
+    if (live(g) && reading === undefined) failDiag('warn', 'clock-now', 'clock.now refused: ' + safeText(x))
+    if (request <= clockAppliedSeq) return clockMs
+    clockAppliedSeq = request
+    // CONSTRAINT (Q2, R2-4): the clock failure flag belongs to the state that asked; an old generation's refusal leaves the new state's flag alone
     if (!live(g)) return clockMs
-    failDiag('warn', 'clock-now', 'clock.now refused: ' + safeText(x))
     if (!S.clockFailed) markPicture()
     S.clockFailed = true
+  } finally {
+    if (clockFlights.get(request) === flight) clockFlights.delete(request)
+    try { timer?.cancel() } catch {
+      // CONSTRAINT: deadline rejection is handled even when a synchronous now
+      // refusal prevented the race from being created.
+    }
   }
   return clockMs
 }
@@ -1033,14 +1130,14 @@ type State = {
   messagesDone: boolean
   pickerOpen: boolean | undefined
   pickerSession: string
-  // the token of the STORE_OPEN record this state wrote or restored (#521 FIX2 Р27)
-  openToken: string
-  // CONSTRAINT (#521 FIX5 Ч8): every token this state wrote or adopted whose
-  // key was not yet deleted — the close deletes them all
-  ownTokens: Set<string>
-  // the token whose flag write landed; only it is re-stamped (#521 FIX5 Ч3)
-  flagToken: string
-  // the re-stamp timer of the open panel (#521 FIX5 Ч3)
+  // #551 D4: the open this state made or adopted — its flag publications
+  // this state confirmed, and the adopted ones it copies and then deletes
+  open: OpenState | null
+  // CONSTRAINT (#521 FIX5 Ч8, #551 FIX9b): opens left behind whose confirmed
+  // publications are not deleted yet — the close deletes them, each marked
+  // covered only when it names the closing session
+  retired: OpenState[]
+  // the re-publication timer of the open panel (#521 FIX5 Ч3)
   keepAlive: { cancel: () => void } | null
   // CONSTRAINT (#521 FIX6b Б1): raised by every close; an open that sees it
   // change across one of its awaits yields to that close
@@ -1053,8 +1150,6 @@ type State = {
   // here, by session, with the stamp of that write, until a later write lands
   // it; a stored draft of the session stamped later supersedes it
   pendingDrafts: Map<string, { draft: Draft; t: number }>
-  // the session whose old single slot was read but not yet moved (#521 FIX4 Ф10)
-  slotMovePending: string
   // CONSTRAINT (#521 FIX4b AR1, FIX5 Ч6): raised by setDraft whenever the
   // draft or its session changes; a picker tree carries the value it was
   // drawn under and acts only while it still stands
@@ -1127,6 +1222,9 @@ type State = {
   episodes: Set<string>
   // now() of the last prune of the `sess:` keys (FIX6 Р4)
   pruneAt: number | null
+  pruneInFlight: boolean
+  pruneToken: number
+  prunePulse: number
 }
 
 // CONSTRAINT (S1-FIX3 F6): the declaration-time value of the WHOLE state —
@@ -1153,15 +1251,13 @@ function freshState(): State {
     messagesDone: false,
     pickerOpen: undefined,
     pickerSession: '',
-    openToken: '',
-    ownTokens: new Set(),
-    flagToken: '',
+    open: null,
+    retired: [],
     keepAlive: null,
     closes: 0,
     opening: false,
     draft: null,
     pendingDrafts: new Map(),
-    slotMovePending: '',
     draftEpoch: 0,
     focusKey: '',
     stubWidth: new Map(),
@@ -1196,16 +1292,32 @@ function freshState(): State {
     verifyPending: new Map(),
     episodes: new Set(),
     pruneAt: null,
+    pruneInFlight: false,
+    pruneToken: 0,
+    prunePulse: 0,
   }
 }
 
 const S: State = freshState()
 
 let generation = 0
-// the latest close instant this environment knows — its own closes and the
-// close marks its restores read (#521 FIX8b Р1, FIX8c); a wipe leaves it, as
-// it leaves the generation counter
-let lastCloseT = 0
+// CONSTRAINT (#551 FIX9 Р1): this environment's order epoch — null until a
+// restore has read the store — and its write counter; a wipe leaves both, as
+// it leaves the generation counter. CONSTRAINT (#551 FIX9c Р10, Р11): so does it
+// leave the greatest epoch whose key write landed, the epoch key write in
+// flight and this environment's greatest close mark per session
+let orderEpoch: number | null = null
+let orderN = 0
+let epochLanded: number | null = null
+// CONSTRAINT (#551 FIX9d AR1): no epoch below Number.MAX_SAFE_INTEGER is past
+// what this environment read — every flag and mark write of it is refused
+let orderSpent = false
+let epochWrite: Promise<unknown> = Promise.resolve(null)
+const ownMarks = new Map<string, { key: string; order: { e: number; n: number }; at: number }>()
+// CONSTRAINT (#551 D2): this environment's confirmed draft publications per
+// session — a landing deletes its own lower ones, or itself below a higher one;
+// a wipe leaves them, as the writer id stays
+const ownDrafts = new Map<string, string[]>()
 
 // every wipe of S goes through here: the new state gets a generation no
 // operation begun before the wipe holds
@@ -2029,32 +2141,31 @@ function themeAxesOf(x: Record<string, unknown>): Record<string, string> {
   return out
 }
 
+// CONSTRAINT (#551 D9): a legacy theme key is within KEY_MAX — a name too long
+// for `legacy-<name>-<hash>` takes `legacy-theme-<hash of name and content>`
+function legacyThemeId(name: string, def: unknown): string {
+  const id = legacyIdOf(name, def)
+  return themeKeyOf(id).length <= KEY_MAX ? id : 'legacy-theme-' + fnv64hex(canonicalJson({ name, def }))
+}
+
 // The stored user themes, oldest first (#521 FIX5 Ч4). The pre-FIX5 bare map
 // is moved first, one key per theme under `legacy-<name>-<content hash>`
-// (#521 FIX6 Р4), stamp 0. null: stale.
+// (#521 FIX6 Р4), stamp 0; the map itself stays (#551 D8). null: stale.
 async function readThemeRecords($: EngineInterface, g: number): Promise<ThemeRecord[] | null> {
   const bare = await $.store.get(STORE_THEMES)
   if (!live(g)) return null
-  if (bare !== undefined) {
-    if (bare && typeof bare === 'object' && !Array.isArray(bare)) {
-      for (const [name, def] of Object.entries(bare as Record<string, unknown>)) {
-        if (!def || typeof def !== 'object' || Array.isArray(def)) continue
-        const key = themeKeyOf(legacyIdOf(name, def))
-        // CONSTRAINT: a theme already moved is not moved again — a save under
-        // its name may have rewritten the key since
-        const moved = await $.store.get(key)
-        if (!live(g)) return null
-        if (moved !== undefined) continue
-        await $.store.set(key, { name, ...themeAxesOf(def as Record<string, unknown>), t: 0 })
-        if (!live(g)) return null
-      }
+  if (bare && typeof bare === 'object' && !Array.isArray(bare)) {
+    for (const [name, def] of Object.entries(bare as Record<string, unknown>)) {
+      if (!def || typeof def !== 'object' || Array.isArray(def)) continue
+      const key = themeKeyOf(legacyThemeId(name, def))
+      // CONSTRAINT: a theme already moved is not moved again — a save under
+      // its name may have rewritten the key since; keyed themes are never deleted
+      const moved = await $.store.get(key)
+      if (!live(g)) return null
+      if (moved !== undefined) continue
+      await $.store.set(key, { name, ...themeAxesOf(def as Record<string, unknown>), t: 0 })
+      if (!live(g)) return null
     }
-    try {
-      await $.store.delete(STORE_THEMES)
-    } catch (err) {
-      if (live(g)) failDiag('warn', 'themes-move', 'the old themes map could not be removed after its move: ' + errorText(err) + '; the next read moves only the themes not moved yet')
-    }
-    if (!live(g)) return null
   }
   const keyed = await readKeyed($, g, STORE_THEMES)
   if (keyed === null) return null
@@ -2119,7 +2230,7 @@ export async function restoreAfterReload($: EngineInterface, options: PluginOpti
       const superseded = records.some((r) => r.saveId !== newest.saveId && byStamp(r, newest) > 0)
       for (const m of marks) {
         if (m === newest && !superseded) continue
-        await $.store.delete(markKeyOf(m.saveId))
+        await clearSaveMark($, m)
         if (!live(g)) return staleDrop('restore')
         // CONSTRAINT (#521 FIX6b Б5): moved marks share one stamp, so which of
         // them is the newest is not known — dropping one is said aloud
@@ -2128,10 +2239,10 @@ export async function restoreAfterReload($: EngineInterface, options: PluginOpti
       if (!superseded) {
         const { fields, values } = newest
         const unwritten = fields.filter((f) => (raw[f] ?? '') !== (values[f] ?? ''))
-        await trimUndoRecord($, g, newest.saveId, fields.filter((f) => (raw[f] ?? '') === (values[f] ?? '')))
+        await trimUndoRecord($, g, records, newest.saveId, fields.filter((f) => (raw[f] ?? '') === (values[f] ?? '')))
         if (!live(g)) return staleDrop('restore')
         if (unwritten.length === 0) {
-          await $.store.delete(markKeyOf(newest.saveId))
+          await clearSaveMark($, newest)
           if (!live(g)) return staleDrop('restore')
           S.saving = null
           S.saveResult = 'сохранено'
@@ -2147,38 +2258,20 @@ export async function restoreAfterReload($: EngineInterface, options: PluginOpti
   }
   if (!live(g)) return staleDrop('restore')
   let session = ''
-  let isOpen = false
-  let token = ''
+  let decided: OpenDecision | undefined
   let draft: Draft | null = null
   try {
     // CONSTRAINT (#521 FIX4 Ф2): a refused flag read keeps the panel closed
-    // and still lets the session id through — the snapshot recovery below
-    // needs it. CONSTRAINT (#521 FIX5 Ч1): the id comes first — the bare flag
-    // is moved by its own session only
+    // and still lets the session id through — the snapshot recovery below needs it
     session = await $.session.id()
     if (!live(g)) return staleDrop('restore')
-    const flags = await readOpenFlags($, g, session)
-    if (!live(g) || flags === null) return staleDrop('restore')
-    // «open in this session» = some flag names it; the newest one is adopted
-    const mine = flags.filter((f) => f.session === session).sort((a, b) => byStamp({ t: a.t, saveId: a.token }, { t: b.t, saveId: b.token }))
-    isOpen = mine.length > 0
-    if (isOpen) {
-      token = mine[mine.length - 1]!.token
-      // CONSTRAINT (#521 FIX8b Р1): one open flag of a session stands, the
-      // newest — a late write of an older token of this session goes here
-      for (const old of mine.slice(0, -1)) {
-        try {
-          await $.store.delete(openKeyOf(old.token))
-        } catch (err) {
-          if (live(g)) failDiag('info', 'picker-open-flag-old', 'an older open flag of this session could not be cleared: ' + errorText(err) + '; it ages out of the store in ' + String(DRAFT_KEEP_MS / 86400000) + ' days')
-        }
-        if (!live(g)) return staleDrop('restore')
-      }
-      // the key of the session the open record names (#521 FIX2 Р13)
-      draft = await readStoredDraft($, session, g)
-    }
+    const read = await readOpenFlags($, g, session)
+    if (!live(g) || read === null) return staleDrop('restore')
+    decided = read
+    // the key of the session the open record names (#521 FIX2 Р13)
+    if (decided !== undefined) draft = await readStoredDraft($, session, g)
   } catch (err) {
-    isOpen = false
+    decided = undefined
     draft = null
     if (live(g)) failDiag('warn', 'picker-restore-read', 'the picker open flag or its draft could not be read: ' + errorText(err) + '; the picker stays closed')
   }
@@ -2186,19 +2279,22 @@ export async function restoreAfterReload($: EngineInterface, options: PluginOpti
   await restoreSession($, session)
   if (!live(g)) return staleDrop('restore')
   // CONSTRAINT (#521 FIX5 Ч7): an opener that set the panel up meanwhile
-  // decided from newer facts — its panel, session, token and draft stand
+  // decided from newer facts — its panel, session, open and draft stand; the
+  // sources stay for the next restore
   if (S.opening || S.pickerOpen === true) return
-  S.pickerOpen = isOpen
-  S.openToken = isOpen ? token : ''
-  if (isOpen) {
-    S.ownTokens.add(token)
-    S.flagToken = token
-  }
+  S.pickerOpen = decided !== undefined
+  // CONSTRAINT (#551 D4): the copy keeps the source's openId and order; the source is never own
+  if (decided !== undefined) S.open = { openId: decided.openId, session, order: decided.order, state: 'active', confirmed: [], sources: decided.sources, v1Sources: decided.v1Sources }
   if (draft) setDraft(draft, session)
   else if (session !== S.pickerSession) setDraft(null, session)
+  if (decided === undefined) return
+  // #551 D4: the adoption's own copy, the last await of the restore — a close
+  // waits for the restore and finds the copy confirmed
+  await stampOpenFlag($, g)
+  if (!live(g)) return
   // CONSTRAINT (#521 FIX5 Ч3): a panel the reload reopens is open as much as
-  // one the command opened — its flag and draft are re-stamped by the same timer
-  if (isOpen) armKeepAlive($, g)
+  // one the command opened — its flag and draft are published by the same timer
+  if (S.pickerOpen === true && S.open?.state === 'active') armKeepAlive($, g)
 }
 
 // CONSTRAINT (#521 FIX5 Ч6): the one writer of the draft outside the stand —
@@ -2254,6 +2350,7 @@ function isSnap(x: unknown): x is DraftSnap {
 // CONSTRAINT (#363 L1/L2): $ travels only into functions declared at the top
 // of this file; the timer bootstrap is one of them.
 function ensureStarted($: EngineInterface, defer = false): void {
+  sweepClockHung()
   if (S.started) return
   S.started = true // the ONLY place timers are created; render never restarts them
   const g = S.gen
@@ -2286,6 +2383,7 @@ function ensureStarted($: EngineInterface, defer = false): void {
 }
 
 function ensureRestore($: EngineInterface): void {
+  sweepClockHung()
   if (S.restored) return
   S.restored = true
   clearStatus($)
@@ -2749,6 +2847,7 @@ async function syncBody($: EngineInterface, g: number): Promise<void> {
 }
 
 function syncSourceTimers($: EngineInterface): Promise<void> {
+  sweepClockHung()
   // CONSTRAINT: the generation is the caller's, taken at the queueing — a job
   // queued behind another would otherwise start as the newer state's own
   const g = S.gen
@@ -2779,7 +2878,7 @@ async function refresh($: EngineInterface): Promise<void> {
   if (rearm) await syncSourceTimers($)
   if (!live(g)) return staleDrop('refresh')
   sweepHung()
-  releaseParked($)
+  releaseParked()
   pruneLanded()
   flushDiag($)
   // CONSTRAINT (FIX5 Р2): a farewell taken by an earlier gather (or returned
@@ -2941,6 +3040,7 @@ function refreshQuietly($: EngineInterface): Promise<void> {
 // control — a press on a tree drawn by an older state acts on nothing and the
 // pane is redrawn by the state now current (SPEC §13.4)
 function act($: EngineInterface, g: number, operation: () => Promise<unknown>): void {
+  sweepClockHung()
   // picker presses run one after another; a failure becomes a notice, never a
   // lost picker (SPEC §14.12)
   S.actions = S.actions.then(() => S.restoring).then(() => {
@@ -3026,7 +3126,7 @@ async function openPicker($: EngineInterface): Promise<boolean | string> {
     let switched = false
     if (had !== null && hadSession !== '' && hadSession !== session) {
       switched = true
-      await writeDraft($, hadSession, had)
+      await writeDraft($, g, hadSession, had)
       if (!live(g)) return dropOpen()
       if (closedSince()) return true
       setDraft(null, session)
@@ -3065,23 +3165,19 @@ async function openPicker($: EngineInterface): Promise<boolean | string> {
   if (closedSince()) return true
   const pending = continued && S.draft ? draftChanges(S.draft) : 0
   S.saveResult = pending > 0 ? 'продолжен несохранённый черновик (' + changedWord(pending) + ')' : ''
-  const token = stampId()
-  const previous = S.openToken
-  S.openToken = token
-  // the flag this open wrote goes when a close landed after its write
-  const yieldFlag = async (): Promise<boolean> => {
-    await clearFlag($, g, token)
-    return true
-  }
-  await writeOpenFlag($, g, S.pickerSession, token, previous)
+  // #551 D4: a new open; the one before is retired — a close that lands after
+  // this open's publication finds it confirmed, one that lands before makes the
+  // publication delete itself
+  const { open, prev } = beginOpen(S.pickerSession)
+  await writeOpenFlag($, g, open, prev, closedSince)
   if (!live(g)) return dropOpen()
-  if (closedSince()) return yieldFlag()
-  await persistDraft($)
+  if (closedSince()) return true
+  await persistDraft($, g)
   if (!live(g)) return dropOpen()
-  if (closedSince()) return yieldFlag()
+  if (closedSince()) return true
   await pruneDrafts($, g)
   if (!live(g)) return dropOpen()
-  if (closedSince()) return yieldFlag()
+  if (closedSince()) return true
   armKeepAlive($, g)
   try {
     await $.ui.open({ id: PANE_ID, title: 'Статус-строка', focus: true, closeOnEscape: true, holdToasts: true, rows: 30 })
@@ -3104,10 +3200,53 @@ function draftKeyOf(session: string): string {
   return STORE_DRAFT + ':' + session
 }
 
-// The stored draft of `session`: its own key, else the pre-FIX2 single slot
-// when that slot names the same session — moved to the key and removed
-// (#521 FIX2 Р13). null: none, or the state went stale meanwhile (the caller
-// checks live).
+type DraftCand = { key: string; t: number; rank: number; v3: boolean; draft: Draft }
+
+// The stored drafts of `session`, oldest first: this version's publications,
+// the previous version's key and its bare slot when it names the session —
+// by (t, this version over the keyed form over the slot, key) (#521 FIX5 Ч9).
+// CONSTRAINT (#551 D8): v1 is read only; deleted only past MARK_KEEP by its own age (NOTES)
+// null: stale
+async function draftCands($: EngineInterface, g: number, session: string): Promise<DraftCand[] | null> {
+  const keys = await $.store.keys()
+  if (!live(g)) return null
+  const list = Array.isArray(keys) ? keys.filter((k): k is string => typeof k === 'string') : []
+  const out: DraftCand[] = []
+  const scope = NS_DRAFT + '.' + fnv64hex(session) + ':'
+  const tOf = (v: Record<string, unknown>): number => (typeof v['t'] === 'number' ? (v['t'] as number) : -Infinity)
+  for (const key of list) {
+    if (!key.startsWith(scope)) continue
+    const value = await $.store.get(key)
+    if (!live(g)) return null
+    if (value === undefined) continue
+    const bad = v3Damage(NS_DRAFT, key, value)
+    if (bad !== null) {
+      if (!(await dropDamaged($, g, key, bad))) return null
+      continue
+    }
+    const v = value as Record<string, unknown>
+    if (v['session'] !== session) continue
+    const draft = draftFrom(v)
+    if (draft !== null) out.push({ key, t: tOf(v), rank: 2, v3: true, draft })
+  }
+  const keyed = draftKeyOf(session)
+  if (keyed.length <= KEY_MAX) {
+    const value = await $.store.get(keyed)
+    if (!live(g)) return null
+    const draft = value && typeof value === 'object' && (value as { session?: unknown }).session === session ? draftFrom(value as Record<string, unknown>) : null
+    if (draft !== null) out.push({ key: keyed, t: tOf(value as Record<string, unknown>), rank: 1, v3: false, draft })
+  }
+  const slot = await $.store.get(STORE_DRAFT)
+  if (!live(g)) return null
+  const slotDraft = slot && typeof slot === 'object' && (slot as { session?: unknown }).session === session ? draftFrom(slot as Record<string, unknown>) : null
+  if (slotDraft !== null) out.push({ key: STORE_DRAFT, t: tOf(slot as Record<string, unknown>), rank: 0, v3: false, draft: slotDraft })
+  return out.sort((a, b) => (a.t !== b.t ? (a.t < b.t ? -1 : 1) : a.rank !== b.rank ? a.rank - b.rank : a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+}
+
+// The stored draft of `session`: the newest of draftCands. The other
+// publications of this version are deleted by the keys read; a newest one of
+// the previous version gets a copy of this version, the record itself stays.
+// null: none, or the state went stale meanwhile (the caller checks live).
 async function readStoredDraft($: EngineInterface, session: string, g: number): Promise<Draft | null> {
   // a draft whose write was refused is newer than its stored copy (#521 FIX4
   // Ф6) unless another process stored a later one since (#521 FIX5 Ч9)
@@ -3124,227 +3263,697 @@ async function readStoredDraft($: EngineInterface, session: string, g: number): 
     if (stands === null) return null
     if (stands) return kept.draft
   }
-  const stored = await $.store.get(draftKeyOf(session))
-  if (!live(g)) return null
-  if (stored !== undefined) {
-    return stored && typeof stored === 'object' && (stored as { session?: unknown }).session === session ? draftFrom(stored as Record<string, unknown>) : null
-  }
-  const slot = await $.store.get(STORE_DRAFT)
-  if (!live(g)) return null
-  if (!slot || typeof slot !== 'object' || (slot as { session?: unknown }).session !== session) return null
-  const draft = draftFrom(slot as Record<string, unknown>)
-  if (!draft) return null
-  // CONSTRAINT (#521 FIX4 Ф10): the read landed — a refused move is its own
-  // refusal, the panel opens with the slot's draft, and the next write of
-  // this session's key finishes the move
-  try {
-    await $.store.set(draftKeyOf(session), { session, t: stampMs(), ...draft })
+  const cands = await draftCands($, g, session)
+  if (cands === null) return null
+  const newest = cands[cands.length - 1]
+  if (newest === undefined) return null
+  // CONSTRAINT (#551 D1): get → decide → delete is not atomic; the key read cannot change
+  for (const c of cands) {
+    if (c === newest || !c.v3) continue
+    try {
+      await $.store.delete(c.key)
+    } catch (err) {
+      if (live(g)) failDiag('info', 'picker-draft-old', 'an older picker draft of session ' + session + ' could not be removed: ' + errorText(err) + '; the newest stands', 'picker-draft-old:' + c.key)
+    }
     if (!live(g)) return null
-    await $.store.delete(STORE_DRAFT)
-  } catch (err) {
-    if (!live(g)) return null
-    S.slotMovePending = session
-    failDiag('warn', 'picker-draft-transfer', 'the kept picker draft could not be moved to its session key: ' + errorText(err) + '; the panel opens with it and the next draft write moves it')
   }
-  return draft
+  if (!newest.v3) {
+    // the copy is this version's newest; a refused one leaves the previous
+    // version's record, which is read again
+    try {
+      const tk = ticket(NS_DRAFT, session)
+      await $.store.set(tk.key, { session, t: tk.at, ...newest.draft })
+      await landedDraft($, g, session, tk.key)
+    } catch (err) {
+      if (live(g)) failDiag('warn', 'picker-draft-transfer', 'the kept picker draft of the previous version could not be copied: ' + errorText(err) + '; the panel opens with it, and it is read again until a draft write of this session lands')
+    }
+    if (!live(g)) return null
+  }
+  return newest.draft
 }
 
-// Draft keys, open flags and sessions' close marks (#521 FIX8b Р1) whose stamp is older
-// than DRAFT_KEEP_MS leave the store at an open (#521 FIX2 Р13, FIX4 Ф2); a key without a numeric stamp
-// stays. CONSTRAINT (#521 FIX4 Ф9, FIX5 Ч1): the bare slot and a bare open
-// flag its session did not move are stamped at their first pass and age from
-// there. CONSTRAINT (#521 FIX5 Ч3): the flags and the draft of the session
-// whose panel is open in this state are never pruned here
+// #551 §3.11: the prune of an open (called by openPicker). Every flag, mark,
+// draft and epoch record of one listing is read first and judged after — a
+// mark's hold depends on the flags of the same listing. CONSTRAINT (#521 FIX5
+// Ч3, #551 F24): a record of the session whose panel is open in this state is
+// never pruned here, its session read as the order read reads it (ownerOf,
+// #551 FIX9c Р7). CONSTRAINT (#551 FIX9f Р5): a flag or mark read here raises
+// the epoch by the restore's rule; a damaged one of the previous versions is
+// not counted and stays
 async function pruneDrafts($: EngineInterface, g: number): Promise<void> {
   try {
     const keys = await $.store.keys()
     if (!live(g)) return
-    const now = stampMs()
-    const cut = now - DRAFT_KEEP_MS
+    type Read = { key: string; kind: 'flag' | 'mark' | 'draft' | 'epoch'; v3: boolean; session: unknown; order: Order; age: number | undefined }
+    const reads: Read[] = []
     for (const key of Array.isArray(keys) ? keys : []) {
       if (typeof key !== 'string') continue
-      const slot = key === STORE_DRAFT || key === STORE_OPEN
-      if (!slot && !key.startsWith(STORE_DRAFT + ':') && !key.startsWith(STORE_OPEN + ':') && !key.startsWith(STORE_OPEN_CLOSED + ':')) continue
+      const flag = key === STORE_OPEN || isFlagKey(key)
+      const mark = isMarkKey(key)
+      const draft = key === STORE_DRAFT || key.startsWith(STORE_DRAFT + ':') || isNs(key, NS_DRAFT)
+      const epoch = isNs(key, NS_EPOCH)
+      if (!flag && !mark && !draft && !epoch) continue
       const value = await $.store.get(key)
       if (!live(g)) return
-      if (S.pickerOpen === true && S.pickerSession !== '' && value && typeof value === 'object' && (value as { session?: unknown }).session === S.pickerSession) continue
-      const t = value && typeof value === 'object' ? (value as { t?: unknown }).t : undefined
-      if (slot && value && typeof value === 'object' && typeof t !== 'number') {
-        await $.store.set(key, { ...(value as Record<string, unknown>), t: now })
-        if (!live(g)) return
-        continue
+      if (value === undefined) continue
+      const ns = v3NsOf(key)
+      if (ns !== null) {
+        const bad = v3Damage(ns, key, value)
+        if (bad !== null) {
+          if (!(await dropDamaged($, g, key, bad))) return
+          continue
+        }
       }
-      if (typeof t !== 'number' || t >= cut) continue
+      const v = value as Record<string, unknown>
+      if (flag || mark) {
+        const r = key === STORE_OPEN ? bareFlagOf(value) : recordOf(key, value)
+        if (r === null || 'damage' in r) continue
+        raiseEpoch(r)
+        reads.push({ key, kind: flag ? 'flag' : 'mark', v3: r.v3, session: r.session, order: r.order, age: r.age })
+      } else if (draft) {
+        reads.push({ key, kind: 'draft', v3: ns !== null, session: ownerOf(key, value), order: { e: 0, n: 0 }, age: ns !== null ? (v['t'] as number) : ageOf(value) })
+      } else {
+        reads.push({ key, kind: 'epoch', v3: true, session: undefined, order: { e: v['e'] as number, n: 0 }, age: undefined })
+      }
+    }
+    const now = stampMs()
+    const flags = reads.filter((r) => r.kind === 'flag')
+    const marks = reads.filter((r) => r.kind === 'mark')
+    // CONSTRAINT (#551 D6): the greatest valid epoch record is never deleted
+    const epochMax = Math.max(epochLanded ?? -1, ...reads.filter((r) => r.kind === 'epoch').map((r) => r.order.e))
+    // CONSTRAINT (#551 D5, D8): a mark is not aged out while the same listing holds a restorable flag of its session it closes, unless a greater mark of that session is listed
+    const held = (m: Read): boolean =>
+      !marks.some((o) => o.session === m.session && orderAfter(o.order, m.order)) &&
+      flags.some((f) => f.session === m.session && restorable(f.age, now) && !orderAfter(f.order, m.order))
+    const drop: string[] = []
+    for (const r of reads) {
+      if (r.kind !== 'epoch' && S.pickerOpen === true && S.pickerSession !== '' && r.session === S.pickerSession) continue
+      const aged = typeof r.age === 'number' && now - r.age > MARK_KEEP
+      if (r.kind === 'flag' ? (r.v3 ? !restorable(r.age, now) : aged) : r.kind === 'mark' ? aged && !held(r) : r.kind === 'draft' ? (r.v3 ? (r.age as number) < now - DRAFT_KEEP_MS : aged) : r.order.e < epochMax) drop.push(r.key)
+    }
+    // CONSTRAINT (#551 D1): get → decide → delete is not atomic; the key read cannot change
+    for (const key of drop) {
       await $.store.delete(key)
       if (!live(g)) return
     }
   } catch (err) {
-    if (live(g)) failDiag('info', 'picker-draft-prune', 'old picker drafts could not be pruned: ' + errorText(err) + '; they stay until the next open')
+    if (live(g)) failDiag('info', 'picker-draft-prune', 'old picker drafts, flags and marks could not be pruned: ' + errorText(err) + '; they stay until the next open')
   }
 }
 
-function openKeyOf(token: string): string {
-  return STORE_OPEN + ':' + token
+// CONSTRAINT (#551 D5): MARK_KEEP − FLAG_TTL ≥ 4 days — a collected mark's flags can no longer restore
+function restorable(at: unknown, now: number): boolean {
+  return typeof at === 'number' && Number.isFinite(at) && now - at < FLAG_TTL && now - at >= -CLOCK_SKEW
 }
 
-function closeMarkKeyOf(session: string): string {
-  return STORE_OPEN_CLOSED + ':' + session
+// the age of a record of the previous versions: `at`, else the stamp `t`
+function ageOf(value: unknown): number | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const v = value as { at?: unknown; t?: unknown }
+  return typeof v.at === 'number' ? v.at : typeof v.t === 'number' ? v.t : undefined
 }
 
-// CONSTRAINT (#521 FIX8b Р1): the stamp of every open-flag write, taken
-// before its await — past this environment's latest close, so an open in the
-// close's millisecond is not read as closed
-function flagStamp(): number {
-  return Math.max(stampMs(), lastCloseT + 1)
+type Order = { e: number; n: number }
+// #551 D4: one open — its id and order; `confirmed` its publications this
+// state saw land, `sources` the adopted ones it deletes after its copy landed
+type V1Source = { session: string; order: Order }
+type OpenState = { openId: string; session: string; order: Order | null; state: 'active' | 'closed' | 'retired' | 'withdrawn'; confirmed: string[]; sources: string[]; v1Sources: V1Source[] }
+type OpenDecision = { openId: string; order: Order; sources: string[]; v1Sources: V1Source[] }
+// a flag or mark as read: its session, order and age; openId — a flag's open
+type Rec = { session: string; order: Order; age: number | undefined; openId: string; v3: boolean }
+type Damage = { damage: string; v3: boolean }
+
+const isNs = (key: string, ns: string): boolean => key.startsWith(ns + ':') || key.startsWith(ns + '.')
+function v3NsOf(key: string): string | null {
+  for (const ns of ALL_NS) if (isNs(key, ns)) return ns
+  return null
+}
+const isFlagKey = (key: string): boolean => key.startsWith(STORE_OPEN + ':') || isNs(key, NS_OPEN)
+const isStamp = (x: unknown): boolean => typeof x === 'number' && Number.isFinite(x) && x >= 0
+const isStrings = (x: unknown): boolean => Array.isArray(x) && x.every((s) => typeof s === 'string')
+const isObject = (x: unknown): boolean => !!x && typeof x === 'object' && !Array.isArray(x)
+const WRITER_SEQ = ':[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:([0-9]{16})$'
+const SCOPED_TAIL = new RegExp('^\\.([0-9a-f]{16})' + WRITER_SEQ)
+const PLAIN_TAIL = new RegExp('^' + WRITER_SEQ)
+
+// #551 D7: the damage of a record under a namespace of this version — the key
+// off the publication form, or a value off its schema; null: sound
+function v3Damage(ns: string, key: string, value: unknown): string | null {
+  const scoped = SCOPED_NS.has(ns)
+  const parts = (scoped ? SCOPED_TAIL : PLAIN_TAIL).exec(key.slice(ns.length))
+  if (parts === null) return 'ключ не в форме публикации'
+  const seq = Number(parts[scoped ? 2 : 1])
+  if (!(seq >= 1 && seq <= Number.MAX_SAFE_INTEGER)) return 'номер публикации вне 1…' + String(Number.MAX_SAFE_INTEGER)
+  if (!isObject(value)) return 'значение — не объект'
+  const v = value as Record<string, unknown>
+  if (scoped) {
+    if (typeof v['session'] !== 'string') return 'session = ' + shown(v['session']) + ' — не строка'
+    if (fnv64hex(v['session'] as string) !== parts[1]) return 'сессия значения расходится с дайджестом ключа'
+  }
+  const order = (): string | null => (!isEpoch(v['e']) ? epochDamage(v['e']) : !isOrderCount(v['n']) ? 'n = ' + shown(v['n']) + ' — не неотрицательное безопасное целое' : null)
+  const stamp = (f: string): string | null => (isStamp(v[f]) ? null : f + ' = ' + shown(v[f]) + ' — не штамп')
+  switch (ns) {
+    case NS_OPEN:
+      if (typeof v['openId'] !== 'string' || v['openId'] === '') return 'openId = ' + shown(v['openId']) + ' — не непустая строка'
+      return order() ?? stamp('at')
+    case NS_MARK:
+      return order() ?? stamp('at')
+    case NS_EPOCH:
+      return (isEpoch(v['e']) ? null : epochDamage(v['e'])) ?? stamp('at')
+    case NS_DRAFT:
+      return stamp('t') ?? (draftFrom(v) === null ? 'нет lines' : null)
+    case NS_SAVING:
+      if (v['done'] === true) {
+        if (typeof v['src'] !== 'string' || typeof v['srcSaveId'] !== 'string') return 'src или srcSaveId — не строка'
+        if (typeof v['srcT'] !== 'number' || !Number.isFinite(v['srcT'])) return 'srcT — не конечное число'
+        return stamp('t')
+      }
+      if (typeof v['saveId'] !== 'string') return 'saveId = ' + shown(v['saveId']) + ' — не строка'
+      return stamp('t') ?? (!isStrings(v['fields']) ? 'fields — не список строк' : !isObject(v['values']) ? 'values — не объект' : null)
+    case NS_UNDO:
+      if (typeof v['saveId'] !== 'string') return 'saveId = ' + shown(v['saveId']) + ' — не строка'
+      if (typeof v['t'] !== 'number' || !Number.isFinite(v['t'])) return 't = ' + shown(v['t']) + ' — не число'
+      if (!isStrings(v['fields'])) return 'fields — не список строк'
+      if (!isObject(v['prev']) || !isObject(v['written'])) return 'prev или written — не объект'
+      return v['src'] === undefined || typeof v['src'] === 'string' ? null : 'src = ' + shown(v['src']) + ' — не строка'
+    case NS_SESS:
+      return seqOf(v) > 0 ? null : 'seq = ' + shown(v['seq']) + ' — не порядок снимка'
+  }
+  return null
 }
 
-type OpenFlag = { session: string; token: string; t: number }
-
-// CONSTRAINT (#521 FIX8d Р2): an open flag stamped further than DRAFT_KEEP_MS
-// past this environment's clock, and a close mark stamped at or past that
-// boundary (futureMark), is damage — deleted at the read and never counted,
-// its delete refused or not. A clock behind the writer's by DRAFT_KEEP_MS or
-// more reads a fresh mark as damage (NOTES.md)
-function futureStamp(t: number): boolean {
-  return t > stampMs() + DRAFT_KEEP_MS
+function orderAfter(a: Order, b: Order): boolean {
+  return a.e > b.e || (a.e === b.e && a.n > b.n)
 }
 
-// CONSTRAINT (#521 FIX8e): an open is stamped lastCloseT + 1, so only a mark strictly before the boundary may seed — a mark on it would stamp the open past the boundary and its flag would be deleted as damage
-function futureMark(t: number): boolean {
-  return t >= stampMs() + DRAFT_KEEP_MS
+const NO_EPOCH = 'the order epoch is not known: no restore of this environment has read the store'
+const ORDER_SPENT = 'порядок исчерпан'
+
+// CONSTRAINT (#551 FIX9 Р1, FIX9c Р4): the (e, n) of a flag or mark write, taken
+// before its store call — a write that takes its order later is past it. null:
+// no restore of this environment has read the store yet, or the counter is spent
+function nextOrder(): Order | null {
+  if (orderEpoch === null || orderN === Number.MAX_SAFE_INTEGER) return null
+  return { e: orderEpoch, n: orderN++ }
 }
 
-// false: the state went stale meanwhile
-async function dropFutureStamp($: EngineInterface, g: number, key: string): Promise<boolean> {
-  const why = 'штамп дальше ' + String(DRAFT_KEEP_MS / 86400000) + ' дней в будущем'
+const isOrderCount = (x: unknown): boolean => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0
+// CONSTRAINT (#551 FIX9c Р4): an epoch is below Number.MAX_SAFE_INTEGER — the epoch past it is still a safe integer
+const isEpoch = (x: unknown): boolean => isOrderCount(x) && (x as number) < Number.MAX_SAFE_INTEGER
+const shown = (x: unknown): string => (typeof x === 'string' ? JSON.stringify(x) : String(x))
+const epochDamage = (x: unknown): string => 'e = ' + shown(x) + ' — не неотрицательное целое меньше ' + String(Number.MAX_SAFE_INTEGER)
+
+// A record's order: this version's `{e, n}`, the 0.5.1 form `{t}` read as
+// e = 0, n = t (#551 FIX9 Р1); undefined — neither form; a string — the damage, named
+function orderOf(value: Record<string, unknown>): Order | string | undefined {
+  if (value['e'] !== undefined) {
+    if (!isEpoch(value['e'])) return epochDamage(value['e'])
+    if (!isOrderCount(value['n'])) return 'n = ' + shown(value['n']) + ' — не неотрицательное безопасное целое'
+    return { e: value['e'] as number, n: value['n'] as number }
+  }
+  if (value['t'] === undefined) return undefined
+  if (!isOrderCount(value['t'])) return 't = ' + shown(value['t']) + ' (прежний формат, n = t) — не неотрицательное безопасное целое'
+  return { e: 0, n: value['t'] as number }
+}
+
+// CONSTRAINT (#551 FIX9c Р11): one attempt to publish an epoch record at e; the
+// bootstrap's makes its epoch this environment's only when it is over, landed
+// or refused — no flag or mark write that takes a counter, of any generation,
+// goes in at an epoch whose first record is in flight. CONSTRAINT (#551
+// FIX9f Р2): the attempts run one after another, whatever the one before
+// ended with, and one whose e a landed record already holds or passed writes
+// nothing (#551 D6: each attempt is a record of its own). null: landed, or not needed
+function storeEpoch($: EngineInterface, e: number, adopt: boolean): Promise<{ err: unknown } | null> {
+  const prior = epochWrite
+  const attempt = (async (): Promise<{ err: unknown } | null> => {
+    await prior.catch(() => undefined)
+    let refused: { err: unknown } | null = null
+    try {
+      if (epochLanded !== null && e <= epochLanded) return null
+      const tk = ticket(NS_EPOCH)
+      await $.store.set(tk.key, { e, at: tk.at })
+      if (epochLanded === null || e > epochLanded) epochLanded = e
+    } catch (err) {
+      refused = { err }
+    } finally {
+      if (adopt && (orderEpoch === null || e > orderEpoch)) orderEpoch = e
+    }
+    return refused
+  })()
+  epochWrite = attempt
+  return attempt
+}
+
+// CONSTRAINT (#551 FIX9c Р11): the wait for the epoch key write in flight, and
+// for one begun while it was waited for
+async function epochSettled(): Promise<void> {
+  let epochPending: Promise<unknown>
+  do {
+    epochPending = epochWrite
+    await epochPending
+  } while (epochPending !== epochWrite)
+}
+
+// CONSTRAINT (#551 FIX9c Р11): a flag or mark write takes its order after the
+// epoch key write in flight is over, and only once the key at this
+// environment's epoch or past it landed — until then the write repeats the key
+// write first, and a refused one refuses the write, said once per epoch in a generation.
+// CONSTRAINT (#551 FIX9d AR1, AR5): a spent epoch or counter refuses the write, said once
+async function landedOrder($: EngineInterface, g: number): Promise<Order> {
+  const spent = (): Error => {
+    if (live(g)) failDiag('warn', 'picker-order-spent', ORDER_SPENT + ': no epoch or counter below Number.MAX_SAFE_INTEGER is left to this environment; its flag and mark writes are refused, the stored records stay')
+    return new Error(ORDER_SPENT)
+  }
+  await epochSettled()
+  for (;;) {
+    if (orderSpent) throw spent()
+    if (orderEpoch === null) throw new Error(NO_EPOCH)
+    if (epochLanded !== null && epochLanded >= orderEpoch) break
+    const epoch = orderEpoch
+    const refused = await storeEpoch($, epoch, false)
+    if (refused !== null) {
+      const text = 'эпоха не записана: ' + errorText(refused.err)
+      if (live(g)) failDiag('warn', 'picker-epoch-store', text, 'picker-epoch-store:' + String(epoch))
+      throw new Error(text)
+    }
+  }
+  const order = nextOrder()
+  if (order === null) throw orderEpoch === null ? new Error(NO_EPOCH) : spent()
+  return order
+}
+
+// CONSTRAINT (#551 FIX9d AR1): the epoch past e — null when it would not be
+// below Number.MAX_SAFE_INTEGER: no epoch is taken, the environment's order is spent
+function epochAfter(e: number): number | null {
+  if (e + 1 < Number.MAX_SAFE_INTEGER) return e + 1
+  orderSpent = true
+  return null
+}
+
+// CONSTRAINT (#551 D7): only own v3 damage is deleted, at once, by exact key
+// A record of this version off its form is deleted at the read and never
+// counted, its delete refused or not; said once per key. false: the state went
+// stale meanwhile
+async function dropDamaged($: EngineInterface, g: number, key: string, why: string): Promise<boolean> {
+  if (v3NsOf(key) === null) {
+    if (live(g)) failDiag('info', 'picker-order-damage', key + ': повреждённая запись прежней версии, ' + why + ' — запись не учитывается и остаётся', 'picker-order-damage:' + key)
+    return live(g)
+  }
   try {
     await $.store.delete(key)
-    if (live(g)) failDiag('info', 'picker-future-stamp', key + ': ' + why + ' — запись удалена', 'picker-future-stamp:' + key)
+    if (live(g)) failDiag('info', 'store-damage', key + ': повреждённая запись, ' + why + ' — запись удалена', 'store-damage:' + key)
   } catch (err) {
-    if (live(g)) failDiag('info', 'picker-future-stamp', key + ': ' + why + ' — запись не учитывается, удалить её не удалось: ' + errorText(err), 'picker-future-stamp:' + key)
+    if (live(g)) failDiag('info', 'store-damage', key + ': повреждённая запись, ' + why + ' — запись не учитывается, удалить её не удалось: ' + errorText(err), 'store-damage:' + key)
   }
   return live(g)
 }
 
-// The open flags, the pre-FIX4 bare flag moved to its token key first
-// (#521 FIX4 Ф2). CONSTRAINT (#521 FIX5 Ч1): only the session the bare flag
-// names moves it, under LEGACY_TOKEN + that session; another session's bare flag stays and
-// ages out through the prune. null: the state went stale meanwhile.
-async function readOpenFlags($: EngineInterface, g: number, session: string): Promise<OpenFlag[] | null> {
-  // CONSTRAINT (#521 FIX8c, FIX8d Р1): the stored close marks seed lastCloseT
-  // before any flag write below, the bare move included — a new environment's
-  // flags are stamped past every mark, even with its clock behind them
-  const seedKeys = await $.store.keys()
-  if (!live(g)) return null
-  for (const key of Array.isArray(seedKeys) ? seedKeys : []) {
-    if (typeof key !== 'string' || !key.startsWith(STORE_OPEN_CLOSED + ':')) continue
-    const value = await $.store.get(key)
-    if (!live(g)) return null
-    const t = value && typeof value === 'object' ? (value as { t?: unknown }).t : undefined
-    if (typeof t !== 'number') continue
-    if (futureMark(t)) {
-      if (!(await dropFutureStamp($, g, key))) return null
-      continue
-    }
-    lastCloseT = Math.max(lastCloseT, t)
+const isMarkKey = (key: string): boolean => key.startsWith(STORE_OPEN_CLOSED + ':') || key.startsWith(STORE_OPEN_CLOSED_V2 + ':') || isNs(key, NS_MARK)
+
+// `<STORE_OPEN_CLOSED_V2>:<session>:<e>:<n>` split from the right — a session id may hold ':'
+function markKeyParts(key: string): { session: string; e: string; n: string } | null {
+  const rest = key.slice(STORE_OPEN_CLOSED_V2.length + 1)
+  const j = rest.lastIndexOf(':')
+  const i = j > 0 ? rest.lastIndexOf(':', j - 1) : -1
+  return i < 0 ? null : { session: rest.slice(0, i), e: rest.slice(i + 1, j), n: rest.slice(j + 1) }
+}
+
+// CONSTRAINT (#551 FIX9c Р7): the session a record belongs to — a close mark's
+// is its key's, of both forms; a flag's or a draft's is its value's. The order
+// read and the prune read it here alike
+function ownerOf(key: string, value: unknown): unknown {
+  if (key.startsWith(STORE_OPEN_CLOSED + ':')) return key.slice(STORE_OPEN_CLOSED.length + 1)
+  if (key.startsWith(STORE_OPEN_CLOSED_V2 + ':')) return markKeyParts(key)?.session
+  return value && typeof value === 'object' ? (value as { session?: unknown }).session : undefined
+}
+
+// CONSTRAINT (#551 FIX9c Р13): a close mark of this version is its key — its
+// session, e and n; a value that names another, carries one of e and n, or
+// neither, is damage
+function markV2Of(key: string, value: unknown): { session: string; order: Order } | string {
+  const v = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  if (v['e'] === undefined && v['n'] === undefined) return 'нет ни e, ни n'
+  if (v['e'] === undefined || v['n'] === undefined) return 'есть только ' + (v['e'] === undefined ? 'n' : 'e') + ' из e, n'
+  const order = orderOf(v)
+  if (typeof order !== 'object') return order ?? 'нет ни e, ни n'
+  const k = markKeyParts(key)
+  if (k === null || v['session'] !== k.session || String(order.e) !== k.e || String(order.n) !== k.n) return 'значение ' + shown(v['session']) + ':' + String(order.e) + ':' + String(order.n) + ' расходится с ключом'
+  return { session: k.session, order }
+}
+
+// the flag or mark `value` under `key`; null — not one; a Damage — named. A
+// flag of the previous versions of neither form is ordered (0, 0); a 0.5.1
+// mark of neither form is not counted
+function recordOf(key: string, value: unknown): Rec | Damage | null {
+  const ns = v3NsOf(key)
+  if (ns !== null) {
+    const bad = v3Damage(ns, key, value)
+    if (bad !== null) return { damage: bad, v3: true }
+    const v = value as Record<string, unknown>
+    return { session: v['session'] as string, order: { e: v['e'] as number, n: v['n'] as number }, age: v['at'] as number, openId: ns === NS_OPEN ? (v['openId'] as string) : '', v3: true }
   }
+  if (key.startsWith(STORE_OPEN_CLOSED_V2 + ':')) {
+    const m = markV2Of(key, value)
+    return typeof m === 'string' ? { damage: m, v3: false } : { ...m, age: ageOf(value), openId: '', v3: false }
+  }
+  if (!value || typeof value !== 'object') return null
+  const session = ownerOf(key, value)
+  if (typeof session !== 'string') return null
+  const flag = key.startsWith(STORE_OPEN + ':')
+  const openId = flag ? 'v1:' + key.slice(STORE_OPEN.length + 1) : ''
+  const order = orderOf(value as Record<string, unknown>)
+  if (order === undefined) return flag ? { session, order: { e: 0, n: 0 }, age: ageOf(value), openId, v3: false } : null
+  return typeof order === 'string' ? { damage: order, v3: false } : { session, order, age: ageOf(value), openId, v3: false }
+}
+
+// CONSTRAINT (#551 FIX9 Р5, D8): the bare pre-FIX4 flag is the open
+// 'v1:' + LEGACY_TOKEN + its session at (0, 0) — it opens a panel only while
+// its session has no close mark and its age is fresh; null — it names no session
+function bareFlagOf(value: unknown): Rec | null {
+  const owner = value && typeof value === 'object' ? (value as { session?: unknown }).session : undefined
+  return typeof owner === 'string' ? { session: owner, order: { e: 0, n: 0 }, age: ageOf(value), openId: 'v1:' + LEGACY_TOKEN + owner, v3: false } : null
+}
+
+// The open flag or close mark under `key`. null — not one, or damaged (this
+// version's dropped here, the previous versions' left and not counted);
+// 'absent' — the key holds nothing at the read; 'stale' — the state went stale
+// meanwhile. CONSTRAINT (#551 FIX9c Р1): a record at or past this
+// environment's epoch raises the epoch past it, on every pass that reads it
+async function orderRecord($: EngineInterface, g: number, key: string): Promise<Rec | null | 'absent' | 'stale'> {
+  const value = await $.store.get(key)
+  if (!live(g)) return 'stale'
+  if (value === undefined) return 'absent'
+  const record = recordOf(key, value)
+  if (record !== null && 'damage' in record) return (await dropDamaged($, g, key, record.damage)) ? null : 'stale'
+  raiseEpoch(record)
+  return record
+}
+
+// #551 §3.3: the greatest order of the close marks of `session`, every form —
+// this version's under its digest, FIX9's naming it in the key, 0.5.1's under
+// its key; undefined — none. 'stale': the state went stale meanwhile. Throws
+// when the store refuses
+async function readSessionMarks($: EngineInterface, g: number, session: string): Promise<Order | undefined | 'stale'> {
+  const keys = await $.store.keys()
+  if (!live(g)) return 'stale'
+  const scope = NS_MARK + '.' + fnv64hex(session) + ':'
+  const old = STORE_OPEN_CLOSED + ':' + session
+  let max: Order | undefined
+  for (const key of Array.isArray(keys) ? keys : []) {
+    if (typeof key !== 'string') continue
+    if (!key.startsWith(scope) && !(key.startsWith(STORE_OPEN_CLOSED_V2 + ':') && markKeyParts(key)?.session === session) && !(key === old && key.length <= KEY_MAX)) continue
+    const record = await orderRecord($, g, key)
+    if (record === 'stale') return 'stale'
+    if (record === null || record === 'absent' || record.session !== session) continue
+    if (max === undefined || orderAfter(record.order, max)) max = record.order
+  }
+  return max
+}
+
+// CONSTRAINT (#551 FIX9c Р1, FIX9f Р5): the one rule by which a read of a flag
+// or mark raises the epoch — the restore's reads and the prune's take it here
+function raiseEpoch(record: { order: Order } | null): void {
+  if (record !== null && orderEpoch !== null && record.order.e >= orderEpoch) orderEpoch = epochAfter(record.order.e) ?? orderEpoch
+}
+
+// The restore's decision on the open of `session` (#551 §3.4): the open with
+// the greatest order among the fresh flags of the session no close mark
+// closes, and every publication of this version of the session's open flags,
+// kept as the sources the adoption deletes once its copy landed. undefined:
+// none opens; null: the state went stale meanwhile.
+async function readOpenFlags($: EngineInterface, g: number, session: string): Promise<OpenDecision | undefined | null> {
+  // CONSTRAINT (#551 FIX9 Р1, Р4, FIX9c Р11): the first restore that reads the
+  // store takes the epoch past every epoch record and every flag and mark of
+  // this pass and tries to publish it; a restore of another generation that
+  // meets that try in flight waits for it. A spent order takes no epoch (#551 FIX9d AR1)
+  await epochSettled()
+  if (!live(g)) return null
+  if (orderEpoch === null && !orderSpent) {
+    const firstKeys = await $.store.keys()
+    if (!live(g)) return null
+    let seen = 0
+    const epochRecords: Array<{ key: string; e: number }> = []
+    for (const key of Array.isArray(firstKeys) ? firstKeys : []) {
+      if (typeof key !== 'string') continue
+      if (isNs(key, NS_EPOCH) || key === STORE_EPOCH) {
+        const value = await $.store.get(key)
+        if (!live(g)) return null
+        if (value === undefined) continue
+        const e = value && typeof value === 'object' ? (value as { e?: unknown }).e : undefined
+        if (key === STORE_EPOCH) {
+          // CONSTRAINT (#551 D8, FIX9c Р12): a damaged epoch key of the previous version counts as absent and stays
+          if (isEpoch(e)) seen = Math.max(seen, e as number)
+          else if (!(await dropDamaged($, g, key, epochDamage(e)))) return null
+          continue
+        }
+        const bad = v3Damage(NS_EPOCH, key, value)
+        if (bad !== null) {
+          if (!(await dropDamaged($, g, key, bad))) return null
+          continue
+        }
+        seen = Math.max(seen, e as number)
+        epochRecords.push({ key, e: e as number })
+        continue
+      }
+      if (!isFlagKey(key) && !isMarkKey(key)) continue
+      const record = await orderRecord($, g, key)
+      if (record === 'stale') return null
+      if (record !== null && record !== 'absent') seen = Math.max(seen, record.order.e)
+    }
+    await readClock($)
+    if (!live(g)) return null
+    const E = epochAfter(seen)
+    const refused = E === null ? null : await storeEpoch($, E, true)
+    if (refused !== null && live(g)) failDiag('warn', 'picker-epoch-store', 'эпоха не записана: ' + errorText(refused.err), 'picker-epoch-store:' + String(E))
+    if (!live(g)) return null
+    // CONSTRAINT (#551 D6): the greatest valid epoch record is never deleted
+    const max = Math.max(seen, epochLanded ?? -1)
+    for (const r of epochRecords) {
+      if (r.e >= max) continue
+      try {
+        await $.store.delete(r.key)
+      } catch (err) {
+        if (live(g)) failDiag('info', 'picker-epoch-old', 'an epoch record below the greatest could not be removed: ' + errorText(err) + '; the next open removes it', 'picker-epoch-old:' + r.key)
+      }
+      if (!live(g)) return null
+    }
+  }
+  // CONSTRAINT (#551 D8): v1 is read only; deleted only past MARK_KEEP by its own age (NOTES)
   const bare = await $.store.get(STORE_OPEN)
   if (!live(g)) return null
-  if (bare !== undefined) {
-    const owner = bare && typeof bare === 'object' ? (bare as { session?: unknown }).session : undefined
-    if (typeof owner !== 'string') {
-      await $.store.delete(STORE_OPEN)
-      if (!live(g)) return null
-    } else if (owner === session) {
-      const token = LEGACY_TOKEN + owner
-      await $.store.set(openKeyOf(token), { session: owner, token, t: flagStamp() })
-      if (!live(g)) return null
-      await $.store.delete(STORE_OPEN)
-      if (!live(g)) return null
-    }
-  }
+  const bareFlag = bare === undefined ? null : bareFlagOf(bare)
   const keys = await $.store.keys()
   if (!live(g)) return null
-  const list = Array.isArray(keys) ? keys : []
-  const marks = new Map<string, number>()
-  for (const key of list) {
-    if (typeof key !== 'string' || !key.startsWith(STORE_OPEN_CLOSED + ':')) continue
-    const value = await $.store.get(key)
-    if (!live(g)) return null
-    const t = value && typeof value === 'object' ? (value as { t?: unknown }).t : undefined
-    if (typeof t === 'number' && !futureMark(t)) marks.set(key.slice(STORE_OPEN_CLOSED.length + 1), t)
-  }
-  const flags: OpenFlag[] = []
-  for (const key of list) {
-    if (typeof key !== 'string' || !key.startsWith(STORE_OPEN + ':')) continue
-    const value = await $.store.get(key)
-    if (!live(g)) return null
-    const session = value && typeof value === 'object' ? (value as { session?: unknown }).session : undefined
-    if (typeof session !== 'string') continue
-    const token = key.slice(STORE_OPEN.length + 1)
-    const stamp = (value as { t?: unknown }).t
-    if (typeof stamp === 'number' && futureStamp(stamp)) {
-      if (!(await dropFutureStamp($, g, key))) return null
-      continue
+  let list = Array.isArray(keys) ? keys : []
+  // CONSTRAINT (#551 FIX9 Р2): the rule takes the greatest mark of a session
+  // over every mark read, both forms together. CONSTRAINT (#551 FIX9c Р2): a
+  // listed mark that holds nothing at its read was deleted below a greater one
+  // written after the listing — the keys are listed again and the marks not
+  // read yet are read, until a listing has none left. CONSTRAINT (#551 FIX9f
+  // Р1): so is a listed flag that holds nothing at its read — a close mark
+  // past it may have been written meanwhile; the flags and marks of every
+  // listing are read, each key once, and a flag is judged only when the last
+  // listing holds it and its read found it
+  const marks = new Map<string, Order>()
+  const read: Array<Rec & { key: string }> = []
+  const flagsRead = new Map<string, Rec>()
+  const listed = new Set<string>()
+  for (;;) {
+    let gone = false
+    for (const key of list) {
+      if (typeof key !== 'string' || !isMarkKey(key)) continue
+      if (listed.has(key)) continue
+      listed.add(key)
+      const record = await orderRecord($, g, key)
+      if (record === 'stale') return null
+      if (record === 'absent') gone = true
+      if (record === null || record === 'absent') continue
+      read.push({ key, ...record })
+      const max = marks.get(record.session)
+      if (max === undefined || orderAfter(record.order, max)) marks.set(record.session, record.order)
     }
-    const t = typeof stamp === 'number' ? stamp : 0
-    // CONSTRAINT (#521 FIX8b Р1): a flag stamped at or before its session's
-    // close mark is closed — it is deleted and the mark stays, a late write
-    // may still be on its way
-    const mark = marks.get(session)
-    const open = mark === undefined || t > mark
-    if (!open) {
+    for (const key of list) {
+      if (typeof key !== 'string' || !isFlagKey(key)) continue
+      if (listed.has(key)) continue
+      listed.add(key)
+      const flag = await orderRecord($, g, key)
+      if (flag === 'stale') return null
+      if (flag === 'absent') gone = true
+      if (flag === null || flag === 'absent') continue
+      flagsRead.set(key, flag)
+    }
+    if (!gone) break
+    const again = await $.store.keys()
+    if (!live(g)) return null
+    list = Array.isArray(again) ? again : []
+  }
+  await readClock($)
+  if (!live(g)) return null
+  const now = stampMs()
+  // CONSTRAINT (#551 FIX9 Р3): a mark below its session's greatest one closes
+  // nothing the greatest does not — this version's is deleted by the key read,
+  // the previous versions' stay (#551 D8); the greatest is never deleted here
+  for (const mark of read) {
+    if (!mark.v3 || !orderAfter(marks.get(mark.session)!, mark.order)) continue
+    try {
+      await $.store.delete(mark.key)
+    } catch (err) {
+      if (live(g)) failDiag('info', 'picker-close-mark-old', 'an older close mark of session ' + mark.session + ' could not be removed: ' + errorText(err) + '; the greatest mark rules; ' + MARK_EXPIRES, 'picker-close-mark-old:' + mark.key)
+    }
+    if (!live(g)) return null
+  }
+  const opens = new Map<string, { order: Order; keys: string[] }>()
+  const v1Sources: V1Source[] = []
+  const judged: Array<[string, Rec]> = []
+  if (bareFlag !== null) judged.push([STORE_OPEN, bareFlag])
+  for (const key of list) {
+    if (typeof key !== 'string') continue
+    const record = flagsRead.get(key)
+    if (record !== undefined) judged.push([key, record])
+  }
+  for (const [key, record] of judged) {
+    // CONSTRAINT (#521 FIX8b Р1, #551 D5): a flag at or below its session's
+    // greatest close mark is closed, and one whose age is not fresh opens
+    // nothing — this version's goes by the key read, the mark stays, a late
+    // write may still be on its way
+    const mark = marks.get(record.session)
+    const closed = mark !== undefined && !orderAfter(record.order, mark)
+    if (closed || !restorable(record.age, now)) {
+      if (!record.v3) continue
       try {
         await $.store.delete(key)
       } catch (err) {
-        if (live(g)) failDiag('info', 'picker-closed-flag', 'the flag of a closed picker panel could not be removed: ' + errorText(err) + '; the panel stays closed and the flag ages out of the store', 'picker-closed-flag:' + token)
+        if (live(g)) failDiag('info', 'picker-closed-flag', 'the flag of a closed picker panel could not be removed: ' + errorText(err) + '; the panel stays closed; the flag ' + FLAG_EXPIRES, 'picker-closed-flag:' + key)
       }
       if (!live(g)) return null
       continue
     }
-    flags.push({ session, token, t })
+    if (record.session !== session) continue
+    const open = opens.get(record.openId) ?? { order: record.order, keys: [] }
+    if (orderAfter(record.order, open.order)) open.order = record.order
+    if (record.v3) open.keys.push(key)
+    else v1Sources.push({ session: record.session, order: record.order })
+    opens.set(record.openId, open)
   }
-  return flags
+  // CONSTRAINT (#521 FIX8b Р1): one open of a session stands — the greatest
+  // order, the lesser openId at a tie; every publication of the session's
+  // opens is a source
+  let best: [string, { order: Order; keys: string[] }] | undefined
+  for (const entry of opens) {
+    if (best === undefined || orderAfter(entry[1].order, best[1].order) || (!orderAfter(best[1].order, entry[1].order) && entry[0] < best[0])) best = entry
+  }
+  if (best === undefined) return undefined
+  return { openId: best[0], order: best[1].order, sources: [...opens.values()].flatMap((o) => o.keys), v1Sources }
 }
 
-// This open's flag goes in under its own token; the flags of this state's
-// earlier opens are its own and go — whether or not the new one landed
-// (#521 FIX5 Ч8), so a refused write leaves no older flag of this state
-async function writeOpenFlag($: EngineInterface, g: number, session: string, token: string, previous: string): Promise<void> {
-  S.ownTokens.add(token)
-  let refused: unknown
-  let landed = true
-  try {
-    await $.store.set(openKeyOf(token), { session, token, t: flagStamp() })
-  } catch (err) {
-    landed = false
-    refused = err
-  }
-  if (!live(g)) return
-  if (landed && flagOutlived(g, token)) {
-    await clearFlag($, g, token)
-    return
-  }
-  if (landed) S.flagToken = token
-  let left = false
-  let clearErr: unknown
-  for (const old of [...S.ownTokens]) {
-    if (old === token) continue
+// #551 §3.2 step 1: a new open of `session`, the one before retired; null —
+// no openId (said, store-writer-id)
+function beginOpen(session: string): { open: OpenState | null; prev: OpenState | null } {
+  const prev = S.open
+  const openId = newId()
+  const open: OpenState | null = openId === null ? null : { openId, session, order: null, state: 'active', confirmed: [], sources: [], v1Sources: [] }
+  S.open = open
+  if (prev !== null && prev.state === 'active') prev.state = 'retired'
+  if (prev !== null && prev.state === 'retired' && !S.retired.includes(prev)) S.retired.push(prev)
+  return { open, prev }
+}
+
+// #551 §3.2 steps 2–6: this open's first publication — its session's marks
+// read and the epoch raised by them before its order is taken, so a mark of
+// another environment written after this environment's restore does not close
+// it. CONSTRAINT (#551 D4, s521-fix5 Ч8): the old open's publications go even when the new one is refused
+async function writeOpenFlag($: EngineInterface, g: number, open: OpenState | null, prev: OpenState | null, closedSince: () => boolean): Promise<void> {
+  let refused: unknown = new Error(NO_WRITER)
+  let failed = open === null
+  if (open !== null) {
     try {
-      await $.store.delete(openKeyOf(old))
+      try {
+        if ((await readSessionMarks($, g, open.session)) === 'stale') return
+      } catch (err) {
+        if (live(g)) failDiag('info', 'picker-open-marks-read', 'the close marks of session ' + open.session + ' could not be read before its open: ' + errorText(err) + '; the open takes its order from the current epoch, a later mark closes it')
+      }
       if (!live(g)) return
-      S.ownTokens.delete(old)
+      open.order = await landedOrder($, g)
+      if (live(g) && !closedSince() && S.open === open && open.state === 'active') {
+        const tk = ticket(NS_OPEN, open.session)
+        await $.store.set(tk.key, { session: open.session, openId: open.openId, e: open.order.e, n: open.order.n, at: tk.at })
+        await landedFlag($, g, open, tk.key)
+      }
     } catch (err) {
-      if (!live(g)) return
-      left = true
-      clearErr = err
+      failed = true
+      refused = err
     }
   }
-  if (!landed) {
-    failDiag('warn', 'picker-open-flag', 'the picker open flag could not be stored: ' + errorText(refused) + (left ? '; перезагрузка может открыть панель прежней сессии; флаг устареет за 7 дней' : '; перезагрузка не откроет панель'))
+  if (!live(g)) return
+  let left = false
+  let clearErr: unknown
+  if (prev !== null && prev.state === 'retired') {
+    // CONSTRAINT (#551 AR-5): retirement closes only each v1 source's order, never a later foreign open.
+    for (const source of [...prev.v1Sources]) {
+      try {
+        const tk = ticket(NS_MARK, source.session)
+        await $.store.set(tk.key, { session: source.session, e: source.order.e, n: source.order.n, at: tk.at })
+        await settleMark($, g, source.session, source.order, tk)
+        dropKey(prev.v1Sources, source)
+      } catch (err) {
+        left = true
+        clearErr = err
+      }
+      if (!live(g)) return
+    }
+    for (const key of [...prev.confirmed]) {
+      try {
+        await $.store.delete(key)
+        dropKey(prev.confirmed, key)
+      } catch (err) {
+        left = true
+        clearErr = err
+      }
+      if (!live(g)) return
+    }
+    if (prev.confirmed.length === 0) dropKey(S.retired, prev)
+  }
+  if (failed) {
+    failDiag('warn', 'picker-open-flag', 'the picker open flag could not be stored: ' + errorText(refused) + (left ? '; перезагрузка может открыть панель прежней сессии; флаг ' + FLAG_EXPIRES : '; перезагрузка не откроет панель'))
     return
   }
-  if (left && previous !== '') failDiag('info', 'picker-open-flag-old', 'the flag of the previous open could not be cleared: ' + errorText(clearErr) + '; it ages out of the store')
+  if (left) failDiag('info', 'picker-open-flag-old', 'the flag of the previous open could not be cleared: ' + errorText(clearErr) + '; ' + FLAG_EXPIRES)
+}
+
+function dropKey<T>(list: T[], item: T): void {
+  const at = list.indexOf(item)
+  if (at >= 0) list.splice(at, 1)
+}
+
+// #551 §3.6, the landing of a flag publication of `open`. A stale state does
+// nothing — the publication is a source for the new state (#551 F25); an open
+// that is not the active one deletes this publication, its own key, never the
+// current panel's; the active open confirms it and deletes its own earlier
+// publications, then — once its first copy landed — the adopted sources
+async function landedFlag($: EngineInterface, g: number, open: OpenState, key: string): Promise<void> {
+  if (!live(g)) return
+  if (S.open !== open || open.state !== 'active') {
+    try {
+      await $.store.delete(key)
+    } catch (err) {
+      if (live(g)) failDiag('info', 'picker-open-flag-late', 'a flag write that landed after its open ended could not be removed: ' + errorText(err) + '; a close mark keeps a closed panel closed, and the flag ' + FLAG_EXPIRES, 'picker-open-flag-late:' + key)
+    }
+    return
+  }
+  open.confirmed.push(key)
+  const seq = seqOfKey(key)
+  // CONSTRAINT (#551 D1): get → decide → delete is not atomic; the key read cannot change
+  for (const old of [...open.confirmed, ...open.sources]) {
+    if (old === key || (open.confirmed.includes(old) && seqOfKey(old) >= seq)) continue
+    try {
+      await $.store.delete(old)
+      dropKey(open.confirmed, old)
+      dropKey(open.sources, old)
+    } catch (err) {
+      if (live(g)) failDiag('info', 'picker-open-flag-old', 'an older open flag of this session could not be cleared: ' + errorText(err) + '; ' + FLAG_EXPIRES, 'picker-open-flag-old:' + old)
+    }
+    if (!live(g)) return
+  }
 }
 
 const REBOUND = 'сессия сменилась — черновик прежней сессии сохранён'
@@ -3356,7 +3965,7 @@ const STALE_TREE = 'панель обновлена под текущую сес
 async function rebindPicker($: EngineInterface, g: number, to: string): Promise<void> {
   if (S.pickerOpen !== true || S.pickerSession === '' || S.pickerSession === to) return
   const from = S.pickerSession
-  const kept = S.draft ? await writeDraft($, from, S.draft) : true
+  const kept = S.draft ? await writeDraft($, g, from, S.draft) : true
   if (!live(g)) return staleDrop('picker rebind')
   let next: Draft | null = null
   try {
@@ -3369,18 +3978,20 @@ async function rebindPicker($: EngineInterface, g: number, to: string): Promise<
   if (S.pickerOpen !== true || S.pickerSession !== from) return
   setDraft(next ?? freshDraft(), to)
   S.focusKey = ''
-  const token = stampId()
-  const previous = S.openToken
-  S.openToken = token
-  await writeOpenFlag($, g, to, token, previous)
+  // CONSTRAINT (#551 D4, s521-fix5 Ч8): the old open's publications go even when the new one is refused
+  // A rebind is no close — the old open is retired without a mark (#521 FIX8b Р1)
+  const closes = S.closes
+  const { open, prev } = beginOpen(to)
+  await writeOpenFlag($, g, open, prev, () => S.closes !== closes)
   if (!live(g)) return staleDrop('picker rebind')
-  await persistDraft($)
+  await persistDraft($, g)
   if (!live(g)) return staleDrop('picker rebind')
   S.saveResult = kept ? REBOUND : 'сессия сменилась — черновик прежней сессии не записан в хранилище, он держится в памяти до следующей записи'
   invalidate($)
 }
 
 async function settledRestore(): Promise<void> {
+  sweepClockHung()
   let seen: Promise<void>
   do {
     seen = S.restoring
@@ -3388,34 +3999,62 @@ async function settledRestore(): Promise<void> {
   } while (seen !== S.restoring)
 }
 
-// CONSTRAINT (#521 FIX5 Ч3): a draft write of the open panel stamps its open
-// flag as well — both age from the panel's last write
-async function persistDraft($: EngineInterface): Promise<void> {
-  if (!S.draft) return
-  await writeDraft($, S.pickerSession, S.draft)
-  await stampOpenFlag($)
+// CONSTRAINT (#521 FIX5 Ч3): a draft write of the open panel publishes its open
+// flag again as well — both age from the panel's last write. CONSTRAINT (#551 FIX9c
+// Р3): `g` is the caller's state; after each await nothing is written once a
+// newer state took over — its panel, draft and flag are its own
+async function persistDraft($: EngineInterface, g: number): Promise<void> {
+  if (!live(g) || !S.draft) return
+  await writeDraft($, g, S.pickerSession, S.draft)
+  if (!live(g)) return
+  await stampOpenFlag($, g)
 }
 
-// the open flag re-written with a new stamp; only a flag whose write landed,
-// while the panel is open
-async function stampOpenFlag($: EngineInterface): Promise<void> {
-  const g = S.gen
-  const token = S.openToken
-  if (S.pickerOpen !== true || token === '' || S.flagToken !== token) return
+const STAMP_TAIL = 'флаг держит прежнюю отметку времени и перестаёт открывать панель через ' + String(FLAG_TTL / 86400000) + ' суток'
+
+// CONSTRAINT (#551 D4, D5): same order, new key; a closed open is withdrawn, never republished
+// #551 §3.3: the re-publication of the active open of the caller's state —
+// at a draft write, a tick and the adoption. CONSTRAINT (#551 FIX9f Р4): the
+// open is captured at the start; its session and openId ride in the ticket's value
+async function stampOpenFlag($: EngineInterface, g: number): Promise<void> {
+  const open = S.open
+  if (!live(g) || S.pickerOpen !== true || open === null || open.state !== 'active' || open.order === null) return
+  let max: Order | undefined
   try {
-    await $.store.set(openKeyOf(token), { session: S.pickerSession, token, t: flagStamp() })
+    const read = await readSessionMarks($, g, open.session)
+    if (read === 'stale') return
+    max = read
   } catch (err) {
-    if (live(g)) failDiag('info', 'picker-open-stamp', 'the open flag could not be re-stamped: ' + errorText(err) + '; it keeps its older stamp and another session\'s open may prune it after ' + String(DRAFT_KEEP_MS / 86400000) + ' days')
+    if (live(g)) failDiag('info', 'picker-open-stamp', 'the open flag could not be published again: the close marks of its session could not be read: ' + errorText(err) + '; ' + STAMP_TAIL)
     return
   }
-  if (flagOutlived(g, token)) await clearFlag($, g, token)
-}
-
-// CONSTRAINT (#521 FIX6 Р2): a flag write that lands after the close, or after
-// a newer token took over, is deleted again — $.store does not promise that a
-// set begun before a delete lands before it
-function flagOutlived(g: number, token: string): boolean {
-  return live(g) && (S.pickerOpen !== true || S.openToken !== token)
+  if (!live(g) || S.open !== open || open.state !== 'active') return
+  const order = open.order
+  if (max !== undefined && !orderAfter(order, max)) {
+    open.state = 'withdrawn'
+    stopKeepAlive(g)
+    for (const key of [...open.confirmed]) {
+      try {
+        await $.store.delete(key)
+        dropKey(open.confirmed, key)
+      } catch (err) {
+        if (live(g)) failDiag('info', 'picker-open-flag-old', 'the flag of a withdrawn open could not be cleared: ' + errorText(err) + '; the close mark keeps the panel closed at a reload', 'picker-open-flag-old:' + key)
+      }
+      if (!live(g)) return
+    }
+    failDiag('info', 'picker-open-withdrawn', 'открытие сессии ' + open.session + ' закрыто отметкой другого процесса; панель на экране остаётся, перезагрузка её не откроет')
+    return
+  }
+  let key: string
+  try {
+    const tk = ticket(NS_OPEN, open.session)
+    key = tk.key
+    await $.store.set(tk.key, { session: open.session, openId: open.openId, e: order.e, n: order.n, at: tk.at })
+  } catch (err) {
+    if (live(g)) failDiag('info', 'picker-open-stamp', 'the open flag could not be published again: ' + errorText(err) + '; ' + STAMP_TAIL)
+    return
+  }
+  await landedFlag($, g, open, key)
 }
 
 // CONSTRAINT (#521 FIX5 Ч3): one timer per open panel re-stamps its flag and
@@ -3440,7 +4079,7 @@ function armKeepAlive($: EngineInterface, g: number): void {
       if (S.pickerOpen !== true) return
       await readClock($)
       if (!live(g) || S.pickerOpen !== true) return
-      await persistDraft($)
+      await persistDraft($, g)
     })
   }
   try {
@@ -3468,51 +4107,62 @@ function stopKeepAlive(g: number): void {
 
 // CONSTRAINT (#521 FIX4 Ф6): a refused draft write keeps the draft in
 // S.pendingDrafts under its session; every later write and every open writes
-// the kept ones first. true: this draft landed
-async function writeDraft($: EngineInterface, session: string, draft: Draft): Promise<boolean> {
-  const g = S.gen
+// the kept ones first. true: this draft landed. CONSTRAINT (#551 FIX9f Р3):
+// `g` is the caller's state, never read here — a stale one writes nothing
+async function writeDraft($: EngineInterface, g: number, session: string, draft: Draft): Promise<boolean> {
   await flushPendingDrafts($, g, session)
   if (!live(g)) return false
   return storeDraft($, g, session, draft)
 }
 
 async function storeDraft($: EngineInterface, g: number, session: string, draft: Draft): Promise<boolean> {
-  const t = stampMs()
+  let t = Math.max(lastAt, stampMs())
+  let key: string
   try {
-    await $.store.set(draftKeyOf(session), { session, t, ...draft })
+    const tk = ticket(NS_DRAFT, session)
+    t = tk.at
+    key = tk.key
+    await $.store.set(tk.key, { session, t, ...draft })
   } catch (err) {
     if (!live(g)) return false
     S.pendingDrafts.set(session, { draft, t })
     failDiag('warn', 'picker-draft-store', 'the picker draft' + (session !== '' ? ' of session ' + session : '') + ' could not be stored: ' + errorText(err) + '; it is kept in memory and stored at the next draft write or open — a reload loses the unsaved edits', 'picker-draft-store:' + session)
     return false
   }
+  await landedDraft($, g, session, key)
   if (!live(g)) return true
   if (S.pendingDrafts.get(session)?.draft === draft) S.pendingDrafts.delete(session)
-  if (S.slotMovePending === session) {
-    try {
-      // CONSTRAINT (#521 FIX5 Ч10): the bare slot goes only while it still
-      // names this session — an older build may have written another's since
-      const slot = await $.store.get(STORE_DRAFT)
-      if (!live(g)) return true
-      if (slot && typeof slot === 'object' && (slot as { session?: unknown }).session === session) {
-        await $.store.delete(STORE_DRAFT)
-        if (!live(g)) return true
-      }
-      if (S.slotMovePending === session) S.slotMovePending = ''
-    } catch (err) {
-      if (live(g)) failDiag('warn', 'picker-draft-transfer', 'the moved picker draft slot could not be removed: ' + errorText(err) + '; the next draft write removes it')
-    }
-  }
   return true
+}
+
+// CONSTRAINT (#551 D2): a landed draft publication of this environment
+// deletes its own lower ones, or itself below a higher own one; a stale state
+// deletes nothing (#551 F25) — its keys wait for the next landing
+async function landedDraft($: EngineInterface, g: number, session: string, key: string): Promise<void> {
+  const own = ownDrafts.get(session) ?? []
+  own.push(key)
+  ownDrafts.set(session, own)
+  if (!live(g)) return
+  const seq = seqOfKey(key)
+  const gone = own.some((k) => seqOfKey(k) > seq) ? [key] : own.filter((k) => seqOfKey(k) < seq)
+  for (const old of gone) {
+    try {
+      await $.store.delete(old)
+      dropKey(own, old)
+    } catch (err) {
+      if (live(g)) failDiag('info', 'picker-draft-old', 'an older picker draft of session ' + session + ' could not be removed: ' + errorText(err) + '; the newest stands', 'picker-draft-old:' + old)
+    }
+    if (!live(g)) return
+  }
 }
 
 // CONSTRAINT (#521 FIX5 Ч9): a kept draft is stored only while the stored
 // draft of its session is not stamped later; a later one supersedes it and
 // the kept one is dropped aloud. null: stale
 async function pendingStands($: EngineInterface, g: number, session: string, kept: { draft: Draft; t: number }): Promise<boolean | null> {
-  const stored = await $.store.get(draftKeyOf(session))
-  if (!live(g)) return null
-  const t = stored && typeof stored === 'object' ? (stored as { t?: unknown }).t : undefined
+  const cands = await draftCands($, g, session)
+  if (cands === null) return null
+  const t = cands[cands.length - 1]?.t
   if (typeof t !== 'number' || t <= kept.t) return true
   if (S.pendingDrafts.get(session) === kept) S.pendingDrafts.delete(session)
   failDiag('warn', 'picker-draft-superseded', 'the kept picker draft of session ' + session + ' is dropped: the store holds a later draft of that session, which stands', 'picker-draft-superseded:' + session)
@@ -3545,47 +4195,120 @@ export async function closeKeepDraft($: EngineInterface): Promise<void> {
   // restore that would reopen the pane after it
   await settledRestore()
   const g = S.gen
-  // CONSTRAINT (#521 FIX2 Р27, FIX4 Ф2, FIX5 Ч8): the close deletes the keys
-  // of this state's own tokens, as they stand now, and reads nothing first —
-  // an open that landed meanwhile has its own key
-  const tokens = [...S.ownTokens]
+  // CONSTRAINT (#521 FIX2 Р27, FIX4 Ф2, FIX5 Ч8, #551 D2): the close deletes
+  // the confirmed publications of this state's open and of the opens it
+  // retired, as they stand now, and reads nothing first; the open ends here —
+  // a publication of it that lands later deletes itself
+  const open = S.open
+  if (open !== null) {
+    open.state = 'closed'
+    if (!S.retired.includes(open)) S.retired.push(open)
+  }
+  const own = S.retired.map((r) => ({ r, keys: [...r.confirmed] }))
   const session = S.pickerSession
   S.pickerOpen = false
   S.closes++
-  // CONSTRAINT (#521 FIX8b Р1, FIX8c): the close's instant is taken before any
-  // await — a flag stamped after this line is stamped past it (flagStamp), and
-  // it is past the latest close, so it is not below a flag stamped lastCloseT + 1
-  // while the clock stood still
-  const closedAt = Math.max(stampMs(), lastCloseT + 1)
-  lastCloseT = Math.max(lastCloseT, closedAt)
   S.focusKey = ''
   stopKeepAlive(g)
-  if (session !== '') await markClosed($, g, session, closedAt)
-  await persistDraft($)
-  for (const token of tokens) await clearFlag($, g, token)
+  const marked = session !== '' ? await markClosed($, g, session) : false
+  // CONSTRAINT (#551 FIX9 Р8): the flags this state leaves after a newer state
+  // took over are closed by the mark, not deleted here
+  if (!live(g)) return
+  await persistDraft($, g)
+  // CONSTRAINT (#551 FIX9c Р3): a newer state that took over during the draft write owns the flags
+  if (!live(g)) return
+  // CONSTRAINT (#551 FIX9b): the mark of `session` closes only that session's
+  // flags — an open retired by a rebind names another session
+  for (const { r, keys } of own) {
+    for (const key of keys) await clearFlag($, g, r, key, marked && r.session === session)
+    if (!live(g)) return
+    if (r.confirmed.length === 0) dropKey(S.retired, r)
+  }
   invalidate($, g)
 }
 
 // CONSTRAINT (#521 FIX8b Р1): only the close marks a session — a flag deleted
 // because a newer token of an open panel took over, or yielded to a close
 // that has already marked, is deleted without a mark: a mark closes every
-// flag of the session stamped before it, the open panel's own included. The
+// flag of the session ordered before it, the open panel's own included. The
 // mark goes in before the close deletes its flags; its refusal is said and
-// the flags are deleted all the same
-async function markClosed($: EngineInterface, g: number, session: string, t: number): Promise<void> {
+// the flags are deleted all the same. true: the mark landed.
+// CONSTRAINT (#521 FIX8b Р1, #551 FIX9 Р1, FIX9c Р11): the close's order is
+// taken once the epoch key write in flight is over, before the mark's store
+// call — every flag write of this environment that took its order earlier is
+// below it, every later one past it, whatever the clock reads.
+// CONSTRAINT (#551 FIX9c Р10): once the mark landed, the lower of it and this
+// environment's greatest earlier mark of the session is deleted — one mark per
+// session and environment; the lower, as the marks may land out of their order
+// (at a tie of order, the earlier stamp)
+async function markClosed($: EngineInterface, g: number, session: string): Promise<boolean> {
+  let cur: { key: string; order: Order; at: number }
   try {
-    await $.store.set(closeMarkKeyOf(session), { t })
+    const order = await landedOrder($, g)
+    const tk = ticket(NS_MARK, session)
+    await $.store.set(tk.key, { session, e: order.e, n: order.n, at: tk.at })
+    cur = { key: tk.key, order, at: tk.at }
   } catch (err) {
     if (live(g)) failDiag('warn', 'picker-close-store', 'the closed mark of the picker open flag could not be stored: ' + errorText(err) + '; закрытая панель может открыться при перезагрузке, если запись флага была в пути', 'picker-close-store:closed-mark')
+    return false
   }
+  return settleMark($, g, session, cur.order, cur)
 }
 
-async function clearFlag($: EngineInterface, g: number, token: string): Promise<void> {
+async function markClockAvailable($: EngineInterface, g: number, session: string, mark: { key: string }): Promise<boolean> {
+  const reading: ClockRead = { ok: false }
+  await readClock($, reading)
+  if (!reading.ok && live(g)) failDiag('warn', 'picker-close-mark-clock', 'the close mark ' + mark.key + ' of session ' + session + " cannot check freshness: refused('clock.now'): " + errorText(reading.reason) + '; the landed mark remains, no fresh copy is published', 'picker-close-mark-clock:' + mark.key)
+  return reading.ok
+}
+
+async function settleMark($: EngineInterface, g: number, session: string, order: Order, first: { key: string; at: number }): Promise<boolean> {
+  let cur = { key: first.key, order, at: first.at }
+  let clockAvailable = await markClockAvailable($, g, session, cur)
+  // CONSTRAINT (#551 D5, Q1): freshness uses a successful clock reread after each set; refusal stops republication, not completion of the landed close.
+  while (clockAvailable && stampMs() - cur.at > CLOCK_SKEW) {
+    let next: { key: string; order: Order; at: number }
+    try {
+      const tk = ticket(NS_MARK, session)
+      next = { key: tk.key, order: cur.order, at: tk.at }
+      await $.store.set(tk.key, { session, e: cur.order.e, n: cur.order.n, at: tk.at })
+      clockAvailable = await markClockAvailable($, g, session, next)
+    } catch (err) {
+      if (live(g)) failDiag('warn', 'picker-close-mark-late', 'the close mark of session ' + session + ' landed ' + String(stampMs() - cur.at) + ' ms after its stamp and its fresh copy could not be stored: ' + errorText(err) + '; первая отметка остаётся и закрывает панель')
+      break
+    }
+    const earlier = cur
+    cur = next
+    try {
+      await $.store.delete(earlier.key)
+    } catch (err) {
+      if (live(g)) failDiag('info', 'picker-close-mark-old', 'an older close mark of session ' + session + ' could not be removed: ' + errorText(err) + '; the greatest mark rules; ' + MARK_EXPIRES, 'picker-close-mark-old:' + earlier.key)
+    }
+  }
+  const held = ownMarks.get(session)
+  const greater = held === undefined || orderAfter(cur.order, held.order) || (!orderAfter(held.order, cur.order) && cur.at > held.at)
+  if (greater) ownMarks.set(session, cur)
+  const lower = greater ? held?.key : cur.key
+  if (lower !== undefined) {
+    try {
+      await $.store.delete(lower)
+    } catch (err) {
+      if (live(g)) failDiag('info', 'picker-close-mark-old', 'an older close mark of session ' + session + ' could not be removed: ' + errorText(err) + '; the greatest mark rules; ' + MARK_EXPIRES, 'picker-close-mark-old:' + lower)
+    }
+  }
+  return true
+}
+
+// marked: a close mark of this flag's session, past it, landed — the next
+// restore deletes the flag as closed. CONSTRAINT (#551 FIX9c Р3): a stale state
+// deletes no flag — a newer state may have taken it over
+async function clearFlag($: EngineInterface, g: number, open: OpenState, key: string, marked = false): Promise<void> {
+  if (!live(g)) return
   try {
-    await $.store.delete(openKeyOf(token))
-    if (live(g)) S.ownTokens.delete(token)
+    await $.store.delete(key)
+    dropKey(open.confirmed, key)
   } catch (err) {
-    if (live(g)) failDiag('warn', 'picker-close-store', 'the picker open flag could not be cleared: ' + errorText(err) + '; the next reload reopens the panel')
+    if (live(g)) failDiag('warn', 'picker-close-store', 'the picker open flag could not be cleared: ' + errorText(err) + (marked ? '; отметка закрывает его — перезагрузка панель не откроет; флаг удаляется перезагрузкой, если удаление пройдёт' : '; перезагрузка может открыть панель'))
   }
 }
 
@@ -3719,16 +4442,13 @@ function restoreSnap(d: Draft, snap: DraftSnap): void {
   clampNav(d)
 }
 
-type UndoRecord = { saveId: string; t: number; fields: string[]; prev: Record<string, string>; written: Record<string, string> }
-type SaveMark = { saveId: string; t: number; fields: string[]; values: Record<string, string> }
-
-function undoKeyOf(saveId: string): string {
-  return STORE_UNDO + ':' + saveId
-}
-
-function markKeyOf(saveId: string): string {
-  return STORE_SAVING + ':' + saveId
-}
+// `revs`: the keys of this version's revisions of the saveId as read; `src`:
+// the previous version's record of the saveId — its key, or BARE_UNDO_SRC +
+// saveId for the bare array — null: none
+type UndoRecord = { saveId: string; t: number; fields: string[]; prev: Record<string, string>; written: Record<string, string>; revs: string[]; src: string | null }
+// `key`: the key read; v1 — a mark of the previous version (the bare one under STORE_SAVING)
+type SaveMark = { saveId: string; t: number; fields: string[]; values: Record<string, string>; key: string; v1: boolean; srcT?: number }
+const BARE_UNDO_SRC = STORE_UNDO + '#'
 
 function stringsOf(x: unknown): string[] {
   return Array.isArray(x) ? x.filter((v): v is string => typeof v === 'string') : []
@@ -3752,22 +4472,57 @@ async function readKeyed($: EngineInterface, g: number, base: string): Promise<{
   return out
 }
 
-// The undo records oldest first (#521 FIX4 Ф3). The pre-FIX4 bare array is
-// laid out once, in its order: a record without a saveId gets
-// `legacy-undo-<content hash>-<k>`, k its occurrence among the records of
-// equal content, and its stamp is its position minus the array's length
-// (−N…−1, below zero: older than any record this version stamps, whatever
-// the clock reads — #521 FIX8 Р2). CONSTRAINT (#521 FIX5 Ч2, FIX6 Р4, FIX6b Б4/Б5): the id is fixed by
-// the record — a move cut short repeats onto the same keys, a record already
-// moved is not written again, and equal records stay apart. null: stale.
+// The undo records oldest first (#521 FIX4 Ф3, #551 §3.8). Per saveId the
+// revision of this version with the greatest (at, key) stands — the ticket's
+// order, last writer wins — and one naming `src` is a tombstone that hides the
+// saveId. A revision hides the previous version's records of its saveId; those
+// are read only: its keyed records, and its bare array laid out in its order —
+// a record without a saveId gets `legacy-undo-<content hash>-<k>`, k its
+// occurrence among the records of equal content, and its stamp is its position
+// minus the array's length (−N…−1, below zero: older than any record this
+// version stamps, whatever the clock reads — #521 FIX8 Р2, FIX5 Ч2, FIX6 Р4,
+// FIX6b Б4/Б5). CONSTRAINT (#551 D8): v1 is read only; deleted only past MARK_KEEP by its own age (NOTES)
+// A tombstone whose source the listing no longer holds goes (#551 F29). null: stale.
 async function readUndo($: EngineInterface, g: number): Promise<UndoRecord[] | null> {
-  const bare = await $.store.get(STORE_UNDO)
+  const keys = await $.store.keys()
   if (!live(g)) return null
-  if (bare !== undefined) {
-    const list = Array.isArray(bare) ? (bare as unknown[]) : []
+  const list = Array.isArray(keys) ? keys.filter((k): k is string => typeof k === 'string') : []
+  const revs = new Map<string, Array<{ key: string; at: number; value: Record<string, unknown> }>>()
+  for (const key of list) {
+    if (!isNs(key, NS_UNDO)) continue
+    const value = await $.store.get(key)
+    if (!live(g)) return null
+    if (value === undefined) continue
+    const bad = v3Damage(NS_UNDO, key, value)
+    if (bad !== null) {
+      if (!(await dropDamaged($, g, key, bad))) return null
+      continue
+    }
+    const v = value as Record<string, unknown>
+    const id = v['saveId'] as string
+    const rs = revs.get(id) ?? []
+    rs.push({ key, at: typeof v['at'] === 'number' ? (v['at'] as number) : -Infinity, value: v })
+    revs.set(id, rs)
+  }
+  const v1 = new Map<string, Omit<UndoRecord, 'revs'>>()
+  const sources = new Set<string>()
+  for (const key of list) {
+    if (!key.startsWith(STORE_UNDO + ':')) continue
+    const value = await $.store.get(key)
+    if (!live(g)) return null
+    if (!isObject(value)) continue
+    const v = value as Record<string, unknown>
+    const saveId = key.slice(STORE_UNDO.length + 1)
+    sources.add(key)
+    v1.set(saveId, { saveId, t: typeof v['t'] === 'number' ? (v['t'] as number) : 0, fields: stringsOf(v['fields']), prev: valuesOf(v['prev']), written: valuesOf(v['written']), src: key })
+  }
+  if (list.includes(STORE_UNDO)) {
+    const bare = await $.store.get(STORE_UNDO)
+    if (!live(g)) return null
+    const arr = Array.isArray(bare) ? (bare as unknown[]) : []
     const seen = new Map<string, number>()
-    for (let i = 0; i < list.length; i++) {
-      const e = list[i]
+    for (let i = 0; i < arr.length; i++) {
+      const e = arr[i]
       if (!e || typeof e !== 'object') continue
       const r = e as { saveId?: unknown; fields?: unknown; prev?: unknown; written?: unknown }
       let saveId: string
@@ -3779,73 +4534,135 @@ async function readUndo($: EngineInterface, g: number): Promise<UndoRecord[] | n
         seen.set(base, k)
         saveId = base + '-' + String(k)
       }
-      const moved = await $.store.get(undoKeyOf(saveId))
-      if (!live(g)) return null
-      if (moved !== undefined) continue
-      await $.store.set(undoKeyOf(saveId), { saveId, t: i - list.length, fields: stringsOf(r.fields), prev: valuesOf(r.prev), written: valuesOf(r.written) })
-      if (!live(g)) return null
+      sources.add(BARE_UNDO_SRC + saveId)
+      if (!v1.has(saveId)) v1.set(saveId, { saveId, t: i - arr.length, fields: stringsOf(r.fields), prev: valuesOf(r.prev), written: valuesOf(r.written), src: BARE_UNDO_SRC + saveId })
     }
-    await $.store.delete(STORE_UNDO)
-    if (!live(g)) return null
   }
-  const keyed = await readKeyed($, g, STORE_UNDO)
-  if (keyed === null) return null
-  return keyed
-    .map(({ saveId, value }) => ({ saveId, t: typeof value['t'] === 'number' ? (value['t'] as number) : 0, fields: stringsOf(value['fields']), prev: valuesOf(value['prev']), written: valuesOf(value['written']) }))
-    .sort(byStamp)
-}
-
-// The save marks oldest first; the pre-FIX4 bare mark is moved to its key
-// once. CONSTRAINT (#521 FIX8 Р2): the bare mark's stamp is MOVED_MARK_T,
-// −0.5 — newer than every record of the bare array it was written with (their
-// stamps are −N…−1 whatever its length), older than any record this version
-// stamps (stampMs() ≥ 0) whatever the clock reads; without a saveId its id is
-// `legacy-mark-<content hash>` (#521 FIX5 Ч2, FIX6 Р4), and a mark already
-// moved is not written again. null: stale.
-async function readMarks($: EngineInterface, g: number): Promise<SaveMark[] | null> {
-  const bare = await $.store.get(STORE_SAVING)
-  if (!live(g)) return null
-  if (bare !== undefined) {
-    if (bare && typeof bare === 'object' && !Array.isArray(bare)) {
-      const m = bare as { saveId?: unknown; fields?: unknown; values?: unknown }
-      const saveId = typeof m.saveId === 'string' && m.saveId !== '' ? m.saveId : legacyIdOf('mark', bare)
-      const moved = await $.store.get(markKeyOf(saveId))
-      if (!live(g)) return null
-      if (moved === undefined) {
-        await $.store.set(markKeyOf(saveId), { saveId, t: MOVED_MARK_T, fields: stringsOf(m.fields), values: valuesOf(m.values) })
+  const out: UndoRecord[] = []
+  for (const [saveId, rs] of revs) {
+    const eff = rs.reduce((a, b) => (b.at > a.at || (b.at === a.at && b.key > a.key) ? b : a))
+    const v = eff.value
+    if (typeof v['src'] === 'string') {
+      if (sources.has(v['src'] as string)) continue
+      // the tombstone last: a revision below it must not show again
+      for (const r of [...rs.filter((r) => r !== eff), eff]) {
+        await $.store.delete(r.key)
         if (!live(g)) return null
       }
+      continue
     }
-    await $.store.delete(STORE_SAVING)
-    if (!live(g)) return null
+    out.push({ saveId, t: v['t'] as number, fields: stringsOf(v['fields']), prev: valuesOf(v['prev']), written: valuesOf(v['written']), revs: rs.map((r) => r.key), src: v1.get(saveId)?.src ?? null })
   }
-  const keyed = await readKeyed($, g, STORE_SAVING)
-  if (keyed === null) return null
-  return keyed
-    .map(({ saveId, value }) => ({ saveId, t: typeof value['t'] === 'number' ? (value['t'] as number) : 0, fields: stringsOf(value['fields']), values: valuesOf(value['values']) }))
-    .sort(byStamp)
+  for (const [saveId, record] of v1) if (!revs.has(saveId)) out.push({ ...record, revs: [] })
+  return out.sort(byStamp)
+}
+
+// The save marks oldest first: this version's, then the previous version's
+// keyed ones and its bare one, read only, hidden only by a done record matching
+// the key, saveId and source timestamp (#551 AR-4). CONSTRAINT (#521 FIX8 Р2): the bare mark's stamp
+// is MOVED_MARK_T, −0.5 — newer than every record of the bare array it was
+// written with (their stamps are −N…−1 whatever its length), older than any
+// record this version stamps (stampMs() ≥ 0) whatever the clock reads;
+// without a saveId its id is `legacy-mark-<content hash>` (#521 FIX5 Ч2, FIX6
+// Р4), and a keyed mark of its saveId hides it. A done record whose listed
+// source is absent or no longer matches goes (#551 F29, AR-4). null: stale.
+async function readMarks($: EngineInterface, g: number): Promise<SaveMark[] | null> {
+  const keys = await $.store.keys()
+  if (!live(g)) return null
+  const list = Array.isArray(keys) ? keys.filter((k): k is string => typeof k === 'string') : []
+  const out: SaveMark[] = []
+  const done = new Map<string, Array<{ key: string; saveId: string; t: number }>>()
+  const sources = new Map<string, { saveId: string; t: number }>()
+  const hidden = (key: string, saveId: string, t: number): boolean => {
+    sources.set(key, { saveId, t })
+    return (done.get(key) ?? []).some((d) => d.saveId === saveId && d.t === t)
+  }
+  for (const key of list) {
+    if (!isNs(key, NS_SAVING)) continue
+    const value = await $.store.get(key)
+    if (!live(g)) return null
+    if (value === undefined) continue
+    const bad = v3Damage(NS_SAVING, key, value)
+    if (bad !== null) {
+      if (!(await dropDamaged($, g, key, bad))) return null
+      continue
+    }
+    const v = value as Record<string, unknown>
+    if (v['done'] === true) done.set(v['src'] as string, [...(done.get(v['src'] as string) ?? []), { key, saveId: v['srcSaveId'] as string, t: v['srcT'] as number }])
+    else out.push({ saveId: v['saveId'] as string, t: v['t'] as number, fields: stringsOf(v['fields']), values: valuesOf(v['values']), key, v1: false })
+  }
+  const keyedIds = new Set<string>()
+  for (const key of list) {
+    if (!key.startsWith(STORE_SAVING + ':')) continue
+    const value = await $.store.get(key)
+    if (!live(g)) return null
+    if (!isObject(value)) continue
+    const v = value as Record<string, unknown>
+    const saveId = key.slice(STORE_SAVING.length + 1)
+    keyedIds.add(saveId)
+    const t = typeof v['t'] === 'number' ? v['t'] as number : 0
+    if (!hidden(key, saveId, t)) out.push({ saveId, t, fields: stringsOf(v['fields']), values: valuesOf(v['values']), key, v1: true })
+  }
+  if (list.includes(STORE_SAVING)) {
+    const bare = await $.store.get(STORE_SAVING)
+    if (!live(g)) return null
+    if (isObject(bare)) {
+      const m = bare as { saveId?: unknown; t?: unknown; fields?: unknown; values?: unknown }
+      const saveId = typeof m.saveId === 'string' && m.saveId !== '' ? m.saveId : legacyIdOf('mark', bare)
+      const srcT = typeof m.t === 'number' ? m.t : MOVED_MARK_T
+      if (!hidden(STORE_SAVING, saveId, srcT) && !keyedIds.has(saveId)) out.push({ saveId, t: MOVED_MARK_T, srcT, fields: stringsOf(m.fields), values: valuesOf(m.values), key: STORE_SAVING, v1: true })
+    }
+  }
+  for (const [src, records] of done) {
+    const current = sources.get(src)
+    for (const record of records) {
+      if (list.includes(src) && current?.saveId === record.saveId && current.t === record.t) continue
+      await $.store.delete(record.key)
+      if (!live(g)) return null
+    }
+  }
+  return out.sort(byStamp)
+}
+
+// #551 §3.8: a save mark goes — this version's by the key read; one of the
+// previous version stays and a done record names it (#551 D8). Throws when refused
+async function clearSaveMark($: EngineInterface, m: SaveMark): Promise<void> {
+  if (!m.v1) return $.store.delete(m.key)
+  const tk = ticket(NS_SAVING)
+  await $.store.set(tk.key, { src: m.key, done: true, t: tk.at, srcSaveId: m.saveId, srcT: m.srcT ?? m.t })
+}
+
+// #551 §3.8: the undo record `r` keeps `fields` — a new revision of its
+// saveId; none left: a tombstone over a record of the previous version, else
+// nothing. The revisions read go after it landed, by their keys. Throws when refused
+async function reviseUndo($: EngineInterface, r: UndoRecord, fields: string[]): Promise<void> {
+  if (fields.length > 0 || r.src !== null) {
+    const tk = ticket(NS_UNDO)
+    await $.store.set(tk.key, fields.length > 0
+      ? { saveId: r.saveId, t: r.t, at: tk.at, fields, prev: pickFields(r.prev, fields), written: pickFields(r.written, fields) }
+      : { saveId: r.saveId, t: r.t, at: tk.at, fields: [], prev: {}, written: {}, src: r.src })
+  }
+  // CONSTRAINT (#551 D1): get → decide → delete is not atomic; the key read cannot change
+  for (const key of r.revs) await $.store.delete(key)
 }
 
 // CONSTRAINT (#521 Р10, FIX2 Р14, FIX4 Ф3): the undo record of a save names
-// only the fields that landed; the mark trims its own saveId's record only
-async function trimUndoRecord($: EngineInterface, g: number, saveId: string, landed: string[]): Promise<void> {
-  const key = undoKeyOf(saveId)
-  const got = await $.store.get(key)
-  if (!live(g) || !got || typeof got !== 'object') return
-  const record = got as { t?: unknown; fields?: unknown; prev?: unknown; written?: unknown }
-  const fields = stringsOf(record.fields)
-  const keep = fields.filter((f) => landed.includes(f))
-  if (keep.length === fields.length) return
+// only the fields that landed; the mark trims its own saveId's record only,
+// as `records` read it
+async function trimUndoRecord($: EngineInterface, g: number, records: UndoRecord[], saveId: string, landed: string[]): Promise<void> {
+  const record = records.find((r) => r.saveId === saveId)
+  if (!live(g) || record === undefined) return
+  const keep = record.fields.filter((f) => landed.includes(f))
+  if (keep.length === record.fields.length) return
   try {
-    if (keep.length === 0) await $.store.delete(key)
-    else await $.store.set(key, { saveId, t: record.t, fields: keep, prev: pickFields(valuesOf(record.prev), keep), written: pickFields(valuesOf(record.written), keep) })
+    await reviseUndo($, record, keep)
   } catch (err) {
     if (live(g)) failDiag('warn', 'undo-stack-write', 'the undo stack could not be stored: ' + errorText(err) + '; «Откатить сохранение» may revert a field that was not written')
   }
 }
 
-// CONSTRAINT (#521 FIX4 Ф3): UNDO_CAP stands by deleting the oldest record
-// keys, never `own`; the depth is the count left. false: the stack could not
+// CONSTRAINT (#521 FIX4 Ф3): UNDO_CAP stands by taking off the oldest records,
+// never `own`; the depth is the count left. false: the stack could not
 // be read (#521 FIX4b AR3 — the save says its undo is unavailable)
 async function capUndo($: EngineInterface, g: number, own: string): Promise<boolean> {
   let records: UndoRecord[] | null
@@ -3861,7 +4678,7 @@ async function capUndo($: EngineInterface, g: number, own: string): Promise<bool
     for (const r of records) {
       if (left <= UNDO_CAP) break
       if (r.saveId === own) continue
-      await $.store.delete(undoKeyOf(r.saveId))
+      await reviseUndo($, r, [])
       left--
     }
     if (live(g)) S.undoDepth = left
@@ -3941,12 +4758,18 @@ async function saveDraft($: EngineInterface): Promise<void> {
   }
   const denied: string[] = []
   const written: string[] = []
-  const saveId = stampId()
-  const t = stampMs()
+  // #551 D3 (#560): the saveId is this writer's; refused, the save goes on
+  // and each publication of it is refused (said, store-writer-id)
+  const saveId = newId() ?? ''
+  let t = Math.max(lastAt, stampMs())
+  let markKey: string | null = null
   // the in-flight mark goes in BEFORE the first write: the reload it causes
   // must not cut the sequence short (SPEC §14.7)
   try {
-    await $.store.set(markKeyOf(saveId), { saveId, t, fields, values: changed })
+    const tk = ticket(NS_SAVING)
+    t = tk.at
+    await $.store.set(tk.key, { saveId, t, fields, values: changed })
+    markKey = tk.key
     if (live(g)) S.saving = { fields, values: changed }
   } catch (err) {
     if (live(g)) failDiag('warn', 'save-mark-write', 'the in-flight save mark could not be stored: ' + errorText(err) + '; a reload inside this save cannot name what it missed')
@@ -3957,11 +4780,21 @@ async function saveDraft($: EngineInterface): Promise<void> {
     prevValues[f] = base[f] ?? ''
     writtenValues[f] = changed[f] ?? ''
   }
-  // CONSTRAINT (#521 FIX4 Ф3): this save writes and deletes its own record key only
+  // CONSTRAINT (#521 FIX4 Ф3, #551 D2): this save publishes its own revisions
+  // and deletes only the one before, confirmed, once the next landed
+  let ownRev: string | null = null
   const storeUndo = async (kept: string[]): Promise<void> => {
     try {
-      if (kept.length === 0) await $.store.delete(undoKeyOf(saveId))
-      else await $.store.set(undoKeyOf(saveId), { saveId, t, fields: kept, prev: pickFields(prevValues, kept), written: pickFields(writtenValues, kept) })
+      if (kept.length > 0) {
+        const tk = ticket(NS_UNDO)
+        await $.store.set(tk.key, { saveId, t, at: tk.at, fields: kept, prev: pickFields(prevValues, kept), written: pickFields(writtenValues, kept) })
+        const earlier = ownRev
+        ownRev = tk.key
+        if (earlier !== null) await $.store.delete(earlier)
+      } else if (ownRev !== null) {
+        await $.store.delete(ownRev)
+        ownRev = null
+      }
     } catch (err) {
       if (live(g)) failDiag('warn', 'undo-stack-write', 'the undo stack could not be stored: ' + errorText(err) + '; «Откатить сохранение» may revert a field that was not written')
     }
@@ -3992,7 +4825,7 @@ async function saveDraft($: EngineInterface): Promise<void> {
   await storeUndo(written)
   const undoReadable = await capUndo($, g, saveId)
   try {
-    await $.store.delete(markKeyOf(saveId))
+    if (markKey !== null) await $.store.delete(markKey)
   } catch (err) {
     if (live(g)) failDiag('warn', 'save-mark-clear', 'the in-flight save mark could not be cleared: ' + errorText(err) + '; the next reload reports this save again')
   }
@@ -4069,8 +4902,7 @@ async function undoSave($: EngineInterface): Promise<void> {
     // CONSTRAINT (#521 FIX4 Ф4): a refused write leaves the record whole; the
     // repeat counts the reverted fields as done and reaches the rest
     try {
-      if (left.length === 0) await $.store.delete(undoKeyOf(entry.saveId))
-      else await $.store.set(undoKeyOf(entry.saveId), { saveId: entry.saveId, t: entry.t, fields: left, prev: pickFields(entry.prev, left), written: pickFields(entry.written, left) })
+      await reviseUndo($, entry, left)
       if (live(g)) S.undoDepth = records.length - (left.length === 0 ? 1 : 0)
     } catch (err) {
       if (live(g)) failDiag('warn', 'undo-stack-write', 'the undo stack could not be stored: ' + errorText(err) + '; a repeated «Откатить сохранение» finds the reverted fields done')
@@ -4132,7 +4964,9 @@ async function saveUserTheme($: EngineInterface, typed: string | null): Promise<
   // CONSTRAINT (#521 FIX6 Р5): the user's theme stored under this name is
   // rewritten in place — the newest when several share it (the list is oldest
   // first) — whatever name the list shows it under; any other name is a new key
-  const id = before.filter((t) => t.record.name === name).pop()?.record.id ?? stampId()
+  // #551 D3 (#560): a new theme's id is this writer's
+  const id = before.filter((t) => t.record.name === name).pop()?.record.id ?? newId()
+  if (id === null) return note('тема не сохранена: ' + NO_WRITER)
   // CONSTRAINT (S1-FIX4 П.3): the band never shows a theme that is not in
   // storage — store first; the decision after is restore's own (applyDecided).
   try {
@@ -4340,7 +5174,7 @@ function pickerModel($: EngineInterface, e: { requestId?: string }, treeTable: T
     surface: surface.name,
     isFullscreen: surface.isFullscreen,
   }
-  const persist = (): Promise<void> => persistDraft($).then(() => invalidate($, g))
+  const persist = (): Promise<void> => persistDraft($, g).then(() => invalidate($, g))
   const note = (text: string): void => {
     if (text !== '') S.saveResult = text
   }
@@ -4653,12 +5487,15 @@ function restoreSession($: EngineInterface, session: string): Promise<void> {
   const recovery = S.recovery
   if (recovery.session === '') recovery.session = session
   if (base.session === '') S.famStates.set(FAMILIES[0]!, { ...base, session })
+  sweepClockHung()
   if (recovery.status !== 'pending') return Promise.resolve()
   if (recovery.reading) return recovery.reading
   const g = S.gen
   const read = (async () => {
     try {
-      const raw = await $.store.get(STORE_SESS + session)
+      const newest = await readSessNewest($, g, session)
+      if (newest === null) return staleDrop('session snapshot read')
+      const raw = newest.value
       if (!live(g)) return staleDrop('session snapshot read')
       await readClock($)
       if (!live(g)) return staleDrop('session snapshot read')
@@ -4675,10 +5512,11 @@ function restoreSession($: EngineInterface, session: string): Promise<void> {
       let stored: SessValue | undefined
       let snap: SessValue | undefined
       try {
-        stored = learnRead(STORE_SESS + session, ordOf(raw), raw as SessValue)
+        ordOf(raw)
+        stored = boundRead(STORE_SESS + session, raw as SessValue)
         // Р1.4: the store may lag behind a value of this key still queued
         const pending = newestPending(session)
-        snap = pending !== null && cmp(ordOf(pending), ordOf(stored)) > 0 ? pending : stored
+        snap = pending !== null && cmpRead(ordOf(pending), ordOf(stored)) > 0 ? pending : stored
       } catch (err) {
         if (S.recovery !== recovery) return
         recovery.status = 'lost'
@@ -4686,6 +5524,7 @@ function restoreSession($: EngineInterface, session: string): Promise<void> {
         failDiag('fail', 'session-snapshot-shape', 'session ' + session + ': malformed snapshot; no accumulated figures restored: ' + errorText(err))
         markPicture()
         invalidate($)
+        if (newest.v3 !== null) await dropDamaged($, g, newest.v3, 'снимок не разбирается: ' + errorText(err))
         return
       }
       const current = famState(FAMILIES[0]!) as BaseState
@@ -4713,7 +5552,16 @@ function restoreSession($: EngineInterface, session: string): Promise<void> {
           failDiag('fail', 'session-snapshot-shape', 'session ' + session + ': malformed snapshot; no accumulated figures restored' + (shapeErr === '' ? '' : ': ' + shapeErr))
           markPicture()
           invalidate($)
+          // CONSTRAINT (#551 D7): only own v3 damage is deleted, at once, by exact key
+          if (snap === stored && newest.v3 !== null) await dropDamaged($, g, newest.v3, 'снимок не разбирается' + (shapeErr === '' ? '' : ': ' + shapeErr))
           return
+        }
+        // CONSTRAINT (#551 AR-11): pending recovery cannot make a malformed stored order learnable.
+        if (snap === stored) learnBounded(STORE_SESS + session, ordOf(raw), stored)
+        else {
+          try {
+            if (applySnapshot(current, stored) !== current) learnBounded(STORE_SESS + session, ordOf(raw), stored)
+          } catch { /* CONSTRAINT (AR-11): a refused stored parse does not invalidate pending recovery. */ }
         }
         S.famStates.set(FAMILIES[0]!, replaySnapshot(restored, recovery.buffer, sinceInfo))
       }
@@ -4770,13 +5618,106 @@ function cmp(a: Ord, b: Ord): number {
   return a.origin < b.origin ? -1 : a.origin > b.origin ? 1 : 0
 }
 
+// #551 §3.10: the snapshot of the logical key `sess:<id>` goes out as a
+// publication of NS_SESS carrying its session; the answer is the key it landed under
+async function publishSess($: EngineInterface, logical: string, value: unknown): Promise<string> {
+  const session = logical.slice(STORE_SESS.length)
+  const tk = ticket(NS_SESS, session)
+  await $.store.set(tk.key, { ...(value as Record<string, unknown>), session })
+  return tk.key
+}
+
+// #551 §3.10: the newest snapshot of `session` in the store — this version's
+// publications under its digest and the previous version's `sess:<id>` — by
+// (seq, origin, n); `v3` is its key when it is this version's. null: stale
+async function readSessNewest($: EngineInterface, g: number, session: string): Promise<{ value: unknown; v3: string | null } | null> {
+  await readClock($)
+  if (!live(g)) return null
+  const keys = await $.store.keys()
+  if (!live(g)) return null
+  const scope = NS_SESS + '.' + fnv64hex(session) + ':'
+  let best: { value: unknown; v3: string | null; ord: Ord } | null = null
+  for (const key of Array.isArray(keys) ? keys : []) {
+    if (typeof key !== 'string' || !key.startsWith(scope)) continue
+    const value = await $.store.get(key)
+    if (!live(g)) return null
+    if (value === undefined) continue
+    // CONSTRAINT (S4-FIX14 У3): the ordering reads are part of the parse — a throw there is damage of this record
+    let bad: string | null
+    let ord: Ord = ZERO
+    try {
+      bad = v3Damage(NS_SESS, key, value)
+      if (bad === null && (value as { session?: unknown }).session === session) ord = ordOf(value)
+    } catch (err) {
+      bad = 'снимок не разбирается: ' + errorText(err)
+    }
+    if (bad !== null) {
+      if (!(await dropDamaged($, g, key, bad))) return null
+      continue
+    }
+    if ((value as { session?: unknown }).session !== session) continue
+    if (best === null || cmpRead(ord, best.ord) > 0) best = { value, v3: key, ord }
+  }
+  // CONSTRAINT (#551 D8): v1 is read only; deleted only past MARK_KEEP by its own age (NOTES)
+  const old = STORE_SESS + session
+  if (old.length <= KEY_MAX) {
+    const value = await $.store.get(old)
+    if (!live(g)) return null
+    // CONSTRAINT (S4-FIX14 У3): a v1 value whose ordering reads throw cannot be
+    // ordered — alone it goes to the parse, which reports the shape fault once
+    let ord: Ord | null
+    try {
+      ord = ordOf(value)
+    } catch {
+      ord = null
+    }
+    if (value !== undefined && ord === null && best === null) return { value, v3: null }
+    if (value !== undefined && ord !== null && (best === null || cmpRead(ord, best.ord) > 0)) best = { value, v3: null, ord }
+  }
+  return best ?? { value: undefined, v3: null }
+}
+
+// CONSTRAINT (#551 D2): this environment's confirmed snapshot publications per
+// session, of every generation — a wipe leaves them, as the writer id stays
+const SESS_PUBS = new Map<string, Array<{ key: string; ord: Ord }>>()
+
+// CONSTRAINT (#551 D2): a landed snapshot publication of this environment
+// stays only while it is the newest of its session's own confirmed ones — the
+// newest deletes the others, one below it deletes itself (no re-put: nothing
+// was written over); `io` null, a flight of a wiped generation (FIX6b AR4),
+// deletes nothing — the next landing of the live generation does
+function landedPub(session: string, key: string, ord: Ord, io: StoreIO | null): void {
+  const pubs = SESS_PUBS.get(session) ?? []
+  pubs.push({ key, ord })
+  SESS_PUBS.set(session, pubs)
+  if (io === null) return
+  const newest = pubs.every((p) => cmp(ord, p.ord) >= 0)
+  const gone = pubs.filter((p) => (newest ? p.key !== key : p.key === key))
+  if (gone.length === 0) return
+  void quiet('snapshot-gc', async () => {
+    for (const p of gone) {
+      try {
+        await io.del(p.key)
+        dropKey(pubs, p)
+      } catch (err) {
+        episodeDiag('info', 'session-snapshot-old', STORE_SESS + session, 'an older snapshot publication of ' + session + ' could not be removed: ' + errorText(err) + '; the newest stands, a later landing removes it')
+      }
+    }
+  })
+}
+
 function ioOf($: EngineInterface): StoreIO {
   return {
-    put: (k, v) => $.store.set(k, v),
+    put: (k, v) => publishSess($, k, v),
     arm: (fn) => $.clock.after(STORE_HANG_MS, fn),
     get: (k) => $.store.get(k),
     keys: () => $.store.keys(),
     del: (k) => $.store.delete(k),
+    clock: async () => {
+      const reading: ClockRead = { ok: false }
+      const ms = await readClock($, reading)
+      return { ...reading, ms }
+    },
   }
 }
 
@@ -4870,25 +5811,38 @@ function learn(key: string, ord: Ord, value: SessValue): void {
   pruneLanded()
 }
 
-// CONSTRAINT (FIX8 Ф2): a seq read from the store that runs past this
-// process's clock by more than a day is not learned — learn would drag
-// seqLast toward the SEQ_CAP boundary and silence every later write of every
-// key of this environment. The value counts as older than any of this
-// module's own writes instead: the fences compare only what learn admitted,
-// so the next own write puts over it
+// CONSTRAINT (FIX8 Ф2, #551 AR-2): a seq more than a day ahead is not learned
+// and ranks below every in-window snapshot; otherwise it drags seqLast toward
+// SEQ_CAP. The next prune removes a v3 copy whatever the store size only if
+// its pass clock is available and still before the clock catches the order;
+// a v1 source remains read-only (NOTES, Q3, Q8).
 const CLOCK_AHEAD_SEQ = 24 * 60 * 60 * 1000 * SEQ_PER_MS
+function clockBeyond(ord: Ord, clock = stampMs()): number {
+  const base = Math.floor(clock) * SEQ_PER_MS
+  return ord.seq - (base + CLOCK_AHEAD_SEQ)
+}
+function cmpRead(a: Ord, b: Ord, clock = stampMs()): number {
+  const aheadA = clockBeyond(a, clock) > 0
+  const aheadB = clockBeyond(b, clock) > 0
+  return aheadA !== aheadB ? (aheadA ? -1 : 1) : cmp(a, b)
+}
 // boundJson only accepts JSON-copied values because it cannot traverse cycles.
-function learnRead(key: string, ord: Ord, value: SessValue): SessValue {
+function boundRead(key: string, value: SessValue): SessValue {
   let bounded = value
   try {
     bounded = boundSess(JSON.parse(JSON.stringify(value)) as SessValue, key)
   } catch {
     /* CONSTRAINT (#521 Р11): downstream copy boundaries own the diagnostic for non-JSON snapshots */
   }
-  const base = (clockMs > 0 ? Math.floor(clockMs) : Date.now()) * SEQ_PER_MS
-  const beyond = ord.seq - (base + CLOCK_AHEAD_SEQ)
+  return bounded
+}
+function learnRead(key: string, ord: Ord, value: SessValue): SessValue {
+  return learnBounded(key, ord, boundRead(key, value))
+}
+function learnBounded(key: string, ord: Ord, bounded: SessValue): SessValue {
+  const beyond = clockBeyond(ord)
   if (beyond > 0) {
-    episodeDiag('warn', 'session-snapshot-clock', key, 'store.set ' + key + ': the stored seq ' + String(ord.seq) + ' runs ' + String(beyond) + ' beyond the clock window; it is not learned and is overwritten by this module\'s next write')
+    episodeDiag('warn', 'session-snapshot-clock', key, 'store.set ' + key + ': the stored seq ' + String(ord.seq) + ' runs ' + String(beyond) + ' beyond the clock window; it is not learned and ranks below this module\'s writes; prune removes a v3 copy')
     return bounded
   }
   learn(key, ord, bounded)
@@ -4996,7 +5950,7 @@ function sessWrite($: EngineInterface, session: string, value: SessValue, owner:
     // CONSTRAINT (FIX7 Р12): a value the JSON round-trip cannot carry is
     // diagnosed and dropped — session.end's next(e) is never held by it
     failDiag('fail', 'session-snapshot-copy', 'the session snapshot of ' + session + ' could not be copied for the store: ' + errorText(err))
-    const dead: WriteItem = { value, ord: ordOf(value), owner, io: null, atEnd, sent: false, settle: () => undefined }
+    const dead: WriteItem = { value, ord: ordOf(value), owner, io: ioOf($), atEnd, sent: false, settle: () => undefined }
     return { key: STORE_SESS + session, item: dead, done: Promise.resolve(), settled: true }
   }
   let settled = false
@@ -5042,7 +5996,7 @@ function sessEnqueue(session: string, item: WriteItem): void {
     // CONSTRAINT (FIX7 Р1): a value that waits at a key whose flight is
     // free, under the limit and with an io of its own, runs now —
     // session.end has no gather after it to release it
-    if (slot.flight === null && item.io !== null && (INFLIGHT.get(key) ?? 0) < SESS_FLIGHTS) {
+    if (slot.flight === null && (INFLIGHT.get(key) ?? 0) < SESS_FLIGHTS) {
       slot.next = null
       return sessRun(session, key, slot, item, item.io)
     }
@@ -5051,24 +6005,20 @@ function sessEnqueue(session: string, item: WriteItem): void {
   }
   const fresh: SessSlot = { flight: null, next: null }
   SESS_Q.set(key, fresh)
-  if (item.io === null) fresh.next = item
-  else if ((INFLIGHT.get(key) ?? 0) >= SESS_FLIGHTS) {
+  if ((INFLIGHT.get(key) ?? 0) >= SESS_FLIGHTS) {
     fresh.next = item
     blockedDiag(key)
   }
   else sessRun(session, key, fresh, item, item.io)
 }
 
-// the gather start runs a value that waits in a slot with nothing in flight,
-// once the key is under SESS_FLIGHTS, through the item's `$` or this gather's
-function releaseParked($: EngineInterface): void {
+// CONSTRAINT (Р3): a value released below SESS_FLIGHTS uses its enqueuing call's io.
+function releaseParked(): void {
   for (const [key, slot] of [...SESS_Q]) {
     const item = slot.next
     if (slot.flight !== null || item === null || (INFLIGHT.get(key) ?? 0) >= SESS_FLIGHTS) continue
     slot.next = null
-    const io = item.io ?? ioOf($)
-    item.io = io
-    sessRun(key.slice(STORE_SESS.length), key, slot, item, io)
+    sessRun(key.slice(STORE_SESS.length), key, slot, item, item.io)
   }
 }
 
@@ -5092,9 +6042,10 @@ function sessRun(session: string, key: string, slot: SessSlot, item: WriteItem, 
   INFLIGHT.set(key, (INFLIGHT.get(key) ?? 0) + 1)
   void quiet('snapshot-write', async () => {
     let failure: { err: unknown } | null = null
+    let landedAt = ''
     item.sent = true
     try {
-      await io.put(key, item.value)
+      landedAt = await io.put(key, item.value)
     } catch (err) {
       failure = { err }
     }
@@ -5107,12 +6058,12 @@ function sessRun(session: string, key: string, slot: SessSlot, item: WriteItem, 
       try {
         if (!live(item.owner.g)) {
           staleDrop('session snapshot')
-          if (failure === null) landedLate(session, key, item, null)
+          if (failure === null) landedLate(session, key, item, null, landedAt)
           return
         }
-        if (flight.hung) return settledLate(session, key, item, failure, io)
+        if (flight.hung) return settledLate(session, key, item, failure, io, landedAt)
         if (failure !== null) onWriteFail(session, item, failure.err)
-        else landedNow(key, item, io)
+        else landedNow(key, item, io, landedAt)
         advance(key, slot)
       } finally {
         item.settle()
@@ -5133,18 +6084,13 @@ function sessRun(session: string, key: string, slot: SessSlot, item: WriteItem, 
         }
         // CONSTRAINT (FIX8 Ф1): the decrement itself frees a seat, and no
         // gather follows a settle — advance saw this flight still counted and
-        // parked the key's newest; below the limit it runs now, through this
-        // flight's io when the value has none of its own (a dead generation
-        // lends nothing, FIX7 AR4)
+        // parked the key's newest; below the limit it runs now through its own io.
         if (live(item.owner.g) && (INFLIGHT.get(key) ?? 0) < SESS_FLIGHTS) {
           const slot = SESS_Q.get(key)
           const queued = slot?.next ?? null
           if (slot !== undefined && slot.flight === null && queued !== null) {
-            if (queued.io === null) queued.io = io
-            if (queued.io !== null) {
-              slot.next = null
-              sessRun(key.slice(STORE_SESS.length), key, slot, queued, queued.io)
-            }
+            slot.next = null
+            sessRun(key.slice(STORE_SESS.length), key, slot, queued, queued.io)
           }
         }
       }
@@ -5152,7 +6098,8 @@ function sessRun(session: string, key: string, slot: SessSlot, item: WriteItem, 
   })
 }
 
-function landedNow(key: string, item: WriteItem, io: StoreIO): void {
+function landedNow(key: string, item: WriteItem, io: StoreIO, landedAt: string): void {
+  landedPub(key.slice(STORE_SESS.length), landedAt, item.ord, io)
   learn(key, item.ord, item.value)
   endEpisode(key, EPISODE_WRITE)
   if (currentKey() === key) pruneStore(io)
@@ -5161,22 +6108,22 @@ function landedNow(key: string, item: WriteItem, io: StoreIO): void {
 // CONSTRAINT (FIX6 Р1): a flight past the watchdog settles into the key's
 // accounting — a refusal is an ordinary retry while its value is the newest
 // known, a landing goes through landedLate
-function settledLate(session: string, key: string, item: WriteItem, failure: { err: unknown } | null, io: StoreIO): void {
-  if (failure === null) return landedLate(session, key, item, io)
+function settledLate(session: string, key: string, item: WriteItem, failure: { err: unknown } | null, io: StoreIO, landedAt: string): void {
+  if (failure === null) return landedLate(session, key, item, io, landedAt)
   if (cmp(item.ord, newestKnown(session, item)) > 0) onWriteFail(session, item, failure.err)
 }
 
-// CONSTRAINT (Д2, FIX6 Р1/Р3): a settle past the watchdog, or of a wiped
-// generation, has put its value over the key. Below a newer known value, that
-// value goes out again under a fresh seq through the settled flight's own `$`
-// — the fence would turn away its old one. The newest value of this
-// generation counts as landed: the retry it left is taken back.
+// CONSTRAINT (Д2, FIX6 Р1/Р3, #551 F27): a settle past the watchdog, or of a
+// wiped generation, landed under a key of its own — nothing was written over.
+// Below a newer own publication it deletes itself (landedPub); below a newer
+// known value it moves no accounting. The newest value of this generation
+// counts as landed: the retry it left is taken back.
 // CONSTRAINT (FIX6b AR4): `own` null = a flight of a wiped generation; its
 // `$` is not called again (a reload is a new environment, d.ts:2946-2947, and
-// a wipe here leaves that `$` to the generation that is gone) — the newest
-// value waits in the slot for the next gather of the live generation
-function landedLate(session: string, key: string, item: WriteItem, own: StoreIO | null): void {
-  if (cmp(item.ord, newestKnown(session, item)) < 0) return requeueNewest(session, key, own)
+// a wipe here leaves that `$` to the generation that is gone)
+function landedLate(session: string, key: string, item: WriteItem, own: StoreIO | null, landedAt: string): void {
+  landedPub(session, landedAt, item.ord, own)
+  if (cmp(item.ord, newestKnown(session, item)) < 0) return
   if (own === null) return
   learn(key, item.ord, item.value)
   const recovery = S.recovery
@@ -5190,9 +6137,9 @@ function landedLate(session: string, key: string, item: WriteItem, own: StoreIO 
 }
 
 // the newest known value of the key (landed, in flight, queued) goes into the
-// queue again under a fresh seq, through `io` (null: the next gather's);
+// queue again under a fresh seq, through the verifying gather's `io`;
 // CONSTRAINT (Д4): a newer farewell still waiting is left to its flush point
-function requeueNewest(session: string, key: string, io: StoreIO | null): void {
+function requeueNewest(session: string, key: string, io: StoreIO): void {
   const slot = SESS_Q.get(key)
   const landed = LANDED.get(key)
   let best: { ord: Ord; value: SessValue } | null = landed !== undefined ? { ord: landed, value: landed.value } : null
@@ -5263,10 +6210,14 @@ function staleVerifyDiag(key: string, outcome: 'read' | 'refused', text: string)
 // through this gather's `$`; one read-back of a key at a time, one hanging
 // past STORE_HANG_MS is reported once per episode
 function verifyStore($: EngineInterface): void {
+  sweepClockHung()
   const key = currentKey()
   if (key === '') return
   const landed = LANDED.get(key)
-  if (landed === undefined) return
+  const session = key.slice(STORE_SESS.length)
+  // CONSTRAINT (#551 AR-1): foreign publications are learned even without an own confirmed publication.
+  const pubs = SESS_PUBS.get(session) ?? []
+  const pub = pubs.reduce<{ key: string; ord: Ord } | undefined>((a, p) => (a === undefined || cmp(p.ord, a.ord) > 0 ? p : a), undefined)
   const t = now()
   const pendingAt = S.verifyPending.get(key)
   if (pendingAt !== undefined) {
@@ -5280,13 +6231,31 @@ function verifyStore($: EngineInterface): void {
   const g = S.gen
   // CONSTRAINT (S4-FIX16d Г2): A→B→A gives back the same key; the old read of A must not learn in the new stay in A
   const epoch = S.sessEpoch
-  const session = key.slice(STORE_SESS.length)
-  const since: Ord = { seq: landed.seq, origin: landed.origin, n: landed.n }
+  const since: Ord = landed === undefined ? ZERO : { seq: landed.seq, origin: landed.origin, n: landed.n }
   const io = ioOf($)
   void quiet('snapshot-verify', async () => {
     let stored: unknown
+    const reads: Array<{ physical: string; value: unknown }> = []
     try {
-      stored = await io.get(key)
+      const keys = await io.keys()
+      if (!live(g)) return staleDrop('session snapshot read-back')
+      if (pub !== undefined && (!Array.isArray(keys) || keys.includes(pub.key))) {
+        stored = await io.get(pub.key)
+        if (!live(g)) return staleDrop('session snapshot read-back')
+        reads.push({ physical: pub.key, value: stored })
+      }
+      const scope = NS_SESS + '.' + fnv64hex(session) + ':'
+      for (const physical of Array.isArray(keys) ? keys : []) {
+        if (typeof physical !== 'string' || physical === pub?.key || !physical.startsWith(scope)) continue
+        const value = await io.get(physical)
+        if (!live(g)) return staleDrop('session snapshot read-back')
+        reads.push({ physical, value })
+      }
+      if (key.length <= KEY_MAX && (!Array.isArray(keys) || keys.includes(key))) {
+        const value = await io.get(key)
+        if (!live(g)) return staleDrop('session snapshot read-back')
+        reads.push({ physical: key, value })
+      }
     } catch (err) {
       if (!live(g)) return
       if (S.verifyPending.get(key) === t) S.verifyPending.delete(key)
@@ -5308,6 +6277,42 @@ function verifyStore($: EngineInterface): void {
       staleVerifyDiag(key, 'read', 'read-back of ' + key + ' discarded after the session changed; current key is ' + currentKey())
       return
     }
+    for (const read of reads) {
+      if (read.value === undefined) continue
+      if (read.physical === key) {
+        // CONSTRAINT (#551 AR-10, D7): malformed v1 stays read-only; restore owns its shape diagnostic.
+        try {
+          const ord = ordOf(read.value)
+          const base = famState(FAMILIES[0]!) as BaseState
+          if (applySnapshot(base, read.value) !== base) learnRead(key, ord, read.value as SessValue)
+        } catch { /* CONSTRAINT (AR-10): a refused parse cannot advance the learned order. */ }
+        continue
+      }
+      if (read.physical !== key) {
+        let bad: string | null
+        try {
+          bad = v3Damage(NS_SESS, read.physical, read.value)
+          const base = famState(FAMILIES[0]!) as BaseState
+          if (bad === null && applySnapshot(base, read.value) === base) bad = 'снимок не разбирается'
+        } catch (err) { bad = 'снимок не разбирается: ' + errorText(err) }
+        if (bad !== null) {
+          if (!(await dropDamaged($, g, read.physical, bad))) return
+          if (currentKey() !== key || S.sessEpoch !== epoch) return
+          continue
+        }
+        if ((read.value as { session?: unknown }).session !== session) continue
+      }
+      learnRead(key, ordOf(read.value), read.value as SessValue)
+    }
+    // CONSTRAINT (#551 §3.10): a publication gone at the read-back was taken by
+    // another process's prune — the newest value goes out again; one this
+    // environment's newer landing deleted meanwhile is no loss
+    if (pub === undefined) return
+    if (stored === undefined) {
+      if (!pubs.includes(pub)) return
+      dropKey(pubs, pub)
+      return requeueNewest(session, key, io)
+    }
     const ord = ordOf(stored)
     // CONSTRAINT (FIX7 Р7): the read-back learns what landed — a foreign
     // origin ahead of this module raises the fence (seqLast; the next write
@@ -5315,71 +6320,221 @@ function verifyStore($: EngineInterface): void {
     // the fence is re-put only when it is this module's own (a regression)
     // or its seq ties (the (seq, origin) order decides) — a foreign value of
     // a lower seq is the store's last writer and stands
-    learnRead(key, ord, stored as SessValue)
-    if ((ord.seq === 0 || ord.origin === since.origin || ord.seq === since.seq) && cmp(ord, since) < 0) requeueNewest(session, key, io)
+    if ((ord.seq === 0 || ord.origin === since.origin || ord.seq === since.seq) && cmpRead(ord, since) < 0) requeueNewest(session, key, io)
   })
 }
 
-// CONSTRAINT (FIX6 Р4): after a landed write of the current session's key, at
-// most once per STORE_HANG_MS of now(); the current key and a key with a slot,
-// a farewell or an unsettled store.set here are never deleted; a refusal is one warn
-// per episode, a clean pass ends the episode
-function pruneStore(io: StoreIO): void {
+// CONSTRAINT (FIX6 Р4, R2-1): one pass per generation in flight, no queued
+// triggers; successful clock reads spend STORE_HANG_MS of now() cadence.
+// The current key and a key with a slot, farewell or unsettled store.set here
+// are never deleted; a refusal is one warn per episode, a clean pass ends it.
+let pruneReadDepth = 0
+let pruneSeq = 0
+
+function pruneStore(raw: StoreIO): void {
   const t = now()
-  if (S.pruneAt !== null && t - S.pruneAt < STORE_HANG_MS) return
-  S.pruneAt = t
-  const g = S.gen
-  const refused = (call: string, err: unknown): void => {
-    if (live(g)) episodeDiag('warn', 'session-snapshot-prune', STORE_SESS, 'the sess: keys could not be pruned: ' + call + ' refused: ' + errorText(err) + '; a landed write past 15 s tries again')
+  const hung = S.pruneInFlight && t - S.prunePulse > STORE_HANG_MS
+  if (hung) {
+    episodeDiag('warn', 'session-snapshot-prune-hung', STORE_SESS, 'snapshot prune висит > 15 с; a new pass replaces it')
+    S.pruneInFlight = false
   }
-  // CONSTRAINT (FIX6b AR5): the store has no compare-and-delete — a key another
-  // process writes between the read and the delete goes; it is a live
-  // session's only if its seq (clock ms × 1000) is among the oldest, and that
-  // session's next write puts it back
-  // INFLIGHT protects a low-ord foreign overwrite while this environment's
-  // newer write is unsettled. SESS_Q independently protects an io-null park:
-  // a dead generation's late put can requeue the new generation's landed
-  // farewell after that key stopped being current, with no INFLIGHT or
-  // FAREWELL left. No live io is available until another hook supplies it.
-  const kept = (key: string): boolean => key === currentKey() || SESS_Q.has(key) || INFLIGHT.has(key) || FAREWELL.has(key.slice(STORE_SESS.length))
-  void quiet('snapshot-prune', async () => {
+  if (S.pruneInFlight || (!hung && S.pruneAt !== null && t - S.pruneAt < STORE_HANG_MS)) return
+  S.pruneInFlight = true
+  S.prunePulse = t
+  const token = S.pruneToken = ++pruneSeq
+  const g = S.gen
+  let stopped = false
+  let clean = true
+  const current = (): boolean => {
+    if (!live(g)) { staleDrop('session snapshot prune'); return false }
+    return S.pruneToken === token && !stopped
+  }
+  class PruneDeadline extends Error {}
+  const bounded = async <T>(call: string, invoke: () => Promise<T>): Promise<T> => {
+    if (!current()) throw new Error('prune pass replaced')
+    let timer: { cancel: () => void } | null = null
+    let reject!: (reason: unknown) => void
+    const deadline = new Promise<never>((_resolve, refuse) => { reject = refuse })
+    void deadline.catch(() => undefined)
+    try {
+      timer = raw.arm(() => { reject(new PruneDeadline(call + ' висит > 15 с')) })
+      const value = await Promise.race([invoke(), deadline])
+      if (!current()) throw new Error('prune pass replaced')
+      S.prunePulse = now()
+      return value
+    } catch (err) {
+      if (current()) S.prunePulse = now()
+      throw err
+    } finally {
+      try { timer?.cancel() } catch { /* CONSTRAINT: the deadline has its own rejection handler. */ }
+    }
+  }
+  const io: StoreIO = {
+    ...raw,
+    keys: () => bounded('store.keys', () => raw.keys()),
+    get: key => bounded('store.get', () => raw.get(key)),
+    del: key => bounded('store.delete', () => raw.del(key)).catch((err: unknown) => { if (!(err instanceof PruneDeadline)) clean = false; throw err }),
+  }
+  // CONSTRAINT (AR-2c): only the synchronous store.get entry belongs to this
+  // marker; an unrelated read while prune awaits must remain observable.
+  const read = (key: string): Promise<unknown> => {
+    pruneReadDepth++
+    try { return io.get(key) } finally { pruneReadDepth-- }
+  }
+  const say = (call: string, err: unknown): void => {
+    if (!current()) return
+    episodeDiag('warn', 'session-snapshot-prune', STORE_SESS, 'the sess: keys could not be pruned: ' + call + ' refused: ' + errorText(err) + '; a landed write past 15 s tries again')
+  }
+  const refused = (call: string, err: unknown): void => {
+    if (!current()) return
+    say(call, err)
+    stopped = true
+  }
+  // CONSTRAINT (#551 D2, D1): the sessions are groups — the digest segment of a
+  // publication, the session of a `sess:<id>` key of the previous version; a
+  // delete names a key read, and a publication another process makes between
+  // the read and the delete is under a key of its own and stays.
+  // INFLIGHT protects a session while this environment's write is unsettled;
+  // SESS_Q a key's queue, a value parked at its flight limit included;
+  // FAREWELL a farewell still to go.
+  const keptDigests = (): Set<string> => {
+    const out = new Set<string>()
+    for (const key of [currentKey(), ...SESS_Q.keys(), ...INFLIGHT.keys()]) if (key !== '') out.add(fnv64hex(key.slice(STORE_SESS.length)))
+    for (const session of FAREWELL.keys()) out.add(fnv64hex(session))
+    return out
+  }
+  const pass = async (): Promise<void> => {
+    const reading = await io.clock()
+    if (!current()) return
+    // CONSTRAINT (Q3): every time-dependent verdict uses this pass's clock;
+    // clock refusal permits only schema-damage deletion and does not spend the cadence.
+    const passClock = reading.ms
+    if (reading.ok) S.pruneAt = t
+    else failDiag('warn', 'prune-clock-unavailable', "snapshot prune: refused('clock.now'): " + errorText(reading.reason) + '; time-based deletions wait for the next trigger')
     let keys: unknown
     try {
       keys = await io.keys()
     } catch (err) {
       return refused('store.keys', err)
     }
-    if (!live(g)) return staleDrop('session snapshot prune')
-    const sess = (Array.isArray(keys) ? keys : []).filter((k): k is string => typeof k === 'string' && k.startsWith(STORE_SESS))
-    const excess = sess.length - SESS_KEEP
-    if (excess > 0) {
-      let aged: { key: string; ord: Ord }[]
+    if (!current()) return
+    const groups = new Map<string, string[]>()
+    for (const k of Array.isArray(keys) ? keys : []) {
+      if (typeof k !== 'string') continue
+      const digest = k.startsWith(NS_SESS + '.') ? k.slice(NS_SESS.length + 1, NS_SESS.length + 17) : k.startsWith(STORE_SESS) ? fnv64hex(k.slice(STORE_SESS.length)) : null
+      if (digest === null) continue
+      groups.set(digest, [...(groups.get(digest) ?? []), k])
+    }
+    type Read = { key: string; ord: Ord; present: boolean; v1: boolean }
+    // CONSTRAINT (AR-2b): payload order is independent of the key's publication
+    // counter; the capacity pass must reuse this pass's reads, including misses.
+    const v3Reads = new Map<string, Read>()
+    try {
+      await Promise.all([...new Set([...groups.values()].flat())].filter((key) => key.startsWith(NS_SESS + '.')).map(async (key) => {
+        const value = await read(key)
+        if (!current()) return
+        let bad: string | null = null
+        let ord = ZERO
+        if (value !== undefined) {
+          try {
+            bad = v3Damage(NS_SESS, key, value)
+            if (bad === null) ord = ordOf(value)
+          } catch (err) {
+            bad = 'снимок не разбирается: ' + errorText(err)
+          }
+        }
+        if (bad !== null) {
+          if (!current()) return
+          try {
+            await io.del(key)
+            if (!current()) return
+            failDiag('info', 'store-damage', key + ': повреждённая запись, ' + bad + ' — запись удалена', 'store-damage:' + key)
+          } catch (err) {
+            if (!current()) return
+            if (err instanceof PruneDeadline) return refused('store.delete', err)
+            failDiag('info', 'store-damage', key + ': повреждённая запись, ' + bad + ' — запись не учитывается, удалить её не удалось: ' + errorText(err), 'store-damage:' + key)
+          }
+          v3Reads.set(key, { key, ord: ZERO, present: false, v1: false })
+          return
+        }
+        v3Reads.set(key, { key, ord, present: value !== undefined, v1: false })
+      }))
+    } catch (err) {
+      return refused('store.get', err)
+    }
+    if (!current()) return
+    const deleted = new Set<string>()
+    // CONSTRAINT (#551 Р8′): a stage's hang stops the pass and wins over its refusals; a refusal is
+    // said in the prune episode and the pass goes on — no other key is deleted in its place
+    const stageDone = (results: PromiseSettledResult<unknown>[]): boolean => {
+      const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      const hang = failed.find((r) => r.reason instanceof PruneDeadline)
+      if (hang !== undefined) { refused('store.delete', hang.reason); return false }
+      if (failed[0] !== undefined) say('store.delete', failed[0].reason)
+      return true
+    }
+    if (reading.ok) {
+      const outside = [...v3Reads.values()].filter((r) => r.present && clockBeyond(r.ord, passClock) > 0)
+      const results = await Promise.allSettled(outside.map(async (r) => {
+        deleted.add(r.key)
+        await io.del(r.key)
+      }))
+      if (!current()) return
+      if (!stageDone(results)) return
+    }
+    const excess = groups.size - SESS_KEEP
+    if (reading.ok && excess > 0) {
+      const kept = keptDigests()
+      let aged: Array<{ digest: string; reads: Read[]; max: Ord }>
       try {
-        aged = await Promise.all(sess.filter((k) => !kept(k)).map(async (key) => ({ key, ord: ordOf(await io.get(key)) })))
+        aged = await Promise.all([...groups].filter(([d]) => !kept.has(d)).map(async ([digest, ks]) => {
+          const reads = await Promise.all(ks.map(async (key): Promise<Read> => {
+            const cached = v3Reads.get(key)
+            if (cached !== undefined) return cached
+            const value = await read(key)
+            return { key, ord: ordOf(value), present: value !== undefined, v1: key.startsWith(STORE_SESS) }
+          }))
+          const max = reads.filter((r) => r.present).reduce<Ord>((a, r) => (cmpRead(r.ord, a, passClock) > 0 ? r.ord : a), ZERO)
+          return { digest, reads, max }
+        }))
       } catch (err) {
         return refused('store.get', err)
       }
-      if (!live(g)) return staleDrop('session snapshot prune')
-      const drop = aged.filter((a) => !kept(a.key)).sort((a, b) => cmp(a.ord, b.ord)).slice(0, excess)
-      const results = await Promise.allSettled(drop.map(async (a) => io.del(a.key)))
-      if (!live(g)) return staleDrop('session snapshot prune')
-      const refusal = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
-      if (refusal !== undefined) return refused('store.delete', refusal.reason)
+      if (!current()) return
+      // CONSTRAINT (#551 D8): v1 is read only; deleted only past MARK_KEEP by its own age (NOTES)
+      const goes = (r: Read): boolean => r.present && (!r.v1 || (r.ord.seq > 0 && passClock - r.ord.seq / SEQ_PER_MS > MARK_KEEP))
+      // CONSTRAINT (FIX6 Р4 ME): a session kept only after the reads is kept — the rule is read again here
+      const keptNow = keptDigests()
+      const evicted = new Set(aged.filter((a) => !keptNow.has(a.digest)).sort((a, b) => cmpRead(a.max, b.max, passClock)).slice(0, excess).map((a) => a.digest))
+      const drop: Read[] = []
+      for (const a of aged) {
+        for (const r of a.reads) if (goes(r) && (evicted.has(a.digest) || clockBeyond(r.ord, passClock) > 0 || cmpRead(r.ord, a.max, passClock) < 0)) drop.push(r)
+      }
+      const results = await Promise.allSettled(drop.filter((a) => !deleted.has(a.key)).map(async (a) => io.del(a.key)))
+      if (!current()) return
+      if (!stageDone(results)) return
     }
-    endEpisode(STORE_SESS, ['session-snapshot-prune'])
+    // CONSTRAINT (#551 Р8′): only a pass without a refused delete is clean; a refused one ends the hang episode, not the refusal one
+    if (!clean) return endEpisode(STORE_SESS, ['session-snapshot-prune-hung'])
+    endEpisode(STORE_SESS, ['session-snapshot-prune', 'session-snapshot-prune-hung'])
+  }
+  void quiet('snapshot-prune', async () => {
+    try { await pass() } finally {
+      // CONSTRAINT (P1): neither a replaced pass nor an old generation releases its successor.
+      if (live(g) && S.pruneToken === token) {
+        stopped = true
+        S.pruneInFlight = false
+      }
+    }
   })
 }
 
 function advance(key: string, slot: SessSlot): void {
-  // CONSTRAINT (FIX7 Р1): the value waiting behind the flight that just
-  // ended starts through that flight's io when it has none of its own — a
-  // dead generation lends nothing (AR4: its $ is never called again)
-  const done = slot.flight
+  // CONSTRAINT (FIX7 Р1, Р3): the waiting value starts through its own io, below the flight limit.
   slot.flight = null
   const queued = slot.next
   if (queued !== null) {
-    if (queued.io === null && done !== null && done.item.io !== null && live(done.item.owner.g)) queued.io = done.item.io
-    if (queued.io !== null && (INFLIGHT.get(key) ?? 0) < SESS_FLIGHTS) {
+    if ((INFLIGHT.get(key) ?? 0) < SESS_FLIGHTS) {
       slot.next = null
       return sessRun(key.slice(STORE_SESS.length), key, slot, queued, queued.io)
     }
@@ -5482,6 +6637,7 @@ function writeSession($: EngineInterface, atEnd = false): Pending | null {
 const EFFORT_SOURCE: Source = { kind: 'session', call: 'config' }
 
 function seedEffort($: EngineInterface): Promise<void> {
+  sweepClockHung()
   if (S.effortSeeded) return Promise.resolve()
   if (S.effortSeed !== null) return S.effortSeed
   const g = S.gen
@@ -5602,9 +6758,9 @@ export function register(on: On, options: PluginOptions): void {
         dispatchEvent('session.end', e, at)
         const writes = [snapshotSession($, true), ...flushFarewell($, true)]
         // CONSTRAINT (FIX7 Р1): the end itself releases what waits at a free
-        // key — there is no gather after it; an io-less wait gets this
-        // call's own $
-        releaseParked($)
+        // key — there is no gather after it; a released value uses its
+        // enqueuing call's io (Р3)
+        releaseParked()
         await endWait($, g, writes, { signal: next.signal })
         // CONSTRAINT (FIX7 Р3): the records the end made ship now — neither a
         // redraw nor a gather follows it
@@ -6047,11 +7203,41 @@ export function __savedIds(): string[] {
   return [...savedIds()]
 }
 
+// the stand's seam to this environment's writer id (#551 D3); no working path calls it
+export function __writerIdOf(): string | null {
+  return writerId
+}
+
+// the stand's seam to the write counter (#551 FIX9d AR5); no working path calls it
+export function __setOrderN(n: number): void {
+  orderN = n
+}
+
+// the stand's seam to a draft write of the state `g`, made when the stand
+// chooses (#551 FIX9f Р3); no working path calls it
+export function __writeDraft($: EngineInterface, g: number, session: string, draft: Record<string, unknown>): Promise<boolean> {
+  const d = draftFrom(draft)
+  return d === null ? Promise.resolve(false) : writeDraft($, g, session, d)
+}
+
 export function __resetState(): void {
   wipeState()
   pictureBuilds = 0
   clockMs = 0
-  lastCloseT = 0
+  clockReqSeq = 0
+  clockAppliedSeq = 0
+  orderEpoch = null
+  orderN = 0
+  epochLanded = null
+  orderSpent = false
+  epochWrite = Promise.resolve(null)
+  ownMarks.clear()
+  // a new process of the stand: its own writer id and counter (#551 D3)
+  writerId = newWriterId()
+  pubSeq = 0
+  lastAt = 0
+  ownDrafts.clear()
+  SESS_PUBS.clear()
   seqLast = 0
   seqN = 0
   armOverride = null
@@ -6061,8 +7247,16 @@ export function __resetState(): void {
   inflightEpoch++
 }
 
+export function __inPrune(): boolean {
+  return pruneReadDepth > 0
+}
+
 export function __sessQueue(): { farewell: string[]; queued: string[]; landed: [string, number][] } {
   return { farewell: [...FAREWELL.keys()], queued: [...SESS_Q.keys()], landed: [...LANDED].map(([k, l]) => [k, l.seq]) }
+}
+
+export function __cmpRead(a: unknown, b: unknown): number {
+  return cmpRead(ordOf(a), ordOf(b))
 }
 
 export function __setNow(fn: (() => number) | null): void {
@@ -6120,6 +7314,10 @@ export function __pictureThemes(themes: Record<string, Record<string, string>>):
 
 export function __pictureReadClock($: EngineInterface): Promise<number> {
   return readClock($)
+}
+
+export function __saveMarkReadable(key: string, value: unknown): value is Record<string, unknown> {
+  return isNs(key, NS_SAVING) ? v3Damage(NS_SAVING, key, value) === null : isObject(value)
 }
 
 // CONSTRAINT (#521 FIX5 Ч4): the theme save outside the press chain — two

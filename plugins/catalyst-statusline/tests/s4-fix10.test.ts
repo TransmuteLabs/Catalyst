@@ -3,6 +3,7 @@ import * as SL from '../hooks/statusline'
 import { FAMILIES } from '../hooks/data/index'
 import { snapshotText } from '../hooks/data/snapshotText'
 import type { Source } from '../hooks/data/types'
+import { isSessKey, sessKeys, sessValue } from './world'
 
 // S4-FIX10. CONSTRAINT (measured, the header of s4-fix7.test.ts): the kit loads
 // the folder plugin once; the teeth run against the imported module instance.
@@ -21,7 +22,8 @@ const drain = async (): Promise<void> => {
 const eventInput = (event: string, data: unknown, now = 0): void => SL.__feed({ source: { kind: 'event', event } as Source, ok: true, data, now })
 const tokens = (turnId: string, n: number) => ({ turnId, usage: { input_tokens: n, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
 const clone = (v: unknown): any => JSON.parse(JSON.stringify(v))
-const total = (m: Map<string, unknown>, k: string): number | undefined => (m.get(k) as { sum?: { total: number } } | undefined)?.sum?.total
+// the newest snapshot of the session of the logical key `sess:<id>`, both forms (#551 §3.10)
+const total = (m: Map<string, unknown>, k: string): number | undefined => (sessValue(m, k.slice('sess:'.length)) as { sum?: { total: number } } | undefined)?.sum?.total
 const deferred = <T,>() => {
   let resolve!: (v: T) => void
   let reject!: (e: unknown) => void
@@ -63,7 +65,7 @@ test('S4F10 Ж9: an id and its snapshot image spawn two agents', async () => {
     await h['agent.spawn']($, { subagentType: 'second' }, async () => ({ agentId: image }))
     await drain()
     await end(h, $)
-    const v = persisted.get('sess:A') as any
+    const v = sessValue(persisted, 'A') as any
     expect(v.agents.map.length).toBe(2)
   } finally { SL.__resetState() }
 })
@@ -97,7 +99,7 @@ test('S4F10 Ж9: restore of a marked snapshot leaves its ids untouched and write
     const { h, $ } = await start(persisted)
     eventInput('turn.complete', tokens('w1', 1))
     await end(h, $)
-    const v = persisted.get('sess:A') as any
+    const v = sessValue(persisted, 'A') as any
     expect(v.norm).toBe(1)
     expect(v.seenTurns[0]).toBe(id)
     expect(v.agents.map[0][0]).toBe(id)
@@ -121,7 +123,7 @@ test('S4F10 Ж9: restore of a legacy snapshot normalizes long ids as capture doe
     const { h, $ } = await start(persisted)
     eventInput('turn.complete', tokens('w1', 1))
     await end(h, $)
-    const v = persisted.get('sess:A') as any
+    const v = sessValue(persisted, 'A') as any
     expect(v.norm).toBe(1)
     expect(v.seenTurns[0]).toBe(snapshotText(raw))
     expect(v.agents.map[0][0]).toBe(snapshotText(raw))
@@ -131,7 +133,9 @@ test('S4F10 Ж9: restore of a legacy snapshot normalizes long ids as capture doe
 
 // ---------- Ж10: the local write order survives the store round trip ----------
 
-test('S4F10 Ж10: a stale late landing at SEQ_CAP is healed by the read-back', async () => {
+// #551 §3.10: the stale body lands under a key of its own below the newest —
+// nothing is written over, the newest stands and the read-back puts nothing
+test('S4F10 Ж10: a stale late landing at SEQ_CAP covers nothing — the newest stands, the local n orders it', async () => {
   SL.__resetState()
   try {
     const { h, $, persisted } = await clockStart(SEQ_CAP - 1, Math.floor((SEQ_CAP - 1) / 1000))
@@ -139,7 +143,7 @@ test('S4F10 Ж10: a stale late landing at SEQ_CAP is healed by the read-back', a
     const gate = deferred<void>()
     let hang = true
     $.store.set = async (k: string, v: unknown) => {
-      if (k !== 'sess:A') { persisted.set(k, clone(v)); return }
+      if (!isSessKey(k, 'A')) { persisted.set(k, clone(v)); return }
       if (hang) {
         // the stale body reaches the store late and its promise never settles
         hang = false
@@ -158,12 +162,14 @@ test('S4F10 Ж10: a stale late landing at SEQ_CAP is healed by the read-back', a
     expect(total(persisted, 'sess:A')).toBe(53)
     gate.resolve()
     await drain()
-    expect(total(persisted, 'sess:A')).toBe(51)
+    expect({ stored: total(persisted, 'sess:A'), pubs: sessKeys(persisted, 'A').filter((k) => k !== 'sess:A').length }).toEqual({ stored: 53, pubs: 2 })
+    let puts = 0
+    const set = $.store.set
+    $.store.set = async (k: string, v: unknown) => { if (isSessKey(k, 'A')) puts++; return set(k, v) }
     $.t += 16000
     await gather($)
-    const v = persisted.get('sess:A') as any
-    expect(v.sum.total >= 53).toBe(true)
-    expect(v.n >= 3).toBe(true)
+    const v = sessValue(persisted, 'A') as any
+    expect({ total: v.sum.total, puts, n: v.n >= 2 }).toEqual({ total: 53, puts: 0, n: true })
   } finally { SL.__resetState() }
 })
 
@@ -175,7 +181,7 @@ test('S4F10 Ж10: the read-back of the own newest record ties and the key is wri
     let puts = 0
     const put = $.store.set
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A') puts++
+      if (isSessKey(k, 'A')) puts++
       await put(k, v)
     }
     eventInput('turn.complete', tokens('one', 1))
@@ -186,7 +192,7 @@ test('S4F10 Ж10: the read-back of the own newest record ties and the key is wri
     $.t += 16000
     await gather($)
     expect(puts).toBe(1)
-    const v = persisted.get('sess:A') as any
+    const v = sessValue(persisted, 'A') as any
     expect(v.n >= 1).toBe(true)
     expect(v.norm).toBe(1)
   } finally { SL.__resetState() }
@@ -254,21 +260,20 @@ test('S4F10 Ж10b: non-id strings of a marked snapshot are bounded idempotently 
     const a = 'w'.repeat(191) + '#' + '01234567'
     const b = 'z'.repeat(300)
     const seed = { ...SNAP(50, 42_000_000_000), origin: '', norm: 1, extra: { a, b } }
-    const persisted = new Map<string, unknown>([['sess:A', seed]])
     SL.__setOrigin('zzz')
-    const { $ } = await start(persisted)
-    // cycle 1: a late stale body at the learned origin forces the re-put
-    persisted.set('sess:A', { ...SNAP(1, 41_999_995_000), origin: '', norm: 1, extra: { a, b } })
+    const { $, persisted, takeOwn } = await reloadOver(seed)
+    // cycle 1: the own publication gone at the read-back forces the re-put
+    expect(takeOwn()).toBe(1)
     $.t += 16000
     await gather($)
-    const k1 = clone(persisted.get('sess:A'))
+    const k1 = clone(sessValue(persisted, 'A'))
     expect(k1.extra.a).toBe(a)
     expect(typeof k1.extra.b === 'string' && k1.extra.b.length === 200 && /#[0-9a-f]{8}$/.test(k1.extra.b)).toBe(true)
-    // cycle 2: one more late stale body below the landed one — the strings must not drift
-    persisted.set('sess:A', { ...k1, seq: k1.seq - 1 })
+    // cycle 2: the re-put gone too — the next re-put's strings must not drift
+    expect(takeOwn()).toBe(1)
     $.t += 16000
     await gather($)
-    const k2 = clone(persisted.get('sess:A'))
+    const k2 = clone(sessValue(persisted, 'A'))
     expect(k2.extra.a).toBe(k1.extra.a)
     expect(k2.extra.b).toBe(k1.extra.b)
   } finally { SL.__resetState() }
@@ -279,13 +284,13 @@ test('S4F10 Ж10b: a 200-length object key of a marked snapshot survives the rea
   try {
     const key = 'k'.repeat(191) + '#' + 'abcd1234'
     const seed = { ...SNAP(50, 42_000_000_000), origin: '', norm: 1, deep: { [key]: 1 } }
-    const persisted = new Map<string, unknown>([['sess:A', seed]])
     SL.__setOrigin('zzz')
-    const { $ } = await start(persisted)
-    persisted.set('sess:A', { ...SNAP(1, 41_999_995_000), origin: '', norm: 1, deep: { [key]: 1 } })
+    const { $, persisted, takeOwn } = await reloadOver(seed)
+    expect(takeOwn()).toBe(1)
     $.t += 16000
     await gather($)
-    const k1 = persisted.get('sess:A') as any
+    expect(sessKeys(persisted, 'A').length).toBe(2)
+    const k1 = sessValue(persisted, 'A') as any
     expect(Object.keys(clone(k1.deep))).toEqual([key])
   } finally { SL.__resetState() }
 })
@@ -343,4 +348,22 @@ const start = async (persisted = new Map<string, unknown>(), id = 'A'): Promise<
   await SL.restoreAfterReload($, {} as never)
   await drain()
   return { h, $, persisted }
+}
+// #551 §3.10: the read-back re-puts only when this environment's own
+// publication is gone — one lands, a reload restores the previous-version
+// `seed` above it, and `takeOwn` stands for another process's prune of every
+// publication of A
+const reloadOver = async (seed: Record<string, unknown>): Promise<{ $: any; persisted: Map<string, unknown>; takeOwn: () => number }> => {
+  const persisted = new Map<string, unknown>()
+  const first = await start(persisted)
+  eventInput('turn.complete', tokens('w0', 1))
+  await end(first.h, first.$)
+  persisted.set('sess:A', seed)
+  const { $ } = await start(persisted)
+  const takeOwn = (): number => {
+    const own = sessKeys(persisted, 'A').filter((k) => k !== 'sess:A')
+    for (const k of own) persisted.delete(k)
+    return own.length
+  }
+  return { $, persisted, takeOwn }
 }

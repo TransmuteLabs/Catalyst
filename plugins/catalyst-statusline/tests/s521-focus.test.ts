@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { world, start, command, PANE_MOUNT, STORE_DRAFT, SESSION_ID } from './world'
+import { world, start, command, PANE_MOUNT, SESSION_ID, draftOf } from './world'
 
 // #521 tooth 9 / tooth 11 (host UI calls): a refused $.ui.focus of a pill
 // move lands in the diagnostics. The kit answers the plugin's own focus move
@@ -24,7 +24,7 @@ test('#521 tooth 9 (Р9): a refused ui.focus of a move is a diagnostic, not a re
   await w.clock.settle()
   await drain()
   // #521 FIX2 Р13: the draft lives under its session's key
-  const d = w.persisted.get(STORE_DRAFT + ':' + SESSION_ID) as { lines: { id: string }[][] }
+  const d = draftOf(w.persisted, SESSION_ID) as unknown as { lines: { id: string }[][] }
   expect(d.lines[0]!.map((s) => s.id)).toContain('ctx')
   await w.clock.advance(3000)
   await w.clock.settle()

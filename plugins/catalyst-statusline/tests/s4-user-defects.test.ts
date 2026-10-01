@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
 import { FAMILIES } from '../hooks/data'
 import type { Source } from '../hooks/data/types'
-import { world, start, command, BAND_MOUNT, PANE_MOUNT, walk, textOf, barText, SESSION_ID } from './world'
+import { world, start, command, BAND_MOUNT, PANE_MOUNT, walk, textOf, barText, SESSION_ID, isSessKey, sessKeys, sessValue } from './world'
 import type { Node } from './world'
 
 // S4: the four user-reported defects (ADJUDICATION-S4-USER-DEFECTS.md Д1–Д4
@@ -55,7 +55,7 @@ const value = (id: string, variant?: string): any => SL.valueOf(id, variant, {},
 
 const fullStand = (persisted = new Map<string, unknown>(), id = 'A'): any => ({
   ...standDollar(persisted, id),
-  clock: { now: async () => 61000, every: () => ({ cancel() {} }) },
+  clock: { now: async () => 61000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
   session: { id: async () => id, turns: async () => 0, cwd: async () => '/work/demo', root: async () => '/work/demo', model: async () => 'live-model', usage: async () => ({}), messages: async () => [] },
   config: { list: async () => [] },
   env: { get: async () => '' },
@@ -467,7 +467,7 @@ test('S4 T11: a reload under the same session id restores sum and the counters; 
   await $.turn.complete({ answer: 'ok', durationMs: 4000, isAborted: false, turnId: 's4t11', reason: 'answer', usage: { input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as any)
   await w.clock.settle()
   await drain()
-  expect(w.persisted.has('sess:' + SESSION_ID)).toBe(true)
+  expect(sessKeys(w.persisted, SESSION_ID).length > 0).toBe(true)
   const nf = SL.buildNf({})
   SL.__resetState()
   await SL.restoreAfterReload(standDollar(w.persisted), {} as never)
@@ -559,7 +559,7 @@ test('S4 T11d: refused snapshot keeps accumulators pending and forbids writes un
     await drain()
     expect(reads).toBe(2)
     for (const id of ['sum', 'tokens-total', 'tools', 'ag']) expect(value(id).state).toBe('pending')
-    expect(writes.filter((k) => k.startsWith('sess:'))).toEqual([])
+    expect(writes.filter((k) => isSessKey(k))).toEqual([])
     retry.resolve(snapshot())
     await turn
     await drain()
@@ -612,7 +612,7 @@ test('S4 T11g: recovery overflow stays unknown until session switch; snapshot wr
     $.session.id = async () => 'B'
     await SL.__refresh($)
     let attempts = 0
-    $.store.set = async (key: string) => { if (key === 'sess:B' && ++attempts === 1) throw new Error('write down') }
+    $.store.set = async (key: string) => { if (isSessKey(key, 'B') && ++attempts === 1) throw new Error('write down') }
     await h['agent.spawn']($, { description: 'new' }, async () => ({ agentId: 'B-agent' }))
     await drain()
     expect(attempts).toBe(1)
@@ -684,7 +684,8 @@ test('S4 T2b: next from a stored page equal to pages wraps from the clamped last
   try {
     const pages = Math.ceil(SL.REGISTRY.length / 12)
     const store = new Map<string, unknown>([
-      ['statusline.open.v1', { session: 'A' }],
+      // #551 D5: a flag restores only with an age inside FLAG_TTL (the stand clock reads 61000)
+      ['statusline.open.v1', { session: 'A', at: 61000 }],
       ['statusline.draft.v1', { session: 'A', lines: [[{ id: 'model', body: '{model.text}' }]], axes: {}, elements: {}, tab: 'elements', fam: 'all', page: pages }],
     ])
     await SL.restoreAfterReload(fullStand(store), {} as never)
@@ -824,7 +825,7 @@ test('S4 F4: a write held while more turns land is redone with the current state
     await drain()
     await drain()
     expect(writes).toBe(2)
-    expect((persisted.get('sess:A') as { sum: { total: number } }).sum.total).toBe(120)
+    expect((sessValue(persisted, 'A') as { sum: { total: number } }).sum.total).toBe(120)
   } finally { SL.__resetState() }
 })
 
@@ -841,11 +842,11 @@ test('S4 ADJ-1: an id change stores the completed old session its own last turn'
     await SL.__refresh($)
     await drain()
     // FIX5 Р2: the switching gather takes the farewell, the next one writes it
-    expect(persisted.get('sess:A')).toBeUndefined()
+    expect(sessValue(persisted, 'A')).toBeUndefined()
     await SL.__refresh($)
     await drain()
     await drain()
-    const stored = persisted.get('sess:A') as { sum: { total: number } } | undefined
+    const stored = sessValue(persisted, 'A') as { sum: { total: number } } | undefined
     expect(stored).toBeDefined()
     expect(stored!.sum.total).toBe(100)
   } finally { SL.__resetState() }
@@ -901,7 +902,7 @@ test('S4 F7: an old gather finishing after a newer one is dropped, the state doe
   } finally { SL.__resetState() }
 })
 
-test('S4 ADJ-3: a malformed snapshot ends recovery once, the next gather reads nothing', async () => {
+test('S4 ADJ-3: a malformed snapshot ends recovery once; verify does not re-diagnose it', async () => {
   SL.__resetState()
   try {
     const snap = snapshot()
@@ -920,7 +921,10 @@ test('S4 ADJ-3: a malformed snapshot ends recovery once, the next gather reads n
     expect(SL.__diag().filter((d) => d.key === 'session-snapshot-shape')).toHaveLength(1)
     await SL.__refresh($)
     await drain()
-    expect(reads).toBe(1)
+    expect(reads).toBe(2)
+    expect(SL.__sessQueue().landed).toEqual([])
+    expect(famBase().sum).toBeNull()
+    expect(value('ag', 'counts').state).toBe('pending')
     expect(SL.__diag().filter((d) => d.key === 'session-snapshot-shape')).toHaveLength(1)
   } finally { SL.__resetState() }
 })

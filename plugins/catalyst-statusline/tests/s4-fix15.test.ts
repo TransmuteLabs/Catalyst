@@ -198,7 +198,9 @@ test('S4F15 В8: the key-merge cap is per session', async () => {
     }
     const persisted = new Map<string, unknown>([
       ['sess:A', { ...SNAP(50, 42_000_000_000), origin: '', extra: sites(70) }],
-      ['sess:B', { ...SNAP(10, 42_000_000_000), origin: '', extra: sites(1) }],
+      // #551 §3.10: the read-back reads this environment's own publication only —
+      // B's 65 merge sites (p0 among them) are met by its restore after the switch
+      ['sess:B', { ...SNAP(10, 42_000_000_000), origin: '', extra: sites(65) }],
     ])
     const { $ } = await start(persisted)
     const merges = (): string[] => SL.__episodes().filter((id) => id.startsWith('session-snapshot-key-merge|'))
@@ -214,12 +216,14 @@ test('S4F15 В8: the key-merge cap is per session', async () => {
     $.t += 16000
     await gather($)
     expect(famLive(FAMILIES[0]).session).toBe('B')
-    expect(diags('session-snapshot-key-merge').filter((d) => d.text.includes('store.set sess:B:')).length).toBe(1)
+    const texts = diags('session-snapshot-key-merge').filter((d) => d.text.includes('store.set sess:B:')).map((d) => d.text)
+    expect(new Set(texts).size).toBe(texts.length)
+    // CONSTRAINT (statusline.ts CAP.diag): the unexported diagnostic buffer holds 64 records.
+    expect(texts.length + diags('session-snapshot-key-merge-cap').length).toBe(64)
+    const siteIds = texts.map((text) => /object "extra"\/"p(\d+)"/.exec(text)?.[1]).map(Number).sort((a, b) => a - b)
+    expect(siteIds.every(Number.isInteger)).toBe(true)
+    expect(siteIds).toEqual(Array.from({ length: texts.length }, (_, i) => siteIds[0]! + i))
     expect(ofA().length).toBe(0)
-    // the read-back of the current key meets 65 merge sites of B (p0 already open)
-    persisted.set('sess:B', { ...SNAP(10, 42_000_000_001), origin: '', extra: sites(65) })
-    $.t += 16000
-    await gather($)
     expect(merges().filter((id) => id.includes(JSON.stringify('sess:B'))).length).toBe(64)
     const capsB = capsSince(tSwitch)
     expect(capsA + capsB.length).toBe(2)

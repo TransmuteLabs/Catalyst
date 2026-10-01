@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
 import { FAMILIES } from '../hooks/data'
-import { walk, STORE_THEMES, STORE_LASTGOOD, STORE_OPEN, STORE_DRAFT, STORE_SAVING, STORE_UNDO } from './world'
+import { walk, STORE_THEMES, STORE_LASTGOOD, STORE_OPEN, STORE_DRAFT, STORE_SAVING, STORE_UNDO, NS_OPEN, NS_MARK, NS_DRAFT, NS_UNDO } from './world'
 
 // Teeth for BRIEF-v0.5-S1-FIX3 (F3, F6, F7, F8, F-memo). Like picture.test.ts,
 // these run against the imported module instance; the kit's loaded copy is not
@@ -28,7 +28,7 @@ const storeOf = (entries: Record<string, unknown>) => ({
 })
 
 const fullStand = () => ({
-  clock: { now: async () => 5000, every: () => ({ cancel() {} }) },
+  clock: { now: async () => 5000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
   ui: { log: async () => undefined, invalidate: () => undefined, status: () => undefined, toast: () => undefined },
   store: storeOf({}),
   session: {
@@ -141,7 +141,7 @@ test('F7: an arm-refusal diagnostic stays bounded', async () => {
   })
   try {
     await SL.__syncSourceTimers({
-      clock: { now: async () => 5000 },
+      clock: { now: async () => 5000, after: () => ({ cancel() {} }) },
       ui: { log: () => undefined, invalidate: () => undefined },
     } as never)
     const refused = SL.__diag().filter((d) => d.key.startsWith('timer-'))
@@ -163,7 +163,7 @@ test('F8: overflowing the diag buffer drops shipped records, never unshipped one
   // CONSTRAINT (#521 FIX2 Р20): the stand answers the session root — a refused
   // root is a record of its own, outside the two this tooth counts
   const $ = {
-    clock: { now: async () => 70000 },
+    clock: { now: async () => 70000, after: () => ({ cancel() {} }) },
     ui: { log: (t: string) => { logs.push(t) }, invalidate: () => undefined },
     session: { root: async () => '/work/demo', cwd: async () => '/work/demo' },
   }
@@ -225,7 +225,7 @@ const recStore = (entries: Record<string, unknown>) => {
 const HUD_GOOD = { __raw: { template: 'dur||x=constant', theme: 'hud', palette: 'theme', placement: 'above', details: 'off' } }
 
 const optStand = (store: PickerStore) => ({
-  clock: { now: async () => 5000, every: () => ({ cancel() {} }) },
+  clock: { now: async () => 5000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
   ui: { log: async () => undefined, invalidate: () => undefined, status: () => undefined, toast: () => undefined },
   store,
   session: {
@@ -762,7 +762,7 @@ test('S1-FIX5 T12: a refused debug log does not lose the record', async () => {
   const logs: string[] = []
   let failed = false
   const $ = {
-    clock: { now: async () => 70000 },
+    clock: { now: async () => 70000, after: () => ({ cancel() {} }) },
     ui: { log: (t: string) => { if (!failed) { failed = true; throw new Error('log-refused') } logs.push(t) }, invalidate: () => undefined },
   }
   const clockRuns: Array<() => void> = []
@@ -1027,7 +1027,8 @@ test('S1-FIX6 U7: a close inside the restore window stays closed', async () => {
     await started
     await drain()
     expect(SL.__stateSnapshot()['pickerOpen']).toBe(false)
-    expect(Object.keys(entries).filter((k) => k.startsWith(STORE_OPEN))).toEqual([])
+    // #551 D8: the previous version's flag is read only — the close's mark closes it
+    expect({ v3: Object.keys(entries).filter((k) => k.startsWith(NS_OPEN)), v1: STORE_OPEN + ':t0' in entries, marked: Object.keys(entries).some((k) => k.startsWith(NS_MARK)) }).toEqual({ v3: [], v1: true, marked: true })
   } finally {
     SL.__resetState()
   }
@@ -1286,7 +1287,7 @@ test('S1-FIX6 U16: a refresh across register is dropped', async () => {
   SL.__resetState()
   const { on } = startHandlers()
   const clock = gateOf()
-  const stand = { ...fullStand(), clock: { now: async () => { await clock.p; return 5000 }, every: () => ({ cancel() {} }) } }
+  const stand = { ...fullStand(), clock: { now: async () => { await clock.p; return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.register(on as never, OPT_HUD as never)
     const refreshing = SL.__refresh(stand as never)
@@ -1309,7 +1310,7 @@ test('S1-FIX6 U17: a timer sync across register arms nothing', async () => {
   const clock = gateOf()
   let armed = 0
   const OPTS = { template: 'dur||x=constant', numDuration: 'clock', details: 'off' }
-  const stand = { ...fullStand(), clock: { now: async () => { await clock.p; return 5000 }, every: () => ({ cancel() {} }) } }
+  const stand = { ...fullStand(), clock: { now: async () => { await clock.p; return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.__setArmEvery(() => { armed++; return { cancel() {} } })
     SL.register(on as never, OPTS as never)
@@ -1340,7 +1341,7 @@ test('S1-FIX6 U18: an env pass across register leaves HOME and the families alon
     const stand = {
       ...base,
       env: { get: async (name: string) => { if (parkOn === 'home' && name === 'HOME') await hold(); return name === 'HOME' ? '/work/tester' : '' } },
-      clock: { now: async () => { if (parkOn === 'clock') await hold(); return 5000 }, every: () => ({ cancel() {} }) },
+      clock: { now: async () => { if (parkOn === 'clock') await hold(); return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
     }
     SL.register(on as never, OPT_HUD as never)
     const running = SL.__runEnvSources(stand as never)
@@ -1836,7 +1837,8 @@ const THEMES_SET_REFUSED = (store: ReturnType<typeof memStore>) => ({
 const UNDO_REFUSED = (store: ReturnType<typeof memStore>) => ({
   ...store,
   get: async (k: string): Promise<unknown> => {
-    if (k === STORE_UNDO) throw new Error('io-undo')
+    // the undo records this version reads: its own publications, the previous version's bare array
+    if (k === STORE_UNDO || k.startsWith(NS_UNDO)) throw new Error('io-undo')
     return store.get(k)
   },
 })
@@ -2099,8 +2101,8 @@ test('S1-FIX7 U25: a stale clock resolve cannot clear the failed clock of the ne
   const gate = gateOf()
   const OPTS = { ...OPT_HUD, numDuration: 'clock' }
   let first = true
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p } return 5000 }, every: () => ({ cancel() {} }) } }
-  const poison = { ...optStand(recStore({})), clock: { now: async (): Promise<number> => { throw new Error('no-clock') }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p } return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
+  const poison = { ...optStand(recStore({})), clock: { now: async (): Promise<number> => { throw new Error('no-clock') }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.register(on as never, OPTS as never)
     const refreshing = SL.__refresh($ as never)
@@ -2131,7 +2133,7 @@ test('S1-FIX7 U26: a stale refused clock read says nothing and poisons nothing',
   const { on } = startHandlers()
   const gate = gateOf()
   let first = true
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p; throw new Error('late-refused') } return 5000 }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { if (first) { first = false; await gate.p; throw new Error('late-refused') } return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.register(on as never, OPT_HUD as never)
     const refreshing = SL.__refresh($ as never)
@@ -2159,7 +2161,7 @@ test('S1-FIX7 U27: a stale refresh cannot reap the live timer of the new state',
   const gate = gateOf()
   const OPTS = { ...OPT_HUD, numDuration: 'clock', details: 'off' }
   let clockCalls = 0
-  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 1) { await gate.p; return 9000 } return 5000 }, every: () => ({ cancel() {} }) } }
+  const $ = { ...optStand(recStore({ [STORE_LASTGOOD]: HUD_GOOD })), clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 1) { await gate.p; return 9000 } return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) } }
   try {
     SL.__setArmEvery(() => ({ cancel() {} }))
     SL.register(on as never, OPTS as never)
@@ -2199,7 +2201,7 @@ test('S1-FIX7 U28: a refresh that went stale inside the rearm sync ships nothing
   const $ = {
     ...base,
     ui: { ...base.ui, log: (t: string): void => { logs.push(t) } },
-    clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 4) { await gate.p; return 7000 } if (clockCalls === 3) return 7000; return 5000 }, every: () => ({ cancel() {} }) },
+    clock: { now: async (): Promise<number> => { clockCalls++; if (clockCalls === 4) { await gate.p; return 7000 } if (clockCalls === 3) return 7000; return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
   }
   try {
     SL.__setArmEvery(() => { throw new Error('arm-refused') })
@@ -2233,9 +2235,9 @@ test('S1-FIX7 U29: a picker open stale at the draft persist writes no draft into
   const { on, handlers } = startHandlers()
   const gate = gateOf()
   const stored = { session: 'f4', lines: [[]], axes: { palette: 'semantic' }, elements: {}, focus: null, tab: 'view', query: '', fam: 'all', targetLine: 0, themeName: '' }
-  const entries: Record<string, unknown> = { [STORE_LASTGOOD]: HUD_GOOD,[STORE_OPEN]: { session: 'f4' }, [STORE_DRAFT]: stored }
+  const entries: Record<string, unknown> = { [STORE_LASTGOOD]: HUD_GOOD,[STORE_OPEN]: { session: 'f4', t: 5000 }, [STORE_DRAFT]: stored }
   const writes: Array<{ key: string; value: unknown }> = []
-  // #521 FIX4 Ф2: the restore moves the bare flag to its token key first — the
+  // #551 D4: the restore publishes the bare flag's copy first — the
   // park is armed for the open's own flag write, after the restore
   let armSet = false
   const store = {
@@ -2243,7 +2245,7 @@ test('S1-FIX7 U29: a picker open stale at the draft persist writes no draft into
     set: async (k: string, v: unknown): Promise<void> => {
       writes.push({ key: k, value: JSON.parse(JSON.stringify(v ?? null)) })
       entries[k] = JSON.parse(JSON.stringify(v ?? null))
-      if (k.startsWith(STORE_OPEN + ':') && armSet) { armSet = false; await gate.p }
+      if (k.startsWith(NS_OPEN) && armSet) { armSet = false; await gate.p }
     },
     delete: async (k: string): Promise<void> => { delete entries[k] },
     keys: async (): Promise<string[]> => Object.keys(entries),
@@ -2270,8 +2272,8 @@ test('S1-FIX7 U29: a picker open stale at the draft persist writes no draft into
     await drain()
     await drain()
     // H:2153: a draft written after the persist belongs to the dead open
-    // #521 FIX2 Р13: a draft write goes to the session's key STORE_DRAFT + ':' + id
-    expect({ draftWrites: writes.slice(writesBefore).filter((w) => w.key.startsWith(STORE_DRAFT)).length }).toEqual({ draftWrites: 0 })
+    // #551 §3.7: a draft write is a publication under NS_DRAFT of the session
+    expect({ draftWrites: writes.slice(writesBefore).filter((w) => w.key.startsWith(STORE_DRAFT) || w.key.startsWith(NS_DRAFT)).length }).toEqual({ draftWrites: 0 })
   } finally {
     SL.__resetState()
   }
@@ -2297,7 +2299,7 @@ test('S1-FIX7 U30: the captured source tick stops at each of its three guards', 
     const $ = {
       ...base,
       ui: { ...base.ui, invalidate: () => { if (afterReg) lateInvalidate++ } },
-      clock: { now: async (): Promise<number> => { if (afterReg) lateClock++; if (mode === 'clock' && !parked) { parked = true; await gate.p } return 5000 }, every: () => ({ cancel() {} }) },
+      clock: { now: async (): Promise<number> => { if (afterReg) lateClock++; if (mode === 'clock' && !parked) { parked = true; await gate.p } return 5000 }, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
       process: { run: async (): Promise<unknown> => { if (afterReg) lateRun++; if (mode === 'source' && !parked) { parked = true; await gate.p } return { exitCode: 0, stdout: '', stderr: '' } } },
     }
     try {

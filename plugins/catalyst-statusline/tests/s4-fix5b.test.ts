@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
 import { FAMILIES } from '../hooks/data'
 import type { Source } from '../hooks/data/types'
+import { dropSess, isSessKey, regressSess, sessValue } from './world'
 
 // S4-FIX5b/5c (BRIEF-S4-FIX5b Д1–Д5, FIX5c): a hang as a refusal for the
 // retry, the re-put of the newest value after a late landing, the read-back of
@@ -16,7 +17,8 @@ const drain = async (): Promise<void> => {
 const eventInput = (event: string, data: unknown, now = 0): void => SL.__feed({ source: { kind: 'event', event } as Source, ok: true, data, now })
 const tokens = (turnId: string, n: number) => ({ turnId, usage: { input_tokens: n, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
 const clone = (v: unknown): any => JSON.parse(JSON.stringify(v))
-const total = (m: Map<string, unknown>, k: string): number | undefined => (m.get(k) as { sum?: { total: number } } | undefined)?.sum?.total
+// the newest snapshot of the session of the logical key `sess:<id>`, both forms (#551 §3.10)
+const total = (m: Map<string, unknown>, k: string): number | undefined => (sessValue(m, k.slice('sess:'.length)) as { sum?: { total: number } } | undefined)?.sum?.total
 const famBase = (): any => ((SL.__stateSnapshot()['famStates'] as Array<[unknown, any]>).find(([fam]) => fam === FAMILIES[0])![1])
 
 const deferred = <T,>() => {
@@ -38,6 +40,7 @@ const fullStand = (persisted = new Map<string, unknown>(), id = 'A'): any => {
       get: async (k: string) => persisted.get(k),
       set: async (k: string, v: unknown) => { persisted.set(k, clone(v)) },
       delete: async (k: string) => { persisted.delete(k) },
+      keys: async () => [...persisted.keys()],
     },
     session: { id: async () => id, turns: async () => 0, cwd: async () => '/work/demo', root: async () => '/work/demo', model: async () => 'live-model', usage: async () => ({}), messages: async () => [] },
     config: { list: async () => [] },
@@ -98,7 +101,7 @@ test('S4F5b Д1 session: a hung session write is retried by the next gather', as
     const $ = fullStand(persisted)
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await new Promise<void>(() => {})
+      if (isSessKey(k, 'A') && ++n === 1) await new Promise<void>(() => {})
       persisted.set(k, clone(v))
     }
     await SL.restoreAfterReload($, {} as never)
@@ -128,7 +131,7 @@ test('S4F5b Д1 farewell: a hung farewell is written once by the next gather', a
     await gather($)
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await new Promise<void>(() => {})
+      if (isSessKey(k, 'A') && ++n === 1) await new Promise<void>(() => {})
       persisted.set(k, clone(v))
     }
     await gather($)
@@ -143,7 +146,8 @@ test('S4F5b Д1 farewell: a hung farewell is written once by the next gather', a
 
 // ---------------------------------------------------------------- Д2
 
-test('S4F5b Д2: a hung write landing late over a newer one is followed by the newest value again', async () => {
+// #551 §3.10: the late landing is a publication of its own below the newer one — it deletes itself, the newest stands
+test('S4F5b Д2: a hung write landing late below a newer one deletes itself and the newest value stands', async () => {
   SL.__resetState()
   try {
     const h = handlers()
@@ -152,7 +156,7 @@ test('S4F5b Д2: a hung write landing late over a newer one is followed by the n
     const gate = deferred<void>()
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await gate.promise
+      if (isSessKey(k, 'A') && ++n === 1) await gate.promise
       persisted.set(k, clone(v))
     }
     await SL.restoreAfterReload($, {} as never)
@@ -180,7 +184,7 @@ test('S4F5b Д2 generation: a flight of the wiped state landing late over the ne
     const gate = deferred<void>()
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await gate.promise
+      if (isSessKey(k, 'A') && ++n === 1) await gate.promise
       persisted.set(k, clone(v))
     }
     await SL.restoreAfterReload($, {} as never)
@@ -216,7 +220,7 @@ test('S4F5b Д2 farewell: a late landing below a waiting farewell leaves it to t
     const gate = deferred<void>()
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await gate.promise
+      if (isSessKey(k, 'A') && ++n === 1) await gate.promise
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('a2', 50), 60500)
@@ -250,20 +254,20 @@ test('S4F5b Д3 newest: a read-back below the landed value puts back the newest 
     await drain()
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
-    const old = clone(persisted.get('sess:A'))
+    const old = clone(sessValue(persisted, 'A'))
     eventInput('turn.complete', tokens('a2', 10), 60500)
     await end(h, $)
     const gate = deferred<void>()
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await gate.promise
+      if (isSessKey(k, 'A') && ++n === 1) await gate.promise
       persisted.set(k, clone(v))
     }
     eventInput('turn.complete', tokens('a3', 5), 61000)
     await end(h, $)
     eventInput('turn.complete', tokens('a4', 1), 61000)
     await end(h, $)
-    persisted.set('sess:A', old)
+    regressSess(persisted, 'A', old)
     await gather($)
     gate.resolve()
     await drain()
@@ -282,18 +286,18 @@ test('S4F5b Д3 (а): a store value regressed from outside is put back by a gath
     await drain()
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
-    const old = clone(persisted.get('sess:A'))
+    const old = clone(sessValue(persisted, 'A'))
     eventInput('turn.complete', tokens('a2', 10), 60500)
     await end(h, $)
     await gather($)
-    persisted.set('sess:A', old)
+    regressSess(persisted, 'A', old)
     await gather($)
     expect(total(persisted, 'sess:A')).toBe(100)
     $.t += 16000
     await gather($)
     expect(total(persisted, 'sess:A')).toBe(110)
     // an absent value is put back the same way
-    persisted.delete('sess:A')
+    dropSess(persisted, 'A')
     $.t += 16000
     await gather($)
     expect(total(persisted, 'sess:A')).toBe(110)
@@ -311,7 +315,7 @@ test('S4F5b Д3 (б): within the window the store is not read back', async () =>
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
     let reads = 0
-    $.store.get = async (k: string) => { if (k === 'sess:A') reads++; return persisted.get(k) }
+    $.store.get = async (k: string) => { if (isSessKey(k, 'A')) reads++; return persisted.get(k) }
     const counts: number[] = []
     await gather($)
     counts.push(reads)
@@ -338,7 +342,7 @@ test('S4F5b Д3 (в): a refused read-back is diagnosed once and not retried in t
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
     let reads = 0
-    $.store.get = async (k: string) => { if (k === 'sess:A') { reads++; throw new Error('store read down') } return persisted.get(k) }
+    $.store.get = async (k: string) => { if (isSessKey(k, 'A')) { reads++; throw new Error('store read down') } return persisted.get(k) }
     await gather($)
     $.t += 16000
     await gather($)
@@ -389,8 +393,8 @@ test('S4F5b Р1 queue order via a non-flushing writer: an old farewell flushed b
     let refuse = false
     let park: { promise: Promise<void> } | null = null
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && refuse) throw new Error('store down')
-      if (k === 'sess:A' && park !== null) { const p = park; park = null; await p.promise }
+      if (isSessKey(k, 'A') && refuse) throw new Error('store down')
+      if (isSessKey(k, 'A') && park !== null) { const p = park; park = null; await p.promise }
       persisted.set(k, clone(v))
     }
     await SL.restoreAfterReload($, {} as never)
@@ -428,7 +432,7 @@ test('S4F5b P1 via a non-flushing writer: a refused farewell never lands over a 
     const $ = fullStand(persisted)
     let refuseA = false
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && refuseA) throw new Error('store down')
+      if (isSessKey(k, 'A') && refuseA) throw new Error('store down')
       persisted.set(k, clone(v))
     }
     await SL.restoreAfterReload($, {} as never)
@@ -461,7 +465,7 @@ test('S4F5b Д5: a watchdog the host never fires is stood in for by the gather-s
     const $ = fullStand(persisted)
     let n = 0
     $.store.set = async (k: string, v: unknown) => {
-      if (k === 'sess:A' && ++n === 1) await new Promise<void>(() => {})
+      if (isSessKey(k, 'A') && ++n === 1) await new Promise<void>(() => {})
       persisted.set(k, clone(v))
     }
     await SL.restoreAfterReload($, {} as never)
@@ -498,13 +502,14 @@ test('S4F5c R4b: a wipe forgets the landed record — the new generation neither
     eventInput('turn.complete', tokens('a1', 100), 60000)
     await end(h, $)
     expect(total(persisted, 'sess:R4B')).toBe(100)
-    persisted.delete('sess:R4B')
+    dropSess(persisted, 'R4B')
     const h2 = handlers()
     const $2 = fullStand(persisted, 'R4B')
     await SL.restoreAfterReload($2, {} as never)
     await drain()
     let reads = 0
-    $2.store.get = async (k: string) => { if (k === 'sess:R4B') reads++; return persisted.get(k) }
+    // CONSTRAINT (AR-2c): T39 counts prune reads; R4b counts landed read-back.
+    $2.store.get = async (k: string) => { if (isSessKey(k, 'R4B') && !SL.__inPrune()) reads++; return persisted.get(k) }
     await gather($2)
     expect({ oldLandedReadBack: reads, oldLandedReput: total(persisted, 'sess:R4B') }).toEqual({ oldLandedReadBack: 0, oldLandedReput: undefined })
     eventInput('turn.complete', tokens('n1', 5), 70000)

@@ -374,10 +374,11 @@ const drain = async (): Promise<void> => {
 // test moves it.
 const timerStand = (): { $: any; gitReads: () => number; nowMs: { n: number } } => {
   const cmds: string[] = []
-  const nowMs = { n: 0 }
+  const nowMs = { n: 1000 }
   const $ = {
     clock: {
       now: async () => nowMs.n,
+      after: () => ({ cancel() {} }),
       every: () => {
         throw new Error('direct clock.every')
       },

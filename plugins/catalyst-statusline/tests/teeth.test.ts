@@ -4,7 +4,7 @@ import base from '../hooks/data/base'
 import {
   buildRegistry, resolveVariantOwner, __renderPicker, __feed, __render, __diag,
 } from '../hooks/statusline'
-import { world, start, command, BAND_MOUNT, PANE_MOUNT, walk, textOf, STORE_OPEN, STORE_DRAFT, SESSION_ID, PANE_ID, HOME, isOpen } from './world'
+import { world, start, command, BAND_MOUNT, PANE_MOUNT, walk, textOf, STORE_OPEN, STORE_DRAFT, SESSION_ID, PANE_ID, HOME, isOpen, draftOf, draftKeys } from './world'
 import type { Node } from './world'
 
 // The 0.5 teeth: the Р5 panel (tabs, pills, preview, bottom), the Р4
@@ -113,14 +113,14 @@ test('Р5: Esc keeps the unsaved draft in the store and it is restored on the ne
   // own plugin instance holds — «Закрыть» runs the same closeKeepDraft there
   await pane.press({ key: 'close' })
   await w.clock.settle()
-  expect(w.persisted.has(STORE_DRAFT + ':' + SESSION_ID)).toBe(true)
+  expect(draftKeys(w.persisted, SESSION_ID).length).toBeGreaterThan(0)
   expect(w.persisted.has(STORE_OPEN)).toBe(false)
   expect(isOpen(w.persisted)).toBe(false)
   await command($)
   await w.clock.settle()
   await pane.unmount()
   const again = await $.ui.mount(PANE_MOUNT)
-  const draft = w.persisted.get(STORE_DRAFT + ':' + SESSION_ID) as { lines: { id: string }[][] }
+  const draft = draftOf(w.persisted, SESSION_ID) as unknown as { lines: { id: string }[][] }
   expect(draft.lines.flat().some((s) => s.id === 'github')).toBe(true)
   expect(await again.find({ key: 'box:el:github' })).toBeDefined()
 })
@@ -304,7 +304,7 @@ test('14.8-17: { deny } from $.config.set is shown in the panel, not gulled', as
 
 test('14.8-18 (Esc path): a reload restores the open panel and its draft from $.store', async ($, on) => {
   world(on, {}, {
-    [STORE_OPEN]: { session: SESSION_ID },
+    [STORE_OPEN]: { session: SESSION_ID, at: Date.now() },
     [STORE_DRAFT]: { session: SESSION_ID, lines: [[{ id: 'cost', body: '{cost.text}' }]], axes: { theme: 'hud' }, elements: {}, focus: null, tab: 'layout', query: '', fam: 'all', targetLine: 0, themeName: '' },
   })
   await start($)

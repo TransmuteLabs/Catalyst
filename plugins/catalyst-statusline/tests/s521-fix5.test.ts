@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
-import { walk, textOf, STORE_DRAFT, STORE_OPEN, STORE_UNDO, STORE_SAVING, STORE_THEMES, openFlags, themeRecords } from './world'
+import { walk, textOf, STORE_DRAFT, STORE_OPEN, STORE_UNDO, STORE_SAVING, STORE_THEMES, openFlags, themeRecords, draftOf as draftIn, fnv64, v3Key, v3Keys, NS_OPEN, NS_DRAFT, NS_UNDO, NS_SAVING, EXT_WRITER } from './world'
 import type { Node } from './world'
 
 // #521 FIX5 teeth (Ч1–Ч4, Ч6–Ч11). CONSTRAINT (s521-fix1 tooth 11): the kit
@@ -136,8 +136,8 @@ const STALE_TREE = 'панель обновлена под текущую сес
 
 // ---------- Ч1: the bare open flag is moved by its own session only ----------
 
-test('#521 FIX5 Ч1: a foreign session leaves the bare open flag alone; the owner moves it to «legacy-<session>», closes, and a late foreign pass brings nothing back', async () => {
-  const bare = { session: 'A', token: 't1' }
+test('#521 FIX5 Ч1: a foreign session leaves the bare open flag alone; the owner adopts it as «legacy-<session>», closes, and a late foreign pass brings nothing back', async () => {
+  const bare = { session: 'A', token: 't1', t: 1 }
   const persisted = new Map<string, unknown>([[STORE_OPEN, bare], [draftKey('A'), { session: 'A', t: 1, ...body([['ctx']]) }]])
   try {
     boot()
@@ -149,10 +149,12 @@ test('#521 FIX5 Ч1: a foreign session leaves the bare open flag alone; the owne
     const $A = standOf(async () => 'A', storeOf(persisted))
     await SL.restoreAfterReload($A, {} as never)
     expect(snap()['pickerOpen']).toBe(true)
-    expect(persisted.has(STORE_OPEN)).toBe(false)
-    expect(openFlags(persisted).map((f) => ({ session: f.session, token: f.token }))).toEqual([{ session: 'A', token: 'legacy-A' }])
+    // #551 D8: the previous version's record is read only; the adoption publishes its copy
+    expect(persisted.get(STORE_OPEN)).toEqual(bare)
+    expect(openFlags(persisted).map((f) => ({ session: f.session, openId: f.openId }))).toEqual([{ session: 'A', openId: 'v1:legacy-A' }])
     await SL.closeKeepDraft($A)
     expect(openFlags(persisted)).toEqual([])
+    expect(persisted.get(STORE_OPEN)).toEqual(bare)
     // B's read of the bare flag landed before A's move: its pass writes nothing
     boot()
     await SL.restoreAfterReload(standOf(async () => 'B', storeOf(persisted, { getAs: (k) => (k === STORE_OPEN ? { value: bare } : undefined) })), {} as never)
@@ -185,23 +187,20 @@ test('#521 FIX5 Ч1: a foreign bare open flag ages out through the prune of an o
 
 // ---------- Ч2: the bare undo array and mark move under fixed ids ----------
 
-test('#521 FIX5 Ч2: a move of the bare undo array and mark whose bare delete is refused repeats onto the same keys', async () => {
-  const persisted = new Map<string, unknown>([
-    [STORE_UNDO, [{ fields: ['numUsd'], prev: { numUsd: 'exact' }, written: { numUsd: 'short' } }]],
-    [STORE_SAVING, { fields: ['numUsd'], values: { numUsd: 'short' } }],
-  ])
-  const store = storeOf(persisted, { refuseDelete: (k) => k === STORE_UNDO || k === STORE_SAVING })
+test('#521 FIX5 Ч2: the bare undo array and mark are read only — every pass reads them alike and writes, moves or deletes nothing of them', async () => {
+  const undo = [{ fields: ['numUsd'], prev: { numUsd: 'exact' }, written: { numUsd: 'short' } }]
+  const mark = { fields: ['numUsd'], values: { numUsd: 'short' } }
+  const persisted = new Map<string, unknown>([[STORE_UNDO, undo], [STORE_SAVING, mark]])
+  let bareDeletes = 0
+  const store = storeOf(persisted, { refuseDelete: (k) => (k === STORE_UNDO || k === STORE_SAVING ? (bareDeletes++, true) : false) })
   try {
-    let first: { undo: string[]; marks: string[] } | null = null
     for (let pass = 1; pass <= 2; pass++) {
       const h = boot()
       await command(h, standOf(async () => 'A', store))
       await drainLong()
-      const keys = { undo: keysWith(persisted, STORE_UNDO), marks: keysWith(persisted, STORE_SAVING) }
-      // #521 FIX6 Р4, FIX6b: the id of a moved record is `legacy-<kind>-<64-bit content hash>`, an undo record's with its occurrence
-      expect({ pass, undo: keys.undo.map((k) => /:legacy-undo-[0-9a-f]{16}-1$/.test(k)), marks: keys.marks.map((k) => /:legacy-mark-[0-9a-f]{16}$/.test(k)) }).toEqual({ pass, undo: [true], marks: [true] })
-      if (first === null) first = keys
-      expect({ pass, keys }).toEqual({ pass, keys: first })
+      // #551 D8: no copy of a read-only record — the mark stands unwritten, the record behind it read in place
+      const keys = { undo: [...keysWith(persisted, STORE_UNDO), ...v3Keys(persisted, NS_UNDO)], marks: [...keysWith(persisted, STORE_SAVING), ...v3Keys(persisted, NS_SAVING)] }
+      expect({ pass, keys, bare: [persisted.get(STORE_UNDO), persisted.get(STORE_SAVING)], bareDeletes, saving: snap()['saving']?.fields }).toEqual({ pass, keys: { undo: [], marks: [] }, bare: [undo, mark], bareDeletes: 0, saving: ['numUsd'] })
     }
   } finally {
     SL.__resetState()
@@ -239,8 +238,8 @@ test('#521 FIX5 Ч3: a panel open eight days is re-stamped by its timer; another
     expect(flagA.length).toBe(1)
     const clockB: Clock = { now: T0 + 8 * DAY, arms: [] }
     await openAt(T0 + 8 * DAY, persisted, clockB, 'B')
-    expect(openFlags(persisted).filter((f) => f.session === 'A').map((f) => f.token)).toEqual([flagA[0]!.token])
-    expect((persisted.get(draftKey('A')) as any)?.axes?.numTokens).toBe('raw')
+    expect(openFlags(persisted).filter((f) => f.session === 'A').map((f) => f.openId)).toEqual([flagA[0]!.openId])
+    expect((draftIn(persisted, 'A') as any)?.axes?.numTokens).toBe('raw')
   } finally {
     SL.__resetState()
   }
@@ -255,10 +254,10 @@ test('#521 FIX5 Ч3: a draft write of the open panel re-stamps its open flag too
     clock.now = T0 + 8 * DAY
     await SL.__pictureReadClock($)
     await pressOn(treeOf('numbers', store, $), 'num:numUsd:short')
-    expect(openFlags(persisted).filter((f) => f.session === 'A').map((f) => f.t)).toEqual([T0 + 8 * DAY])
+    expect(openFlags(persisted).filter((f) => f.session === 'A').map((f) => f.at)).toEqual([T0 + 8 * DAY])
     await openAt(T0 + 8 * DAY, persisted, { now: T0 + 8 * DAY, arms: [] }, 'B')
     expect(openFlags(persisted).filter((f) => f.session === 'A').length).toBe(1)
-    expect((persisted.get(draftKey('A')) as any)?.axes?.numUsd).toBe('short')
+    expect((draftIn(persisted, 'A') as any)?.axes?.numUsd).toBe('short')
   } finally {
     SL.__resetState()
   }
@@ -303,8 +302,8 @@ test('#521 FIX5 Ч3: a panel the reload reopens is re-stamped by its timer too; 
       await drainLong()
     }
     await openAt(T0 + 8 * DAY, persisted, { now: T0 + 8 * DAY, arms: [] }, 'B')
-    expect(openFlags(persisted).filter((f) => f.session === 'A').map((f) => f.token)).toEqual(['t1'])
-    expect((persisted.get(draftKey('A')) as any)?.axes?.numTokens).toBe('raw')
+    expect(openFlags(persisted).filter((f) => f.session === 'A').map((f) => f.openId ?? f.token)).toEqual(['v1:t1'])
+    expect((draftIn(persisted, 'A') as any)?.axes?.numTokens).toBe('raw')
   } finally {
     SL.__resetState()
   }
@@ -317,7 +316,7 @@ test('#521 FIX5 Ч3: the prune of an open keeps the stored draft of the session 
   const clock: Clock = { now: T0, arms: [] }
   try {
     const h = boot()
-    const $ = standOf(async () => 'A', storeOf(persisted, { refuseSet: (k) => k === draftKey('A') }), clock)
+    const $ = standOf(async () => 'A', storeOf(persisted, { refuseSet: (k) => k.startsWith(NS_DRAFT + '.' + fnv64('A') + ':') }), clock)
     await SL.__pictureReadClock($)
     await command(h, $)
     await drainLong()
@@ -330,12 +329,13 @@ test('#521 FIX5 Ч3: the prune of an open keeps the stored draft of the session 
 
 // ---------- Ч4: one store key per theme ----------
 
-test('#521 FIX5 Ч4: the bare theme map moves to one key per theme under legacy ids and the bare key goes', async () => {
+test('#521 FIX5 Ч4: the bare theme map moves to one key per theme under legacy ids and the bare map stays', async () => {
   const persisted = new Map<string, unknown>([[STORE_THEMES, { u1: { palette: 'mono' } }]])
   try {
     boot()
     await SL.restoreAfterReload(standOf(async () => 'A', storeOf(persisted)), {} as never)
-    expect(persisted.has(STORE_THEMES)).toBe(false)
+    // #551 D8: the previous version's record is read only
+    expect(persisted.get(STORE_THEMES)).toEqual({ u1: { palette: 'mono' } })
     // #521 FIX6 Р4, FIX6b: the id of a moved theme is `legacy-<name>-<64-bit content hash>`
     expect(themeRecords(persisted).map((r) => ({ id: /^legacy-u1-[0-9a-f]{16}$/.test(r.id), name: r.name, palette: r['palette'] }))).toEqual([{ id: true, name: 'u1', palette: 'mono' }])
     expect(Object.keys(snap()['userThemes'] as Record<string, unknown>)).toEqual(['u1'])
@@ -432,7 +432,7 @@ test('#521 FIX5 Ч6: a pane drawn while /statusline-mod opens says «откры�
     idHold = null
     await opening
     await drainLong()
-    expect((persisted.get(draftKey('A')) as any)?.axes?.numTokens).toBe('raw')
+    expect((draftIn(persisted, 'A') as any)?.axes?.numTokens).toBe('raw')
     expect(snap()['draft']?.axes?.numTokens).toBe('raw')
     expect(snap()['pickerOpen']).toBe(true)
   } finally {
@@ -457,11 +457,11 @@ test('#521 FIX5 Ч6: a press on a tree drawn while /statusline-mod opened change
     idHold = null
     await opening
     await drainLong()
-    const storedA = JSON.stringify(persisted.get(draftKey('A')))
+    const storedA = JSON.stringify(draftIn(persisted, 'A'))
     const live = JSON.stringify(snap()['draft'])
     await pressOn(stale, 'num:numUsd:short')
     expect(snap()['saveResult']).toBe(STALE_TREE)
-    expect(JSON.stringify(persisted.get(draftKey('A')))).toBe(storedA)
+    expect(JSON.stringify(draftIn(persisted, 'A'))).toBe(storedA)
     expect(JSON.stringify(snap()['draft'])).toBe(live)
     expect(snap()['draft']?.axes?.numTokens).toBe('raw')
   } finally {
@@ -473,16 +473,19 @@ test('#521 FIX5 Ч6: a press on a tree drawn while /statusline-mod opened change
 
 test('#521 FIX5 Ч7: a restore inside the open, with the session changed A→B, leaves the panel open and B\'s stored draft as it was', async () => {
   const storedB = { session: 'B', t: 1, ...body([['ver']], { numTokens: 'compact' }) }
-  const persisted = new Map<string, unknown>([[draftKey('A'), { session: 'A', t: 1, ...body([['ctx']], { numTokens: 'raw' }) }], [draftKey('B'), storedB]])
+  // an empty bare undo array: the open lists it and its read is the await held
+  const persisted = new Map<string, unknown>([[draftKey('A'), { session: 'A', t: 1, ...body([['ctx']], { numTokens: 'raw' }) }], [draftKey('B'), storedB], [STORE_UNDO, []]])
   let session = 'A'
   let undoHold: Gate | null = null
+  let held = 0
   try {
     const h = boot()
-    const $ = standOf(async () => session, storeOf(persisted, { holdGet: (k) => (k === STORE_UNDO && undoHold ? undoHold.p : undefined) }))
+    const $ = standOf(async () => session, storeOf(persisted, { holdGet: (k) => (k === STORE_UNDO && undoHold ? (held++, undoHold.p) : undefined) }))
     undoHold = gate()
     const opening = command(h, $)
     await drainLong()
     expect(snap()['draft']?.axes?.numTokens).toBe('raw')
+    expect(held).toBe(1)
     session = 'B'
     await SL.restoreAfterReload($, {} as never)
     ;(undoHold as Gate).open()
@@ -490,6 +493,7 @@ test('#521 FIX5 Ч7: a restore inside the open, with the session changed A→B, 
     await opening
     await drainLong()
     expect(persisted.get(draftKey('B'))).toEqual(storedB)
+    expect(v3Keys(persisted, NS_DRAFT, 'B')).toEqual([])
     expect(snap()['pickerOpen']).toBe(true)
   } finally {
     SL.__resetState()
@@ -517,10 +521,14 @@ test('#521 FIX5 Ч7: a restore that finds the session changed and no draft of it
 
 // ---------- Ч8: a refused flag write leaves no flag of this state behind ----------
 
+// open T1 is another environment's publication of this version, adopted by the restore
 const openInA = async (session: { id: string }, persisted: Map<string, unknown>, store: StoreStand): Promise<any> => {
-  persisted.set(STORE_OPEN + ':t1', { session: 'A', token: 't1', t: 1 })
+  persisted.set(v3Key(NS_OPEN, 'A', EXT_WRITER, 1), { session: 'A', openId: 't1', e: 0, n: 1, at: 1 })
   persisted.set(draftKey('A'), { session: 'A', t: 1, ...body([['ctx']], { numTokens: 'raw' }) })
   const $ = standOf(async () => session.id, store)
+  // CONSTRAINT (#551 §3 ticket): the restore's epoch record is its first ticket and precedes its first clock
+  // read — the stand clock is read first, so the flags of A are stamped on the clock the reload judges them by
+  await SL.__pictureReadClock($)
   await SL.restoreAfterReload($, {} as never)
   SL.__render({})
   await SL.__refresh($)
@@ -532,7 +540,7 @@ const openInA = async (session: { id: string }, persisted: Map<string, unknown>,
 test('#521 FIX5 Ч8: open T1, a rebind whose T2 write is refused, a close — the reload in A does not open the panel', async () => {
   const persisted = new Map<string, unknown>()
   let refuse = false
-  const store = storeOf(persisted, { refuseSet: (k) => refuse && k.startsWith(STORE_OPEN + ':') })
+  const store = storeOf(persisted, { refuseSet: (k) => refuse && k.startsWith(NS_OPEN) })
   try {
     SL.__resetState()
     const session = { id: 'A' }
@@ -557,7 +565,7 @@ test('#521 FIX5 Ч8: open T1, a rebind whose T2 write is refused, a close — th
 test('#521 FIX5 Ч8: a refused flag write whose old-flag delete is refused too says the reload may open the old session\'s panel', async () => {
   const persisted = new Map<string, unknown>()
   let refuse = false
-  const store = storeOf(persisted, { refuseSet: (k) => refuse && k.startsWith(STORE_OPEN + ':'), refuseDelete: (k) => refuse && k.startsWith(STORE_OPEN + ':') })
+  const store = storeOf(persisted, { refuseSet: (k) => refuse && k.startsWith(NS_OPEN), refuseDelete: (k) => refuse && k.startsWith(NS_OPEN) })
   try {
     SL.__resetState()
     const session = { id: 'A' }
@@ -566,7 +574,7 @@ test('#521 FIX5 Ч8: a refused flag write whose old-flag delete is refused too s
     session.id = 'B'
     await SL.__refresh($)
     await drainLong()
-    expect(SL.__diag().filter((d) => d.key === 'picker-open-flag').map((d) => d.text.endsWith('перезагрузка может открыть панель прежней сессии; флаг устареет за 7 дней'))).toEqual([true])
+    expect(SL.__diag().filter((d) => d.key === 'picker-open-flag').map((d) => d.text.endsWith('перезагрузка может открыть панель прежней сессии; флаг перестаёт открывать панель через 3 суток после последней записи и удаляется при открытии панели, кроме записей сессии, чья панель сейчас открыта'))).toEqual([true])
   } finally {
     SL.__resetState()
   }
@@ -575,7 +583,7 @@ test('#521 FIX5 Ч8: a refused flag write whose old-flag delete is refused too s
 test('#521 FIX5 Ч8: the close deletes the flags of every token of this state — the T1 left by a refused delete goes at the close, and the reload in A does not open the panel', async () => {
   const persisted = new Map<string, unknown>()
   let refuse = false
-  const store = storeOf(persisted, { refuseSet: (k) => refuse && k.startsWith(STORE_OPEN + ':'), refuseDelete: (k) => refuse && k.startsWith(STORE_OPEN + ':') })
+  const store = storeOf(persisted, { refuseSet: (k) => refuse && k.startsWith(NS_OPEN), refuseDelete: (k) => refuse && k.startsWith(NS_OPEN) })
   try {
     SL.__resetState()
     const session = { id: 'A' }
@@ -584,7 +592,7 @@ test('#521 FIX5 Ч8: the close deletes the flags of every token of this state �
     session.id = 'B'
     await SL.__refresh($)
     await drainLong()
-    expect(openFlags(persisted).map((f) => f.token)).toEqual(['t1'])
+    expect(openFlags(persisted).map((f) => f.openId)).toEqual(['t1'])
     refuse = false
     await SL.closeKeepDraft($)
     expect(openFlags(persisted)).toEqual([])
@@ -601,7 +609,7 @@ test('#521 FIX5 Ч8: the close deletes the flags of every token of this state �
 test('#521 FIX5 Ч9: a pending draft older than the stored draft of its session is dropped aloud, the stored one stays', async () => {
   const persisted = new Map<string, unknown>()
   let refuse = false
-  const store = storeOf(persisted, { refuseSet: (k) => refuse && k === draftKey('A') })
+  const store = storeOf(persisted, { refuseSet: (k) => refuse && k.startsWith(NS_DRAFT + '.' + fnv64('A') + ':') })
   try {
     SL.__resetState()
     const session = { id: 'A' }
@@ -612,10 +620,11 @@ test('#521 FIX5 Ч9: a pending draft older than the stored draft of its session 
     await drainLong()
     expect(snap()['pickerSession']).toBe('B')
     refuse = false
-    const newer = { session: 'A', t: 9000, ...body([['ver']]) }
+    // past every stamp of this environment, whatever clock stamped it
+    const newer = { session: 'A', t: Date.now() + 60000, ...body([['ver']]) }
     persisted.set(draftKey('A'), newer)
     await pressOn(treeOf('numbers', store, $), 'num:numUsd:short')
-    expect(persisted.get(draftKey('A'))).toEqual(newer)
+    expect(draftIn(persisted, 'A')).toEqual(newer)
     expect(SL.__diag().some((d) => d.key === 'picker-draft-superseded')).toBe(true)
     expect(snap()['pendingDrafts']).toEqual([])
   } finally {
@@ -625,21 +634,23 @@ test('#521 FIX5 Ч9: a pending draft older than the stored draft of its session 
 
 // ---------- Ч10: the bare slot is removed only when it is the writer's ----------
 
-test('#521 FIX5 Ч10: the unfinished slot move removes the bare slot only when it still names the writing session', async () => {
-  const persisted = new Map<string, unknown>([[STORE_OPEN + ':t1', { session: 'A', token: 't1', t: 1 }], [STORE_DRAFT, { session: 'A', ...body([['ctx']]) }]])
-  let refuse = true
-  const store = storeOf(persisted, { refuseDelete: (k) => refuse && k === STORE_DRAFT })
+test('#521 FIX5 Ч10: the bare slot is read only — its copy lands under this version, and the slot stays whatever session it names', async () => {
+  const slot = { session: 'A', ...body([['ctx']]) }
+  const persisted = new Map<string, unknown>([[STORE_OPEN + ':t1', { session: 'A', token: 't1', t: 1 }], [STORE_DRAFT, slot]])
+  let slotDeletes = 0
+  const store = storeOf(persisted, { refuseDelete: (k) => (k === STORE_DRAFT ? (slotDeletes++, true) : false) })
   try {
     SL.__resetState()
     const $ = standOf(async () => 'A', store)
     await SL.restoreAfterReload($, {} as never)
-    expect(snap()['slotMovePending']).toBe('A')
+    expect(v3Keys(persisted, NS_DRAFT, 'A').length).toBe(1)
+    expect(persisted.get(STORE_DRAFT)).toEqual(slot)
     const foreign = { session: 'C', t: 7, ...body([['ver']]) }
     persisted.set(STORE_DRAFT, foreign)
-    refuse = false
     await pressOn(treeOf('numbers', store, $), 'num:numUsd:short')
     expect(persisted.get(STORE_DRAFT)).toEqual(foreign)
-    expect((persisted.get(draftKey('A')) as any)?.axes?.numUsd).toBe('short')
+    expect(slotDeletes).toBe(0)
+    expect((draftIn(persisted, 'A') as any)?.axes?.numUsd).toBe('short')
   } finally {
     SL.__resetState()
   }

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import * as SL from '../hooks/statusline'
 import type { Source } from '../hooks/data/types'
-import { world, start, command, BAND_MOUNT, PANE_MOUNT, walk, textOf, barText, SESSION_ID, STORE_OPEN, STORE_DRAFT, STORE_SAVING, saveMarks } from './world'
+import { world, start, command, BAND_MOUNT, PANE_MOUNT, walk, textOf, barText, SESSION_ID, STORE_OPEN, STORE_DRAFT, STORE_SAVING, saveMarks, v3Keys, NS_SAVING } from './world'
 import type { Node } from './world'
 
 // S2: the fifteen teeth of the 0.4 tree (ef5bafc) whose census class is NONE
@@ -279,14 +279,15 @@ test('S2 #25: the in-flight save mark clears on matching options and names the u
   try {
     const persisted = new Map<string, unknown>([[STORE_SAVING, { fields: ['template'], values: { template: 'one={model.text}' } }]])
     await SL.restoreAfterReload(standDollar(persisted), { template: 'one={model.text}' } as never)
-    // #521 FIX4 Ф3: the bare mark moves to its key; a judged-clean mark leaves no key
-    expect(persisted.has(STORE_SAVING)).toBe(false)
+    // #551 D8: the bare mark is read only — a judged-clean one stays, hidden by the done record naming it
+    expect(persisted.has(STORE_SAVING)).toBe(true)
+    expect(v3Keys(persisted, NS_SAVING).map((k) => (persisted.get(k) as { src?: unknown; done?: unknown })).map((v) => [v.src, v.done])).toEqual([[STORE_SAVING, true]])
     expect(saveMarks(persisted)).toEqual([])
     expect(SL.__diag().some((d) => d.key === 'save-unwritten')).toBe(false)
 
-    persisted.set(STORE_SAVING, { fields: ['template'], values: { template: 'one={model.text}' } })
+    persisted.set(STORE_SAVING, { saveId: 'later', t: 1, fields: ['template'], values: { template: 'one={model.text}' } })
     await SL.restoreAfterReload(standDollar(persisted), {} as never)
-    expect(persisted.has(STORE_SAVING)).toBe(false)
+    expect(persisted.has(STORE_SAVING)).toBe(true)
     expect(saveMarks(persisted).map((m) => m.fields)).toEqual([['template']])
     expect(SL.__diag().some((d) => d.text.includes('fields not written: template'))).toBe(true)
   } finally {
@@ -296,7 +297,7 @@ test('S2 #25: the in-flight save mark clears on matching options and names the u
 
 test('S2 #26: a draft literal holding a reserved token is refused aloud by Save', async ($, on) => {
   const w = world(on, {}, {
-    [STORE_OPEN]: { session: SESSION_ID },
+    [STORE_OPEN]: { session: SESSION_ID, at: Date.now() },
     [STORE_DRAFT]: { session: SESSION_ID, lines: [[{ id: 'ok', body: '{model.text}' }, { id: 'lit', body: 'a||b' }]], axes: {}, elements: {}, focus: null, tab: 'layout', query: '', fam: 'all', targetLine: 0, themeName: '' },
   })
   await start($)
