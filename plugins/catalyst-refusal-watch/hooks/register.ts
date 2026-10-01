@@ -1,6 +1,173 @@
 export const RULE_TEXT =
   "Если ответ был остановлен фильтром сервиса (в разговоре пометка об остановке ответа или результаты вызовов «Not run: … stopped by a safety classifier»): 1) первой строкой следующего ответа сообщи пользователю, что ответ был остановлен, какие действия не выполнены и какая линия работы затронута; 2) не останавливай фоновые задачи и агентов и не прекращай линию работы по своей инициативе — решение о продолжении, изменении задачи или остановке принимает пользователь."
 
+// CONSTRAINT: RULE_TEXT, REFUSAL_RULE and RULE_TEXT_SPLICE_SHA256 must agree byte-for-byte.
+export const RULE_TEXT_SPLICE_SHA256 = "4db6139512a61d07f935e0c3b95b6b97f61ab98ed96b2037c40ec9bc27b8b65f"
+
+const MOD_NAME = "catalyst-refusal-watch"
+let moduleGeneration = 0
+
+type Environment569 = {
+  generation: number
+  started: boolean
+  passportCovered: boolean
+  seatProbePending: boolean
+  seatProbeSeen: boolean
+  seatProbeResult: "unknown" | "seated" | "unseated" | "unconfirmed"
+  diagnosed: Set<string>
+}
+
+let snapshotState569: Environment569 | null = null
+
+// CONSTRAINT: шов стенда отдаёт копию состояния окружения, не его изменяемые latch'и.
+export function __snapshot569(): any {
+  return snapshotState569 == null ? null : { ...snapshotState569, diagnosed: [...snapshotState569.diagnosed] }
+}
+
+function current569(state: Environment569): boolean {
+  return state.generation === moduleGeneration
+}
+
+// CONSTRAINT: чтение свойств пойманного значения не бросает: отказ чтения не меняет классификацию.
+function errno569(x: any): string | null {
+  try {
+    if (typeof x?.code === "string") return /^E[A-Z0-9]{1,15}$/.test(x.code) ? x.code : null
+    const tail = strOf(x?.message ?? x).split(": ").pop() ?? ""
+    return tail.match(/\b(E[A-Z0-9]{1,15})\s*$/)?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
+// CONSTRAINT: экранируются и точки Cf; астральная точка — обе единицы UTF-16, чтобы JSON.parse восстанавливал исходник.
+function escapeUnit569(point: string): string {
+  let out = ""
+  for (let i = 0; i < point.length; i++) out += "\\u" + point.charCodeAt(i).toString(16).padStart(4, "0")
+  return out
+}
+
+function raw569(value: any): string {
+  const points = Array.from(strOf(value))
+  const quoted = JSON.stringify(points.slice(0, 80).join(""))
+  const escaped = quoted.replace(/[\x7f-\x9f\u{2028}\u{2029}\p{Cf}]/gu, escapeUnit569)
+  return escaped + (points.length > 80 ? "…" : "")
+}
+
+// CONSTRAINT: only module-composed diagnostics use this marker; embedded external values are formatted with raw569 first.
+class OwnMessage569 extends Error {}
+
+function error569(x: any): string {
+  try {
+    if (x instanceof OwnMessage569) return x.message
+    return raw569(x?.message ?? x)
+  } catch {
+    // CONSTRAINT: бросок чтения чужого исключения — собственный литерал в OwnMessage569, не наружу.
+    return new OwnMessage569("<unreadable exception>").message
+  }
+}
+
+async function diagnose569($: any, state: Environment569, key: string, text: string, cause?: any, reason = errno569(cause) ?? "error"): Promise<void> {
+  if (!current569(state)) return
+  const prefix = key + ":"
+  if (!state.diagnosed.has(prefix + reason) && [...state.diagnosed].filter((entry) => entry.startsWith(prefix) && entry !== prefix + "other").length >= 8) reason = "other"
+  const latch = key + ":" + reason
+  if (state.diagnosed.has(latch)) return
+  state.diagnosed.add(latch)
+  try {
+    await $.ui.log(text)
+  } catch (x) {
+    if (!current569(state)) return
+    try {
+      await $.ui.log("[569] " + MOD_NAME + ": канал " + key + " не сработал: " + error569(x), { to: "debug" })
+    } catch {
+      // CONSTRAINT: отказ обоих каналов не выходит из наблюдателя и не прерывает цепочку.
+    }
+  }
+}
+
+async function enabled569($: any, state: Environment569): Promise<boolean> {
+  try {
+    const raw = await $.env.get("CLAUDE_REFUSAL_WATCH")
+    if (!current569(state)) return false
+    const value = String(raw ?? "").trim().toLowerCase()
+    if (["1", "true", "yes", "on"].includes(value)) return true
+    if (!["", "0", "false", "no", "off"].includes(value)) {
+      await diagnose569($, state, "env", "[569] " + MOD_NAME + ": неизвестное значение CLAUDE_REFUSAL_WATCH=" + raw569(raw), undefined, "value")
+    }
+  } catch (x) {
+    await diagnose569($, state, "env", "[569] " + MOD_NAME + ": отказ чтения CLAUDE_REFUSAL_WATCH: " + error569(x), x)
+  }
+  return false
+}
+
+function absent569(x: any): boolean {
+  return errno569(x) === "ENOENT"
+}
+
+async function delivery569($: any, state: Environment569, enabled: boolean): Promise<void> {
+  if (enabled && state.seatProbeResult === "seated") {
+    const uncovered = state.passportCovered ? "нет" : "RULE_TEXT (prompt.context)"
+    const covered = state.passportCovered ? "RULE_TEXT" : "нет"
+    await diagnose569($, state, "D4", "[569] " + MOD_NAME + ": user tier обойдён организационным sec-default; не доставлены " + uncovered + "; системный носитель подтверждён для " + covered + ".")
+  }
+}
+
+async function passport569($: any, state: Environment569): Promise<void> {
+  let version = "?"
+  try {
+    const info = await $.session.version()
+    if (!current569(state)) return
+    version = info.version
+    const home = await $.env.get("HOME")
+    if (!current569(state)) return
+    if (typeof version !== "string" || !version || version === "." || version === ".." || /[\/\x00-\x1f\x7f-\x9f]/.test(version)) throw new OwnMessage569("invalid version segment")
+    if (typeof home !== "string" || !home.startsWith("/")) throw new OwnMessage569("HOME invalid")
+    const root = home.replace(/\/$/, "")
+    const dir = root + "/.local/share/catalyst-cc/passports/"
+    let entries: any[]
+    try {
+      entries = await $.fs.list(dir)
+    } catch (x) {
+      if (!current569(state)) return
+      if (absent569(x)) return
+      throw x
+    }
+    if (!current569(state)) return
+    const prefix = version + "-"
+    const names = entries.map((entry) => entry.name).filter((name) =>
+      typeof name === "string" && name.startsWith(prefix) && /^[a-z0-9_]+\.json$/.test(name.slice(prefix.length)),
+    )
+    if (names.length === 0) return
+    if (names.length > 1) {
+      await diagnose569($, state, "passport-ambiguous", "[569] passport-ambiguous " + raw569(version))
+      return
+    }
+    const raw = await $.fs.read(dir + names[0])
+    if (!current569(state)) return
+    const record = JSON.parse(raw)
+    const platform = names[0].slice(prefix.length, -5)
+    if (record?.version !== version || record?.platform !== platform) throw new OwnMessage569("passport version/platform mismatch")
+    if (record.step26?.applied !== true || record.step26?.rule_sha256 !== RULE_TEXT_SPLICE_SHA256) return
+    let stat: any
+    try {
+      stat = await $.fs.stat(root + "/.local/share/claude/versions/" + version)
+    } catch (x) {
+      if (!current569(state)) return
+      if (!absent569(x)) throw x
+      await diagnose569($, state, "passport-stale", "[569] passport-stale " + raw569(version), x)
+      return
+    }
+    if (!current569(state)) return
+    if (stat.kind !== "file" || stat.size !== record.size || !Number.isSafeInteger(record.size) || record.size < 0 || !Number.isSafeInteger(stat.size) || stat.size < 0 || !Number.isFinite(record.mtime_ms) || !Number.isFinite(stat.mtimeMs) || !(Math.abs(stat.mtimeMs - record.mtime_ms) <= 1)) {
+      await diagnose569($, state, "passport-stale", "[569] passport-stale " + raw569(version))
+      return
+    }
+    state.passportCovered = true
+  } catch (x) {
+    await diagnose569($, state, "passport-read", "[569] " + MOD_NAME + ": passport-read " + raw569(version) + ": " + error569(x), x)
+  }
+}
+
 const WINDOW_MS = 30 * 60 * 1000
 const STORE_MAX = 100
 const STORE_WAIT_MS = 5000
@@ -116,11 +283,11 @@ function fieldTry($: any, o: any, name: string): [boolean, any] {
   } catch (x) {
     let why: string
     try {
-      why = strOf((x as any)?.message ?? x)
+      why = error569(x)
     } catch {
       why = "?"
     }
-    reportChannelFailure($, "event", new Error(name + ": " + why))
+    reportChannelFailure($, "event", new OwnMessage569(name + ": " + why))
     return [false, undefined]
   }
 }
@@ -129,24 +296,25 @@ function fieldOf($: any, o: any, name: string): any {
   return fieldTry($, o, name)[1]
 }
 
+// CONSTRAINT: каждое внешнее поле события проходит raw569 до любого вывода интерфейса (toast/log/status).
 export function formatAlert(info: any): string {
   if (info?.via === "step") {
     const names =
-      Array.isArray(info.tools) && info.tools.length > 0 ? info.tools.map(strOf).join(", ") : "вызовов нет"
-    let text = "⚠ Ответ оборван фильтром сервиса · " + strOf(info.model)
-    if (info.agentId) text += " · агент " + strOf(info.agentId)
+      Array.isArray(info.tools) && info.tools.length > 0 ? info.tools.map(raw569).join(", ") : "вызовов нет"
+    let text = "⚠ Ответ оборван фильтром сервиса · " + raw569(info.model)
+    if (info.agentId) text += " · агент " + raw569(info.agentId)
     return text + " · не выполнено: " + names
   }
   if (info?.via === "complete") {
     let text = "⚠ Ход завершён отказом фильтра без повтора"
-    if (info.category != null) text += " · категория " + strOf(info.category)
-    if (info.agentId) text += " · агент " + strOf(info.agentId)
+    if (info.category != null) text += " · категория " + raw569(info.category)
+    if (info.agentId) text += " · агент " + raw569(info.agentId)
     return text
   }
   return (
     "⚠ После обрыва фильтром остановлена фоновая задача " +
-    strOf(info.taskId) +
-    (info.agentId ? " (остановил агент " + strOf(info.agentId) + ")" : "") +
+    raw569(info.taskId) +
+    (info.agentId ? " (остановил агент " + raw569(info.agentId) + ")" : "") +
     " — проверь, что это было одобрено"
   )
 }
@@ -185,7 +353,7 @@ function recordOf(info: any, now: number): any {
 function reportChannelFailure($: any, name: string, x: any): void {
   try {
     $.ui.log(
-      "catalyst-refusal-watch: канал " + name + " не сработал: " + String(x?.message ?? x),
+      "catalyst-refusal-watch: канал " + name + " не сработал: " + error569(x),
       { to: "debug" },
     )
   } catch {
@@ -199,7 +367,7 @@ function wallOf($: any): number {
   try {
     const t = wall()
     if (typeof t === "number" && Number.isFinite(t)) return t
-    reportChannelFailure($, "clock", new Error("местное время не число: " + strOf(t)))
+    reportChannelFailure($, "clock", new OwnMessage569("местное время не число: " + raw569(t)))
     return Number.NaN
   } catch (x) {
     reportChannelFailure($, "clock", x)
@@ -211,7 +379,7 @@ async function nowOf($: any, fallback: () => number = () => wallOf($)): Promise<
   try {
     const t = await $.clock.now()
     if (typeof t === "number" && Number.isFinite(t)) return t
-    reportChannelFailure($, "clock", new Error("не число: " + String(t)))
+    reportChannelFailure($, "clock", new OwnMessage569("не число: " + raw569(t)))
   } catch (x) {
     reportChannelFailure($, "clock", x)
   }
@@ -366,8 +534,8 @@ async function alert($: any, info: any, born: number, signal?: any): Promise<voi
     }
     try {
       const where: string[] = []
-      if (info.turnId != null) where.push("turn " + strOf(info.turnId))
-      if (info.step != null) where.push("step " + strOf(info.step))
+      if (info.turnId != null) where.push("turn " + raw569(info.turnId))
+      if (info.step != null) where.push("step " + raw569(info.step))
       $.ui.log(where.length > 0 ? text + " [" + where.join(", ") + "]" : text)
     } catch (x) {
       reportChannelFailure($, "log", x)
@@ -377,7 +545,7 @@ async function alert($: any, info: any, born: number, signal?: any): Promise<voi
     if (born === epoch) {
       // CONSTRAINT: сведённый `complete` — тот же обрыв, что уже объявил шаг его хода: счёт, окно и «последний» он не трогает.
       if (counts && !same) {
-        const model = info.model ? " " + strOf(info.model) : ""
+        const model = info.model ? " " + raw569(info.model) : ""
         if (Number.isFinite(now)) {
           knownEnd = knownEnd === null ? now + WINDOW_MS : Math.max(knownEnd, now + WINDOW_MS)
           if (mark != null && mark > knownMarkMax) knownMarkMax = mark
@@ -418,7 +586,7 @@ async function alert($: any, info: any, born: number, signal?: any): Promise<voi
       reportChannelFailure(
         $,
         "store",
-        new Error("запись дольше " + STORE_WAIT_MS + " мс; продолжается в фоне"),
+        new OwnMessage569("запись дольше " + STORE_WAIT_MS + " мс; продолжается в фоне"),
       )
     } else if (outcome === "aborted" || outcome === "released") {
       const a = abortedOf(signal)
@@ -431,7 +599,7 @@ async function alert($: any, info: any, born: number, signal?: any): Promise<voi
       reportChannelFailure(
         $,
         "store",
-        new Error("ожидание записи снято " + why + "; запись не подтверждена"),
+        new OwnMessage569("ожидание записи снято " + why + "; запись не подтверждена"),
       )
     }
   } catch (x) {
@@ -506,6 +674,61 @@ function stoppedOk($: any, r: any): boolean {
 }
 
 export function register(on: any): void {
+  const state: Environment569 = {
+    generation: ++moduleGeneration,
+    started: false,
+    passportCovered: false,
+    seatProbePending: false,
+    seatProbeSeen: false,
+    seatProbeResult: "unknown",
+    diagnosed: new Set(),
+  }
+  snapshotState569 = state
+
+  on("settings.read", ($: any, e: any, next: any) => {
+    if (current569(state) && state.seatProbePending && next.origin?.plugin === MOD_NAME) state.seatProbeSeen = true
+    return next(e)
+  })
+
+  on("session.start", async ($: any, e: any, next: any) => {
+    const generation = state.generation
+    if (state.started || !current569(state)) return next(e)
+    state.started = true
+    await passport569($, state)
+    if (generation !== moduleGeneration) return next(e)
+    const enabled = await enabled569($, state)
+    if (generation !== moduleGeneration) return next(e)
+    state.seatProbePending = true
+    state.seatProbeSeen = false
+    try {
+      await $.settings.read()
+      if (generation !== moduleGeneration) return next(e)
+      state.seatProbePending = false
+      state.seatProbeResult = state.seatProbeSeen ? "unseated" : "seated"
+      await delivery569($, state, enabled)
+      if (generation !== moduleGeneration) return next(e)
+    } catch (x) {
+      if (generation !== moduleGeneration) return next(e)
+      state.seatProbePending = false
+      state.seatProbeResult = "unconfirmed"
+      await diagnose569($, state, "D4", "[569] " + MOD_NAME + ": доставка не подтверждена наблюдением: " + error569(x), x)
+      if (generation !== moduleGeneration) return next(e)
+    }
+    return next(e)
+  })
+
+  on("turn.start", async ($: any, e: any, next: any) => {
+    if (!current569(state)) return next(e)
+    try {
+      const enabled = await enabled569($, state)
+      if (current569(state)) await delivery569($, state, enabled)
+    } catch (x) {
+      if (current569(state)) reportChannelFailure($, "turn.start", x)
+    }
+    if (!current569(state)) return next(e)
+    return next(e)
+  })
+
   // CONSTRAINT: turn.step стримит — обычная async-функция роняет загрузку
   // всего модуля (хост требует async function*). next() бывает генератором
   // или готовым значением; неготовое к итерации возвращается как есть.
@@ -640,19 +863,25 @@ export function register(on: any): void {
     const r = await next(_e)
     try {
       const src = Array.isArray(r?.blocks) ? r.blocks : []
+      const enabled = await enabled569($, state)
+      if (!current569(state) || !enabled) return r
+      const canonical = src.some((b: any) => typeof b?.text === "string" && b.text.indexOf(RULE_TEXT) !== -1)
+      const insert = enabled && !state.passportCovered && !canonical
+      const own = src.filter((b: any) => b != null && b.name === "refusalHandling")
+      const kept = own.find((b: any) => typeof b.text === "string" && b.text.indexOf(RULE_TEXT) !== -1) ?? own[0]
       const blocks: any[] = []
       let placed = false
       for (const b of src) {
         if (b != null && b.name === "refusalHandling") {
           if (!placed) {
-            blocks.push({ ...b, name: "refusalHandling", text: RULE_TEXT })
+            if (insert || (typeof kept?.text === "string" && kept.text.indexOf(RULE_TEXT) !== -1)) blocks.push(insert ? { ...kept, name: "refusalHandling", text: RULE_TEXT } : kept)
             placed = true
           }
         } else {
           blocks.push(b)
         }
       }
-      if (!placed) blocks.push({ name: "refusalHandling", text: RULE_TEXT })
+      if (insert && !placed) blocks.push({ name: "refusalHandling", text: RULE_TEXT })
       return { ...r, blocks }
     } catch (x) {
       reportChannelFailure($, "context", x)

@@ -51,6 +51,7 @@ function make$(o?: {
   let clockCalls = 0
   let fixedNow: number | undefined
   const $ = {
+    env: { async get(name: string) { return name === "CLAUDE_REFUSAL_WATCH" ? "on" : undefined } },
     ui: {
       toast(text: string, options?: any) {
         if (o?.toastThrows) throw new Error("toast-boom")
@@ -218,14 +219,14 @@ test("T1 step refusal: toast, status, log, store", async () => {
   expect(out.chunks.length, "three chunks yielded").toBe(3)
   expect(env.toast.length, "toast is delivered once").toBe(1)
   expect(env.toast[0][0], "toast names the filter stop").toContain("оборван фильтром")
-  expect(env.toast[0][0], "toast names the tools that did not run").toContain("Bash, Edit")
+  expect(env.toast[0][0], "toast names the tools that did not run").toContain('"Bash", "Edit"')
   expect(env.toast[0][0], "toast names the model").toContain("opus-test")
-  expect(env.toast[0][0], "toast names the agent when present").toContain("агент agent-7")
+  expect(env.toast[0][0], "toast names the agent when present").toContain('агент "agent-7"')
   expect(env.toast[0][1], "toast stays 20s").toEqual({ timeoutMs: 20000 })
   expect(env.status.length, "status is set").toBe(1)
   expect(env.status[0], "status counts the stop").toContain("обрывов фильтром за сессию: 1")
   expect(env.log.some((row: any) => String(row[0]).includes("turn")), "log names the turn").toBe(true)
-  expect(env.log.some((row: any) => String(row[0]).includes("step 4")), "log names the step").toBe(true)
+  expect(env.log.some((row: any) => String(row[0]).includes("step \"4\"")), "log names the step").toBe(true)
   const recs = env.journal()
   expect(recs.length, "store received one record").toBe(1)
   expect(recs[0].tools, "store record lists the tool names").toEqual(["Bash", "Edit"])
@@ -294,8 +295,8 @@ test("T4 turn.complete refusal names the category", async () => {
   )
   expect(out, "next's result is returned unchanged").toBe(sentinel)
   expect(env.toast.length, "complete toasts once").toBe(1)
-  expect(env.toast[0][0], "toast names the category").toContain("категория cyber")
-  expect(env.toast[0][0], "toast names the agent").toContain("агент agent-4")
+  expect(env.toast[0][0], "toast names the category").toContain('категория "cyber"')
+  expect(env.toast[0][0], "toast names the agent").toContain('агент "agent-4"')
   const rec = env.journal()[0]
   expect(rec.category, "store keeps the category").toBe("cyber")
   expect(rec.explanation, "explanation is capped at 200").toBe("e".repeat(200))
@@ -471,7 +472,7 @@ test("T12 log line omits absent turn/step instead of printing undefined", async 
   const lines = env.log.filter((row: any) => row[1] === undefined).map((row: any) => String(row[0]))
   expect(lines.length, "complete and taskstop both log").toBe(2)
   expect(lines.some((l: string) => l.includes("undefined")), "no undefined in transcript log").toBe(false)
-  expect(lines[0], "complete log keeps its turn").toContain("[turn turn-12]")
+  expect(lines[0], "complete log keeps its turn").toContain('[turn "turn-12"]')
   expect(lines[1].includes("["), "taskstop log carries no empty bracket").toBe(false)
 })
 
@@ -661,7 +662,7 @@ test("T19 TaskStop alerts only after a successful stop and names the agent", asy
   expect(outOk, "success result is returned").toBe(ok)
   expect(taskToasts().length, "a successful stop toasts once").toBe(1)
   expect(taskToasts()[0][0], "toast names the task").toContain("bg-19")
-  expect(taskToasts()[0][0], "toast names the agent").toContain("остановил агент sub-9")
+  expect(taskToasts()[0][0], "toast names the agent").toContain('остановил агент "sub-9"')
   const recs = env.journal().filter((r: any) => r.via === "taskstop")
   expect(recs.length, "one taskstop record").toBe(1)
   expect(recs[0].agentId, "store record keeps the agent").toBe("sub-9")
@@ -2031,7 +2032,7 @@ test("T72 a stop with no following next shows the toast and the log line at once
   expect(
     env.log.some(
       (row: any) =>
-        String(row[0]).includes("Ответ оборван фильтром") && String(row[0]).includes("turn t72"),
+        String(row[0]).includes("Ответ оборван фильтром") && String(row[0]).includes('turn "t72"'),
     ),
     "the transcript line is out before any clock read",
   ).toBe(true)
@@ -3216,7 +3217,7 @@ test("T119 an older refusal whose clock answers later does not move the window o
     const last = String(env.status[env.status.length - 1])
     expect(last, "the count is two").toContain("за сессию: 2")
     expect(last, "the last time stays the newer refusal's").toContain("последний " + hhmmOf(10_000_000))
-    expect(last, "the last model stays the newer refusal's").toContain(" mB")
+    expect(last, "the last model stays the newer refusal's").toContain(' "mB"')
     __setWall(() => 10_500_000)
     const out = { result: stopOut("bg-119") }
     const r = await hooks.taskstop(
@@ -3281,7 +3282,7 @@ test("T121 a refusal explanation that is not a string still announces the turn",
   )
   expect(r, "the next result is returned").toBe(sentinel)
   expect(env.toast.length, "one toast").toBe(1)
-  expect(String(env.toast[0][0]), "the category is stringified").toContain("категория 7")
+  expect(String(env.toast[0][0]), "the category is stringified").toContain('категория "7"')
   expect(env.journal()[0].explanation, "the explanation is stringified").toBe("5")
 })
 
@@ -3301,8 +3302,8 @@ test("T122 event fields that are not strings still give the toast text", async (
   })
   expect(env.toast.length, "one toast").toBe(1)
   expect(String(env.toast[0][0]), "the model is stringified").toContain("Symbol(m)")
-  expect(String(env.toast[0][0]), "an unreadable agent is a question mark").toContain("агент ?")
-  expect(String(env.status[env.status.length - 1]), "the status model is stringified").toContain(" Symbol(m)")
+  expect(String(env.toast[0][0]), "an unreadable agent is a question mark").toContain('агент "?"')
+  expect(String(env.status[env.status.length - 1]), "the status model is stringified").toContain(' "Symbol(m)"')
 })
 
 test("T123 a signal whose listener cannot be read does not lose the refusal's accounting", async () => {
@@ -3414,7 +3415,7 @@ test("T126 a newer refusal with an earlier time does not close the window on an 
     expect(last, "the last time is the older refusal's later answer").toContain(
       "последний " + hhmmOf(10_000_000),
     )
-    expect(last, "the last model is the older refusal's").toContain(" mA")
+    expect(last, "the last model is the older refusal's").toContain(' "mA"')
     __setWall(() => 10_500_000)
     const out = { result: stopOut("bg-126") }
     const r = await hooks.taskstop(
@@ -3488,7 +3489,7 @@ test("T128 a complete deduped against its step keeps the step's model in the sta
   )
   const last = String(env.status[env.status.length - 1])
   expect(last, "the turn counts once").toContain("за сессию: 1")
-  expect(last, "the step's model stays").toContain(" mX")
+  expect(last, "the step's model stays").toContain(' "mX"')
 })
 
 test("T129 a step without refusal between re-arms the turn's complete count", async () => {
@@ -3747,7 +3748,7 @@ test("T142 a turn id whose text throws still gives the transcript line", async (
     index: 0,
   })
   expect(
-    env.log.some((row: any) => String(row[0]).includes("[turn ?, step 0]")),
+    env.log.some((row: any) => String(row[0]).includes('[turn "?", step "0"]')),
     "the transcript line names the unreadable turn",
   ).toBe(true)
 })
@@ -4221,5 +4222,98 @@ test("T161 a throwing name getter on a non-reason rejection is a clock failure",
   expect(
     env.log.some((row: any) => String(row[0]).includes("канал clock не сработал")),
     "a throwing name getter does not hide a clock failure",
+  ).toBe(true)
+})
+
+// CONSTRAINT: внешние поля события в ui-выводах дают одну строку: клип 80 точек, экранирование, суффикс «…».
+const hostile569 = () => "\n\u0085" + "t".repeat(198)
+const hostileQuoted569 = () => '"\\n\\u0085' + "t".repeat(78) + '"…'
+
+test("ui-raw-569 model", async () => {
+  __reset()
+  const env = make$()
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: hostile569(), turnId: "t-ui-model", index: 0 })
+  const toast = String(env.toast[0][0])
+  expect(toast.includes("\n"), "ui-raw-569: model escaped in toast").toBe(false)
+  expect(toast.includes(String.fromCharCode(0x85)), "ui-raw-569: model escaped in toast").toBe(false)
+  expect(toast, "ui-raw-569: model escaped in toast").toContain(hostileQuoted569())
+  expect(String(env.status[0]), "ui-raw-569: model escaped in status").toContain(hostileQuoted569())
+})
+
+test("ui-raw-569 agentId", async () => {
+  __reset()
+  const env = make$()
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "m", agentId: hostile569(), turnId: "t-ui-agent", index: 0 })
+  expect(String(env.toast[0][0]), "ui-raw-569: agentId escaped in toast").toContain('агент ' + hostileQuoted569())
+  const out = { result: stopOut("bg-ui-agent") }
+  await hooks.taskstop(env.$, { tool: "TaskStop", task_id: "bg-ui-agent", agentId: hostile569() }, async () => out)
+  expect(
+    env.toast.some((row: any) => String(row[0]).includes('остановил агент ' + hostileQuoted569())),
+    "ui-raw-569: agentId escaped in toast",
+  ).toBe(true)
+})
+
+test("ui-raw-569 turnId", async () => {
+  __reset()
+  const env = make$()
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "m", turnId: hostile569(), index: 0 })
+  const row = env.log
+    .filter((r: any) => r[1] === undefined)
+    .map((r: any) => String(r[0]))
+    .find((s: string) => s.includes("[turn "))
+  expect(row !== undefined, "ui-raw-569: turnId escaped in transcript log").toBe(true)
+  expect(row!.includes("\n"), "ui-raw-569: turnId escaped in transcript log").toBe(false)
+  expect(row!.includes(String.fromCharCode(0x85)), "ui-raw-569: turnId escaped in transcript log").toBe(false)
+  expect(row!, "ui-raw-569: turnId escaped in transcript log").toContain("[turn " + hostileQuoted569())
+  expect(JSON.parse(hostileQuoted569().slice(0, -1)), "ui-raw-569: turnId quoted part parses intact").toBe("\n\u0085" + "t".repeat(78))
+})
+
+test("ui-raw-569 step", async () => {
+  __reset()
+  const env = make$()
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "m", turnId: "t-ui-step", index: hostile569() as any })
+  const row = env.log
+    .filter((r: any) => r[1] === undefined)
+    .map((r: any) => String(r[0]))
+    .find((s: string) => s.includes("step "))
+  expect(row !== undefined, "ui-raw-569: step escaped in transcript log").toBe(true)
+  expect(row!.includes("\n"), "ui-raw-569: step escaped in transcript log").toBe(false)
+  expect(row!, "ui-raw-569: step escaped in transcript log").toContain(", step " + hostileQuoted569())
+})
+
+test("ui-raw-569 tools", async () => {
+  __reset()
+  const env = make$()
+  const tool = { kind: "tool", index: 0, id: "tool-x", name: hostile569() }
+  const stop = { kind: "stop", stopReason: "refusal", usage: null }
+  await runStep(env, [tool, stop], { stopReason: "refusal" }, { model: "m", turnId: "t-ui-tools", index: 0 })
+  expect(String(env.toast[0][0]), "ui-raw-569: tool names escaped in toast").toContain("не выполнено: " + hostileQuoted569())
+})
+
+test("ui-raw-569 category", async () => {
+  __reset()
+  const env = make$()
+  await hooks.complete(
+    env.$,
+    { reason: "refusal", turnId: "t-ui-cat", refusal: { category: hostile569(), explanation: "x" } },
+    async () => ({}),
+  )
+  expect(String(env.toast[0][0]), "ui-raw-569: category escaped in toast").toContain("категория " + hostileQuoted569())
+})
+
+test("ui-raw-569 taskId", async () => {
+  __reset()
+  const env = make$()
+  const spec = refusalChunks()
+  await runStep(env, spec.chunks, spec.result, { model: "m", turnId: "t-ui-task", index: 0 })
+  const out = { result: stopOut("bg-ui-task") }
+  await hooks.taskstop(env.$, { tool: "TaskStop", task_id: hostile569() as any }, async () => out)
+  expect(
+    env.toast.some((row: any) => String(row[0]).includes("фоновая задача " + hostileQuoted569())),
+    "ui-raw-569: taskId escaped in toast",
   ).toBe(true)
 })
