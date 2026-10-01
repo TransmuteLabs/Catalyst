@@ -210,6 +210,26 @@ add_name() {
 
 miss=0
 
+# CONSTRAINT: карта HEAD читается лениво -- только когда встретился удалённый
+# путь, о котором молчит индексная карта: штатный проход не делает ни одного
+# лишнего вызова git и не держит лишнего временного файла.
+HMAP_STATE=""
+HMAP_TXT=""
+head_map_load() {
+  [ -z "$HMAP_STATE" ] || return 0
+  git rev-parse -q --verify HEAD:tests/stand-map.tsv >/dev/null
+  local r=$?
+  if [ "$r" -eq 1 ]; then
+    HMAP_STATE=none
+    return 0
+  fi
+  [ "$r" -eq 0 ] || fail3 "git rev-parse HEAD:tests/stand-map.tsv отказ (rc=$r)"
+  HMAP_TXT=$(git show HEAD:tests/stand-map.tsv)
+  r=$?
+  [ "$r" -eq 0 ] || fail3 "git show HEAD:tests/stand-map.tsv отказ (rc=$r)"
+  HMAP_STATE=loaded
+}
+
 process_path() {   # <путь> <удалён: 0|1>: карта для любого, правило -- только для живого
   local p="$1" isdel="$2" hit=0 mkey mval v
   local covered=0
@@ -249,6 +269,22 @@ process_path() {   # <путь> <удалён: 0|1>: карта для любо�
     case "$p" in
       tests/scripts/test-*.sh) covered=1; add_name run-all ;;
     esac
+  fi
+  # CONSTRAINT (только --staged): удалённый путь, о котором индексная карта
+  # молчит, покрыт, если его покрывала карта HEAD -- его стенды даёт HEAD-проход
+  # двери и свидетеля; без этого удаление файла вместе с его строкой карты
+  # неудовлетворимо одним коммитом. Не покрытый и в HEAD -- НЕ ПОКРЫТ.
+  if [ "$covered" = 0 ] && [ "$isdel" = 1 ] && [ "$MAP_REV" != "HEAD" ]; then
+    head_map_load
+    if [ "$HMAP_STATE" = loaded ]; then
+      while IFS=$'\t' read -r mkey mval || [ -n "$mkey" ]; do
+        case "$mkey" in ''|'#'*) continue ;; esac
+        case "$mkey" in
+          */) case "$p" in "$mkey"*) covered=1 ;; esac ;;
+          *)  case "$p" in "$mkey") covered=1 ;; esac ;;
+        esac
+      done <<< "$HMAP_TXT"
+    fi
   fi
   if [ "$covered" = 0 ]; then
     [ "$SKIP_UNCOVERED" = 1 ] && return 0

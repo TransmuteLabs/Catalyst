@@ -15,7 +15,7 @@ export LC_ALL=C
 # CONSTRAINT: ожидаемое число зубов объявлено ЗДЕСЬ и больше нигде; расхождение
 # в любую сторону -- КРАСНЫЙ (зуб, тихо выпавший из прогона, неотличим от зуба,
 # которого никогда не писали).
-EXPECTED_TEETH=98
+EXPECTED_TEETH=101
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TESTS="$(cd "$HERE/.." && pwd)"
@@ -1651,6 +1651,69 @@ else
   else
     bad "R98) пустой массив стендов: --scope foo rc=$r98a out=[$o98a]; --list rc=$r98b out=[$o98b]"
   fi
+fi
+
+# --- R99. удалённый файл вместе со своей строкой карты -- покрыт картой HEAD -------
+W99=$(mk_world w99)
+printf 'tests/stand-map.tsv\t-\n' >> "$W99/tests/stand-map.tsv"
+git -C "$W99" add tests/stand-map.tsv
+git -C "$W99" commit -qm mapself
+git -C "$W99" rm -q beta/exact.txt
+grep -v '^beta/exact.txt	' "$W99/tests/stand-map.tsv" > "$W99/map.new" && mv "$W99/map.new" "$W99/tests/stand-map.tsv"
+git -C "$W99" add tests/stand-map.tsv
+fx99=""
+grep -q '^beta/exact.txt	' "$W99/tests/stand-map.tsv" && fx99="строка beta/exact.txt осталась в карте"
+git -C "$W99" show HEAD:tests/stand-map.tsv | grep -q '^beta/exact.txt	b$' || fx99="${fx99:+$fx99; }в HEAD-карте нет строки beta/exact.txt"
+if [ -n "$fx99" ]; then
+  bad "R99) фикстура: $fx99"
+else
+  run_ss_staged "$W99"
+  o99h=$(cd "$W99" && bash tests/stand-scope.sh --staged --map-rev HEAD --skip-uncovered 2>/dev/null); r99h=$?
+  if [ "$SSS_RC" = 0 ] && [ -z "$SSS_OUT" ] && [[ "$SSS_ERR" != *"НЕ ПОКРЫТ"* ]] \
+     && [ "$r99h" = 0 ] && [ "$o99h" = "b" ]; then
+    ok "R99) git rm beta/exact.txt + снятая строка карты -- индексный проход rc 0 без «НЕ ПОКРЫТ», HEAD-проход даёт b"
+  else
+    bad "R99) удалённый картированный путь: rc=$SSS_RC out=[$SSS_OUT] err=[$SSS_ERR] head rc=$r99h out=[$o99h]"
+  fi
+fi
+
+# --- R100. контроль R99: удалённый путь, не покрытый и картой HEAD -- НЕ ПОКРЫТ -----
+W100=$(mk_world w100)
+mkdir -p "$W100/nowhere"
+printf 'x\n' > "$W100/nowhere/y"
+git -C "$W100" add nowhere/y
+git -C "$W100" commit -qm unmapped
+git -C "$W100" rm -q nowhere/y
+run_ss_staged "$W100"
+if [ "$SSS_RC" = 2 ] && [[ "$SSS_ERR" == *"stand-scope: НЕ ПОКРЫТ nowhere/y"* ]]; then
+  ok "R100) git rm nowhere/y без строки ни в индексной, ни в HEAD-карте -- rc 2 НЕ ПОКРЫТ"
+else
+  bad "R100) удалённый непокрытый путь: rc=$SSS_RC out=[$SSS_OUT] err=[$SSS_ERR]"
+fi
+
+# --- R101. отказ git при чтении карты HEAD для удалённого пути -- rc 3 ОТКАЗ ПРИБОР ----
+W101=$(mk_world w101)
+git -C "$W101" rm -q beta/exact.txt
+grep -v '^beta/exact.txt	' "$W101/tests/stand-map.tsv" > "$W101/map.new" && mv "$W101/map.new" "$W101/tests/stand-map.tsv"
+printf 'tests/stand-map.tsv\t-\n' >> "$W101/tests/stand-map.tsv"
+git -C "$W101" add tests/stand-map.tsv
+mkdir -p "$WORK/gbin101"
+cat > "$WORK/gbin101/git" <<EOF2
+#!/usr/bin/env bash
+if [ "\$1" = rev-parse ] && [ "\${2:-}" = -q ] && [ "\${3:-}" = --verify ] && [ "\${4:-}" = HEAD:tests/stand-map.tsv ]; then
+  printf 'FAIL %s\n' "\$*" >> "$WORK/stub-git101.log"
+  exit 128
+fi
+exec "$REALGIT" "\$@"
+EOF2
+chmod +x "$WORK/gbin101/git"
+o101=$(cd "$W101" && env PATH="$WORK/gbin101:$PATH" bash tests/stand-scope.sh --staged 2>"$W101/.err"); r101=$?
+e101=$(cat "$W101/.err")
+if [ "$r101" = 3 ] && [ -z "$o101" ] && [ -s "$WORK/stub-git101.log" ] \
+   && [[ "$e101" == *"stand-scope: ОТКАЗ ПРИБОР: git rev-parse HEAD:tests/stand-map.tsv отказ (rc=128)"* ]]; then
+  ok "R101) заглушка git rc=128 на карте HEAD для удалённого пути -- rc 3 ОТКАЗ ПРИБОР, не НЕ ПОКРЫТ"
+else
+  bad "R101) отказ чтения карты HEAD: rc=$r101 out=[$o101] err=[$e101] журнал=[$(cat "$WORK/stub-git101.log" 2>/dev/null)]"
 fi
 
 printf '\nRUN-ALL-TEETH PASS=%d FAILED=%d\n' "$PASS" "$FAIL"
