@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.56"
+export const MOD_VERSION = "0.1.57"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -278,30 +278,39 @@ export const REFUSAL_REQUEST_PREFIXES = [
   "An image in the conversation exceeds the dimension limit", "Auto mode is unavailable for your plan",
   "Autocompact is thrashing:",
 ]
-export const REFUSAL_PERMANENT_PREFIXES = [
+// CONSTRAINT (#514 Р9): отказ о состоянии учётки (вход, токен, ключ, учётные
+// данные провайдера) -- temporary-unknown с backoff, не permanent-model: за
+// шлюзом localhost:8317 учётка ротируется и возвращается сама, а метка
+// permanent-model на час снимала объявленную модель агента одним 403. Отказы
+// аккаунта и политики (кредит, план, доступ, организация, шлюз «signing in
+// again won't change this», «Authentication error · » PJt) остаются permanent.
+export const REFUSAL_AUTH_PREFIXES = [
   "Not logged in · Please run /login",
   "Authentication required · Sign in again to continue",
   "Please run /login",
   "Failed to authenticate.",
   "OAuth token revoked · Please run /login",
   "Login expired · ",
-  "Authentication error · ",
-  "Credit balance is too low",
-  "Claude Opus is not available with the Claude Pro plan",
   "Failed to authenticate: OAuth session expired and could not be refreshed",
-  "Your account does not have access to Claude.",
-  "Invalid API key · ", "Invalid auth token · ", "Invalid ANTHROPIC_CUSTOM_HEADERS · ",
-  "Invalid request header from the environment · ",
-  "Your ANTHROPIC_API_KEY belongs to a disabled organization · ",
+  "Invalid API key · ", "Invalid auth token · ",
   "Your apiKeyHelper script is failing · ",
-  "Your organization has disabled Claude subscription access for Claude Code · ",
-  "Your organization has disabled API key authentication · ",
   "Anthropic profile login expired · ",
-  "Your account is on hold and can't use Claude Code.",
-  "This service is disabled for your org",
   "AWS credentials expired or invalid", "AWS authentication failed",
   "Google Cloud credentials expired or invalid", "Google Cloud authentication failed",
   "Microsoft Foundry authentication failed",
+]
+export const REFUSAL_PERMANENT_PREFIXES = [
+  "Authentication error · ",
+  "Credit balance is too low",
+  "Claude Opus is not available with the Claude Pro plan",
+  "Your account does not have access to Claude.",
+  "Invalid ANTHROPIC_CUSTOM_HEADERS · ",
+  "Invalid request header from the environment · ",
+  "Your ANTHROPIC_API_KEY belongs to a disabled organization · ",
+  "Your organization has disabled Claude subscription access for Claude Code · ",
+  "Your organization has disabled API key authentication · ",
+  "Your account is on hold and can't use Claude Code.",
+  "This service is disabled for your org",
   "Gateway refused the request",
   "There's an issue with the selected model (",
   "CLAUDE_CODE_NO_MODEL_FALLBACK is set: model substitution is disabled",
@@ -393,8 +402,8 @@ export const REFUSAL_CREDITS_NOW_RX = /^[^\r\n:]+ now uses usage credits · /
 export const REFUSAL_OTHER_PREFIXES = ["API Error", "Request timed out"]
 // CONSTRAINT (#509-FIX9 R4, #509-FIX10 F3): статус обёртки `API Error: <NNN>` --
 // 413 -- request, 400 -- request только с предметом размера запроса
-// (предикат refusalRequestSize), 401/403/404 -- permanent-model, прочие --
-// temporary-unknown. 402, мёртвый провайдер и model_not_found решает тело
+// (предикат refusalRequestSize), 404 -- permanent-model, 401/403 --
+// temporary-unknown (учётка, #514 Р9), прочие -- temporary-unknown. 402, мёртвый провайдер и model_not_found решает тело
 // строки раньше обёртки.
 export const REFUSAL_WRAP_STATUS_RX = /^API Error:\s*(\d{3})(?!\d)/
 // CONSTRAINT (#509-FIX10 F3, #509-FIX11 B4, #509-FIX12 T1/T2, #509-FIX13,
@@ -965,11 +974,12 @@ export function classifyRefusal(line: string, atMs: number, model: string = ""):
     const st = REFUSAL_WRAP_STATUS_RX.exec(text)
     const code = st ? Number(st[1]) : 0
     if (code === 413 || (code === 400 && refusalRequestSize(text))) return { class: "request", readyAt: 0, err: null }
-    if (code === 401 || code === 403 || code === 404) return { class: "permanent-model", readyAt: 0, err: null }
+    if (code === 404) return { class: "permanent-model", readyAt: 0, err: null }
     return { class: "temporary-unknown", readyAt: 0, err: null }
   }
   if (startsWithAny(text, REFUSAL_REQUEST_PREFIXES)) return { class: "request", readyAt: 0, err: null }
   if (REFUSAL_TEMPORARY_EXACT.indexOf(text) >= 0) return { class: "temporary-unknown", readyAt: 0, err: null }
+  if (startsWithAny(text, REFUSAL_AUTH_PREFIXES)) return { class: "temporary-unknown", readyAt: 0, err: null }
   if (isPermanentLine(text)) return { class: "permanent-model", readyAt: 0, err: null }
   if (isLimitLine(text)) {
     const r = resetsAtOf(text, atMs)
@@ -1250,12 +1260,11 @@ export function failoverAttemptModels(incoming: string, sticky: string | null, l
 // середины, оттуда снимается. Объявленная, совпавшая с терминалом, остаётся
 // первой, терминал второй раз не добавляется и перехода нет (termAt -1, D-8a);
 // остывая, она уходит в самый конец и там -- терминал. Живая метка permanent-model пропускает
-// модель (dead), кроме терминала. skipKnown (проход пробуждения, AR-3)
-// снимает модели с живой меткой temporary-known ИЛИ quota (#509-FIX11 B1:
-// живая quota не менее известна -- ответ до срока известен заранее);
-// первичный проход (skipKnown ложь) не снимает ничего. Длина плана не
-// ограничена счётом (H9).
-export function failoverStepPlan(incoming: string, sticky: string | null, ladder: string[], terminal: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, opts: { skipKnown?: boolean } = {}): { plan: string[]; all: string[]; dead: string[]; evidence: { [k: string]: any }; termAt: number; skippedKnown: string[] } {
+// модель (dead), кроме терминала. Любой проход (#514 Р9) снимает модели с
+// живой меткой temporary-known ИЛИ quota (#509-FIX11 B1: живая quota не менее
+// известна -- ответ до срока известен заранее): вызов до срока -- заведомый
+// отказ на каждом шаге, видимый в сессии. Длина плана не ограничена счётом (H9).
+export function failoverStepPlan(incoming: string, sticky: string | null, ladder: string[], terminal: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks): { plan: string[]; all: string[]; dead: string[]; evidence: { [k: string]: any }; termAt: number; skippedKnown: string[] } {
   const base = failoverAttemptModels(incoming, sticky, ladder)
   const term = String(terminal || "")
   const termN = term ? normModelId(term) : ""
@@ -1283,10 +1292,10 @@ export function failoverStepPlan(incoming: string, sticky: string | null, ladder
   const skippedKnown: string[] = []
   const known = (m: string): boolean => {
     const mk = marks.get(normModelId(m))
-    if (!opts.skipKnown || !mk || !isModelCooling(m, atMs, marks)) return false
+    if (!mk || !isModelCooling(m, atMs, marks)) return false
     return mk.class === "temporary-known" || mk.class === "quota"
   }
-  if (opts.skipKnown) {
+  {
     const keep: string[] = []
     for (let i = 0; i < plan.length; i++) {
       if (known(plan[i])) skippedKnown.push(plan[i])
@@ -1295,8 +1304,8 @@ export function failoverStepPlan(incoming: string, sticky: string | null, ladder
     plan = keep
   }
   // CONSTRAINT (#509-FIX9 R2): терминал с живой меткой temporary-known или
-  // quota (срок в будущем) снимается в skippedKnown в ЛЮБОМ проходе, не только
-  // под skipKnown; срок истёк -- в плане, как прежде.
+  // quota (срок в будущем) снимается в skippedKnown в любом проходе, как
+  // ступени; срок истёк -- в плане, как прежде.
   const termKnown = (m: string): boolean => {
     const mk = marks.get(normModelId(m))
     return !!(mk && (mk.class === "temporary-known" || mk.class === "quota") && isModelCooling(m, atMs, marks))
@@ -2885,9 +2894,10 @@ export function failoverBindRefresh(bind: any, world: any): void {
   const info = failoverLadderBind(world.failover, bind.subagentType, bind.class)
   const term = failoverTerminal(world.failover)
   const adm = admitLadder(info.ladder, bind.class, world.allowedByClass, admissionUsable(world))
-  // CONSTRAINT: мир без ступеней и терминала для агента (нечитаемый слой) не
-  // стирает привязку ожидающего -- иначе он теряет и ту ступень, что была.
-  if (!adm.ladder.length && !term.model) return
+  // CONSTRAINT: нечитаемый слой лестницы или допуска не подтверждает и не
+  // снимает ступени -- привязка ожидающего остаётся прежней. Прочитанный мир,
+  // сузивший лестницу или терминал, сужает их и здесь, как на спавне.
+  if (world.probesUnread || adm.unavailable) return
   let rungEffort = info.rungEffort
   let effortBad = info.effortBad
   if (term.effort && modelKeyed(rungEffort, term.model) === undefined) rungEffort = Object.assign({}, rungEffort, { [term.model]: term.effort })
@@ -4005,11 +4015,13 @@ export async function loadWorld($: any, env: any, cwdArg: string): Promise<any> 
   const gParsed = parseToml(gToml.text || "")
   let projectHome = ""
   let pParsed: any = {}
+  let probesUnread = gToml.unreadable ? "global" : ""
   if (!env.PROBES_DIR) {
     projectHome = await findProjectHome($, cwd, globalHome)
     if (projectHome) {
       const pt = await readText($, projectHome + "/probes.toml")
       if (pt.unreadable) noteLost("project-probes-toml", new Error(projectHome + "/probes.toml: " + pt.unreadable), $)
+      if (pt.unreadable) probesUnread = probesUnread ? probesUnread + ",project" : "project"
       if (pt.text) pParsed = parseToml(pt.text)
     }
   }
@@ -4040,7 +4052,7 @@ export async function loadWorld($: any, env: any, cwdArg: string): Promise<any> 
     }
   }
   return {
-    globalHome, projectHome, cwd, cfgUnread,
+    globalHome, projectHome, cwd, cfgUnread, probesUnread,
     probes: probesOf(gParsed, pParsed),
     prompts: promptsOf(gParsed, pParsed),
     failover: failoverOf(gParsed, pParsed),
@@ -8511,9 +8523,10 @@ export function register(on: any) {
     }
     }
     await filterLadder()
-    // CONSTRAINT: bind.ladder и bind.sticky не переписываются -- в привязке
-    // лежит объявленная реестром истина и факт «эта ступень отработала»;
-    // очистка от моделей исполнителей -- решение одного шага. Порядок ступеней
+    // CONSTRAINT: bind.sticky не переписывается, bind.ladder -- только свежим
+    // миром ожидающего (failoverBindRefresh, #514 Р8): в привязке лежит
+    // объявленная реестром истина и факт «эта ступень отработала»; очистка от
+    // моделей исполнителей -- решение шага. Порядок ступеней
     // строит failoverAttemptModels -- ТА ЖЕ функция, которую пинят зубы;
     // второй копии порядка в бою не держать. Снятие липкости -- на ИСПОЛЬЗОВАНИИ:
     // накопитель растёт позже установки, проверка в прошлом снова преждевременна.
@@ -8586,7 +8599,7 @@ export function register(on: any) {
     if (bind.rungsDropped) journalBase.rungsDropped = bind.rungsDropped
     if (bind.source) journalBase.source = bind.source
     if (bind.allowedSrc) journalBase.allowedSrc = bind.allowedSrc
-    const jpath = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
+    let jpath = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
     const recHead = String(aid) + "-" + String(ev.turnId || "") + "-" + String(ev.index)
     let lastRes: any = null
     let lastClass = ""
@@ -8614,19 +8627,47 @@ export function register(on: any) {
       try { w = await worldFor($) } catch (x) { noteLost("failover-wait-world", x, $); return }
       const fw = w && w.world
       if (!fw || !fw.failover || !bl3(fw.failover.enabled, true)) return
+      // CONSTRAINT (#514 Р8-FIX1): свежий мир несёт и пины эффорта клетки, и
+      // дом журнала -- шаг, начатый без мира, иначе отказывал бы ступени по
+      // эффорту и не писал бы эпизод ожидания.
+      world = fw
+      if (!jpath && fw.globalHome) jpath = fw.globalHome + "/failover/journal.jsonl"
       failoverBindRefresh(bind, fw)
       await filterLadder()
       filterTerminal()
       planTermN = planTerminal ? normModelId(planTerminal) : ""
+      // CONSTRAINT (#226): липкая модель, начавшая обслуживать исполнителя посреди
+      // ожидания, снимается у проверяющего так же, как на старте шага.
+      if (reviewer && planSticky && sessionExecutorHas(String(planSticky))) {
+        planSticky = null
+        stickyDropped = true
+        journalBase.stickyDropped = true
+      }
+      const put = (k: string, v: any): void => { if (v) journalBase[k] = v; else delete journalBase[k] }
       if (reviewer) {
         journalBase.rungsFiltered = rungsFiltered
         journalBase.rungsFilteredReviewer = rungsFilteredReviewer
-        if (ladderFullTaken) journalBase.ladderFullTaken = true
+        put("ladderFullTaken", ladderFullTaken)
       }
-      if (terminalFiltered) journalBase.terminalFiltered = true
-      if (bind.rungsDropped) journalBase.rungsDropped = bind.rungsDropped
-      if (bind.source) journalBase.source = bind.source
-      if (bind.allowedSrc) journalBase.allowedSrc = bind.allowedSrc
+      put("terminalFiltered", terminalFiltered)
+      put("rungsDropped", bind.rungsDropped)
+      put("source", bind.source)
+      put("allowedSrc", bind.allowedSrc)
+    }
+    let builtTermN = planTermN
+    // CONSTRAINT (#514 Р8-FIX1): план ожидания сменяется при ЛЮБОМ расхождении
+    // состава со свежим миром -- и при новой ступени, и при снятой (допуск,
+    // занятость исполнителем, терминал); снятая модель не пробуется до своего
+    // срока. Смена пишется в журнал: улика «откуда взялась ступень».
+    const swapPlan = async (fresh: any): Promise<boolean> => {
+      const added = fresh.all.filter((m: string) => built.all.indexOf(m) < 0)
+      const removed = built.all.filter((m: string) => fresh.all.indexOf(m) < 0)
+      const termChanged = builtTermN !== planTermN
+      if (!added.length && !removed.length && !termChanged) return false
+      built = fresh
+      builtTermN = planTermN
+      await waitRec("wait-plan-refresh", { added, removed, terminal: planTerminal })
+      return true
     }
     const aborted = (): boolean => {
       try { return !!(next.signal && next.signal.aborted) } catch (x) { noteLost("failover-signal", x, $); return false }
@@ -9238,10 +9279,8 @@ export function register(on: any) {
           refusalText: mk ? String(mk.text || "") : "",
         }, "journal-skipped-dead"), "journal-skipped-dead")
       }
-      // CONSTRAINT (#509-FIX3 AR-3): проход пробуждения не зовёт модель с живым
-      // известным сроком -- ответ до срока известен заранее; пропуск назван.
-      // CONSTRAINT (#509-FIX9 R2): в первом проходе skippedKnown несёт только
-      // терминал -- его пропуск назван той же записью.
+      // CONSTRAINT (#509-FIX3 AR-3, #514 Р9): ни один проход не зовёт модель с
+      // живым известным сроком -- ответ до срока известен заранее; пропуск назван.
       for (let i = 0; i < built.skippedKnown.length; i++) {
         const m = built.skippedKnown[i]
         const mk = markOf(m)
@@ -9348,8 +9387,7 @@ export function register(on: any) {
       await toastByD("агент " + String(bind.subagentType || aid) + " ждёт сброса лимита: " + target.model + " до " + isoOf(target.wakeAt), "failover-wait-toast")
     }
     await refreshForWait()
-    const entryBuilt = failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($), rungCooldownMarks, { skipKnown: true })
-    if (entryBuilt.all.some((m: string) => built.all.indexOf(m) < 0)) built = entryBuilt
+    await swapPlan(failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($), rungCooldownMarks))
     waiting = true
     for (;;) {
       if (aborted()) { await waitRec("wait-aborted", {}, false); return lastRes }
@@ -9364,7 +9402,8 @@ export function register(on: any) {
         await waitRec("wait-probe", { kind: "wake", model: target.model })
         lastProbeAt = now
         await refreshForWait()
-        built = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks, { skipKnown: true })
+        built = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks)
+        builtTermN = planTermN
         const r = yield* passOnce(built, true)
         pausedSinceCall = !!r.paused
         if (r.final) return r.res
@@ -9380,11 +9419,10 @@ export function register(on: any) {
       const deadlineDue = deadlineAt() - now <= HALF_MARGIN_MS
       if (heartbeatDue || deadlineDue) {
         // CONSTRAINT (#514 Р8): ступень, появившаяся в мире после спавна, идёт
-        // проходом пробуждения следующего витка, а не ждёт пробы старой цели.
-        // План шага (фильтр занятости проверяющих) сменяется только новой ступенью.
+        // проходом пробуждения следующего витка, а не ждёт пробы старой цели;
+        // снятая -- выпадает из цели до пробы (swapPlan).
         await refreshForWait()
-        const freshBuilt = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks, { skipKnown: true })
-        if (freshBuilt.all.some((m: string) => built.all.indexOf(m) < 0)) { built = freshBuilt; continue }
+        if (await swapPlan(failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks))) continue
         await begin(target)
         await waitRec("wait-probe", { kind: heartbeatDue ? "heartbeat" : "deadline", model: target.model })
         lastProbeAt = now

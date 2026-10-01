@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.56")
+  expect(MOD_VERSION).toBe("0.1.57")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -9860,8 +9860,11 @@ function host514(tag: string, now: number, o: {
   const dir = "/probes-514" + tag
   const state: any = { history: [] as any[], sleeps: [] as number[], procCalls: [] as any[], messagesThrow: false, writeThrow: false, messageArgs: [] as any[], fired: [] as number[] }
   for (const t of o.history || []) state.history.push({ role: "user", text: "q" }, { role: "assistant", text: t })
+  const files = Object.assign({ [dir + "/probes.toml"]: o.probes ?? "[failover]\nenabled = true\n" }, o.files || {})
+  state.files = files
+  state.probesPath = dir + "/probes.toml"
   const m = mod$393({
-    files: Object.assign({ [dir + "/probes.toml"]: o.probes ?? "[failover]\nenabled = true\n" }, o.files || {}),
+    files,
     env: Object.assign({ CLAUDE_PROBES_DIR: dir }, o.env || {}),
     envRefuses: o.envRefuses,
     now,
@@ -10082,12 +10085,12 @@ test("#514 H1 / FIX3 M2: классы отказа по таблице хост�
     ["You've hit your session limit", "temporary-unknown"],
     ["You've hit your session limit · resets soon", "temporary-unknown"],
     ["You've hit your session limit · resets 2:30am (Nowhere/Atlantis)", "temporary-unknown"],
-    ["Not logged in · Please run /login", "permanent-model"],
-    ["Authentication required · Sign in again to continue", "permanent-model"],
-    ["Please run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "permanent-model"],
-    ["Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "permanent-model"],
-    ["OAuth token revoked · Please run /login", "permanent-model"],
-    ["Login expired · Please run /login", "permanent-model"],
+    ["Not logged in · Please run /login", "temporary-unknown"],
+    ["Authentication required · Sign in again to continue", "temporary-unknown"],
+    ["Please run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "temporary-unknown"],
+    ["Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "temporary-unknown"],
+    ["OAuth token revoked · Please run /login", "temporary-unknown"],
+    ["Login expired · Please run /login", "temporary-unknown"],
     ["Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator", "permanent-model"],
     ["Credit balance is too low", "permanent-model"],
     ["Claude Opus is not available with the Claude Pro plan. If you have updated your subscription plan recently, run /logout and /login for the plan to take effect.", "permanent-model"],
@@ -10139,6 +10142,144 @@ test("#514 Р8: застрявшая на A привязка берёт B из �
     expect(next.seen, "B вызвана, хотя в привязке спавна была только A").toContain("b514r8")
     expect(out.value && out.value.text).toBe("OK-b514r8")
     expect(waits514(h, "ag-514r8", "wait-aborted").length).toBe(0)
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р8-FIX1): срок цели (resets через 2 ч) длиннее пульса --
+// смену мира видит только проба пульса; короткий backoff увёл бы её в wake.
+test("#514 Р8-FIX1: уже ждущий на A агент берёт B, появившуюся в мире посреди ожидания (проба пульса)", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 11, 0, 0)
+  let next: any = null
+  const one = '[failover]\nenabled = true\n\n[failover.class.c514g]\nmodels = [{model = "a514g", effort = "max"}]\n'
+  const two = '[failover]\nenabled = true\n\n[failover.class.c514g]\nmodels = [{model = "a514g", effort = "max"}, {model = "b514g", effort = "max"}]\n'
+  let grownAt = 0
+  const h = host514("r8g", T0, {
+    probes: one,
+    files: { [TABLE514]: '[classes.c514g]\nallowed = ["a514g"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        h.files[h.probesPath] = two
+        h.files[TABLE514] = '[classes.c514g]\nallowed = ["a514g", "b514g"]\n'
+        grownAt = now
+      }
+      if (now >= T0 + 600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514g", { ladder: ["a514g"], terminal: "", rungEffort: { "a514g": "max" }, subagentType: "t514g", class: "c514g", sticky: null })
+  next = next514(h, {
+    "a514g": refuseAll514("You've hit your session limit · resets 1:00pm (UTC)"),
+    "b514g": () => null,
+  })
+  try {
+    const out = await step514(h, "ag-514g", "a514g", next)
+    expect(grownAt, "мир вырос после входа в ожидание").toBeGreaterThan(0)
+    expect(out.value && out.value.text).toBe("OK-b514g")
+    expect(waits514(h, "ag-514g", "wait-aborted").length).toBe(0)
+    const sw = waits514(h, "ag-514g", "wait-plan-refresh")
+    expect(sw.length).toBeGreaterThan(0)
+    expect(sw[0].added).toEqual(["b514g"])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р8-FIX1): B снята только из допуска, в лестнице с эффортом
+// остаётся -- отказ эффорта её не ловит, держит одна смена плана.
+test("#514 Р8-FIX1: ступень, снятая допуском посреди ожидания, не пробуется до своего срока", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 12, 0, 0)
+  let next: any = null
+  const two = '[failover]\nenabled = true\n\n[failover.class.c514d]\nmodels = [{model = "a514d", effort = "max"}, {model = "b514d", effort = "max"}]\n'
+  let cutAt = 0
+  const late: number[] = []
+  const h = host514("r8d", T0, {
+    probes: two,
+    files: { [TABLE514]: '[classes.c514d]\nallowed = ["a514d", "b514d"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        h.files[TABLE514] = '[classes.c514d]\nallowed = ["a514d"]\n'
+        cutAt = now
+      }
+      if (now >= T0 + 600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514d", { ladder: ["a514d", "b514d"], terminal: "", rungEffort: { "a514d": "max", "b514d": "max" }, subagentType: "t514d", class: "c514d", sticky: null })
+  next = next514(h, {
+    "a514d": refuseAll514("Credit balance is too low"),
+    "b514d": (_k: number, t: number) => { if (cutAt && t > cutAt) late.push(t); return "You've hit your session limit · resets 2:00pm (UTC)" },
+  })
+  try {
+    await step514(h, "ag-514d", "a514d", next)
+    expect(cutAt, "мир сузился после входа в ожидание").toBeGreaterThan(0)
+    expect(next.seen.filter((m: string) => m === "b514d").length, "B вызвана до сужения").toBeGreaterThan(0)
+    expect(late, "снятая B пробовалась после сужения мира").toEqual([])
+    const sw = waits514(h, "ag-514d", "wait-plan-refresh")
+    expect(sw.length).toBeGreaterThan(0)
+    expect(sw[0].removed).toEqual(["b514d"])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р9): улика 02.10 -- объявленная gpt-6.1-sol одним «Please run
+// /login · API Error: 403» становилась мёртвой на час, а glm с живой квотой
+// (срок известен) звался первым на каждом шаге.
+test("#514 Р9 (а): 403 «Please run /login» -- учётка, не мёртвая модель: следующий шаг снова зовёт объявленную первой", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 13, 0, 0)
+  const h = host514("r9a", T0)
+  failoverBindSet("ag-514r9a", { ladder: ["g514r9a"], terminal: "claude-t514r9a", rungEffort: { "g514r9a": "max", "claude-t514r9a": "max" }, subagentType: "t514r9a", class: "", sticky: null })
+  const next = next514(h, {
+    "s514r9a": (k: number) => (k === 0 ? "Please run /login · API Error: 403 status 403" : null),
+    "g514r9a": () => null,
+    "claude-t514r9a": () => null,
+  })
+  try {
+    const one = await step514(h, "ag-514r9a", "s514r9a", next)
+    expect(one.value && one.value.text, "шаг 1: переход на ступень").toBe("OK-g514r9a")
+    const cls = attempts514(h, "ag-514r9a").filter(r => r.modelRequested === "s514r9a").map(r => r.refusalClass)
+    expect(cls, "403 учётки -- temporary-unknown").toEqual(["temporary-unknown"])
+    h.m.setNow(T0 + 31000)
+    const seen0 = next.seen.length
+    const two = await step514(h, "ag-514r9a", "s514r9a", next, { index: 1 })
+    expect(next.seen.slice(seen0), "шаг 2: объявленная первой, без пропуска мёртвой").toEqual(["s514r9a"])
+    expect(two.value && two.value.text).toBe("OK-s514r9a")
+    expect(journal514(h).filter(r => r.agentId === "ag-514r9a" && r.outcome === "skipped-dead").length).toBe(0)
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+test("#514 Р9 (б): ступень с живой quota-меткой и известным сроком не вызывается ни в одном первичном проходе до срока", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 14, 0, 0)
+  const h = host514("r9b", T0)
+  failoverBindSet("ag-514r9b", { ladder: ["g514r9b"], terminal: "claude-t514r9b", rungEffort: { "g514r9b": "max", "claude-t514r9b": "max" }, subagentType: "t514r9b", class: "", sticky: null })
+  const quotaLine = "API Error: 503 auth_unavailable: no auth available (providers=claude, model=g514r9b; last upstream error: [1308][Usage limit reached for 5 hour]); 1 candidate(s) blocked: 1 on a spent allowance; soonest recovery in 48m37s"
+  R514.noteModelRefusal("g514r9b", T0, "quota", T0 + 2917000, "carrier-refusal", quotaLine)
+  const next = next514(h, {
+    "s514r9b": refuseAll514(ORG_OFF),
+    "g514r9b": refuseAll514(quotaLine),
+    "claude-t514r9b": () => null,
+  })
+  try {
+    for (let i = 0; i < 3; i++) {
+      h.m.setNow(T0 + 1000 + i * 600000)
+      const out = await step514(h, "ag-514r9b", "s514r9b", next, { index: i })
+      expect(out.value && out.value.text, "шаг " + String(i) + ": терминал").toBe("OK-claude-t514r9b")
+    }
+    expect(next.seen.filter((m: string) => m === "g514r9b"), "ступень с известным сроком не вызвана").toEqual([])
+    const sk = journal514(h).filter(r => r.agentId === "ag-514r9b" && r.outcome === "skipped-known-until" && r.model === "g514r9b")
+    expect(sk.length, "пропуск назван в каждом шаге").toBe(3)
   } finally {
     rungCooldownReset()
     reset514()
@@ -10514,7 +10655,7 @@ test("#514 FIX2b: предел вызовов модели стенда -- ци�
 test("#514 FIX2b H1 / FIX3 M2: префикс таблицы решает по началу строки, не по вхождению", () => {
   const cr = R514.classifyRefusal
   const cases: Array<[string, string]> = [
-    ["Please run /login · API Error: 429 Request rejected (429) · rate limited", "permanent-model"],
+    ["Please run /login · API Error: 429 Request rejected (429) · rate limited", "temporary-unknown"],
     ["API Error: 400 Prompt is too long", "request"],
     ["API Error: 409 Prompt is too long", "temporary-unknown"],
     ["API Error: 402 Credit balance is too low", "quota"],
@@ -10578,7 +10719,7 @@ test("#514 FIX2b H5: все модели прохода permanent-model -- wait-
   failoverBindSet("ag-514pp", { ladder: [], terminal: "claude-t514pp", rungEffort: {}, subagentType: "t", class: "", sticky: null })
   next = next514(h, {
     "in514pp": refuseAll514("Credit balance is too low"),
-    "claude-t514pp": refuseAll514("Not logged in · Please run /login"),
+    "claude-t514pp": refuseAll514("This service is disabled for your org"),
   })
   await step514(h, "ag-514pp", "in514pp", next)
   const begin = waits514(h, "ag-514pp", "wait-begin")
@@ -11071,7 +11212,7 @@ test("#514 FIX3 L2: сердцебиение тем же классом permanen
   failoverBindSet("ag-3l2", { ladder: [], terminal: "claude-t3l2", rungEffort: {}, subagentType: "t", class: "", sticky: null })
   const next = next514(h, {
     "in3l2": (_k, t) => (t >= T0 + 3600000 ? null : "Credit balance is too low"),
-    "claude-t3l2": refuseAll514("Not logged in · Please run /login"),
+    "claude-t3l2": refuseAll514("This service is disabled for your org"),
   })
   const out = await step514(h, "ag-3l2", "in3l2", next)
   expect(out.value && out.value.text).toBe("OK-in3l2")
@@ -11623,7 +11764,8 @@ test("#509-FIX4 AR-5: остывшая объявленная = терминал
 // кладутся прямо в h.history (сессия отдаёт объекты как есть), изменение
 // записи между чтениями -- правкой того же объекта в сценарии попытки.
 
-const NOLOGIN = "Not logged in · Please run /login"
+// CONSTRAINT (#514 Р9): permanent-model -- отказ уровня организации, не учётки.
+const ORG_OFF = "This service is disabled for your org"
 
 test("#509-FIX5 Р1 (а): план [D(request), R(request), P(живая permanent с прошлого шага)] -- выход без ожидания", async () => {
   reset514()
@@ -11631,8 +11773,8 @@ test("#509-FIX5 Р1 (а): план [D(request), R(request), P(живая permane
   let next: any = null
   const h = host514("5p1a", T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
   failoverBindSet("ag-5p1a", { ladder: ["r5p1a", "p5p1a"], terminal: "", rungEffort: effortAll509(["r5p1a", "p5p1a"]), subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("p5p1a", T0 - 1000, "permanent-model", 0, "carrier-refusal", NOLOGIN)
-  next = next514(h, { "in5p1a": refuseAll514("Prompt is too long"), "r5p1a": refuseAll514("Prompt is too long"), "p5p1a": refuseAll514(NOLOGIN) })
+  R514.noteModelRefusal("p5p1a", T0 - 1000, "permanent-model", 0, "carrier-refusal", ORG_OFF)
+  next = next514(h, { "in5p1a": refuseAll514("Prompt is too long"), "r5p1a": refuseAll514("Prompt is too long"), "p5p1a": refuseAll514(ORG_OFF) })
   await step514(h, "ag-5p1a", "in5p1a", next)
   expect(next.seen, "permanent-модель не вызвана").toEqual(["in5p1a", "r5p1a"])
   expect(attempts514(h, "ag-5p1a").map(r => r.refusalClass)).toEqual(["request", "request"])
@@ -11649,8 +11791,8 @@ test("#509-FIX5 Р1 (б): [P(permanent), Q(permanent)] без request -- ожи�
   let next: any = null
   const h = host514("5p1b", T0, { sleepHook: (n) => { if (n === 2) next.signal.aborted = true } })
   failoverBindSet("ag-5p1b", { ladder: [], terminal: "claude-q5p1b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("p5p1b", T0 - 1000, "permanent-model", 0, "carrier-refusal", NOLOGIN)
-  next = next514(h, { "p5p1b": refuseAll514(NOLOGIN), "claude-q5p1b": refuseAll514(NOLOGIN) })
+  R514.noteModelRefusal("p5p1b", T0 - 1000, "permanent-model", 0, "carrier-refusal", ORG_OFF)
+  next = next514(h, { "p5p1b": refuseAll514(ORG_OFF), "claude-q5p1b": refuseAll514(ORG_OFF) })
   await step514(h, "ag-5p1b", "p5p1b", next)
   expect(next.seen).toEqual(["claude-q5p1b"])
   expect(attempts514(h, "ag-5p1b").map(r => r.refusalClass)).toEqual(["permanent-model"])
@@ -12150,35 +12292,39 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
     "Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use /clear to start fresh.",
   ]
   const permanent = [
-    "Failed to authenticate: OAuth session expired and could not be refreshed",
     "Your account does not have access to Claude. Please login again or contact your administrator.",
-    "Invalid API key · Fix external API key",
-    "Invalid auth token · Fix external auth token · 401 token rejected",
     "Invalid ANTHROPIC_CUSTOM_HEADERS · Fix the environment variable · header rejected",
     "Invalid request header from the environment · Fix the environment variable · header rejected",
     "Your ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your subscription instead",
     "Your ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable",
-    "Your apiKeyHelper script is failing · This usually means you need to re-authenticate with your provider · Run /status to see the script's error output",
     "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access",
     "Your organization has disabled API key authentication · Unset ANTHROPIC_API_KEY to use your claude.ai account instead",
     "Your organization has disabled API key authentication · Unset ANTHROPIC_API_KEY and run /login to sign in with your claude.ai account",
     "Your organization has disabled API key authentication · Unset the apiKeyHelper setting and run /login to sign in with your claude.ai account",
     "Your organization has disabled API key authentication · Sign in again with your claude.ai account",
     "Your organization has disabled API key authentication · Run /login to sign in with your claude.ai account",
-    "Anthropic profile login expired · Re-authenticate your Anthropic profile",
     "Your account is on hold and can't use Claude Code. View details or appeal: https://claude.ai/account-hold",
     "This service is disabled for your org",
-    "AWS credentials expired or invalid · run `aws sso login` and retry · API Error: 403 security token expired",
-    "AWS authentication failed · credentials are managed by this environment — retry, or contact your administrator · API Error: 403 denied",
-    "Google Cloud credentials expired or invalid · run `gcloud auth application-default login` and retry · API Error: 401 expired",
-    "Google Cloud authentication failed · refresh your Google Cloud credentials (application default sign-in, or the key file in GOOGLE_APPLICATION_CREDENTIALS) and retry · API Error: 401 denied",
-    "Microsoft Foundry authentication failed · credentials are managed by this environment — retry, or contact your administrator · if credentials are current, check access to the Foundry resource · API Error: 401 denied",
     "Gateway refused the request · signing in again won't change this — check with your gateway administrator · API Error: 403 denied",
     "There's an issue with the selected model (claude-opus-5-5[1m]). It may not exist or you may not have access to it. Run /model to pick a different model.",
     "CLAUDE_CODE_NO_MODEL_FALLBACK is set: model substitution is disabled · unset it to allow the swap",
     "The model claude-opus-5-5[1m] is not available on your Bedrock deployment. Try /model to switch to claude-sonnet-5, or ask your admin to enable this model.",
     "The model Opus 5.5 is not available on your Vertex AI deployment. Try switching to Sonnet 5, or ask your admin to enable this model.",
     "The server routed this response to a model that is not in your organization’s availableModels allowlist; the response was discarded.",
+
+  ]
+  // CONSTRAINT (#514 Р9): строки учётки -- temporary-unknown, не permanent-model.
+  const auth = [
+    "Failed to authenticate: OAuth session expired and could not be refreshed",
+    "Invalid API key · Fix external API key",
+    "Invalid auth token · Fix external auth token · 401 token rejected",
+    "Your apiKeyHelper script is failing · This usually means you need to re-authenticate with your provider · Run /status to see the script's error output",
+    "Anthropic profile login expired · Re-authenticate your Anthropic profile",
+    "AWS credentials expired or invalid · run `aws sso login` and retry · API Error: 403 security token expired",
+    "AWS authentication failed · credentials are managed by this environment — retry, or contact your administrator · API Error: 403 denied",
+    "Google Cloud credentials expired or invalid · run `gcloud auth application-default login` and retry · API Error: 401 expired",
+    "Google Cloud authentication failed · refresh your Google Cloud credentials (application default sign-in, or the key file in GOOGLE_APPLICATION_CREDENTIALS) and retry · API Error: 401 denied",
+    "Microsoft Foundry authentication failed · credentials are managed by this environment — retry, or contact your administrator · if credentials are current, check access to the Foundry resource · API Error: 401 denied",
   ]
   const limit = [
     "Fable limit reached · continuing on Opus 5.5 uses usage credits, and the prompt to confirm went unanswered — nothing was sent · answer it where this session is running, or /model to change",
@@ -12200,6 +12346,7 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
   const want: any[] = []
   for (const l of request) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "request" }) }
   for (const l of permanent) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "permanent-model" }) }
+  for (const l of auth) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "temporary-unknown" }) }
   for (const l of limit) {
     const k = cr(l + TAIL, now)
     got.push({ l, known: known(l), c: k.class, at: k.readyAt })
@@ -12230,6 +12377,7 @@ test("#509-FIX6 А3: префиксы таблиц не перекрывают �
   const groups: Array<[string, string[]]> = [
     ["other", R514.REFUSAL_OTHER_PREFIXES], ["request", R514.REFUSAL_REQUEST_PREFIXES],
     ["permanent", R514.REFUSAL_PERMANENT_PREFIXES], ["limit", R514.REFUSAL_LIMIT_PREFIXES],
+    ["auth", R514.REFUSAL_AUTH_PREFIXES],
   ]
   const cross: string[] = []
   for (const [ga, as] of groups) for (const [gb, bs] of groups) {
@@ -12237,7 +12385,7 @@ test("#509-FIX6 А3: префиксы таблиц не перекрывают �
     for (const a of as) for (const b of bs) if (a.indexOf(b) === 0) cross.push(ga + ":" + a + " <- " + gb + ":" + b)
   }
   expect(cross, "начало префикса одного класса -- префикс другого").toEqual([])
-  const wantOf: { [g: string]: string } = { other: "temporary-unknown", request: "request", permanent: "permanent-model", limit: "temporary-known" }
+  const wantOf: { [g: string]: string } = { other: "temporary-unknown", request: "request", permanent: "permanent-model", limit: "temporary-known", auth: "temporary-unknown" }
   const bad: string[] = []
   for (const [g, ps] of groups) for (const p of ps) {
     const c = cr(p + " · resets 11am (UTC)", now).class
@@ -12324,16 +12472,17 @@ test("#509-FIX7 А-Р3: стенд doorCost -- бросок двери двиг�
   expect({ thrown, spent: h.m.getNow() - T0 }, "запись: 10 + 20").toEqual({ thrown: 3, spent: 630 })
 })
 
-test("#509-FIX7 А-Р5: GBn и HBn -- permanent по общему префиксу «Login expired · »", () => {
+test("#509-FIX7 А-Р5, #514 Р9: GBn и HBn -- учётка (temporary-unknown) по общему префиксу «Login expired · »", () => {
   const cr = R514.classifyRefusal
   const now = Date.parse("2026-10-03T09:00:00Z")
   const rows = [
     "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile",
     "Login expired · Please run /login",
   ]
-  expect(rows.map(l => ({ l, c: cr(l, now).class }))).toEqual(rows.map(l => ({ l, c: "permanent-model" })))
-  expect(R514.REFUSAL_PERMANENT_PREFIXES, "общий префикс в таблице").toContain("Login expired · ")
-  expect(R514.REFUSAL_PERMANENT_PREFIXES.indexOf("Login expired · Please run /login"), "полная форма избыточна").toBe(-1)
+  expect(rows.map(l => ({ l, c: cr(l, now).class }))).toEqual(rows.map(l => ({ l, c: "temporary-unknown" })))
+  expect(R514.REFUSAL_AUTH_PREFIXES, "общий префикс в таблице").toContain("Login expired · ")
+  expect(R514.REFUSAL_AUTH_PREFIXES.indexOf("Login expired · Please run /login"), "полная форма избыточна").toBe(-1)
+  expect(R514.REFUSAL_PERMANENT_PREFIXES.indexOf("Login expired · "), "не в двух таблицах").toBe(-1)
 })
 
 test("#509-FIX7 А-Р6: Hdt -- temporary-unknown раньше префиксов permanent; gateway-строка PJt -- permanent", () => {
@@ -13179,7 +13328,7 @@ test("#509-FIX8c Р6: проверяющий A ждёт на ступени X, �
 
 // --- #509-FIX8d ------------------------------------------------------------------
 // CONSTRAINT (#509-FIX8d Р1): X уходит из плана по известному сбросу (12:20)
-// только в проходе пробуждения (skipKnown): объявленная сперва отказывает
+// в каждом проходе после своей метки (#514 Р9): объявленная сперва отказывает
 // коротко (30 с) и будит проход, затем квотой (60 мин) -- тогда ближайшая цель
 // ожидания -- X вне плана. Окно зуба -- 10 мин, X за него не остывает.
 async function outOfPlan8d(tag: string, take: "spawn" | "race"): Promise<any> {
@@ -16418,8 +16567,8 @@ test("#509-FIX9 R4: статус обёртки API Error решает клас�
   const rows: Array<[string, string]> = [
     ["API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 250000 tokens > 200000 maximum\"}}", "request"],
     ["API Error: 413 request body Too Long for upstream", "request"],
-    ["API Error: 401 {\"error\":{\"message\":\"invalid x-api-key\"}}", "permanent-model"],
-    ["API Error: 403 {\"error\":{\"type\":\"permission_error\",\"message\":\"content policy\"}}", "permanent-model"],
+    ["API Error: 401 {\"error\":{\"message\":\"invalid x-api-key\"}}", "temporary-unknown"],
+    ["API Error: 403 {\"error\":{\"type\":\"permission_error\",\"message\":\"content policy\"}}", "temporary-unknown"],
     ["API Error: 404 {\"error\":{\"message\":\"route not found\"}}", "permanent-model"],
     ["API Error: 402 Payment Required", "quota"],
     ["API Error: 400 {\"error\":\"unknown provider grok-4.6\"}", "permanent-model"],
@@ -16741,7 +16890,7 @@ async function fix10F2Row(tag: string, firstLine: string, beatLine: string): Pro
   const at: number[] = []
   const next = next514(h, {
     [inM]: (k: number, t: number) => { at.push(t); return k === 0 ? firstLine : (t >= T0 + 1800000 ? null : beatLine) },
-    [tM]: refuseAll514("Not logged in · Please run /login"),
+    [tM]: refuseAll514(ORG_OFF),
   })
   const out = await step514(h, aid, inM, next)
   const kinds = waits514(h, aid, "wait-probe").map(r => r.kind)
@@ -16779,7 +16928,7 @@ test("#509-FIX10 F2: отказ сердцебиения temporary-known не д
 // CONSTRAINT: ряды идут фактическим путём turn.step → attemptOne → markRefusal /
 // failoverStepPlan; часы движет только подставной /bin/sleep стенда.
 
-test("#509-FIX11 B1: wake-проход снимает живую quota-метку ступени -- Q не вызывается до её срока, после срока вызывается; первичный проход никого не пропускает", async () => {
+test("#509-FIX11 B1, #514 Р9: любой проход снимает живую quota-метку ступени -- Q не вызывается до её срока, после срока вызывается", async () => {
   reset514()
   const T0 = Date.UTC(2026, 9, 9, 10, 0, 0)
   const inM = "in11w"
@@ -16794,22 +16943,22 @@ test("#509-FIX11 B1: wake-проход снимает живую quota-метк�
   const next = next514(h, {
     [inM]: (k: number, _t: number) => (k === 0 ? "You've hit your session limit · resets 10:30am (UTC)" : RL429),
     [bM]: (_k: number, t: number) => (t >= T0 + 600000 ? RL429 : "You've hit your session limit · resets 10:10am (UTC)"),
-    [qM]: (k: number, t: number) => {
+    [qM]: (_k: number, t: number) => {
       atQ.push(t)
-      return k === 0 || t < T0 + 3600000
+      return t < T0 + 3600000
         ? "API Error: 503 auth_unavailable (model=r11wq; last upstream error: quota); soonest recovery in 1h"
         : null
     },
-    [tM]: refuseAll514("Not logged in · Please run /login"),
+    [tM]: refuseAll514(ORG_OFF),
   })
   const out = await step514(h, aid, inM, next)
   expect(out.value && out.value.text, "шаг завершён вызовом Q после её срока").toBe("OK-" + qM)
-  expect(next.seen.slice(0, 4), "первичный проход: объявленная, обе ступени и терминал -- никого не пропустили").toEqual([inM, bM, qM, tM])
-  expect(atQ.length, "Q вызвана ровно дважды: первичный проход и срок").toBe(2)
-  expect(atQ[0] - T0, "не-пропуск Q на первичном проходе").toBeLessThan(60000)
-  expect(atQ[1] - T0, "второй вызов Q -- после срока квоты").toBeGreaterThanOrEqual(3600000)
+  expect(next.seen.slice(0, 3), "первичный проход: объявленная, B и терминал; Q с живой quota снята").toEqual([inM, bM, tM])
+  expect(atQ.length, "Q вызвана ровно один раз -- после срока").toBe(1)
+  expect(atQ[0] - T0, "единственный вызов Q -- после срока квоты").toBeGreaterThanOrEqual(3600000)
   const skippedQ = waits514(h, aid, "skipped-known-until").filter(r => r.model === qM)
-  expect(skippedQ.length, "wake-проходы снимают живую quota-метку в skippedKnown").toBeGreaterThan(0)
+  expect(skippedQ.filter(r => r.pass === 1).length, "первичный проход называет пропуск Q").toBe(1)
+  expect(skippedQ.length, "проходы до срока снимают живую quota-метку в skippedKnown").toBeGreaterThan(1)
   rungCooldownReset()
   failoverBindReset()
 })
@@ -16830,7 +16979,7 @@ test("#509-FIX11 B3: проба с более ранним достоверны�
         ? "You've hit your session limit · resets 11am (UTC)"
         : (t >= T0 + 540000 ? null : "API Error: 503 auth_unavailable (model=in11s; last upstream error: quota); soonest recovery in 5m")
     },
-    [tM]: refuseAll514("Not logged in · Please run /login"),
+    [tM]: refuseAll514(ORG_OFF),
   })
   const out = await step514(h, aid, inM, next)
   const kinds = waits514(h, aid, "wait-probe").map(r => r.kind)
@@ -17257,8 +17406,8 @@ test("#509-FIX21 P9: двойное отрицание be, самостояте�
     ["API Error: 400 the prompt didn't take timeout, the payload is too long", "request"],
     ["API Error: 400 the request didn't take entire the payload too long, the payload is too long", "request"],
     ["API Error: 413 the prompt wouldn't be too long", "request"],
-    ["API Error: 401 the prompt wouldn't be too long", "permanent-model"],
-    ["API Error: 403 the prompt wouldn't be too long", "permanent-model"],
+    ["API Error: 401 the prompt wouldn't be too long", "temporary-unknown"],
+    ["API Error: 403 the prompt wouldn't be too long", "temporary-unknown"],
     ["API Error: 404 the prompt wouldn't be too long", "permanent-model"],
     ["API Error: 402 the prompt wouldn't be too long", "quota"],
   ]
