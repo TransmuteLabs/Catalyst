@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.55")
+  expect(MOD_VERSION).toBe("0.1.56")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -10117,6 +10117,32 @@ test("#514 H3: backoff неизвестного срока 30/60/120/240/240 с,
   R514.noteModelSuccess("m514b", marks)
   expect(marks.has("m514b")).toBe(false)
   expect(note("m514b", 9000, "temporary-unknown", 0, "carrier-refusal", "t", marks).until).toBe(9000 + 30000)
+})
+
+test("#514 Р8: застрявшая на A привязка берёт B из свежего мира", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 10, 0, 0)
+  let next: any = null
+  const h = host514("r8", T0, {
+    probes: '[failover]\nenabled = true\n\n[failover.class.c514r8]\nmodels = [{model = "a514r8", effort = "max"}, {model = "b514r8", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c514r8]\nallowed = ["a514r8", "b514r8"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (_n, now) => { if (now >= T0 + 244000) next.signal.aborted = true },
+  })
+  failoverBindSet("ag-514r8", { ladder: ["a514r8"], terminal: "", rungEffort: { "a514r8": "max" }, subagentType: "t514r8", class: "c514r8", sticky: null })
+  next = next514(h, {
+    "a514r8": refuseAll514("[1308] Usage limit reached for 5 hour"),
+    "b514r8": () => null,
+  })
+  try {
+    const out = await step514(h, "ag-514r8", "a514r8", next)
+    expect(next.seen, "B вызвана, хотя в привязке спавна была только A").toContain("b514r8")
+    expect(out.value && out.value.text).toBe("OK-b514r8")
+    expect(waits514(h, "ag-514r8", "wait-aborted").length).toBe(0)
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
 })
 
 test("#514 J5(а): все отказывают со сроком «resets» через 2 мин -- ожидание до readyAt, перепроба, успех", async () => {

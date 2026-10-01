@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.55"
+export const MOD_VERSION = "0.1.56"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -2874,6 +2874,31 @@ export function failoverBindSet(agentId: string, rec: any): void {
 
 export function failoverBindGet(agentId: string): any {
   return failoverBinds.get(String(agentId || ""))
+}
+
+// CONSTRAINT (#514 Р8): ожидающий агент берёт лестницу, эффорты ступеней и
+// терминал из мира момента пробы, не спавна: привязка спавна замораживала
+// клетку с одной ступенью, и агент вечно ждал её окна. Отказавшие модели
+// отсеивают метки rungCooldownMarks, а не перечень привязки.
+export function failoverBindRefresh(bind: any, world: any): void {
+  if (!bind || !world || !world.failover) return
+  const info = failoverLadderBind(world.failover, bind.subagentType, bind.class)
+  const term = failoverTerminal(world.failover)
+  const adm = admitLadder(info.ladder, bind.class, world.allowedByClass, admissionUsable(world))
+  // CONSTRAINT: мир без ступеней и терминала для агента (нечитаемый слой) не
+  // стирает привязку ожидающего -- иначе он теряет и ту ступень, что была.
+  if (!adm.ladder.length && !term.model) return
+  let rungEffort = info.rungEffort
+  let effortBad = info.effortBad
+  if (term.effort && modelKeyed(rungEffort, term.model) === undefined) rungEffort = Object.assign({}, rungEffort, { [term.model]: term.effort })
+  if (term.effortBad && modelKeyed(effortBad, term.model) === undefined) effortBad = Object.assign({}, effortBad, { [term.model]: term.effortBad })
+  bind.ladder = adm.ladder
+  bind.rungEffort = rungEffort
+  bind.effortBad = effortBad
+  bind.rungsDropped = info.rungsDropped
+  bind.source = info.source
+  bind.allowedSrc = world.allowedSrc
+  bind.terminal = term.model
 }
 
 // CONSTRAINT (#226): исполнитель и проверяющий -- ЯВНЫЕ перечни префиксов
@@ -8451,6 +8476,11 @@ export function register(on: any) {
     const epStep = epoch
     let others: string[] = []
     const origN = normModelId(original)
+    const filterLadder = async (): Promise<void> => {
+    planLadder = bind.ladder
+    rungsFiltered = 0
+    rungsFilteredReviewer = 0
+    ladderFullTaken = false
     if (reviewer) {
       const bindLadder: string[] = bind.ladder ?? []
       const keep: string[] = []
@@ -8479,6 +8509,8 @@ export function register(on: any) {
         ladderFullTaken = true
       }
     }
+    }
+    await filterLadder()
     // CONSTRAINT: bind.ladder и bind.sticky не переписываются -- в привязке
     // лежит объявленная реестром истина и факт «эта ступень отработала»;
     // очистка от моделей исполнителей -- решение одного шага. Порядок ступеней
@@ -8505,13 +8537,18 @@ export function register(on: any) {
     // (#514 H3): такая модель пропускается, терминал -- никогда.
     // CONSTRAINT (#509-FIX1 D): терминал модели исполнителя снимается у
     // проверяющего при ЛЮБОЙ базе, включая пустую, -- тем же фильтром, что ступени.
-    const termModel = String(bind.terminal || "")
-    let planTerminal = termModel
+    let planTerminal = ""
     let terminalFiltered = false
-    if (termModel && reviewer && sessionExecutorHas(termModel)) {
-      planTerminal = ""
-      terminalFiltered = true
+    const filterTerminal = (): void => {
+      const termModel = String(bind.terminal || "")
+      planTerminal = termModel
+      terminalFiltered = false
+      if (termModel && reviewer && sessionExecutorHas(termModel)) {
+        planTerminal = ""
+        terminalFiltered = true
+      }
     }
+    filterTerminal()
     const firstPlan = failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($))
     // CONSTRAINT (#509-FIX11 B2): прямой проход -- только для ДЕЙСТВИТЕЛЬНО
     // пустого плана; план, опустевший от снятых живых меток, уходит в штатное
@@ -8571,7 +8608,26 @@ export function register(on: any) {
     const stepRequest: string[] = []
     let unreadToasted = false
     const newPass = (): void => { passN++; called = []; effortRefused = []; skippedDead = [] }
-    const planTermN = planTerminal ? normModelId(planTerminal) : ""
+    let planTermN = planTerminal ? normModelId(planTerminal) : ""
+    const refreshForWait = async (): Promise<void> => {
+      let w: any = null
+      try { w = await worldFor($) } catch (x) { noteLost("failover-wait-world", x, $); return }
+      const fw = w && w.world
+      if (!fw || !fw.failover || !bl3(fw.failover.enabled, true)) return
+      failoverBindRefresh(bind, fw)
+      await filterLadder()
+      filterTerminal()
+      planTermN = planTerminal ? normModelId(planTerminal) : ""
+      if (reviewer) {
+        journalBase.rungsFiltered = rungsFiltered
+        journalBase.rungsFilteredReviewer = rungsFilteredReviewer
+        if (ladderFullTaken) journalBase.ladderFullTaken = true
+      }
+      if (terminalFiltered) journalBase.terminalFiltered = true
+      if (bind.rungsDropped) journalBase.rungsDropped = bind.rungsDropped
+      if (bind.source) journalBase.source = bind.source
+      if (bind.allowedSrc) journalBase.allowedSrc = bind.allowedSrc
+    }
     const aborted = (): boolean => {
       try { return !!(next.signal && next.signal.aborted) } catch (x) { noteLost("failover-signal", x, $); return false }
     }
@@ -9291,6 +9347,9 @@ export function register(on: any) {
       // CONSTRAINT (#514 H7): один тост на агента на эпизод ожидания.
       await toastByD("агент " + String(bind.subagentType || aid) + " ждёт сброса лимита: " + target.model + " до " + isoOf(target.wakeAt), "failover-wait-toast")
     }
+    await refreshForWait()
+    const entryBuilt = failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($), rungCooldownMarks, { skipKnown: true })
+    if (entryBuilt.all.some((m: string) => built.all.indexOf(m) < 0)) built = entryBuilt
     waiting = true
     for (;;) {
       if (aborted()) { await waitRec("wait-aborted", {}, false); return lastRes }
@@ -9304,6 +9363,7 @@ export function register(on: any) {
         await begin(target)
         await waitRec("wait-probe", { kind: "wake", model: target.model })
         lastProbeAt = now
+        await refreshForWait()
         built = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks, { skipKnown: true })
         const r = yield* passOnce(built, true)
         pausedSinceCall = !!r.paused
@@ -9319,6 +9379,12 @@ export function register(on: any) {
       const heartbeatDue = mayCall && now - lastProbeAt >= HEARTBEAT_MS
       const deadlineDue = deadlineAt() - now <= HALF_MARGIN_MS
       if (heartbeatDue || deadlineDue) {
+        // CONSTRAINT (#514 Р8): ступень, появившаяся в мире после спавна, идёт
+        // проходом пробуждения следующего витка, а не ждёт пробы старой цели.
+        // План шага (фильтр занятости проверяющих) сменяется только новой ступенью.
+        await refreshForWait()
+        const freshBuilt = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks, { skipKnown: true })
+        if (freshBuilt.all.some((m: string) => built.all.indexOf(m) < 0)) { built = freshBuilt; continue }
         await begin(target)
         await waitRec("wait-probe", { kind: heartbeatDue ? "heartbeat" : "deadline", model: target.model })
         lastProbeAt = now
