@@ -330,6 +330,13 @@ LATCH_REFUSE_TOLERANT = '        except (OSError, ValueError, RuntimeError) as e
 FIX6_CONTROLS['latch-refuse-narrow-runner'] = (RUNNER, LATCH_REFUSE_TOLERANT, LATCH_REFUSE_TOLERANT.replace(', RuntimeError', ''), ['latch-installed-all'], 'latch-installed-all', 'run3 rc=1')
 FAKE_REFUSE_TOLERANT = 'LATCH_FAKE_REFUSED = (OSError, ValueError, RuntimeError)\n'
 FIX6_CONTROLS['latch-refuse-narrow-fake'] = (RUNNER, FAKE_REFUSE_TOLERANT, FAKE_REFUSE_TOLERANT.replace(', RuntimeError', ''), ['latch-installed-all'], 'latch-installed-all', 'missing_count=1 refused=[]')
+# CONSTRAINT: недостижимая мутация не имеет права всплывать как «did not fail its own tooth»: свидетель достижимости отказывает именованным UNREACHABLE до запуска зубов записи; rc binary-check сверен с литералом 0 в тексте пробы контроллера, одинаковое смещение rc в пробе и базе иначе проходит клаузу равенства.
+FIX6_CONTROLS['set-probe-mismatch-branch-mutant'] = (RUNNER, "        if os.WTERMSIG(status) != n:\n            print('latch-set-measured refused: n=' + str(n) + ' status=' + str(status))\n            sys.exit(2)\n", "        if os.WTERMSIG(status) != n:\n            print('latch-set-measured refused: n=' + str(n) + ' status=' + str(status) )\n            sys.exit(2)\n", ['latch-set-measured'], 'latch-set-measured', 'set-probe mismatch branch never runs')
+FIX6_CONTROLS['binary-refused-branch-unreachable-mutant'] = (RUNNER, "        print('fixture-loader-285: explicit binary refused before launch: ' + args.binary)\n", "        print('fixture-loader-285: explicit binary refused before launch: ' + args.binary + '')\n", ['latch-installed-all'], 'latch-installed-all', 'binary refused branch never runs')
+# CONSTRAINT: мутация спецификатора поднятого импорта маяком не свидетельствуется: связывание падает до первого оператора, исход — именованный UNREACHABLE.
+FIX6_CONTROLS['mjs-literal-branch-unreachable-mutant'] = (ORACLE_JS, 'node:fs', 'node:fsX', ORACLE_TEETH, 'oracle-current-green', 'mjs import specifier: beacon never reached')
+FIX6_CONTROLS['binary-check-rc-mutant'] = (RUNNER, "        print('fixture-loader-285: explicit binary accepted without test launch')\n        return 0\n", "        print('fixture-loader-285: explicit binary accepted without test launch')\n        return 3\n", ['latch-installed-all'], 'latch-installed-all', ('expected_rc=0', 'ok=False'))
+FIX6_CONTROLS['binary-check-refused-rc-mutant'] = (RUNNER, "        print('fixture-loader-285: explicit binary accepted without test launch')\n        return 0\n", "        print('fixture-loader-285: explicit binary accepted without test launch')\n        return 5\n", ['latch-refused-named'], 'latch-refused-named', ('rc=5', 'base_rc=5'))
 KIT_SCOPES = {'oracle-current'} | (set(ORACLE_TEETH) - {'oracle-kit-missing'}) | set(GUARD_TEETH) | {name for name, spec in FIX6_CONTROLS.items() if spec[3] is ORACLE_TEETH or spec[3] is GUARD_TEETH}
 LATCH_PROBE = '''import importlib.util
 import os
@@ -490,6 +497,8 @@ caught = [int(sig) for sig in runner.LATCH569['caught']]
 print('error=' + repr(exits) + ' fd1=' + repr(data) + ' caught=' + repr(caught))
 sys.exit(0 if exits == [128 + int(signal.SIGTERM)] and caught == [int(signal.SIGTERM), int(signal.SIGHUP)] and sorted(data.split(b'\\n')[:-1]) == sorted([outer, b'controls signal SIGHUP']) else 1)
 '''
+# CONSTRAINT: обе пробы binary-check берут ноль из одной константы контроллера, не из субъекта: равное смещение rc в пробе и базе иначе проходит клаузу равенства.
+CHECK_RC569 = 0
 REFUSED_PROBE = '''import importlib.util
 import os
 import signal
@@ -533,8 +542,8 @@ blocked = [line for line in data.decode('utf-8', 'replace').splitlines() if line
 want = 'latch ' + str(usr2) + ' refused: [Errno 22] Invalid argument'
 reached = b'fixture-loader-285: explicit binary accepted without test launch' in data
 restored = all(after[sig] == before[sig] for sig in subjects)
-print('rc=' + repr(rc) + ' base_rc=' + repr(base.returncode) + ' usr2_calls=' + repr(calls) + ' lines=' + repr(lines) + ' reached=' + repr(reached) + ' restored=' + repr(restored) + ' blocked=' + repr(blocked))
-sys.exit(0 if lines == [want] and rc == base.returncode and reached and restored and calls == [(usr2, runner.stop569)] and blocked == [] else 1)
+print('rc=' + repr(rc) + ' base_rc=' + repr(base.returncode) + ' expected_rc=' + str(@@CHECK_RC@@) + ' usr2_calls=' + repr(calls) + ' lines=' + repr(lines) + ' reached=' + repr(reached) + ' restored=' + repr(restored) + ' blocked=' + repr(blocked))
+sys.exit(0 if lines == [want] and rc == base.returncode == @@CHECK_RC@@ and reached and restored and calls == [(usr2, runner.stop569)] and blocked == [] else 1)
 '''
 DEPTH_PROBE = '''import importlib.util
 import os
@@ -768,12 +777,14 @@ for run in range(4):
     named = all(('latch ' + str(int(sig)) + ' refused: ') in text for sig in refused)
     restored = all(after[sig] == before[sig] for sig in subjects)
     blocked = [line for line in text.splitlines() if line.startswith('BLOCKED controls: ')]
-    ok = seen == subjects and refused == ([SIGPWR] if (SIGPWR is not None and refuse[0] is not None) else []) and (refuse[0] is None or named) and rc == base.returncode and restored and blocked == []
+    ok = seen == subjects and refused == ([SIGPWR] if (SIGPWR is not None and refuse[0] is not None) else []) and (refuse[0] is None or named) and rc == base.returncode == @@CHECK_RC@@ and restored and blocked == []
     oks.append(ok)
-    outcomes.append('run' + str(run) + ' rc=' + repr(rc) + ' base_rc=' + repr(base.returncode) + ' installed_count=' + str(sum(1 for _, outcome in calls if outcome == 'installed')) + ' subjects_count=' + str(len(subjects)) + ' missing_count=' + str(len(missing)) + ' refused=' + repr([int(sig) for sig in refused]) + ' named=' + repr(named) + ' restored=' + repr(restored) + ' blocked=' + repr(blocked) + ' ok=' + repr(ok))
+    outcomes.append('run' + str(run) + ' rc=' + repr(rc) + ' base_rc=' + repr(base.returncode) + ' expected_rc=' + str(@@CHECK_RC@@) + ' installed_count=' + str(sum(1 for _, outcome in calls if outcome == 'installed')) + ' subjects_count=' + str(len(subjects)) + ' missing_count=' + str(len(missing)) + ' refused=' + repr([int(sig) for sig in refused]) + ' named=' + repr(named) + ' restored=' + repr(restored) + ' blocked=' + repr(blocked) + ' ok=' + repr(ok))
 print(' | '.join(outcomes))
 sys.exit(0 if all(oks) else 1)
 '''
+REFUSED_PROBE = REFUSED_PROBE.replace('@@CHECK_RC@@', str(CHECK_RC569))
+INSTALLED_PROBE = INSTALLED_PROBE.replace('@@CHECK_RC@@', str(CHECK_RC569))
 LATCH_PROBES = {'latch-handler-unbuffered': LATCH_PROBE, 'latch-handler-foreign-error': FOREIGN_PROBE, 'latch-rt-signal': RT_PROBE, 'latch-nested-lines': NESTED_PROBE, 'latch-refused-named': REFUSED_PROBE, 'latch-depth-foreign-raise': DEPTH_PROBE, 'latch-emt-member': EMT_PROBE, 'latch-depth-paths': DEPTH_PATHS_PROBE, 'latch-installed-all': INSTALLED_PROBE, 'latch-set-measured': SET_PROBE}
 
 
@@ -990,6 +1001,206 @@ def fix6_teeth(teeth, plug, case, env, kit):
     return failed, raws
 
 
+def needle569(raw, part):
+    return re.search(r'(?<![\w])' + re.escape(part) + r'(?![\w])', raw) is not None
+
+
+def fix6_scored569(out, parts):
+    return all(needle569(out, part) for part in parts)
+
+
+def literal_spans569(text, file, kit):
+    # CONSTRAINT: литерал = текстовые части строк и шаблонов вместе с разделителями; код внутри ${…} шаблона и {…} f-строки — не литерал; разделители `${` / `}` и `{` / `}` — код. Границы читаются существующими сканерами (Python — tokenize, .mjs — lexModule кита), а кит приходит аргументом --kit, не вычисляемым путём.
+    if str(file).endswith('.mjs'):
+        if not kit:
+            raise ValueError('literal classification unavailable: --kit not given')
+        # CONSTRAINT: любой отказ Path() семейства Exception в значении --kit (не путь, __fspath__ отдаёт не str, __fspath__ бросает) — отказ с префиксом; предикат по типу аргумента этот класс не закрывает; BaseException вне Exception (прерывание) не перехватывается.
+        try:
+            kit_path = Path(kit)
+        except Exception:
+            raise ValueError('literal classification unavailable: --kit is not a path: ' + type(kit).__name__)
+        try:
+            source = kit_path.read_text()
+            start = source.index('  const MULTI_OPS =')
+            end = source.index('  const parseImportSpecs =', start)
+            node = subprocess.run(['node', '-e', MJS_LITERAL_SCAN569], input=json.dumps({'src': source[start:end], 'text': text}), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except (OSError, ValueError) as error:
+            raise ValueError('literal classification unavailable: ' + str(error))
+        if node.returncode:
+            raise ValueError('literal classification unavailable: ' + node.stderr.strip())
+        try:
+            spans = json.loads(node.stdout)
+        except (OSError, ValueError) as error:
+            raise ValueError('literal classification unavailable: ' + str(error))
+        return mjs_spans569(text, spans)
+    return python_spans569(text)
+
+
+def python_spans569(text):
+    import io
+    import tokenize
+    spans = []
+    fstring_types = tuple(getattr(tokenize, name) for name in ('FSTRING_START', 'FSTRING_MIDDLE', 'FSTRING_END') if hasattr(tokenize, name))
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if token.type == tokenize.STRING:
+                if re.match(r'^[rRuUbB]*[fF]', token.string):
+                    raise ValueError('literal classification unavailable: python<3.12 f-string')
+                spans.append(token_offsets569(text, token))
+            elif token.type in fstring_types:
+                spans.append(token_offsets569(text, token))
+            elif token.type == tokenize.ERRORTOKEN:
+                raise ValueError('literal classification unavailable: ' + token.string)
+    except tokenize.TokenError as error:
+        raise ValueError('literal classification unavailable: ' + str(error))
+    except SyntaxError as error:
+        raise ValueError('literal classification unavailable: ' + str(error))
+    return spans
+
+
+def token_offsets569(text, token):
+    starts = line_starts569(text)
+    return starts[token.start[0] - 1] + token.start[1], starts[token.end[0] - 1] + token.end[1]
+
+
+def line_starts569(text):
+    # CONSTRAINT: смещения строк считаются тем же readline, что читает tokenize: splitlines рвёт U+2028/U+2029, и интервал литерала съезжает.
+    import io
+    starts = [0]
+    buf = io.StringIO(text)
+    pos = 0
+    while True:
+        line = buf.readline()
+        if not line:
+            break
+        pos += len(line)
+        starts.append(pos)
+    return starts
+
+
+def mjs_spans569(text, raw):
+    # CONSTRAINT: сканер кита отдаёт индексы UTF-16; перевод в индексы строки Python — по префиксной таблице utf-16-le, иначе астральный символ сдвигает границу литерала.
+    units = [0]
+    for ch in text:
+        units.append(units[-1] + (2 if ord(ch) > 0xFFFF else 1))
+    def to_py(js):
+        lo, hi = 0, len(units) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if units[mid] == js:
+                return mid
+            if units[mid] < js:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        raise ValueError('literal classification unavailable: utf16 boundary ' + str(js))
+    opener = {'sq': "'", 'dq': '"', 'tmpl': '`'}
+    spans = []
+    for js_begin, js_end, mode in raw:
+        begin, end = to_py(js_begin), to_py(js_end)
+        if begin > 0 and text[begin - 1] == opener[mode]:
+            begin -= 1
+        # CONSTRAINT: `${` открывает дырку (ECMAScript TemplateHead / TemplateMiddle) только при чётном числе `\` подряд перед `$`; при нечётном `$` экранирован (TemplateCharacter `\` EscapeSequence), и `\${` — текст.
+        if mode == 'tmpl' and text[end - 2:end] == '${':
+            slashes = 0
+            while end - 3 - slashes >= 0 and text[end - 3 - slashes] == '\\':
+                slashes += 1
+            if slashes % 2 == 0:
+                end -= 2
+        if begin < end:
+            spans.append((begin, end))
+    return spans
+
+
+MJS_LITERAL_SCAN569 = """const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const lexModule = new Function(input.src + '\\nreturn lexModule;')();
+const text = input.text;
+const stateAt = lexModule(text).stateAt;
+const spans = [];
+let open = null;
+for (let i = 0; i <= text.length; i++) {
+  const mode = i < text.length ? stateAt(i) : 'code';
+  if (mode === 'sq' || mode === 'dq' || mode === 'tmpl') {
+    if (open === null) open = [i, mode];
+  } else if (open !== null) {
+    spans.push([open[0], i, open[1]]);
+    open = null;
+  }
+}
+process.stdout.write(JSON.stringify(spans));
+"""
+
+
+def marker569(tag, file):
+    # CONSTRAINT: канал маяка — файл в изолированном каталоге свидетеля (WITNESS569_DIR от контроллера, TMPDIR — фолбэк), не fd 1: latch-пробы dup2/читают fd 1 и сверяют его байты дословно, а TMPDIR субъекта лежит в вычищаемом control-* вложенного раннера.
+    if file.endswith('.mjs'):
+        return "fs.appendFileSync((process.env.WITNESS569_DIR || process.env.TMPDIR || '/tmp') + '/witness-569-" + tag + ".txt', 'WITNESS569 " + tag + "\\n');\n"
+    return "open((__import__('os').environ.get('WITNESS569_DIR') or __import__('os').environ.get('TMPDIR', '/tmp')) + '/witness-569-" + tag + ".txt', 'a').write('WITNESS569 " + tag + "\\n')\n"
+
+
+def beacon569(text, start, old, new, tag, file):
+    # CONSTRAINT: маркер встаёт на первую отличающуюся строку мутации (диф-ядро), не на хвост спана: хвост бывает мёртв под самим мутантом (ранний выход из обработчика), а доказательство нужно именно исполнению изменённых байтов.
+    marker = marker569(tag, file)
+    end = start + len(new)
+    starts = []
+    if new:
+        shared = len(os.path.commonprefix([old, new]))
+        first = start + min(shared, len(new) - 1)
+        starts.append(text.rfind('\n', 0, first) + 1)
+        starts.append(text.rfind('\n', 0, start) + 1)
+    starts.append(end if end >= len(text) or text[end - 1] == '\n' else text.find('\n', end) + 1)
+    for line in dict.fromkeys(starts):
+        if line < 0 or line >= len(text) or not text[line:].strip():
+            continue
+        rest = text[line:]
+        candidate = text[:line] + rest[:len(rest) - len(rest.lstrip())] + marker + rest
+        if file.endswith('.mjs'):
+            return candidate
+        try:
+            compile(candidate, file, 'exec')
+        except SyntaxError:
+            continue
+        return candidate
+    raise ValueError('witness marker has no valid position: ' + tag)
+
+
+def witness569(entry, spans, plug, case, env, kit, tooth):
+    # CONSTRAINT: KILLED засчитывается только после свидетеля достижимости: мутация в неисполняемом месте неотличима от живой исходом зуба и обязана отказывать именованным UNREACHABLE до запуска зубов записи.
+    where = case / ('witness-' + tooth)
+    where.mkdir()
+    markers = where / 'markers'
+    markers.mkdir()
+    env['WITNESS569_DIR'] = str(markers)
+    subject = where / 'plugin'
+    shutil.copytree(plug, subject)
+    tags = []
+    for index, (file, start, old, new) in enumerate(spans):
+        tag = entry + '-' + str(index)
+        tags.append((tag, file, start))
+        path = subject / file
+        path.write_text(beacon569(path.read_text(), start, old, new, tag, file))
+    fix6_teeth([tooth], subject, where, env, kit)
+    absent = []
+    for tag, file, start in tags:
+        try:
+            reached = (markers / ('witness-569-' + tag + '.txt')).read_text()
+        except OSError:
+            absent.append((tag, file, start))
+            continue
+        if 'WITNESS569 ' + tag not in reached:
+            absent.append((tag, file, start))
+    if absent:
+        literal = False
+        for tag, file, start in absent:
+            source_text = (plug / file).read_text()
+            if any(begin <= start < end for begin, end in literal_spans569(source_text, file, kit)):
+                literal = True
+                break
+        suffix = ' (span inside a string literal)' if literal else ''
+        raise ValueError('UNREACHABLE FIX6 mutation: ' + entry + ' witness=' + ','.join(tag for tag, file, start in absent) + suffix)
+    print('witness-569: ' + entry + ' reached=' + ','.join(tag for tag, file, start in tags))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--scope', required=True)
@@ -1094,6 +1305,7 @@ def run569(args, names, root):
             continue
         if name in FIX6_CONTROLS:
             file, old, new, teeth, tooth, message = FIX6_CONTROLS[name]
+            spans = []
             for file, old, new in (file if isinstance(file, list) else [(file, old, new)]):
                 path = plug / file
                 text = path.read_text()
@@ -1101,9 +1313,13 @@ def run569(args, names, root):
                 if changed == text:
                     raise ValueError('inert FIX6 mutation: ' + name)
                 path.write_text(changed)
+                spans.append((file, text.index(old), old, new))
+            witness569(name, spans, plug, case, env, args.kit, tooth)
+            # CONSTRAINT: зачётный прогон не видит WITNESS569_DIR: свидетель и зачёт не делят ключ, иначе зачётный зуб прочитал бы каталог маркеров свидетеля.
+            env.pop('WITNESS569_DIR', None)
             failed, raws = fix6_teeth(teeth, plug, case, env, args.kit)
             messages = message if isinstance(message, tuple) else (message,)
-            if tooth not in failed or not all(part in raws[tooth] for part in messages):
+            if tooth not in failed or not fix6_scored569(raws[tooth], messages):
                 raise ValueError('FIX6 mutation did not fail its own tooth: ' + name)
             killed569('KILLED ' + name + ' -> ' + tooth + ' -> ' + ' + '.join(messages), ''.join('(fail) ' + t + '\n' for t in failed))
             continue
