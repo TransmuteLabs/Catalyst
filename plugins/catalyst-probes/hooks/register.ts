@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.57"
+export const MOD_VERSION = "0.1.58"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -281,10 +281,13 @@ export const REFUSAL_REQUEST_PREFIXES = [
 // CONSTRAINT (#514 Р9): отказ о состоянии учётки (вход, токен, ключ, учётные
 // данные провайдера) -- temporary-unknown с backoff, не permanent-model: за
 // шлюзом localhost:8317 учётка ротируется и возвращается сама, а метка
-// permanent-model на час снимала объявленную модель агента одним 403. Отказы
-// аккаунта и политики (кредит, план, доступ, организация, шлюз «signing in
-// again won't change this», «Authentication error · » PJt) остаются permanent.
+// permanent-model на час снимала объявленную модель агента одним 403. Шлюз,
+// не вошедший к своему провайдеру (nin 2.1.287), -- та же учётка за шлюзом.
+// Отказы аккаунта и политики (кредит, план, организация, «Gateway refused
+// the request») остаются permanent.
 export const REFUSAL_AUTH_PREFIXES = [
+  "Authentication error · The gateway could not authenticate with its upstream provider",
+  "Your account does not have access to Claude.",
   "Not logged in · Please run /login",
   "Authentication required · Sign in again to continue",
   "Please run /login",
@@ -299,11 +302,13 @@ export const REFUSAL_AUTH_PREFIXES = [
   "Google Cloud credentials expired or invalid", "Google Cloud authentication failed",
   "Microsoft Foundry authentication failed",
 ]
+// CONSTRAINT (#514 Р9-FIX1): хвост ветки remedy "model_access" хоста 2.1.287
+// (Bedrock: модель не включена для аккаунта и региона) -- отказ МОДЕЛИ при
+// префиксе учётки AWS; ротация учётки его не снимет.
+export const REFUSAL_AUTH_MODEL_ACCESS = " · enable this model for your account and region in the Amazon Bedrock console"
 export const REFUSAL_PERMANENT_PREFIXES = [
-  "Authentication error · ",
   "Credit balance is too low",
   "Claude Opus is not available with the Claude Pro plan",
-  "Your account does not have access to Claude.",
   "Invalid ANTHROPIC_CUSTOM_HEADERS · ",
   "Invalid request header from the environment · ",
   "Your ANTHROPIC_API_KEY belongs to a disabled organization · ",
@@ -751,7 +756,8 @@ function refusalBodyClassOf(text: string, model: string): string {
 export function refusalKnown(line: any, model: string = ""): boolean {
   const t = String(line == null ? "" : line).trim()
   if (!t) return false
-  return startsWithAny(t, REFUSAL_REQUEST_PREFIXES) || isPermanentLine(t) ||
+  return startsWithAny(t, REFUSAL_REQUEST_PREFIXES) || REFUSAL_TEMPORARY_EXACT.indexOf(t) >= 0 ||
+    startsWithAny(t, REFUSAL_AUTH_PREFIXES) || isPermanentLine(t) ||
     isLimitLine(t) || startsWithAny(t, REFUSAL_OTHER_PREFIXES) || refusalBodyClassOf(t, model) !== ""
 }
 
@@ -979,7 +985,10 @@ export function classifyRefusal(line: string, atMs: number, model: string = ""):
   }
   if (startsWithAny(text, REFUSAL_REQUEST_PREFIXES)) return { class: "request", readyAt: 0, err: null }
   if (REFUSAL_TEMPORARY_EXACT.indexOf(text) >= 0) return { class: "temporary-unknown", readyAt: 0, err: null }
-  if (startsWithAny(text, REFUSAL_AUTH_PREFIXES)) return { class: "temporary-unknown", readyAt: 0, err: null }
+  if (startsWithAny(text, REFUSAL_AUTH_PREFIXES)) {
+    if (text.indexOf(REFUSAL_AUTH_MODEL_ACCESS) >= 0) return { class: "permanent-model", readyAt: 0, err: null }
+    return { class: "temporary-unknown", readyAt: 0, err: null }
+  }
   if (isPermanentLine(text)) return { class: "permanent-model", readyAt: 0, err: null }
   if (isLimitLine(text)) {
     const r = resetsAtOf(text, atMs)
@@ -2896,8 +2905,11 @@ export function failoverBindRefresh(bind: any, world: any): void {
   const adm = admitLadder(info.ladder, bind.class, world.allowedByClass, admissionUsable(world))
   // CONSTRAINT: нечитаемый слой лестницы или допуска не подтверждает и не
   // снимает ступени -- привязка ожидающего остаётся прежней. Прочитанный мир,
-  // сузивший лестницу или терминал, сужает их и здесь, как на спавне.
+  // сузивший лестницу или терминал, сужает их и здесь, как на спавне. Слой,
+  // не назвавший клетке ни лестницы, ни терминала (пустой или оборванный
+  // probes.toml), -- не сужение, а потеря слоя: привязка тоже остаётся.
   if (world.probesUnread || adm.unavailable) return
+  if (!info.ladder.length && !term.model) return
   let rungEffort = info.rungEffort
   let effortBad = info.effortBad
   if (term.effort && modelKeyed(rungEffort, term.model) === undefined) rungEffort = Object.assign({}, rungEffort, { [term.model]: term.effort })
@@ -9402,7 +9414,12 @@ export function register(on: any) {
         await waitRec("wait-probe", { kind: "wake", model: target.model })
         lastProbeAt = now
         await refreshForWait()
-        built = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks)
+        // CONSTRAINT (#514 Р9-FIX1): проход пробуждения идёт по свежему плану и
+        // при том же составе -- метки dead/known сдвигают plan, не all; проба
+        // сердцебиения держит план прохода: reviewer-taken ведёт по нему.
+        const fresh = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks)
+        await swapPlan(fresh)
+        built = fresh
         builtTermN = planTermN
         const r = yield* passOnce(built, true)
         pausedSinceCall = !!r.paused

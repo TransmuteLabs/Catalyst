@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.57")
+  expect(MOD_VERSION).toBe("0.1.58")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -10091,7 +10091,7 @@ test("#514 H1 / FIX3 M2: классы отказа по таблице хост�
     ["Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "temporary-unknown"],
     ["OAuth token revoked · Please run /login", "temporary-unknown"],
     ["Login expired · Please run /login", "temporary-unknown"],
-    ["Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator", "permanent-model"],
+    ["Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator", "temporary-unknown"],
     ["Credit balance is too low", "permanent-model"],
     ["Claude Opus is not available with the Claude Pro plan. If you have updated your subscription plan recently, run /logout and /login for the plan to take effect.", "permanent-model"],
   ]
@@ -10280,6 +10280,84 @@ test("#514 Р9 (б): ступень с живой quota-меткой и изве
     expect(next.seen.filter((m: string) => m === "g514r9b"), "ступень с известным сроком не вызвана").toEqual([])
     const sk = journal514(h).filter(r => r.agentId === "ag-514r9b" && r.outcome === "skipped-known-until" && r.model === "g514r9b")
     expect(sk.length, "пропуск назван в каждом шаге").toBe(3)
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р9-FIX1): слой проб, не назвавший клетке ни лестницы, ни
+// терминала (оборванная запись probes.toml), не сужает привязку ожидающего.
+test("#514 Р9-FIX1: оборванный probes.toml посреди ожидания не снимает ступени привязки", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 12, 0, 0)
+  let next: any = null
+  const two = '[failover]\nenabled = true\n\n[failover.class.c514k]\nmodels = [{model = "a514k", effort = "max"}, {model = "b514k", effort = "max"}]\n'
+  let cutAt = 0
+  const h = host514("r9k", T0, {
+    probes: two,
+    files: { [TABLE514]: '[classes.c514k]\nallowed = ["a514k", "b514k"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        h.files[h.probesPath] = '[failover]\nenabled = true\n'
+        cutAt = now
+      }
+      if (now >= T0 + 3600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514k", { ladder: ["a514k", "b514k"], terminal: "", rungEffort: { "a514k": "max", "b514k": "max" }, subagentType: "t514k", class: "c514k", sticky: null })
+  next = next514(h, {
+    "a514k": refuseAll514("You've hit your session limit · resets 2:00pm (UTC)"),
+    "b514k": (_k: number, t: number) => (t >= T0 + 600000 ? null : "You've hit your session limit · resets 12:10pm (UTC)"),
+  })
+  try {
+    const out = await step514(h, "ag-514k", "a514k", next)
+    expect(cutAt, "запись оборвалась после входа в ожидание").toBeGreaterThan(0)
+    expect(out.value && out.value.text, "B осталась в привязке и ответила по своему сроку").toBe("OK-b514k")
+    const removed = waits514(h, "ag-514k", "wait-plan-refresh").flatMap((r: any) => r.removed || [])
+    expect(removed, "ступени не сняты").toEqual([])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р9-FIX1): срок цели (resets через 2 мин) короче пульса --
+// смену мира видит проба пробуждения; смена состава и там пишется в журнал.
+test("#514 Р9-FIX1: смена состава, увиденная пробой пробуждения, пишется wait-plan-refresh", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 11, 0, 0)
+  let next: any = null
+  const one = '[failover]\nenabled = true\n\n[failover.class.c514w]\nmodels = [{model = "a514w", effort = "max"}]\n'
+  const two = '[failover]\nenabled = true\n\n[failover.class.c514w]\nmodels = [{model = "a514w", effort = "max"}, {model = "b514w", effort = "max"}]\n'
+  let grownAt = 0
+  const h = host514("r9w", T0, {
+    probes: one,
+    files: { [TABLE514]: '[classes.c514w]\nallowed = ["a514w"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        h.files[h.probesPath] = two
+        h.files[TABLE514] = '[classes.c514w]\nallowed = ["a514w", "b514w"]\n'
+        grownAt = now
+      }
+      if (now >= T0 + 600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514w", { ladder: ["a514w"], terminal: "", rungEffort: { "a514w": "max" }, subagentType: "t514w", class: "c514w", sticky: null })
+  next = next514(h, {
+    "a514w": refuseAll514("You've hit your session limit · resets 11:02am (UTC)"),
+    "b514w": () => null,
+  })
+  try {
+    const out = await step514(h, "ag-514w", "a514w", next)
+    expect(grownAt, "мир вырос после входа в ожидание").toBeGreaterThan(0)
+    expect(out.value && out.value.text).toBe("OK-b514w")
+    const wakes = waits514(h, "ag-514w", "wait-probe").filter((r: any) => r.kind === "wake")
+    expect(wakes.length, "смену увидела проба пробуждения").toBeGreaterThan(0)
+    const sw = waits514(h, "ag-514w", "wait-plan-refresh")
+    expect(sw.map((r: any) => r.added), "смена названа").toEqual([["b514w"]])
   } finally {
     rungCooldownReset()
     reset514()
@@ -12292,7 +12370,8 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
     "Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use /clear to start fresh.",
   ]
   const permanent = [
-    "Your account does not have access to Claude. Please login again or contact your administrator.",
+    "AWS authentication failed · enable this model for your account and region in the Amazon Bedrock console, or run /model to pick another model · API Error: 403 denied",
+    "AWS credentials expired or invalid · enable this model for your account and region in the Amazon Bedrock console · API Error: 401 denied",
     "Invalid ANTHROPIC_CUSTOM_HEADERS · Fix the environment variable · header rejected",
     "Invalid request header from the environment · Fix the environment variable · header rejected",
     "Your ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your subscription instead",
@@ -12315,6 +12394,10 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
   ]
   // CONSTRAINT (#514 Р9): строки учётки -- temporary-unknown, не permanent-model.
   const auth = [
+    "Your account does not have access to Claude. Please login again or contact your administrator.",
+    "Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator",
+    "AWS authentication failed · refresh your AWS credentials (SSO sign-in, access keys, API key or proxy token) and retry · if credentials are current, check AWS permissions and model access · API Error: 403 denied",
+    "Google Cloud authentication failed · refresh the gateway token provided via ANTHROPIC_AUTH_TOKEN/ANTHROPIC_CUSTOM_HEADERS and retry · if credentials are current, check GCP IAM permissions and Vertex AI model access · API Error: 403 denied",
     "Failed to authenticate: OAuth session expired and could not be refreshed",
     "Invalid API key · Fix external API key",
     "Invalid auth token · Fix external auth token · 401 token rejected",
@@ -12485,15 +12568,16 @@ test("#509-FIX7 А-Р5, #514 Р9: GBn и HBn -- учётка (temporary-unknown)
   expect(R514.REFUSAL_PERMANENT_PREFIXES.indexOf("Login expired · "), "не в двух таблицах").toBe(-1)
 })
 
-test("#509-FIX7 А-Р6: Hdt -- temporary-unknown раньше префиксов permanent; gateway-строка PJt -- permanent", () => {
+test("#509-FIX7 А-Р6, #514 Р9-FIX1: Hdt и gateway-строка PJt -- temporary-unknown, обе известны", () => {
   const cr = R514.classifyRefusal
   const now = Date.parse("2026-10-03T09:00:00Z")
   const got = [
     "Authentication error · This may be a temporary network issue, please try again",
     "Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator",
   ].map(l => cr(l, now).class)
-  expect(got).toEqual(["temporary-unknown", "permanent-model"])
+  expect(got).toEqual(["temporary-unknown", "temporary-unknown"])
   expect(R514.refusalKnown("Authentication error · This may be a temporary network issue, please try again"), "строка таблицы хоста").toBe(true)
+  expect(R514.refusalKnown("Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator"), "gateway-строка").toBe(true)
 })
 
 test("#509-FIX7 А-Р7: allowlist-маршрутизация организации (110688729) -- permanent", () => {
@@ -12780,6 +12864,9 @@ test("#509-FIX7b AR8: next бросил тело отказа без префи�
     ["b8b", "glm-5.3-t7b8b", "{\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1308\",\"message\":\"[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]\"}}", "quota", "throw"],
     ["b8c", "grok-4.7-t7b8c", "402 All credentials for model grok-4.7 are parked: the upstream refused to bill them", "quota", "throw"],
     ["b8d", "glm-5.3-t7b8d", "Working on it.\n[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]", "quota", "line"],
+    ["b8e", "gpt-6.1-sol-t7b8e", "Please run /login · API Error: 403 status 403", "temporary-unknown", "throw"],
+    ["b8f", "gpt-6.1-sol-t7b8f", "Invalid API key · Fix external API key", "temporary-unknown", "throw"],
+    ["b8g", "gpt-6.1-sol-t7b8g", "AWS authentication failed · enable this model for your account and region in the Amazon Bedrock console · API Error: 403 denied", "permanent-model", "throw"],
   ]
   const got: any[] = []
   const want: any[] = []
@@ -12803,6 +12890,9 @@ test("#509-FIX7b AR8: next бросил тело отказа без префи�
   const z = "[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]"
   got.push({ tag: "messages", glm: pick(["Working on it.\n" + z], "glm-5.3"), opus: pick(["Working on it.\n" + z], "claude-opus-5-5") })
   want.push({ tag: "messages", glm: { line: z, known: true }, opus: { line: "Working on it.", known: false } })
+  // CONSTRAINT (#514 Р9-FIX1): новейшая строка учётки решает раньше старшей известной.
+  got.push({ tag: "auth-newest", v: pick(["Credit balance is too low", "Please run /login · API Error: 403 status 403"], "gpt-6.1-sol") })
+  want.push({ tag: "auth-newest", v: { line: "Please run /login · API Error: 403 status 403", known: true } })
   expect(got).toEqual(want)
 })
 
