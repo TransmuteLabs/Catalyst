@@ -56,6 +56,7 @@ import json
 import os
 import re
 import socket
+import stat
 import sys
 
 try:
@@ -519,14 +520,22 @@ def agent_dirs(cwd):
     return dirs
 
 
+def frontmatter_value(raw):
+    value = raw.strip()
+    if value[:1] in ("\"", "'"):
+        end = value.find(value[0], 1)
+        return value[1:end] if end != -1 else value[1:]
+    return value.split(" #", 1)[0].strip()
+
+
 def frontmatter_fields(subagent_type, cwd):
-    """``model:`` and ``effort:`` from the agent's definition file.
+    """Dispatch fields from the agent's definition file.
 
     First existing <name>.md wins (project > user > plugins — the harness's own
     precedence). A found definition ends the search even when it declares
-    neither field: that IS the definition.
+    none of these fields: that IS the definition.
     """
-    fields = {"model": None, "effort": None}
+    fields = {"model": None, "effort": None, "deliverable": None}
     name = subagent_type.rsplit(":", 1)[-1].strip()
     if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
         return fields
@@ -537,17 +546,32 @@ def frontmatter_fields(subagent_type, cwd):
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 text = f.read()
-        except OSError:
-            return fields
+        except OSError as definition_error:
+            emit_deny(f"agent definition {path} exists but cannot be read: {definition_error} — "
+                      f"the gate cannot see its model / effort / deliverable fields")
+        if text.startswith("\ufeff"):
+            text = text[1:]
+        first_line = text.split("\n", 1)[0]
+        if (text.startswith("\ufeff") or
+                (first_line.replace("\ufeff", "") == "---" and first_line != "---")):
+            emit_deny(f"agent definition {path}: unreadable frontmatter")
         if not text.startswith("---\n"):
             return fields
         end = text.find("\n---", 4)
         if end == -1:
             return fields
         for line in text[4:end].split("\n"):
-            for key in ("model", "effort"):
+            for key in ("model", "effort", "deliverable"):
                 if line.startswith(key + ":"):
-                    fields[key] = line.partition(":")[2].strip().strip("\"'")
+                    value = line.partition(":")[2].strip()
+                    if value[:1] in ("\"", "'"):
+                        unbalanced = value.find(value[0], 1) == -1
+                    else:
+                        unbalanced = any(value.split(" #", 1)[0].count(quote) % 2
+                                         for quote in ("\"", "'"))
+                    if unbalanced:
+                        emit_deny(f"agent definition {path}: unbalanced quote in {key}")
+                    fields[key] = frontmatter_value(line.partition(":")[2])
         return fields
     return fields
 
@@ -664,6 +688,157 @@ def check_quota_exception(model, cid, prompt, table, where="the prompt"):
     )
 
 
+BRIEF_COMPLETE = "<!-- BRIEF COMPLETE -->"
+BRIEF_MAX_BYTES = 4194304
+INPUT_LABEL_RE = re.compile(r"\[(brief|data):([^\]\n\x00]*)\]")
+LABEL_TAIL_RE = re.compile(r"\S*")
+LABEL_TAIL_OK_RE = re.compile("[.,;:!?)*_`\"']*")
+DELIVERABLE_FILE_RE = re.compile(r"\[deliverable:file\s+[^\]\n]+\]")
+TEXT_DELIVERABLE = "[deliverable:text]"
+FENCE_OPEN_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
+INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)", re.S)
+PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
+
+
+def text_lines(text):
+    # CONSTRAINT: one line rule for the prompt and the brief file: split on "\n", drop one trailing "\r".
+    return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+
+
+def last_nonempty_line(text):
+    return next((line for line in reversed(text_lines(text)) if line.strip()), "")
+
+
+def fence_closes(line, fence):
+    return re.fullmatch(" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}[ \t]*", line) is not None
+
+
+def container_line(line):
+    depth, in_list = 0, False
+    while True:
+        quote = re.match(r" {0,3}> ?", line)
+        if quote:
+            depth += 1
+            line = line[quote.end():]
+            continue
+        item = re.match(r" {0,3}(?:[-+*]|[0-9]{1,9}[.)]) {1,4}", line)
+        if item:
+            in_list = True
+            line = line[item.end():]
+            continue
+        return line, depth, in_list
+
+
+def strip_inline(part):
+    kept, position, cursor = [], 0, 0
+    while True:
+        match = INLINE_CODE_RE.search(part, cursor)
+        if match is None:
+            break
+        backslashes = len(part[:match.start()]) - len(part[:match.start()].rstrip("\\"))
+        if backslashes % 2:
+            cursor = match.start() + len(match.group(1))
+            continue
+        kept.append(part[position:match.start()])
+        kept.append("\x00")
+        position = cursor = match.end()
+    kept.append(part[position:])
+    return "".join(kept)
+
+
+def outside_code(text):
+    # CONSTRAINT: code leaves a boundary, never a new declaration made by joining its neighbours.
+    kept, fence, fence_depth, fence_list = [], None, 0, False
+    for line in text_lines(text):
+        content, depth, in_list = container_line(line)
+        if fence is not None and depth < fence_depth:
+            fence = None
+        if fence is None:
+            opener = FENCE_OPEN_RE.match(content)
+            if opener:
+                fence = opener.group(1)
+                fence_depth, fence_list = depth, in_list
+                kept.append("")
+                continue
+            kept.append(line)
+        else:
+            kept.append("")
+            closing = content.lstrip(" \t") if fence_list else content
+            if (fence_list or depth == fence_depth) and fence_closes(closing, fence):
+                fence = None
+    return "\n\n".join(strip_inline(part) for part in PARAGRAPH_BREAK_RE.split("\n".join(kept)))
+
+
+def read_brief(path):
+    # CONSTRAINT: O_NONBLOCK + regular-file check before any read: a FIFO or device must not hang the gate.
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as open_error:
+        emit_deny(f"brief input {path} cannot be read: {open_error} — repair the declared input before dispatch")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            emit_deny(f"brief input {path} is not a regular file — declare a brief file, not a pipe, device or directory")
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            raw = handle.read(BRIEF_MAX_BYTES + 1)
+    except OSError as read_error:
+        emit_deny(f"brief input {path} cannot be read: {read_error} — repair the declared input before dispatch")
+    finally:
+        os.close(fd)
+    if len(raw) > BRIEF_MAX_BYTES:
+        emit_deny(f"brief input {path} is larger than 4 MiB — a brief is a document; declare bulk input as [data:...]")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as decode_error:
+        emit_deny(f"brief input {path} cannot be read: {decode_error} — repair the declared input before dispatch")
+    return text[1:] if text.startswith("\ufeff") else text
+
+
+def check_input_labels(text):
+    if "\x00" in text:
+        emit_deny("dispatch input contains U+0000 — remove it before dispatch")
+    briefs = 0
+    for match in INPUT_LABEL_RE.finditer(text):
+        kind, path = match.group(1), match.group(2)
+        # CONSTRAINT: the whole non-space run after "]" is checked, so "[brief:/a].md]" cannot pass as /a.
+        tail = LABEL_TAIL_RE.match(text, match.end()).group(0)
+        if not LABEL_TAIL_OK_RE.fullmatch(tail):
+            emit_deny(f"malformed {kind} label {match.group(0)!r}: up to the next whitespace or the end "
+                      f"of text it may be followed only by .,;:!?)*_`\"' (a path containing \"]\" is not supported)")
+        if not path.startswith("/"):
+            emit_deny(f"input label path must be absolute: {path}")
+        if kind != "brief":
+            continue
+        briefs += 1
+        text_of_brief = read_brief(path)
+        if last_nonempty_line(text_of_brief) != BRIEF_COMPLETE:
+            emit_deny(f"brief input {path} is incomplete: last non-empty line is not "
+                      f"{BRIEF_COMPLETE} — the agent would refuse it")
+    return briefs
+
+
+def check_text_only_deliverable(agent, fields, prompt):
+    deliverable = fields.get("deliverable")
+    if deliverable is None:
+        return
+    if deliverable != "text-only":
+        emit_deny(f"agent '{agent}' declares deliverable: {deliverable!r} — the only known value "
+                  f"is text-only; fix the agent definition")
+    if DELIVERABLE_FILE_RE.search(prompt):
+        emit_deny(f"agent '{agent}' has deliverable: text-only, but the prompt orders a file with "
+                  f"[deliverable:file ...] — order the report as text or dispatch another agent")
+    if TEXT_DELIVERABLE not in outside_code(prompt):
+        emit_deny(f"agent '{agent}' has deliverable: text-only, but the prompt does not declare "
+                  f"{TEXT_DELIVERABLE} outside code — declare the deliverable or dispatch another agent")
+
+
+def check_u16_inputs(agent, fields, prompt):
+    briefs = check_input_labels(prompt)
+    if briefs and last_nonempty_line(prompt) != BRIEF_COMPLETE:
+        emit_deny(f"dispatch prompt is incomplete: last non-empty line is not "
+                  f"{BRIEF_COMPLETE} — finish the prompt before dispatch")
+    check_text_only_deliverable(agent, fields, prompt)
+
+
 def check_dispatch(tool_input, table, cwd, sink=None):
     st = str(tool_input.get("subagent_type") or "")
     fm = frontmatter_fields(st, cwd)
@@ -693,6 +868,7 @@ def check_dispatch(tool_input, table, cwd, sink=None):
                              f"dispatch of '{st}'",
                              declared=str(tool_input.get("dispatch_class") or ""))
     if cid is None:
+        check_u16_inputs(st, fm, str(tool_input.get("prompt") or ""))
         return
 
     # The agent's NAME must agree with the declared class: a critic dispatched
@@ -714,6 +890,7 @@ def check_dispatch(tool_input, table, cwd, sink=None):
     check_class_admits(model, source, cid, cls, table)
     check_class_has_failover(model, cid, cls)
     check_quota_exception(model, cid, str(tool_input.get("prompt") or ""), table)
+    check_u16_inputs(st, fm, str(tool_input.get("prompt") or ""))
 
     # Agent-channel effort: proxy models must carry an explicit effort — the
     # carrier is the agent definition's frontmatter ``effort:`` field (the
@@ -1085,6 +1262,7 @@ def check_bash(cmd, table, sink=None):
     if not kinds:
         return
     cid, cls = resolve_class(cmd, table, " + ".join(kinds))
+    check_input_labels(cmd)
     if cid is None:
         return
     check_class_delegable(cid, cls)
