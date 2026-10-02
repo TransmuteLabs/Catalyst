@@ -13,6 +13,7 @@ tests/fixtures/form-host-decode.json	mod-units,form-host-parity
 tests/fixtures/	mod-units
 .claude/types/	mod-units
 tests/data/	mod-event-names
+tests/tools/	mod-event-names
 tests/pressure/	lint,scripts
 tests/run-all.sh	run-all
 tests/stand-map.tsv	run-all
