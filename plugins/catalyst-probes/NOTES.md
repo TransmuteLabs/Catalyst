@@ -616,11 +616,13 @@ context-length excess, and `token limit exceeded` / `input length exceeded`
 are size subjects too (#509-FIX11 B4); a time subject keeps
 `temporary-unknown` with the other 4xx: the temporary verb `took` between
 the subject and `too long` (`request/query/message/input/body/payload/history took too long`, and `processing took too long` with no size word at
-all) is a duration, not a size; 401,
-403 and 404 are `permanent-model`;
-402, a dead provider and `model_not_found` are decided by the body before
-the wrapper status. The body-decided classes (402, a dead provider,
-`model_not_found`) are checked before the prefix tables, so they also win
+all) is a duration, not a size; 404 is
+`permanent-model`, while a wrapper 401 or 403 stays `temporary-unknown` (an account fault, #514 R9) — a bare account line that carries Bedrock model access anywhere in the line (the console "enable this model" text or `is not authorized to perform: bedrock:InvokeModel`) is `permanent-model` (#514 R9-FIX1/FIX2); both hold only when no body class decides first:
+402 and the other spent-allowance forms of `QUOTA_RX` (`out of credits`,
+`insufficient_quota`, `exceeded your current quota` and the rest), the z.ai
+window on a non-Anthropic rung, a dead provider and `model_not_found` are
+decided by the body before the wrapper status. The body-decided classes
+(this same list) are checked before the prefix tables, so they also win
 over the `API Error` wrapper, and a body that names a dead provider or
 model wins over a request prefix: a change of model cures it; the wrapper
 status classes above (400/413/401/403/404) are decided inside the
@@ -665,7 +667,22 @@ whitespace folded into one space. With no body class, the message gives no
 known line (a bare `402` line inside it is not a quota), and the older
 messages are checked. Any other message is decided by its lines; a line
 that carries JSON inside it (the host form `API Error: 404 {…}`) is decided
-by its body.
+by its body. #580 adds body-decided provider forms with the same rules:
+`model is not supported` / `model_not_supported` (a ChatGPT plan that lacks
+the model — account rotation cannot cure it, unlike #514 R9) is
+`permanent-model`; `insufficient_quota`, `exceeded your current quota`,
+`out of credits` and `usage_credits_required` are `quota`, and the D3
+boundary keeps the Claude host lines `out of usage credits` / `requires
+usage credits` / `now uses usage credits` limit-classified because they
+contain none of these forms. Exact host 2.1.287 lines that state transience
+(high load, `No response requested.`, the two OAuth refresh races) and the
+`<Name> is currently unavailable. Learn more:` form are known
+`temporary-unknown`; the census home is `SCOUT-HOST-REFUSAL-TEXTS-287.md`.
+On a thrown step a known fresh line of class `temporary-unknown` does not
+outweigh the error text: when the error text gives a known line of another
+class, the error text decides; a fresh line of any other class still wins,
+and a weak fresh line still beats an error text that is unknown or itself
+`temporary-unknown`; weakness is the class at the step's own moment (#595 Кр1).
 
 **The hook budget and `$.clock.after`.** Measured on 2026-09-28 with the
 `claude plugin test` kit of 2.1.283, probe

@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.60"
+export const MOD_VERSION = "0.1.61"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -278,9 +278,9 @@ export function refusalLineOf(text: any): string {
 // CONSTRAINT (#509-FIX3 M2): таблица -- дословные тексты хоста. Решает
 // НАЧАЛО строки, не вхождение: «API Error: 402 Credit balance is too low» --
 // не форма хоста и не permanent-model.
-// CONSTRAINT (#509-FIX6 А3): дом переписи -- G/SCOUT-HOST-REFUSAL-TEXTS-283.md
-// (2.1.283, функция yUn); переход версии обязан перемерить перепись, а
-// таблица зуба -- сверить каждый литерал.
+// CONSTRAINT (#509-FIX6 А3): дом переписи -- G/SCOUT-HOST-REFUSAL-TEXTS-287.md
+// (2.1.287, функция w9n: 67 возвратов и 13 точек ns(...) вне неё); переход
+// версии обязан перемерить перепись, а таблица зуба -- сверить каждый литерал.
 export const REFUSAL_REQUEST_PREFIXES = [
   "Prompt is too long", "Request too large (max", "Request too large for the API",
   "Image was too large.", "PDF too large (max ", "PDF is password protected.", "The PDF file was not valid.",
@@ -296,7 +296,6 @@ export const REFUSAL_REQUEST_PREFIXES = [
 // the request») остаются permanent.
 export const REFUSAL_AUTH_PREFIXES = [
   "Authentication error · The gateway could not authenticate with its upstream provider",
-  "Your account does not have access to Claude.",
   "Not logged in · Please run /login",
   "Authentication required · Sign in again to continue",
   "Please run /login",
@@ -304,6 +303,7 @@ export const REFUSAL_AUTH_PREFIXES = [
   "OAuth token revoked · Please run /login",
   "Login expired · ",
   "Failed to authenticate: OAuth session expired and could not be refreshed",
+  "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.",
   "Invalid API key · ", "Invalid auth token · ",
   "Your apiKeyHelper script is failing · ",
   "Anthropic profile login expired · ",
@@ -335,15 +335,28 @@ export const REFUSAL_PERMANENT_PREFIXES = [
   "CLAUDE_CODE_NO_MODEL_FALLBACK is set: model substitution is disabled",
   "The server routed this response to a model that is not in your organization’s availableModels allowlist; the response was discarded.",
 ]
-// CONSTRAINT (#509-FIX7 А-Р6): строка хоста Hdt сама говорит о временности --
-// temporary-unknown; сверяется целиком и ДО префиксов permanent.
+// CONSTRAINT (#509-FIX7 А-Р6, #595 Р1): точные строки хоста класса
+// temporary-unknown, которые сами говорят о временности или несут rate_limit
+// без срока; сверяются целиком и ДО префиксов permanent; известность важна
+// только проваленному шагу (Р0, ADJUDICATION-REFUSAL-287).
 export const REFUSAL_TEMPORARY_EXACT = [
   "Authentication error · This may be a temporary network issue, please try again",
+  "Opus is experiencing high load. Switch to Sonnet.",
+  "Opus is experiencing high load, please use /model to switch to Sonnet",
+  "Fable is experiencing high load. Switch to Sonnet.",
+  "Fable is experiencing high load, please use /model to switch to Sonnet",
+  "No response requested.",
+  "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again",
+  "Could not refresh your login because another Claude Code process is refreshing it (or exited mid-refresh) · Try again in a minute; if it keeps happening, close other Claude Code windows or sign in again with /login",
 ]
 // CONSTRAINT (#509-FIX7 Р14): мёртвый провайдер и квота решаются по тексту
 // строки ДО префиксных таблиц, включая обёртку `API Error`. Квота -- не лимит
 // Claude (#514): свой класс quota и своё остывание.
-export const PROVIDER_GONE_RX = /\b(unknown provider|model not found|no such model|unknown model|model [^\s]+ (?:is not|isn't) (?:available|supported))\b/i
+// CONSTRAINT (#580 Д1): план аккаунта без модели («model is not supported»,
+// «model_not_supported», в т.ч. JSON error.code и хвостом s01) --
+// permanent-model: ротация учётки пула его не снимает (не #514 Р9), у
+// refusalKnown тем же телом.
+export const PROVIDER_GONE_RX = /\b(unknown provider|model not found|no such model|unknown model|model [^\s]+ (?:is not|isn't) (?:available|supported)|model is not supported|model_not_supported)\b/i
 // CONSTRAINT (#509-FIX7b AR1): 402 -- только HTTP-статус (начало строки,
 // `API Error: 402`, `"status": 402`, `status=402`, `HTTP 402`); свободное число
 // («line 402», путь `/402/`) квотой не считается.
@@ -351,7 +364,12 @@ export const PROVIDER_GONE_RX = /\b(unknown provider|model not found|no such mod
 // конец строки (форма SDK `<status> <тело>`); `402/…`, `402.`, `402-` -- не статус.
 // CONSTRAINT (#509-FIX9 R3): отказ прокси «last upstream error: quota)» и
 // «spent allowance» -- quota, каждый признак сам по себе.
-export const QUOTA_RX = /^\s*402(?=\s|$)|(?:\bAPI Error:\s*|"status"\s*:\s*|\bstatus\s*[=:]\s*|\bHTTP(?:\/[\d.]+)?\s+)402\b|\b(?:payment required|insufficient (?:balance|credits?|quota)|credential_quota|quota (?:exceeded|exhausted))\b|\blast upstream error:\s*quota\)|\bspent allowance\b/i
+// CONSTRAINT (#580 Д2/Д3): insufficient_quota (текстом и error.code),
+// exceeded your current quota, out of credits, usage_credits_required --
+// quota. Граница Д3: строки хоста Claude («out of usage credits», «requires
+// usage credits», «now uses usage credits») этих форм не содержат и остаются
+// лимитом; тело решает раньше лимита.
+export const QUOTA_RX = /^\s*402(?=\s|$)|(?:\bAPI Error:\s*|"status"\s*:\s*|\bstatus\s*[=:]\s*|\bHTTP(?:\/[\d.]+)?\s+)402\b|\b(?:payment required|insufficient (?:balance|credits?|quota)|insufficient_quota|exceeded your current quota|out of credits|usage_credits_required|credential_quota|quota (?:exceeded|exhausted))\b|\blast upstream error:\s*quota\)|\bspent allowance\b/i
 export const QUOTA_COOLDOWN_MS = 60 * 60 * 1000
 // CONSTRAINT (#509-FIX9 R3): срок квоты из текста -- «soonest recovery in
 // <N>h<N>m<N>s», любая подпоследовательность частей в этом порядке, N целые,
@@ -396,18 +414,24 @@ export function refusalErrorCodeOf(text: any): string {
 // CONSTRAINT (#509-FIX6 А3): форма хоста «The model <id> is not available on
 // your <deployment> deployment» -- permanent-model, та же ступень, что префиксы.
 export const REFUSAL_MODEL_UNAVAILABLE_RX = /^The model [^\r\n]+ is not available on your /
+// CONSTRAINT (#595 Р3): форма хоста 287 K6n: литеральная ветка `<Name> is
+// currently unavailable. Learn more: <url>` -- temporary-unknown, известна;
+// имя без двоеточия по причине CREDITS_RX; серверная ветка blockMessage не
+// определена переписью.
+export const REFUSAL_UNAVAILABLE_RX = /^[^\r\n:]+ is currently unavailable\. Learn more: /
 // CONSTRAINT (#509-FIX3 M2): список лимитных префиксов хоста qDr, дословно.
 export const REFUSAL_LIMIT_PREFIXES = [
   "You've hit your", "You've reached your", "You're out of usage credits",
   "Your org is out of usage · add funds to continue", "Your org is out of usage · contact your admin",
   "Your seat type doesn't include usage credits", "Your seat type doesn't include usage",
   "Your usage allocation has been disabled by your admin", "Your group's usage limit is set to $0",
-  "Fable 5 requires usage credits.", "You're out of extra usage", "Your seat type doesn't include extra usage",
+  "You're out of extra usage", "Your seat type doesn't include extra usage",
   "Fable limit reached · ",
 ]
-// CONSTRAINT (#509-FIX4 F-3): лимитный класс несёт и форму билдера хоста fLn
-// «<Name> requires usage credits» (AN-509-HOST-REPORT Q2): имя непусто и без
-// переводов строки; qDr держит из этой формы одно «Fable 5».
+// CONSTRAINT (#509-FIX4 F-3, #595 Р4): лимитный класс несёт и форму билдера
+// хоста «<Name> requires usage credits» (AN-509-HOST-REPORT Q2): имя непусто и
+// без переводов строки; точечного литерала «Fable 5 …» в таблице нет -- форму
+// несёт одна эта регулярка (287 §8.3, U8r без точки покрывается ею же).
 // CONSTRAINT (#509-FIX5 Р4): имя без двоеточия -- обёртка `API Error`/`Request
 // timed out` решает раньше всех форм, и «API Error: <Name> requires usage
 // credits» -- её класс, не лимитный.
@@ -754,7 +778,9 @@ function isPermanentLine(text: string): boolean {
 
 // CONSTRAINT (#509-FIX7 Р14/Р14a/Р14b): классы, решаемые телом строки раньше
 // префиксных таблиц; "" -- тело класса не решает. Правило окна z.ai -- только
-// при модели ступени не-Anthropic.
+// при модели ступени не-Anthropic. #580 живёт тем же телом: Д1 (план аккаунта
+// без модели, PROVIDER_GONE_RX) -- permanent-model, Д2/Д3 (QUOTA_RX) -- quota;
+// у refusalKnown те же ветки решают известность.
 function refusalBodyClassOf(text: string, model: string): string {
   const code = refusalErrorCodeOf(text)
   if (code === "model_not_found") return "permanent-model"
@@ -766,12 +792,15 @@ function refusalBodyClassOf(text: string, model: string): string {
 
 // CONSTRAINT (#509-FIX7b AR8): известны и классы тела (refusalBodyClassOf) --
 // бросок next одним телом такого отказа идёт дорогой лестницы, не hook-error.
+// #595 Р3: форма K6n 287 «<Name> is currently unavailable. Learn more:» --
+// известная temporary-unknown.
 export function refusalKnown(line: any, model: string = ""): boolean {
   const t = String(line == null ? "" : line).trim()
   if (!t) return false
   return startsWithAny(t, REFUSAL_REQUEST_PREFIXES) || REFUSAL_TEMPORARY_EXACT.indexOf(t) >= 0 ||
     startsWithAny(t, REFUSAL_AUTH_PREFIXES) || isPermanentLine(t) ||
-    isLimitLine(t) || startsWithAny(t, REFUSAL_OTHER_PREFIXES) || refusalBodyClassOf(t, model) !== ""
+    isLimitLine(t) || startsWithAny(t, REFUSAL_OTHER_PREFIXES) || REFUSAL_UNAVAILABLE_RX.test(t) ||
+    refusalBodyClassOf(t, model) !== ""
 }
 
 function wholeIsJson(text: string): boolean {
@@ -967,17 +996,20 @@ export function resetsAtOf(line: string, atMs: number): { at: number; err: any }
   }
 }
 
-// CONSTRAINT (#509-FIX3 M2): порядок -- request, permanent-model, лимит qDr
-// (temporary-known при разобранном сроке), иначе temporary-unknown. Дефект
-// запроса одинаков для любой модели и решает раньше модели.
-// CONSTRAINT (#509-FIX5 Р4, #509-FIX7 Р14/А-Р6/ADD1): порядок -- пусто,
-// error.code model_not_found (permanent-model), окно квоты z.ai на ступени
-// не-Anthropic модели (фильтр модели первым; error.code 1308 или
-// QUOTA_WINDOW_RX -- quota), мёртвый провайдер по тексту (permanent-model),
-// квота по тексту (quota), обёртка `API Error`/`Request timed out`
-// (по статусу обёртки -- request / permanent-model, иначе temporary-unknown;
-// #509-FIX9 R4), request, точная временная строка (temporary-unknown),
-// permanent, лимит. Без модели ступени правило окна не действует.
+// CONSTRAINT (#509-FIX3 M2, #509-FIX5 Р4, #509-FIX7 Р14/А-Р6/ADD1, #509-FIX9 R4,
+// #514 Р9, #580, #595): порядок -- пусто; класс тела (refusalBodyClassOf:
+// error.code model_not_found -- permanent-model; окно квоты z.ai только на
+// ступени не-Anthropic модели -- quota; мёртвый провайдер и неподдержка
+// моделью плана аккаунта #580 Д1 -- permanent-model; квота по тексту,
+// включая #580 Д2/Д3 -- quota); обёртка `API Error`/`Request timed out` по
+// статусу (413 и 400 с предметом размера -- request, 404 -- permanent-model,
+// иначе temporary-unknown); request; точная временная строка
+// (temporary-unknown, #595 Р1); учётка (доступ к модели -- permanent-model,
+// иначе temporary-unknown); permanent; лимит (temporary-known при
+// разобранном сроке); иначе temporary-unknown. Форма K6n 287 «<Name> is
+// currently unavailable. Learn more:» своей ветки не имеет: голая доходит до
+// умолчания temporary-unknown, в обёртке -- веткой обёртки (#595 Р3;
+// известность -- refusalKnown).
 export function classifyRefusal(line: string, atMs: number, model: string = ""): { class: string; readyAt: number; err: any } {
   const text = String(line || "").trim()
   if (!text) return { class: "temporary-unknown", readyAt: 0, err: null }
@@ -9130,8 +9162,8 @@ export function register(on: any) {
           // ТОЛЬКО свежий текст сессии агента; поля ответа у лимита Claude и у
           // любого отказа одни и те же (usage null, stopReason null). Отказ
           // чтения -- temporary-unknown.
-          // CONSTRAINT (#509-FIX4 AR-c, #509-FIX5 Р3/Р11, #509-FIX8c Р1): порядок у
-          // броска -- свежая строка с известным началом; иначе текст самой ошибки
+          // CONSTRAINT (#509-FIX4 AR-c, #509-FIX5 Р3/Р11, #509-FIX8c Р1, #595 Кр1): порядок у
+          // броска -- свежая строка с известным началом, класс которой при моменте шага t1 не temporary-unknown; иначе текст самой ошибки, когда он даёт известную строку класса, отличного от temporary-unknown; иначе свежая известная строка; иначе текст самой ошибки
           // тем же выбором, что свежие сообщения (refusalLineOfMessages: текст целиком
           // JSON -- класс тела, иначе строка с известным началом); иначе одна пауза куском ожидания и одно повторное
           // чтение против того же снимка «до» (когда запись отказа хоста
@@ -9170,9 +9202,10 @@ export function register(on: any) {
               known = pick.known
           }
           await look()
-          if (didThrow && !known) {
+          if (didThrow) {
             const errPick = refusalLineOfMessages([safeText(threw)], model)
-            if (errPick.known) { line = errPick.line; known = true; unread = false }
+            const weak = (l: string): boolean => classifyRefusal(l, t1, model).class === "temporary-unknown"
+            if (errPick.known && (!known || (weak(line) && !weak(errPick.line)))) { line = errPick.line; known = true; unread = false }
           }
           if (didThrow && !known) {
             rereadStep = true

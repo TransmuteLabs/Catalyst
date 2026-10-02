@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.60")
+  expect(MOD_VERSION).toBe("0.1.61")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -12802,9 +12802,10 @@ test("#509-FIX6 А2 / FIX7 А-Р1: pauseTimeout = min(15000, 2·chunk + 1000) н
   }
 })
 
-// CONSTRAINT: дом литералов -- G/SCOUT-HOST-REFUSAL-TEXTS-283.md (2.1.283,
-// функция yUn, разделы 2 и 3); переход версии сверяет каждую строку.
-test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каждый литерал в своём классе", () => {
+// CONSTRAINT: дом литералов -- G/SCOUT-HOST-REFUSAL-TEXTS-287.md (2.1.287,
+// функция w9n: 67 возвратов и 13 точек ns(...) вне неё); переход версии
+// сверяет каждую строку.
+test("#509-FIX6 А3, #595: таблица отказов хоста 2.1.287 -- каждый литерал в своём классе", () => {
   const cr = R514.classifyRefusal
   const known = R514.refusalKnown
   const now = Date.parse("2026-10-01T09:00:00Z")
@@ -12849,7 +12850,7 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
   ]
   // CONSTRAINT (#514 Р9): строки учётки -- temporary-unknown, не permanent-model.
   const auth = [
-    "Your account does not have access to Claude. Please login again or contact your administrator.",
+    "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.",
     "Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator",
     "AWS authentication failed · refresh your AWS credentials (SSO sign-in, access keys, API key or proxy token) and retry · if credentials are current, check AWS permissions and model access · API Error: 403 denied",
     "Google Cloud authentication failed · refresh the gateway token provided via ANTHROPIC_AUTH_TOKEN/ANTHROPIC_CUSTOM_HEADERS and retry · if credentials are current, check GCP IAM permissions and Vertex AI model access · API Error: 403 denied",
@@ -12870,7 +12871,7 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
     "Opus 5.5 now uses usage credits · the prompt to confirm went unanswered — nothing was sent · answer it where this session is running, or /model to change",
     "Opus 5.5 now uses usage credits · the prompt to confirm was closed from Remote Control without a choice — nothing was sent · it asks again on your next message, or /model to change",
   ]
-  const unknown = [
+  const temporary = [
     "Opus is experiencing high load. Switch to Sonnet.",
     "Opus is experiencing high load, please use /model to switch to Sonnet",
     "Fable is experiencing high load. Switch to Sonnet.",
@@ -12878,21 +12879,21 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
     "No response requested.",
     "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again",
     "Could not refresh your login because another Claude Code process is refreshing it (or exited mid-refresh) · Try again in a minute; if it keeps happening, close other Claude Code windows or sign in again with /login",
-    "Opus 5.5 is currently unavailable.",
+    "Opus 5.5 is currently unavailable. Learn more: https://www.anthropic.com/news/",
   ]
   const got: any[] = []
   const want: any[] = []
   for (const l of request) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "request" }) }
   for (const l of permanent) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "permanent-model" }) }
-  for (const l of auth) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "temporary-unknown" }) }
+  for (const l of auth) { got.push({ l, known: known(l), c: cr(l, now).class }); want.push({ l, known: true, c: "temporary-unknown" }) }
   for (const l of limit) {
     const k = cr(l + TAIL, now)
     got.push({ l, known: known(l), c: k.class, at: k.readyAt })
     want.push({ l, known: true, c: "temporary-known", at: at11 })
   }
-  for (const l of unknown) {
-    got.push({ l, c: cr(l, now).class, cTail: cr(l + TAIL, now).class })
-    want.push({ l, c: "temporary-unknown", cTail: "temporary-unknown" })
+  for (const l of temporary) {
+    got.push({ l, known: known(l), c: cr(l, now).class, cTail: cr(l + TAIL, now).class })
+    want.push({ l, known: true, c: "temporary-unknown", cTail: "temporary-unknown" })
   }
   // Ряды, которые новые регулярки ловить не должны: имя с двоеточием; обёртка API Error.
   // CONSTRAINT (#509-FIX7 Р14): PROVIDER_GONE_RX решает раньше обёртки API Error --
@@ -12901,6 +12902,9 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
     ["Error: Opus 5.5 now uses usage credits · the prompt to confirm went unanswered — nothing was sent", false, "temporary-unknown"],
     ["API Error: Opus 5.5 now uses usage credits · the prompt to confirm went unanswered — nothing was sent", true, "temporary-unknown"],
     ["API Error: The model claude-opus-5-5[1m] is not available on your Bedrock deployment. Try switching to Sonnet 5, or ask your admin to enable this model.", true, "permanent-model"],
+    ["Opus 5.5 is currently unavailable.", false, "temporary-unknown"],
+    ["API Error: Opus 5.5 is currently unavailable. Learn more: https://www.anthropic.com/news/", true, "temporary-unknown"],
+    ["Error: Opus is experiencing high load. Switch to Sonnet.", false, "temporary-unknown"],
   ] as Array<[string, boolean, string]>
   for (const [l, k, c] of miss) {
     got.push({ l, known: known(l), c: cr(l + TAIL, now).class })
@@ -13095,12 +13099,13 @@ test("#509-FIX7 А-Р9: каждая регулярка -- ловит свой �
   expect(got).toEqual(want)
 })
 
-test("#509-FIX7 А-Р10: литерал Fable в форме 283 «<имя> requires usage credits.»", () => {
+test("#509-FIX7 А-Р10: литерал Fable в форме 283 «<имя> requires usage credits.», #595 (287: литерал снят, форму несёт CREDITS_RX)", () => {
   const cr = R514.classifyRefusal
   const now = Date.parse("2026-10-03T09:00:00Z")
-  expect(R514.REFUSAL_LIMIT_PREFIXES, "байт в байт из переписи 283").toContain("Fable 5 requires usage credits.")
-  expect(R514.REFUSAL_LIMIT_PREFIXES.indexOf("Fable 5 requires usage credits"), "прежняя форма без точки снята").toBe(-1)
+  expect(R514.REFUSAL_LIMIT_PREFIXES.indexOf("Fable 5 requires usage credits."), "форма с точкой в LIMIT снята (287 §8.3)").toBe(-1)
+  expect(R514.REFUSAL_LIMIT_PREFIXES.indexOf("Fable 5 requires usage credits"), "форма без точки в LIMIT снята (287 §8.3)").toBe(-1)
   const rows: Array<[string, string, number]> = [
+    ["Fable 5 requires usage credits", "temporary-unknown", 0],
     ["Fable 5 requires usage credits.", "temporary-unknown", 0],
     ["Fable 5 requires usage credits. · resets 11am (UTC)", "temporary-known", Date.parse("2026-10-03T11:00:00Z")],
     ["Opus 5.5 requires usage credits. · resets 11am (UTC)", "temporary-known", Date.parse("2026-10-03T11:00:00Z")],
@@ -13109,6 +13114,109 @@ test("#509-FIX7 А-Р10: литерал Fable в форме 283 «<имя> requi
     const g = cr(l, now)
     expect({ l, known: R514.refusalKnown(l), c: g.class, at: g.readyAt }).toEqual({ l, known: true, c, at })
   }
+})
+
+// CONSTRAINT (#595 Р4): литерал учётки 283 в образе 287 -- 0 вхождений;
+// его заменила строка Р2 (класс temporary-unknown, #514 Р9).
+test("#595 Р4: мёртвый литерал учётки 283 снят", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const s = "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."
+  expect(R514.REFUSAL_AUTH_PREFIXES.indexOf("Your account does not have access to Claude."), "литерал 283 в AUTH").toBe(-1)
+  expect({ c: cr(s, now).class, known: R514.refusalKnown(s) }).toEqual({ c: "temporary-unknown", known: true })
+})
+
+// CONSTRAINT (#580 Д1, ADJUDICATION-538): план ChatGPT-аккаунта без модели --
+// permanent-model на любой учётке пула (не #514 Р9: ротация учётки его не
+// снимет); решает тело, голой и под обёрткой, без фильтра модели.
+test("#580 Д1: неподдержка моделью плана аккаунта -- permanent-model", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-01T09:00:00Z")
+  const rows = [
+    "{\"detail\":\"The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.\"}",
+    "model is not supported",
+    "model_not_supported",
+    "API Error: 400 {\"detail\":\"The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.\"}",
+    "API Error: 400 model is not supported",
+    "API Error: 400 model_not_supported",
+    "{\"error\":{\"code\":\"model_not_supported\",\"message\":\"x\"}}",
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const l of rows) for (const model of ["", "gpt-6-luna"]) {
+    got.push({ l, model, known: R514.refusalKnown(l, model), c: cr(l, now, model).class })
+    want.push({ l, model, known: true, c: "permanent-model" })
+  }
+  expect(got).toEqual(want)
+})
+
+// CONSTRAINT (#580 Д2): insufficient_quota (голой, под обёрткой и error.code)
+// и exceeded your current quota -- quota; решает тело, без фильтра модели.
+test("#580 Д2: insufficient_quota и exceeded your current quota -- quota", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-01T09:00:00Z")
+  const rows = [
+    "insufficient_quota",
+    "API Error: 400 insufficient_quota",
+    "{\"error\":{\"code\":\"insufficient_quota\"}}",
+    "exceeded your current quota",
+    "API Error: 429 You exceeded your current quota, please check your plan",
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const l of rows) {
+    got.push({ l, known: R514.refusalKnown(l), c: cr(l, now).class })
+    want.push({ l, known: true, c: "quota" })
+  }
+  expect(got).toEqual(want)
+})
+
+// CONSTRAINT (#580 Д3): out of credits и usage_credits_required -- quota.
+// Граница: строки хоста Claude («out of usage credits», «requires usage
+// credits», «now uses usage credits») форм Д3 не содержат и остаются лимитом;
+// тело решает раньше лимита, поэтому расширенная до границы Д3 (М7) красит
+// тест неприкосновенности ниже.
+test("#580 Д3: out of credits и usage_credits_required -- quota", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-01T09:00:00Z")
+  const rows = [
+    "out of credits",
+    "API Error: 402 out of credits",
+    "usage_credits_required",
+    "API Error: 400 usage_credits_required",
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const l of rows) {
+    got.push({ l, known: R514.refusalKnown(l), c: cr(l, now).class })
+    want.push({ l, known: true, c: "quota" })
+  }
+  expect(got).toEqual(want)
+})
+
+// CONSTRAINT (#580): границы Д3 и прежние правила тела -- классы не меняются.
+test("#580: строки хоста Claude и прежние правила тела класс #580 не меняют", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-01T09:00:00Z")
+  const at11 = Date.parse("2026-10-01T11:00:00Z")
+  const rows: Array<[string, string, number]> = [
+    ["You're out of usage credits · resets 11am (UTC)", "temporary-known", at11],
+    ["You're out of usage credits", "temporary-unknown", 0],
+    ["Opus 5.5 requires usage credits. · resets 11am (UTC)", "temporary-known", at11],
+    ["Opus 5.5 now uses usage credits · the prompt to confirm went unanswered — nothing was sent · resets 11am (UTC)", "temporary-known", at11],
+    ["API Error: 404 {\"error\":{\"code\":\"model_not_found\"}}", "permanent-model", 0],
+    ["model not found", "permanent-model", 0],
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const [l, c, at] of rows) {
+    const g = cr(l, now)
+    got.push({ l, c: g.class, at: g.readyAt })
+    want.push({ l, c, at })
+  }
+  expect(cr("{\"error\":{\"code\":\"1308\"}}", now, "glm-5.3").class, "окно z.ai на не-Anthropic ступени").toBe("quota")
+  expect(cr("{\"error\":{\"code\":\"1308\"}}", now, "").class, "без модели ступени окно не действует").toBe("temporary-unknown")
+  expect(got).toEqual(want)
 })
 
 test("#509-FIX7 Р11: запись попытки несёт modelServed (usage.model или null) и declared", async () => {
@@ -13360,6 +13468,43 @@ test("#509-FIX7b AR8: next бросил тело отказа без префи�
   // CONSTRAINT (#514 Р9-FIX1): новейшая строка учётки решает раньше старшей известной.
   got.push({ tag: "auth-newest", v: pick(["Credit balance is too low", "Please run /login · API Error: 403 status 403"], "gpt-6.1-sol") })
   want.push({ tag: "auth-newest", v: { line: "Please run /login · API Error: 403 status 403", known: true } })
+  expect(got).toEqual(want)
+})
+
+// CONSTRAINT (#595 Кр1): известная строка класса temporary-unknown не сильнее источника с другим классом; сильная свежая строка важнее броска; из двух слабых остаётся свежая; слабость — класс при моменте шага.
+test("#595 Кр1/Кр5: бросок и свежая строка -- слабый temporary-unknown не закрывает класс другого источника", async () => {
+  const cases: Array<[string, string[], string, string, string, number?]> = [
+    ["k1a", ["No response requested."], "API Error: 402 out of credits", "quota", "API Error: 402 out of credits"],
+    ["k1b", ["No response requested.", "Working on it."], "Credit balance is too low", "permanent-model", "Credit balance is too low"],
+    ["k1c", ["No response requested."], "lower hook: boom", "temporary-unknown", "No response requested."],
+    ["k1d", ["API Error: 404 model gone"], "API Error: 402 out of credits", "permanent-model", "API Error: 404 model gone"],
+    ["k1e", ["No response requested."], "Opus is experiencing high load. Switch to Sonnet.", "temporary-unknown", "No response requested."],
+    ["k1f", ["You've hit your weekly limit · resets Jan 2, 2025, 9am (UTC)"], "API Error: 402 out of credits", "quota", "API Error: 402 out of credits"],
+    ["k1g", ["You've hit your weekly limit · resets Feb 29, 3pm (UTC)"], "Credit balance is too low", "temporary-known", "You've hit your weekly limit · resets Feb 29, 3pm (UTC)", Date.UTC(2027, 5, 1, 12, 0, 0)],
+    ["k5a", [], "Opus 5.5 is currently unavailable. Learn more: https://www.anthropic.com/news/", "temporary-unknown", "Opus 5.5 is currently unavailable. Learn more: https://www.anthropic.com/news/"],
+    ["k5b", [], "No response requested.", "temporary-unknown", "No response requested."],
+  ]
+  const got: any[] = []
+  const want: any[] = []
+  for (const [tag, freshTexts, throwText, cls, rtext, at] of cases) {
+    reset514()
+    const h = host514("595" + tag, at === undefined ? Date.UTC(2026, 9, 3, 12, 0, 0) : at)
+    const aid = "ag-595" + tag
+    const orig = "gpt-6.1-sol-t595" + tag
+    const rung = "qwen-t595" + tag
+    failoverBindSet(aid, { ladder: [rung], terminal: "", rungEffort: { [rung]: "high" }, subagentType: "t", class: "", sticky: null })
+    const next = next514(h, {
+      [orig]: (k: number) => { for (const t of freshTexts) h.history.push({ role: "assistant", text: t }); return { throwSilent: throwText } },
+      [rung]: () => null,
+    })
+    let out: any = null
+    let threw = ""
+    try { out = await step514(h, aid, orig, next) } catch (x: any) { threw = String((x && x.message) || x) }
+    got.push({ tag, seen: next.seen, cls: attempts514(h, aid).map(r => r.refusalClass)[0], rtext: attempts514(h, aid).map(r => r.refusalText)[0], text: out && out.value && out.value.text, threw })
+    want.push({ tag, seen: [orig, rung], cls, rtext, text: "OK-" + rung, threw: "" })
+    rungCooldownReset()
+    failoverBindReset()
+  }
   expect(got).toEqual(want)
 })
 
