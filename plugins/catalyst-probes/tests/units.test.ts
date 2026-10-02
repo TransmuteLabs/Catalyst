@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.58")
+  expect(MOD_VERSION).toBe("0.1.59")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -10364,6 +10364,47 @@ test("#514 Р9-FIX1: смена состава, увиденная пробой 
   }
 })
 
+// CONSTRAINT (#514 Р9-FIX2): состав и терминал те же, ступень получила метку
+// permanent-model извне во сне -- проход пробуждения идёт по свежему плану и
+// её не зовёт.
+test("#514 Р9-FIX2: метка permanent-model, поставленная во сне при том же составе, снимает ступень с прохода пробуждения", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 13, 0, 0)
+  let next: any = null
+  const two = '[failover]\nenabled = true\nterminal = {model = "claude-t514d", effort = "high"}\n\n[failover.class.c514d]\nmodels = [{model = "a514d", effort = "max"}, {model = "x514d", effort = "max"}]\n'
+  let markedAt = 0
+  const h = host514("r9d", T0, {
+    probes: two,
+    files: { [TABLE514]: '[classes.c514d]\nallowed = ["a514d", "x514d", "claude-t514d"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        R514.noteModelRefusal("x514d", now, "permanent-model", 0, "carrier-refusal", "Credit balance is too low")
+        markedAt = now
+      }
+      if (now >= T0 + 3600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514d", { ladder: ["a514d", "x514d"], terminal: "claude-t514d", rungEffort: { "a514d": "max", "x514d": "max" }, subagentType: "t514d", class: "c514d", sticky: null })
+  next = next514(h, {
+    "a514d": refuseAll514("You've hit your session limit · resets 2:00pm (UTC)"),
+    "x514d": (k: number) => (k === 0 ? "Service temporarily unavailable" : null),
+    "claude-t514d": (k: number) => (k === 0 ? "Service temporarily unavailable" : null),
+  })
+  try {
+    const out = await step514(h, "ag-514d", "a514d", next)
+    expect(markedAt, "метка поставлена во сне").toBeGreaterThan(0)
+    const wakes = waits514(h, "ag-514d", "wait-probe").filter((r: any) => r.kind === "wake")
+    expect(wakes.length, "ответ дала проба пробуждения").toBeGreaterThan(0)
+    expect(out.value && out.value.text, "ответил терминал").toBe("OK-claude-t514d")
+    expect(next.seen.filter((m: string) => m === "x514d").length, "X не звалась после метки").toBe(1)
+    expect(waits514(h, "ag-514d", "wait-plan-refresh"), "состав не менялся").toEqual([])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
 test("#514 J5(а): все отказывают со сроком «resets» через 2 мин -- ожидание до readyAt, перепроба, успех", async () => {
   reset514()
   const T0 = Date.UTC(2026, 8, 26, 10, 0, 0)
@@ -12578,6 +12619,18 @@ test("#509-FIX7 А-Р6, #514 Р9-FIX1: Hdt и gateway-строка PJt -- tempor
   expect(got).toEqual(["temporary-unknown", "temporary-unknown"])
   expect(R514.refusalKnown("Authentication error · This may be a temporary network issue, please try again"), "строка таблицы хоста").toBe(true)
   expect(R514.refusalKnown("Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator"), "gateway-строка").toBe(true)
+})
+
+// CONSTRAINT (#514 Р9-FIX2): строка сессии хоста 2.1.287 для 403 Bedrock
+// InvokeModel (Cut -> denied) -- permanent-model; соседняя оговорка учётки
+// без фразы IAM остаётся temporary-unknown.
+test("#514 Р9-FIX2: 403 Bedrock InvokeModel под префиксом учётки AWS -- permanent-model", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const denied = "AWS authentication failed · refresh your AWS credentials (SSO sign-in, access keys, API key or proxy token) and retry · if credentials are current, check AWS permissions and model access · API Error: 403 User: arn:aws:iam::1:user/a is not authorized to perform: bedrock:InvokeModel on resource: arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus"
+  const mixed = "AWS authentication failed · refresh your AWS credentials (SSO sign-in, access keys, API key or proxy token) and retry · if credentials are current, check AWS permissions and model access · API Error: 403 The security token included in the request is invalid."
+  expect({ c: cr(denied, now).class, known: R514.refusalKnown(denied) }).toEqual({ c: "permanent-model", known: true })
+  expect(cr(mixed, now).class, "оговорка учётки без фразы IAM").toBe("temporary-unknown")
 })
 
 test("#509-FIX7 А-Р7: allowlist-маршрутизация организации (110688729) -- permanent", () => {

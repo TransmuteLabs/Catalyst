@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.58"
+export const MOD_VERSION = "0.1.59"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -306,6 +306,11 @@ export const REFUSAL_AUTH_PREFIXES = [
 // (Bedrock: модель не включена для аккаунта и региона) -- отказ МОДЕЛИ при
 // префиксе учётки AWS; ротация учётки его не снимет.
 export const REFUSAL_AUTH_MODEL_ACCESS = " · enable this model for your account and region in the Amazon Bedrock console"
+// CONSTRAINT (#514 Р9-FIX2): 403 Bedrock «is not authorized to perform:
+// bedrock:InvokeModel» хост 2.1.287 (Cut, yJ) судит отдельным классом denied,
+// не credential: политика IAM на ресурс модели -- отказ МОДЕЛИ при префиксе
+// учётки AWS; ни ротация учётки, ни ожидание его не снимают.
+export const REFUSAL_AUTH_MODEL_DENIED_RX = /is not authorized to perform: bedrock:InvokeModel/i
 export const REFUSAL_PERMANENT_PREFIXES = [
   "Credit balance is too low",
   "Claude Opus is not available with the Claude Pro plan",
@@ -322,8 +327,7 @@ export const REFUSAL_PERMANENT_PREFIXES = [
   "The server routed this response to a model that is not in your organization’s availableModels allowlist; the response was discarded.",
 ]
 // CONSTRAINT (#509-FIX7 А-Р6): строка хоста Hdt сама говорит о временности --
-// temporary-unknown; сверяется целиком и ДО префиксов permanent, соседняя
-// gateway-строка PJt того же префикса остаётся permanent.
+// temporary-unknown; сверяется целиком и ДО префиксов permanent.
 export const REFUSAL_TEMPORARY_EXACT = [
   "Authentication error · This may be a temporary network issue, please try again",
 ]
@@ -986,7 +990,7 @@ export function classifyRefusal(line: string, atMs: number, model: string = ""):
   if (startsWithAny(text, REFUSAL_REQUEST_PREFIXES)) return { class: "request", readyAt: 0, err: null }
   if (REFUSAL_TEMPORARY_EXACT.indexOf(text) >= 0) return { class: "temporary-unknown", readyAt: 0, err: null }
   if (startsWithAny(text, REFUSAL_AUTH_PREFIXES)) {
-    if (text.indexOf(REFUSAL_AUTH_MODEL_ACCESS) >= 0) return { class: "permanent-model", readyAt: 0, err: null }
+    if (text.indexOf(REFUSAL_AUTH_MODEL_ACCESS) >= 0 || REFUSAL_AUTH_MODEL_DENIED_RX.test(text)) return { class: "permanent-model", readyAt: 0, err: null }
     return { class: "temporary-unknown", readyAt: 0, err: null }
   }
   if (isPermanentLine(text)) return { class: "permanent-model", readyAt: 0, err: null }
