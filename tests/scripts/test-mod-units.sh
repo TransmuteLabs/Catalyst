@@ -7,12 +7,13 @@
 #
 # CONSTRAINT: коды возврата -- только 0/1/2/3, как понимает tests/run-all.sh:
 # 0 -- зелёный, ровно ОДНОЙ строкой с числом прошедших тестов;
-# 1 -- красный: провалившиеся тесты (вывод харнеса ДОСЛОВНО) либо рассинхрон
-#     домов версии мода;
+# 1 -- красный: провалившиеся тесты (вывод харнеса ДОСЛОВНО), рассинхрон
+#     домов версии мода, число прогнанных файлов против дерева, число
+#     прогнанных тестов против EXPECTED_TESTS, прошедших меньше прогнанных;
 # 2 -- ПРИБОР НЕДОСТУПЕН (нет бинарника; команда не регистрируется; ценз версии
 #     недействителен) с названной причиной -- молчаливый пропуск невозможен;
-# 3 -- НЕ ИЗМЕРЕНО: код 0 без ДОКАЗАННОГО числа выполненных тестов и файлов
-#     (ПУСТО != НОЛЬ).
+# 3 -- НЕ ИЗМЕРЕНО: сводка харнеса не разобрана (ПУСТО != НОЛЬ) либо ступень
+#     splice-parity не исполнена.
 set -u
 
 # --- самопроверка стенда (#509-FIX3 L10) --------------------------------------
@@ -46,7 +47,7 @@ if [ "$1 $2" = "plugin validate" ]; then
   exit 0
 fi
 if [ "$1 $2" = "plugin test" ]; then
-  printf ' %s pass\n 0 fail\nRan %s tests across 2 files.\n' "$FAKE_N" "$FAKE_N"
+  printf ' %s pass\n 0 fail\nRan %s tests across %s files.\n' "${FAKE_PASS:-$FAKE_N}" "$FAKE_N" "${FAKE_FILES:-2}"
   exit 0
 fi
 exit 9
@@ -58,11 +59,11 @@ FAKE
     N=$((N + 1))
     local name="$1" want_rc="$2" needle="$3" kit="$4" out rc
     if [ -n "$kit" ]; then
-      out="$(CLAUDE_BIN="$WORK/bin/claude" FAKE_N="$N_PIN" FAKE_SURFACE="$T/tests/fixtures/mod-surface.txt" \
+      out="$(CLAUDE_BIN="$WORK/bin/claude" FAKE_N="${5:-$N_PIN}" FAKE_PASS="${6:-${5:-$N_PIN}}" FAKE_FILES="${7:-2}" FAKE_SURFACE="$T/tests/fixtures/mod-surface.txt" \
         CATALYST_PATCH_KIT="$kit" bash "$T/tests/scripts/test-mod-units.sh" 2>&1 </dev/null)"
       rc=$?
     else
-      out="$(env -u CATALYST_PATCH_KIT CLAUDE_BIN="$WORK/bin/claude" FAKE_N="$N_PIN" \
+      out="$(env -u CATALYST_PATCH_KIT CLAUDE_BIN="$WORK/bin/claude" FAKE_N="${5:-$N_PIN}" FAKE_PASS="${6:-${5:-$N_PIN}}" FAKE_FILES="${7:-2}" \
         FAKE_SURFACE="$T/tests/fixtures/mod-surface.txt" bash "$T/tests/scripts/test-mod-units.sh" 2>&1 </dev/null)"
       rc=$?
     fi
@@ -75,6 +76,9 @@ FAKE
   }
   run_case "CATALYST_PATCH_KIT не задана -- splice-parity не исполнена, итог 3" 3 "splice-parity: НЕ ИЗМЕРЕНО" ""
   run_case "CATALYST_PATCH_KIT задана -- ступень исполнена, итог 0" 0 "splice-parity: 1 passed (поддельная ступень самопроверки)" "$WORK/kit"
+  run_case "прогнано на один тест больше пина -- красный, итог 1" 1 "КРАСНЫЙ: прогнано" "$WORK/kit" "$((N_PIN + 1))"
+  run_case "харнес прогнал больше файлов, чем в дереве -- красный, итог 1" 1 "КРАСНЫЙ: харнес прогнал" "$WORK/kit" "$N_PIN" "$N_PIN" 3
+  run_case "прошло меньше прогнанных -- красный, итог 1" 1 "КРАСНЫЙ: прошло" "$WORK/kit" "$N_PIN" "$((N_PIN - 1))"
   if [ "$RED" -ne 0 ]; then
     printf 'зубов стенда %s, красных %s\n' "$N" "$RED"
     exit 1
@@ -416,21 +420,21 @@ if [ "${FAIL_N:-0}" -ne 0 ] || [ "$RC" -ne 0 ]; then
 fi
 
 if [ "$RAN_F" -ne "$FILES_N" ]; then
-  printf 'НЕ ИЗМЕРЕНО: харнес прогнал %s файлов, а в %s их %s -- файл зубов молча не подхвачен\n' \
+  printf 'КРАСНЫЙ: харнес прогнал %s файлов, а в %s их %s -- файл зубов молча не подхвачен\n' \
     "$RAN_F" "$TESTS_DIR" "$FILES_N" >&2
-  exit 3
+  exit 1
 fi
 
 if [ "$RAN_N" -ne "$EXPECTED_TESTS" ]; then
-  printf 'НЕ ИЗМЕРЕНО: прогнано %s зубов, объявлено %s (EXPECTED_TESTS в этом файле)\n' \
+  printf 'КРАСНЫЙ: прогнано %s зубов, объявлено %s (EXPECTED_TESTS в этом файле)\n' \
     "$RAN_N" "$EXPECTED_TESTS" >&2
-  exit 3
+  exit 1
 fi
 
 if [ "$PASS_N" -ne "$RAN_N" ]; then
-  printf 'НЕ ИЗМЕРЕНО: прошло %s из %s прогнанных -- остаток не объявлен ни провалом, ни пропуском\n' \
+  printf 'КРАСНЫЙ: прошло %s из %s прогнанных -- остаток не объявлен ни провалом, ни пропуском\n' \
     "$PASS_N" "$RAN_N" >&2
-  exit 3
+  exit 1
 fi
 
 printf 'mod-units: %s passed (%s файлов, официальный харнес %s)\n' "$PASS_N" "$RAN_F" "$V_CODE"

@@ -11,8 +11,15 @@
 # измениться между write-tree и снимком, и снимок из живого индекса лгал бы о
 # прогоне чужого дерева.
 #
-# CONSTRAINT: хост -- ручка CATALYST_WITNESS_HOST (умолчание usbox); других ручек
-# нет: зубы подставляют заглушки ssh/rsync через PATH, а не отдельными ручками.
+# CONSTRAINT: хост -- ручка CATALYST_WITNESS_HOST (умолчание usbox); кит -- ручка
+# CATALYST_PATCH_KIT (умолчание -- Catalyst-CC-Patch рядом с главным чекаутом этого
+# репозитория); других ручек нет: зубы подставляют заглушки ssh/rsync через PATH.
+#
+# CONSTRAINT: scope со стендом mod-units везёт на хост блоб origin/main:tweakcc-patch.js
+# кита, а не его рабочее дерево (снимок обязан быть воспроизводим), в
+# ~/scratch/catalyst-witness/<T>.kit и задаёт прогону CATALYST_PATCH_KIT на него:
+# без кита ступень splice-parity не исполняется и mod-units даёт НЕ ИЗМЕРЕНО.
+# Нечитаемый кит -- собственный отказ (rc 2) до первого удалённого действия.
 #
 # CONSTRAINT: rc=0 выдаётся ТОЛЬКО при rc=0 агрегатора; rc=3 («НЕ ИЗМЕРЕНО») --
 # тоже НЕ свидетель: не измеренный прогон не доказывает зелёность дерева.
@@ -48,7 +55,7 @@ fail_scope() { printf 'run-witness: ОТКАЗ SCOPE_НЕ_ВЫЧИСЛЕН: %s\n
 # оператор -- запись имени в STAGES_DONE; пропущенная по объявленному правилу
 # пишет имя с пометкой :skip. Файл свидетеля пишется и rc 0 выдаётся только после
 # stages_check: каждое имя STAGES_EXPECTED записано ровно один раз и в этом порядке.
-STAGES_EXPECTED="args tree_arg scope_index head_probe scope_head scope_union tree_index tree_check snapshot deliver run cleanup started"
+STAGES_EXPECTED="args tree_arg scope_index head_probe scope_head scope_union tree_index tree_check snapshot kit deliver run cleanup started"
 STAGES_DONE=""
 PASS_MSG=""
 stages_skip() {   # <имя>...: стадии, пропущенные по объявленному правилу
@@ -207,7 +214,7 @@ fi
 if [ -z "$MODE_TREE" ]; then stage_scope_union; else STAGES_DONE="$STAGES_DONE scope_union:skip"; fi
 if [ -z "$MODE_TREE" ] && [ -z "$S" ]; then
   PASS_MSG='run-witness: стенды не нужны (изменённые пути не мерит ни один стенд)'
-  stages_skip tree_index tree_check snapshot deliver run cleanup started
+  stages_skip tree_index tree_check snapshot kit deliver run cleanup started
   pass_exit
 fi
 if [ -z "$MODE_TREE" ]; then stage_tree_index; else STAGES_DONE="$STAGES_DONE tree_index:skip"; fi
@@ -222,10 +229,14 @@ STAGES_DONE="$STAGES_DONE tree_check"
 }
 stage_tree_check
 
-TMP=""; TMPIDX=""; TLS=""; THP=""; REMOTE_ARMED=0
+TMP=""; TMPIDX=""; TLS=""; THP=""; TMPKIT=""; KITOID=""; REMOTE_ARMED=0
 remote_cleanup() {
   REMOTE_ARMED=0
-  ssh "$HOST" "rm -rf ~/scratch/catalyst-witness/$TQ"
+  if [ -n "$KITOID" ]; then
+    ssh "$HOST" "rm -rf ~/scratch/catalyst-witness/$TQ ~/scratch/catalyst-witness/$TQ.kit"
+  else
+    ssh "$HOST" "rm -rf ~/scratch/catalyst-witness/$TQ"
+  fi
   rmrc=$?
   printf 'run-witness: удалённый снимок %s убран (rc=%s)\n' "$T" "$rmrc"
 }
@@ -235,6 +246,7 @@ on_exit() {
   trap '' HUP INT QUIT TERM
   [ "$REMOTE_ARMED" = 1 ] && remote_cleanup
   [ -n "$TMP" ] && rm -rf "$TMP"
+  [ -n "$TMPKIT" ] && rm -rf "$TMPKIT"
   [ -n "$TMPIDX" ] && rm -f "$TMPIDX"
   [ -n "$TLS" ] && rm -f "$TLS"
   [ -n "$THP" ] && rm -f "$THP"
@@ -285,6 +297,27 @@ STAGES_DONE="$STAGES_DONE snapshot"
 }
 stage_snapshot
 
+stage_kit() {
+case ",$S," in
+  *,mod-units,*) ;;
+  *) STAGES_DONE="$STAGES_DONE kit:skip"; return 0 ;;
+esac
+local kit="${CATALYST_PATCH_KIT:-}" common
+if [ -z "$kit" ]; then
+  common=$(git rev-parse --path-format=absolute --git-common-dir) || fail "КИТ: git rev-parse --git-common-dir отказ"
+  kit="$(dirname "$(dirname "$common")")/Catalyst-CC-Patch"
+fi
+KITOID=$(git -C "$kit" rev-parse --verify --quiet 'origin/main:tweakcc-patch.js') \
+  || fail "КИТ: в $kit нет origin/main:tweakcc-patch.js (ступень splice-parity стенда mod-units не исполнится)"
+TMPKIT=$(mktemp -d "${TMPDIR:-/tmp}/catalyst-witness-kit.XXXXXX") || fail "mktemp отказ"
+git -C "$kit" cat-file blob "$KITOID" > "$TMPKIT/tweakcc-patch.js" || fail "КИТ: git cat-file $KITOID отказ"
+[ "$(git hash-object --no-filters "$TMPKIT/tweakcc-patch.js")" = "$KITOID" ] \
+  || fail "КИТ: материализованный tweakcc-patch.js разошёлся с блобом $KITOID"
+printf 'run-witness: кит %s origin/main:tweakcc-patch.js %s\n' "$kit" "$KITOID"
+STAGES_DONE="$STAGES_DONE kit"
+}
+stage_kit
+
 stage_deliver() {
 # CONSTRAINT: промежуточный каталог на хосте создаётся явно: rsync без --mkpath
 # на чистом хосте отказывает, и ни один свидетель не производился бы вовсе.
@@ -293,6 +326,11 @@ REMOTE_ARMED=1
 
 rsync -a --no-xattrs --delete "$TMP/" "$HOST:scratch/catalyst-witness/$TQ/" \
   || fail "rsync отказ (снимок не доставлен на $HOST)"
+
+if [ -n "$KITOID" ]; then
+  rsync -a --no-xattrs --delete "$TMPKIT/" "$HOST:scratch/catalyst-witness/$TQ.kit/" \
+    || fail "rsync отказ (кит не доставлен на $HOST)"
+fi
 
 # CONSTRAINT: git-dir берётся rev-parse'ом, а не литерой .git: в worktree
 # git-каталог лежит вне рабочего дерева, и хук ищет свидетеля по тому же правилу.
@@ -314,8 +352,11 @@ stage_deliver
 wrc=""
 stage_run() {
 SQ=$(printf '%q' "$S")
-ssh "$HOST" "cd ~/scratch/catalyst-witness/$TQ && printf 'run-witness: прогон начат\n' && env -u CATALYST_STANDS systemd-run --user --scope --quiet -p MemoryMax=4G bash tests/run-all.sh --scope $SQ" > "$LOG" 2>&1
+local kitenv=""
+[ -z "$KITOID" ] || kitenv="CATALYST_PATCH_KIT=\$HOME/scratch/catalyst-witness/$TQ.kit "
+ssh "$HOST" "cd ~/scratch/catalyst-witness/$TQ && printf 'run-witness: прогон начат\n' && env -u CATALYST_STANDS ${kitenv}systemd-run --user --scope --quiet -p MemoryMax=4G bash tests/run-all.sh --scope $SQ" > "$LOG" 2>&1
 wrc=$?
+[ -z "$KITOID" ] || printf 'run-witness: кит origin/main:tweakcc-patch.js %s\n' "$KITOID" >> "$LOG"
 STAGES_DONE="$STAGES_DONE run"
 }
 stage_run
