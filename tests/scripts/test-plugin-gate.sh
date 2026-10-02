@@ -15,9 +15,9 @@ set -u
 # CONSTRAINT: ожидаемое число зубов объявлено ЗДЕСЬ и больше нигде. Стенд
 # печатает фактически прогнанное, и расхождение в ЛЮБУЮ сторону -- КРАСНЫЙ, а не
 # «НЕ ИЗМЕРЕНО»: зуб, тихо выпавший из прогона (ранний выход, потерянный вызов),
-# неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
-# агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
-# дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
+# неотличим от зуба, которого никогда не писали. Код 1: выпавший зуб --
+# красный предмета; код 3 `tests/run-all.sh` оставляет НЕ ИЗМЕРЕНО только
+# стендам из OPTIN_STANDS, а этот стенд не опт-ин.
 EXPECTED_TEETH=110
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -1437,7 +1437,7 @@ fi
 R=$(mk_world removed_plugin)
 git -C "$R" rm -r -q plugins/mini
 add_witness "$R" mini-stand 0 >/dev/null
-REALCLAUDE="$(command -v claude)"
+# CONSTRAINT: дверь зовёт здесь claude только как `plugin validate`; любой другой вызов заглушки -- громкий отказ, не проход к настоящему бинарнику.
 CBIN="$ROOT/cbin68"; mkdir -p "$CBIN"
 cat > "$CBIN/claude" <<EOF2
 #!/usr/bin/env bash
@@ -1445,7 +1445,8 @@ if [ "\${1:-}" = "plugin" ] && [ "\${2:-}" = "validate" ] && [ ! -d "\${3:-}" ];
   printf 'stub-claude: validate %s: каталога нет rc=1\n' "\${3:-}" >&2
   exit 1
 fi
-exec "$REALCLAUDE" "\$@"
+  printf 'stub-claude: неожиданный вызов: %s\n' "\$*" >&2
+  exit 97
 EOF2
 chmod +x "$CBIN/claude"
 out=$(run_door "$R" PATH="$CBIN:$PATH"); rc=$?
@@ -1580,7 +1581,7 @@ printf '{"name":"mini","version":"0.1.1","description":"REJECT-ME","author":{"na
 git -C "$R" add plugins/mini/.claude-plugin/plugin.json
 mini_manifest "$R/plugins/mini/.claude-plugin/plugin.json" 0.1.1
 add_witness "$R" mini-stand 0 >/dev/null
-REALCLAUDE77="$(command -v claude)"
+# CONSTRAINT: дверь зовёт здесь claude только как `plugin validate`; любой другой вызов заглушки -- громкий отказ, не проход к настоящему бинарнику.
 CBIN="$ROOT/cbin77"; mkdir -p "$CBIN"
 cat > "$CBIN/claude" <<EOF2
 #!/usr/bin/env bash
@@ -1588,7 +1589,8 @@ if [ "\${1:-}" = "plugin" ] && [ "\${2:-}" = "validate" ] && grep -q REJECT-ME "
   printf 'stub-claude: validate %s: REJECT-ME rc=1\n' "\${3:-}" >&2
   exit 1
 fi
-exec "$REALCLAUDE77" "\$@"
+  printf 'stub-claude: неожиданный вызов: %s\n' "\$*" >&2
+  exit 97
 EOF2
 chmod +x "$CBIN/claude"
 out=$(run_door "$R" PATH="$CBIN:$PATH"); rc=$?

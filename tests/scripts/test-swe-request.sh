@@ -2,15 +2,16 @@
 # Стенд мода catalyst-swe-request на ОФИЦИАЛЬНОМ харнесе образа: пин sha256
 # hooks/register.ts, `claude plugin validate` и `claude plugin test`.
 #
-# CONSTRAINT: коды возврата -- только 0/1/2, как понимает tests/run-all.sh:
+# CONSTRAINT: коды возврата -- 0/1/2, как понимает tests/run-all.sh:
 # 0 -- зелёный, ОДНОЙ строкой с числами сводки харнеса;
 # 1 -- красный: пин register.ts разошёлся, validate не прошёл, есть провалы,
 #     прогнано не EXPECTED_TESTS тестов или не EXPECTED_FILES файлов (вывод
 #     харнеса ДОСЛОВНО);
-# 2 -- ОТКАЗ ПРИБОРА с названной причиной: нет бинарника claude, нечем считать
-#     sha256, команда не регистрируется, вывод не разобран.
-# Код 3 («НЕ ИЗМЕРЕНО») здесь не выдаётся: run-all даёт на него rc 0, и
-# неразобранная сводка прошла бы дверь коммита как не-красная.
+# 2 -- ОТКАЗ ПРИБОРА с названной причиной: нет бинарника, каталог или
+#     неисполняемый файл (lib-claude-bin.sh), нечем считать sha256, команда не
+#     регистрируется, вывод не разобран.
+# Код 3 стенд не выдаёт: tests/run-all.sh читает его красным у любого стенда
+# вне OPTIN_STANDS.
 #
 # CONSTRAINT: число тестов доказывается СТРОКАМИ сводки харнеса, а не кодом
 # возврата; каждая строка сводки («N pass», «M fail», «Ran R tests across F
@@ -30,7 +31,7 @@ EXPECTED_TESTS=20
 # Пин числа файлов тестов мода (*.test.ts): второй файл или пропавший первый виден здесь.
 EXPECTED_FILES=1
 # Пин файла мода; пересъёмка -- вместе с правкой register.ts.
-REGISTER_SHA256=8e8268a88aaeef81868d7eb4de9b33582b74a08a0a851d5223a6e333999c5073
+REGISTER_SHA256=b007611f6f616236dd4cc4deb2a999226391b693a85ed814805939bf77ee3386
 
 instrument_refuse() {   # <причина>
   printf 'swe-request: ОТКАЗ ПРИБОРА: %s\n' "$1" >&2
@@ -66,8 +67,12 @@ if [ "$DIG" != "$REGISTER_SHA256" ]; then
 fi
 
 # --- прибор ------------------------------------------------------------------
-BIN="$(command -v claude)" || instrument_refuse "бинарник claude не найден в PATH"
-[ -x "$BIN" ] || instrument_refuse "бинарник claude не исполняем: $BIN"
+# CONSTRAINT: резолв бинарника — один дом (lib-claude-bin.sh). Нет бинарника,
+# каталог или неисполняемый файл — код 2 (отказ прибора).
+source "$HERE/lib-claude-bin.sh" || instrument_refuse "нет lib-claude-bin.sh рядом со стендом"
+BIN="$(resolve_claude_bin)"
+BIN_RC=$?
+[ "$BIN_RC" -eq 0 ] || exit "$BIN_RC"
 
 OUT="$(mktemp "${TMPDIR:-/tmp}/swe-request-out.XXXXXX")" || instrument_refuse "mktemp отказ"
 trap 'rm -f "$OUT"' EXIT

@@ -11,7 +11,7 @@ tests/scripts/render-tree.py	render-tree
 tests/scripts/fixtures/u16-mutations.py	dispatch-gate
 tests/fixtures/form-host-decode.json	mod-units,form-host-parity
 tests/fixtures/	mod-units
-.claude/types/	mod-units
+.claude/types/	mod-units,contract-freshness
 tests/data/	mod-event-names
 tests/tools/	mod-event-names
 tests/pressure/	lint,scripts
@@ -33,3 +33,4 @@ AGENTS.md	-
 LICENSE	-
 .gitignore	-
 tests/README.md	-
+tests/scripts/lib-claude-bin.sh	contract-freshness,mod-units,swe-request

@@ -15,7 +15,7 @@ export LC_ALL=C
 # CONSTRAINT: ожидаемое число зубов объявлено ЗДЕСЬ и больше нигде; расхождение
 # в любую сторону -- КРАСНЫЙ (зуб, тихо выпавший из прогона, неотличим от зуба,
 # которого никогда не писали).
-EXPECTED_TEETH=106
+EXPECTED_TEETH=109
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TESTS="$(cd "$HERE/.." && pwd)"
@@ -428,7 +428,7 @@ rmap_against() {   # <каталог дерева> -> 0 зелёно; причи
   local map_out map_rc want_names got_names reach_ok f b
   map_out=$(bash "$dir/tests/stand-scope.sh" --paths "$pf" 2>"$WORK/.rmap-err")
   map_rc=$?
-  want_names="$(printf 'dispatch-gate\ndispatch-stats\nform-host-parity\njudge-bridge\njudge-ladder-live\njudge-serves\nmod-event-names\nmod-units\nplugin-freshness\nplugin-gate\nplugin-ship\nrender-tree\nrun-all\nrun-hook-forwarding\nscripts\nswe-request\nlint\n' | sort)"
+  want_names="$(printf 'contract-freshness\ndispatch-gate\ndispatch-stats\nform-host-parity\njudge-bridge\njudge-ladder-live\njudge-serves\nmod-event-names\nmod-units\nplugin-freshness\nplugin-gate\nplugin-ship\nrender-tree\nrun-all\nrun-hook-forwarding\nscripts\nswe-request\nlint\n' | sort)"
   got_names="$(printf '%s' "$map_out" | tr ',' '\n' | sort)"
   reach_ok=1
   for f in "$dir"/tests/scripts/test-*.sh; do
@@ -1797,6 +1797,33 @@ if [ "$RW_RC" = 0 ] && [ "$(cat "$STUB_RSYNC_REC/tweakcc-patch.js" 2>/dev/null)"
   ok "R106) CATALYST_PATCH_KIT не задана -- кит берётся рядом с главным чекаутом"
 else
   bad "R106) умолчание кита: rc=$RW_RC rec=[$(cat "$STUB_RSYNC_REC/tweakcc-patch.js" 2>/dev/null)] out=[$RW_OUT]"
+fi
+
+W107=$(mk_world w107 a judge-serves judge-ladder-live)
+for n in a judge-serves judge-ladder-live; do
+  printf '#!/usr/bin/env bash\nprintf "%s: НЕ ИЗМЕРЕНО заглушка\\n"\nexit 3\n' "$n" > "$W107/tests/scripts/test-$n.sh"
+done
+run_ra "$W107" --scope a
+if [ "$RA_RC" = 1 ] && [[ "$RA_OUT" == *"КРАСЕН tests/scripts/test-a.sh (rc=3, НЕ ИЗМЕРЕНО у обязательного стенда):"* ]] \
+   && [[ "$RA_OUT" == *"a: НЕ ИЗМЕРЕНО заглушка"* ]] \
+   && [[ "$RA_OUT" == *"зелёных 0, красных 1, НЕ ИЗМЕРЕНО 0, scope=a"* ]]; then
+  ok "R107) код 3 обязательного стенда -- КРАСЕН с пометкой, rc 1"
+else
+  bad "R107) код 3 обязательного стенда: rc=$RA_RC out=[$RA_OUT]"
+fi
+run_ra "$W107" --scope judge-ladder-live,judge-serves
+if [ "$RA_RC" = 0 ] && [[ "$RA_OUT" == *"НЕ ИЗМЕРЕНО tests/scripts/test-judge-serves.sh:"* ]] \
+   && [[ "$RA_OUT" == *"НЕ ИЗМЕРЕНО tests/scripts/test-judge-ladder-live.sh:"* ]] \
+   && [[ "$RA_OUT" == *"зелёных 0, красных 0, НЕ ИЗМЕРЕНО 2, scope=judge-ladder-live,judge-serves"* ]]; then
+  ok "R108) код 3 стендов-опт-инов -- НЕ ИЗМЕРЕНО отдельной категорией, rc 0"
+else
+  bad "R108) код 3 опт-инов: rc=$RA_RC out=[$RA_OUT]"
+fi
+run_ra "$W107" --scope a,judge-serves
+if [ "$RA_RC" = 1 ] && [[ "$RA_OUT" == *"зелёных 0, красных 1, НЕ ИЗМЕРЕНО 1, scope=a,judge-serves"* ]]; then
+  ok "R109) опт-ин НЕ ИЗМЕРЕН, обязательный с кодом 3 -- красный, rc 1"
+else
+  bad "R109) смесь опт-ина и обязательного: rc=$RA_RC out=[$RA_OUT]"
 fi
 
 printf '\nRUN-ALL-TEETH PASS=%d FAILED=%d\n' "$PASS" "$FAIL"

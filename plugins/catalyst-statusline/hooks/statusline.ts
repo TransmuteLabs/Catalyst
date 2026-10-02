@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code'
-import type { Collector, ElementDef, Input, NumberFormat, Row, SessionInfo, Source, Value, Variant } from './data/types'
+import type { Collector, ElementDef, Input, NumberFormat, Option, Row, SessionInfo, Source, Value, Variant } from './data/types'
 import { FAMILIES } from './data/index'
 import { boundText, NORM, SESS_ID_PATHS, snapshotText } from './data/snapshotText'
 import { cloneState } from './data/cloneState'
@@ -646,7 +646,7 @@ export const LAYOUT_PRESETS: { id: string; label: string }[] = [
 
 // the stand's seam; in the host nowOverride stays null
 let nowOverride: (() => number) | null = null
-const now = (): number => (nowOverride !== null ? nowOverride() : ((globalThis as any).performance?.now?.() ?? Date.now()))
+const now = (): number => (nowOverride !== null ? nowOverride() : ((globalThis as { performance?: { now?: () => number } }).performance?.now?.() ?? Date.now()))
 
 // Feeds and refusal deadlines share one stamp. A refused $.clock.now keeps the
 // previous stamp so a deadline is not moved by the refusal itself.
@@ -1744,7 +1744,7 @@ function barGlyphs(ratio: number, view: View, elements: Record<string, ElemSetti
 
 type Composed = { text: string; stale: boolean; pending: boolean; ratio?: number }
 
-function composeElement(id: string, v: Value, elements: Record<string, ElemSettings>, view: View, nf: NumberFormat, rememberWidth = false): Composed | null {
+export function composeElement(id: string, v: Value, elements: Record<string, ElemSettings>, view: View, nf: NumberFormat, rememberWidth = false): Composed | null {
   const entry = REG.byId.get(id)
   if (!entry) return null
   const def = entry.def
@@ -1783,7 +1783,11 @@ function composeElement(id: string, v: Value, elements: Record<string, ElemSetti
     return { text, stale: false, pending: false, ratio: v.ratio }
   }
   if (v.state === 'stale') return markStale(def.kind === 'meter' ? meterText(v.last.text, v.last.ratio) : ((prefix ? prefix + ' ' : '') + v.last.text).trim())
-  return { text: ((prefix ? prefix + ' ' : '') + v.text).trim(), stale: false, pending: false, ratio: v.state === 'ok' ? v.ratio : undefined }
+  // CONSTRAINT: союз Value закрыт (nosource, pending, ok, stale — все ветки
+  // выше возвращаются); сюда доходит только значение вне союза, и защитная
+  // ветка не читает полей союза. Новое состояние Value обязано краснеть здесь.
+  v satisfies never
+  return { text: (prefix ? prefix + ' ' : '').trim(), stale: false, pending: false }
 }
 
 // The variable dictionary the template engine reads: one entry per element.
@@ -5116,7 +5120,7 @@ function pickerModel($: EngineInterface, e: { requestId?: string }, treeTable: T
         barShow: settings['bs'] ?? 'all',
         maxRows: typeof optionsOf(def, d.elements)['maxRows'] === 'number' ? (optionsOf(def, d.elements)['maxRows'] as number) : 3,
         order: String(optionsOf(def, d.elements)['order'] ?? ''),
-        orders: def.kind === 'list' ? (def.options ?? []).find((o) => o.key === 'order' && o.kind === 'choice')?.choices ?? [] : [],
+        orders: def.kind === 'list' ? (def.options ?? []).find((o): o is Extract<Option, { kind: 'choice' }> => o.key === 'order' && o.kind === 'choice')?.choices ?? [] : [],
         isMeter: def.kind === 'meter',
         isList: def.kind === 'list',
       }
@@ -7047,13 +7051,17 @@ export function register(on: On, options: PluginOptions): void {
       if (component === 'AbovePrompt') {
         ensureStarted($, true)
         ensureRestore($)
-        if (typeof e.props.maxRows === 'number' && e.props.maxRows > 0) {
-          S.lastMaxRows = e.props.maxRows
+        // CONSTRAINT: у союза события ui.render нет общих полей пропсов; чтение
+        // идёт через структурный вид события (как `component` выше), значения
+        // проверяются в рантайме.
+        const props = (e as { props: { maxRows?: unknown; hasSurvey?: unknown; bodyColumns?: unknown } }).props
+        if (typeof props.maxRows === 'number' && props.maxRows > 0) {
+          S.lastMaxRows = props.maxRows
           S.bandMeasured = true
         }
         const view = S.cfg.view
         if (view.placement !== 'above') return next(e)
-        if (e.props.hasSurvey === true) {
+        if (props.hasSurvey === true) {
           // one diagnostic record per survey, never a redraw fight (SPEC §14.12)
           if (!S.surveyDiag) {
             S.surveyDiag = true
@@ -7062,8 +7070,8 @@ export function register(on: On, options: PluginOptions): void {
           return next(e)
         }
         S.surveyDiag = false
-        const width = typeof e.props.bodyColumns === 'number' && e.props.bodyColumns > 0 ? e.props.bodyColumns : WIDTH_FALLBACK
-        const maxRows = typeof e.props.maxRows === 'number' && e.props.maxRows > 0 ? e.props.maxRows : 8
+        const width = typeof props.bodyColumns === 'number' && props.bodyColumns > 0 ? props.bodyColumns : WIDTH_FALLBACK
+        const maxRows = typeof props.maxRows === 'number' && props.maxRows > 0 ? props.maxRows : 8
         const vars = buildVars(S.cfg.elements, view, S.cfg.nf, true)
         const lines = drawLines(vars, S.cfg.tpl, view, S.cfg.elements, width, maxRows, S.cfg.nf)
         if (lines.length === 0) return next(e)
@@ -7094,7 +7102,7 @@ export function register(on: On, options: PluginOptions): void {
         const detail = (id: string): string => detailOf(id, S.cfg.elements, S.cfg.nf)
         const bar = buildBarTree(all, view, width, table, view.details === 'hover', detail, S.cfg.elements, S.cfg.nf) as { children?: unknown[] }
         const children: unknown[] = [bar]
-        const hint = typeof e.props.hint === 'string' ? e.props.hint.trim() : ''
+        const hint = typeof (e as { props: { hint?: unknown } }).props.hint === 'string' ? (e as { props: { hint: string } }).props.hint.trim() : ''
         if (hint) children.push(table.Box({ flexShrink: 1, children: [table.Text({ children: ['  ' + hint], dimColor: true, wrap: 'truncate' })] }))
         return table.Box({ flexDirection: 'row', children }) as Awaited<ReturnType<typeof next>>
       }
@@ -7108,7 +7116,7 @@ export function register(on: On, options: PluginOptions): void {
           staleDrop('render')
           return next(e)
         }
-        const bodyColumns = typeof e.props.bodyColumns === 'number' && e.props.bodyColumns > 0 ? e.props.bodyColumns : 80
+        const bodyColumns = typeof (e as { props: { bodyColumns?: unknown } }).props.bodyColumns === 'number' && (e as { props: { bodyColumns: number } }).props.bodyColumns > 0 ? (e as { props: { bodyColumns: number } }).props.bodyColumns : 80
         // CONSTRAINT (#521 FIX5 Ч6): the open decides the draft; until then the
         // pane creates none and draws no control — the open redraws it after
         if (S.opening) {

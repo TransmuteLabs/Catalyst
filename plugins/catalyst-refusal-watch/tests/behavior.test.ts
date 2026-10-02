@@ -2,6 +2,13 @@ import { test, expect } from "claude-code/testing"
 import { register, RULE_TEXT, formatAlert, __reset, __dedupSize, __dedupAgents, __observed, __bounded, __setWall } from "../hooks/register.ts"
 import * as reg from "../hooks/register.ts"
 
+// CONSTRAINT: среда `claude plugin test` даёт тестам таймер (зубы ниже
+// уступают макротаск фоновым обещаниям), но в декларациях окружения хуков
+// его нет (claude-code/index.d.ts:13711-13713: ни у хуков, ни у surface-модулей таймеров);
+// объявление локально для этого файла и отражает живой рантайм, не расширяя
+// контракт модуля.
+declare function setTimeout(handler: (...args: unknown[]) => void, timeout: number): unknown
+
 const stopOut = (id: string) => ({ message: "stopped", task_id: id, task_type: "local_bash" })
 
 // CONSTRAINT: модуль не экспортирует обработчики — единственный путь позвать
@@ -473,7 +480,7 @@ test("T12 log line omits absent turn/step instead of printing undefined", async 
   expect(lines.length, "complete and taskstop both log").toBe(2)
   expect(lines.some((l: string) => l.includes("undefined")), "no undefined in transcript log").toBe(false)
   expect(lines[0], "complete log keeps its turn").toContain('[turn "turn-12"]')
-  expect(lines[1].includes("["), "taskstop log carries no empty bracket").toBe(false)
+  expect(lines[1]!.includes("["), "taskstop log carries no empty bracket").toBe(false)
 })
 
 test("T13 early close from above closes the stream beneath", async () => {
@@ -1382,10 +1389,10 @@ test("T46 each caller times out from its own start", async () => {
     expect(await until(() => releases.length >= 2), "each caller starts its own wait").toBe(true)
     expect(aDone, "A is still waiting on its own sleep").toBe(false)
     expect(bDone, "B is still waiting on its own sleep").toBe(false)
-    releases[1]()
+    releases[1]!()
     expect(await until(() => bDone), "B finishes when its own sleep resolves").toBe(true)
     expect(aDone, "A does not finish on B's sleep").toBe(false)
-    releases[0]()
+    releases[0]!()
     expect(await until(() => aDone), "A finishes when its own sleep resolves").toBe(true)
     await Promise.all([a, b])
   } finally {
@@ -1758,7 +1765,7 @@ test("T61 TaskStop with a truthy non-false isError and a full result does not to
   const ids = ["bg-61a", "bg-61b", "bg-61c"]
   const truthy: any[] = [true, "true", 1]
   for (let i = 0; i < ids.length; i++) {
-    const bad = { isError: truthy[i], result: stopOut(ids[i]) }
+    const bad = { isError: truthy[i], result: stopOut(ids[i]!) }
     const out = await hooks.taskstop(
       env.$,
       { tool: "TaskStop", tool_use_id: "u61-" + ids[i], task_id: ids[i] },
@@ -1950,7 +1957,7 @@ test("T68 isError other than absent or false blocks a full record", async () => 
   const ids = ["bg-68a", "bg-68b", "bg-68c"]
   const values: any[] = [0, null, ""]
   for (let i = 0; i < ids.length; i++) {
-    const rec = { isError: values[i], result: stopOut(ids[i]) }
+    const rec = { isError: values[i], result: stopOut(ids[i]!) }
     const out = await hooks.taskstop(
       env.$,
       { tool: "TaskStop", tool_use_id: "u68-" + ids[i], task_id: ids[i] },

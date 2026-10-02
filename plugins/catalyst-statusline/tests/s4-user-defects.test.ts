@@ -809,7 +809,7 @@ test('S4 F4: a write held while more turns land is redone with the current state
     await SL.restoreAfterReload($, {} as never)
     await drain()
     eventInput('turn.complete', tokens('t1', 100), 60000)
-    const gate = deferred<unknown>()
+    const gate = deferred<void>()
     let writes = 0
     $.store.set = async (key: string, value: unknown) => {
       writes++

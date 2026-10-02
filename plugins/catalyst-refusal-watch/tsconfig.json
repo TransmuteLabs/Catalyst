@@ -4,7 +4,8 @@
     "module": "esnext", "moduleResolution": "bundler",
     "strict": true, "noUncheckedIndexedAccess": true,
     "noEmit": true, "skipLibCheck": true,
-    "jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "Fragment"
+    "jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "Fragment",
+    "allowImportingTsExtensions": true
   },
   "include": ["../../.claude/types", "hooks", "tests"]
 }

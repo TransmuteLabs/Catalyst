@@ -61,7 +61,7 @@ const ANCHORED = [
       op.to === CODING_AGENT && typeof op.pattern === "string" &&
       op.pattern.includes("built on Anthropic's Claude Agent SDK"),
   },
-]
+] as const
 
 test("ноуна нет ⇒ именованная строка и бросок", async ($: any, on: any) => {
   let logged = ""

@@ -171,7 +171,7 @@ test('S4F4 Z3: a farewell queued behind a hung write lands after it, not under i
     const h = handlers()
     const persisted = new Map<string, unknown>()
     const $ = fullStand(persisted)
-    const gate = deferred<unknown>()
+    const gate = deferred<void>()
     let writes = 0
     $.store.set = async (key: string, v: unknown) => {
       if (isSessKey(key, 'A') && ++writes === 1) await gate.promise

@@ -10,10 +10,11 @@
 # 1 -- красный: провалившиеся тесты (вывод харнеса ДОСЛОВНО), рассинхрон
 #     домов версии мода, число прогнанных файлов против дерева, число
 #     прогнанных тестов против EXPECTED_TESTS, прошедших меньше прогнанных;
-# 2 -- ПРИБОР НЕДОСТУПЕН (нет бинарника; команда не регистрируется; ценз версии
-#     недействителен) с названной причиной -- молчаливый пропуск невозможен;
+# 2 -- ПРИБОР НЕДОСТУПЕН (нет бинарника или он не исполняем -- lib-claude-bin.sh;
+#     команда не регистрируется; ценз версии недействителен) с названной причиной -- молчаливый пропуск невозможен;
 # 3 -- НЕ ИЗМЕРЕНО: сводка харнеса не разобрана (ПУСТО != НОЛЬ) либо ступень
-#     splice-parity не исполнена.
+#     splice-parity не исполнена; tests/run-all.sh читает его КРАСНЫМ (стенд
+#     не опт-ин), свидетеля нет.
 set -u
 
 # --- самопроверка стенда (#509-FIX3 L10) --------------------------------------
@@ -32,8 +33,9 @@ if [ "${1:-}" = "--self-check" ]; then
   cp "$SRC_ROOT/tests/fixtures/mod-surface.txt" "$T/tests/fixtures/mod-surface.txt"
   cp "$SRC_ROOT/plugins/catalyst-probes/hooks/register.ts" "$T/plugins/catalyst-probes/hooks/register.ts"
   cp "$SRC_ROOT/plugins/catalyst-probes/.claude-plugin/plugin.json" "$T/plugins/catalyst-probes/.claude-plugin/plugin.json"
-  mkdir -p "$T/.claude/types"
-  cp "$SRC_ROOT/.claude/types/claude-code.d.ts" "$T/.claude/types/claude-code.d.ts"
+  mkdir -p "$T/.claude/types/claude-code" "$T/tests/scripts"
+  cp "$SRC_ROOT/tests/scripts/lib-claude-bin.sh" "$T/tests/scripts/lib-claude-bin.sh"
+  cp "$SRC_ROOT/.claude/types/claude-code/index.d.ts" "$T/.claude/types/claude-code/index.d.ts"
   grep -m 1 'expect(MOD_VERSION)\.toBe(' "$SRC_ROOT/plugins/catalyst-probes/tests/units.test.ts" \
     >"$T/plugins/catalyst-probes/tests/units.test.ts"
   printf 'x\n' >"$T/plugins/catalyst-probes/tests/behavior.test.ts"
@@ -101,13 +103,16 @@ EXPECTED_TESTS=1304
 
 # --- прибор ------------------------------------------------------------------
 
-BIN="${CLAUDE_BIN:-}"
-if [ -z "$BIN" ]; then
-  BIN="$(command -v claude 2>/dev/null || true)"
-fi
-if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
-  printf 'ПРИБОР НЕДОСТУПЕН: бинарник claude не найден (PATH или CLAUDE_BIN)\n' >&2
+# CONSTRAINT: резолв бинарника — один дом (lib-claude-bin.sh). Нет бинарника,
+# каталог или неисполняемый файл — код 2 (ПРИБОР НЕДОСТУПЕН), не красный предмета.
+source "$HERE/lib-claude-bin.sh" || {
+  printf 'ПРИБОР НЕДОСТУПЕН: нет lib-claude-bin.sh рядом со стендом\n' >&2
   exit 2
+}
+BIN="$(resolve_claude_bin)"
+BIN_RC=$?
+if [ "$BIN_RC" -ne 0 ]; then
+  exit "$BIN_RC"
 fi
 
 # --- ценз домов версии мода --------------------------------------------------
@@ -177,7 +182,7 @@ fi
 # CONSTRAINT: константа CLASSIC_EVENTS -- пересчёт, не копия: имена
 # hook_event_name берутся из d.ts контракта, подписки classic.* -- из литералов
 # on() в register.ts; харнес d.ts не читает (node:fs запрещён), поэтому здесь.
-CONTRACT_DTS="$ROOT/.claude/types/claude-code.d.ts"
+CONTRACT_DTS="$ROOT/.claude/types/claude-code/index.d.ts"
 if [ ! -s "$CONTRACT_DTS" ]; then
   printf 'ПРИБОР НЕДОСТУПЕН: контракта для пересчёта classic-имён нет (%s)\n' "$CONTRACT_DTS" >&2
   exit 2

@@ -11,7 +11,7 @@ if [ "$#" -eq 2 ] && [ "$1" = --image ]; then IMAGE="$2"
 elif [ "$#" -ne 0 ]; then printf 'form-host-parity: отказ прибора: нужен --image <path>\n'; exit 2
 fi
 if [ -z "$IMAGE" ]; then
-  # CONSTRAINT: образ по умолчанию — пристин версии фикстуры; отсутствие пристина — НЕ ИЗМЕРЕНО (rc 3), а не отказ прибора: штатный раннер без образа не краснеет.
+  # CONSTRAINT: образ по умолчанию — пристин версии фикстуры; без него, как и вне Linux, — НЕ ИЗМЕРЕНО (rc 3), а не отказ прибора. Стенд обязательный (его нет в OPTIN_STANDS tests/run-all.sh): агрегатор читает rc 3 красным, поэтому площадка свидетеля (usbox) обязана нести пристин версии фикстуры.
   HOST_VERSION="$(python3 - "$ROOT/tests/fixtures/form-host-decode.json" <<'PY'
 import json, sys
 try: print(json.load(open(sys.argv[1]))["hostVersion"])

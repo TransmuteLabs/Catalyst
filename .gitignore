@@ -9,3 +9,6 @@ tests/pressure/out/
 # байткод -- порождённый артефакт прогона, в дерево он не едет.
 __pycache__/
 *.pyc
+
+# CONSTRAINT: движок пишет контракт в каждую папку мода при загрузке; дом контракта для tsc — .claude/types/.
+plugins/*/.claude-plugin/types/

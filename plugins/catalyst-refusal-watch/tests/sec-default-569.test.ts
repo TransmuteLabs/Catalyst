@@ -14,6 +14,7 @@ function capture() {
   register((event: string, a: any, b?: any) => {
     registrations.push(event)
     hooks[event] = b ?? a
+    return { catch() {} }
   })
   return { hooks, registrations }
 }
@@ -591,7 +592,7 @@ for (const site of ["debug", "env", "passport-read", "D4", "channel"]) {
     else await f.start()
     const diagnostic = f.logs.filter(([text]) => text.includes(prefix))
     expect(diagnostic.length, "error-raw-569: one diagnostic for " + site).toBe(1)
-    const text = diagnostic[0][0]
+    const text = diagnostic[0]![0]
     expect(/[\n\r\x7f-\x9f]/.test(text) || text.includes(String.fromCharCode(0x2028)) || text.includes(String.fromCharCode(0x2029)), "error-raw-569: controls escaped at " + site).toBe(false)
     const raw = text.slice(text.indexOf(prefix) + prefix.length)
     expect(raw.endsWith("…"), "error-raw-569: long error clipped at " + site).toBe(true)
@@ -695,10 +696,10 @@ for (const mode of ["stale-before", "stale-await"]) {
     const result = { lower: mode }
     const $ = { env: { async get() {
       envCalls++
-      register(() => {})
+      register(() => ({ catch() {} }))
       return "on"
     } } }
-    if (mode === "stale-before") register(() => {})
+    if (mode === "stale-before") register(() => ({ catch() {} }))
     const out = await hooks["turn.start"]($, event, (forwarded: any) => {
       nextCalls++
       expect(forwarded, "turn-next-function-569: original event at " + mode).toBe(event)
@@ -733,7 +734,7 @@ test("own-error-text-569", async () => {
   await f.hooks["turn.complete"](f.$, { reason: "refusal", turnId: "foreign-error-569" }, next)
   const row = f.logs.filter(([text]) => text.startsWith(prefix) && text !== prefix + own)
   expect(row.length, "own-error-text-569: one foreign error in the same store channel").toBe(1)
-  const quoted = row[0][0].slice(prefix.length)
+  const quoted = row[0]![0].slice(prefix.length)
   expect(quoted.endsWith("…"), "own-error-text-569: foreign message clipped").toBe(true)
   expect(/[\n\r\x7f-\x9f]/.test(quoted) || quoted.includes(String.fromCharCode(0x2028)) || quoted.includes(String.fromCharCode(0x2029)), "own-error-text-569: foreign controls escaped").toBe(false)
   expect(JSON.parse(quoted.slice(0, -1)), "own-error-text-569: foreign clipped points preserved").toBe(Array.from(foreign).slice(0, 80).join(""))

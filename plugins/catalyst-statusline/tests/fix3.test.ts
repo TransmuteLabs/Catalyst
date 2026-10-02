@@ -1,4 +1,10 @@
 import { expect, test } from 'claude-code/testing'
+
+// CONSTRAINT: среда `claude plugin test` даёт тестам console (зубы ниже
+// печатают число заметённых точек ожидания), но в декларациях окружения
+// хуков console есть только у surface-модулей (claude-code/index.d.ts:13711-13713); объявление
+// локально для этого файла и отражает живой рантайм.
+declare const console: { log(...args: unknown[]): void }
 import * as SL from '../hooks/statusline'
 import { FAMILIES } from '../hooks/data'
 import { walk, STORE_THEMES, STORE_LASTGOOD, STORE_OPEN, STORE_DRAFT, STORE_SAVING, STORE_UNDO, NS_OPEN, NS_MARK, NS_DRAFT, NS_UNDO } from './world'

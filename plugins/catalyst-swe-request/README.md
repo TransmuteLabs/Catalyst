@@ -11,12 +11,17 @@ coding agent.», удаление пункта «The most recent Claude models a
 ## Ноун — хостовый
 
 `$.requestText` предоставляет ХОСТ (пропатченный Claude Code, дверь врезает шаг 34 патча; с 2.1.280 политики в образе нет), не этот
-плагин. Поле `types` в `.claude-plugin/plugin.json` отсутствует обязательно:
-объявление `declare module 'claude-code' { interface EngineInterface {
-requestText: … } }` семантически означает «этот плагин ПРЕДОСТАВЛЯЕТ ноун», и
-`claude plugin validate --strict` отказывает: «declares $.requestText on
-EngineInterface, but … registers no hook on engine.create, so the plugin never
-adds it to $». Плагин — потребитель ноуна, не поставщик.
+плагин. Поле `types` в `.claude-plugin/plugin.json` отсутствует: плагин — потребитель ноуна, не поставщик.
+Аугментация `declare module 'claude-code' { interface EngineInterface { requestText } }` на издании 2.1.287 измерена так (usbox, бинарник `/Users/maratkarimov/.local/share/claude/versions/2.1.287`, код 0):
+
+```
+plugin validate --strict plugins/catalyst-swe-request
+Validating plugin manifest: …/.claude-plugin/plugin.json
+Validating hooks: …/hooks/hooks.json
+  ❯ ./register.ts hooks: session.start
+  ❯ ./register.ts calls: $.requestText.register, $.ui.log
+✔ Validation passed
+```
 
 ## Поведение при отсутствии двери
 

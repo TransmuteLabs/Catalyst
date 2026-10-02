@@ -1,3 +1,5 @@
+import type { EngineInterface, On, PromptContextResult, TurnStepChunk, TurnStepResult } from 'claude-code'
+
 export const RULE_TEXT =
   "Если ответ был остановлен фильтром сервиса (в разговоре пометка об остановке ответа или результаты вызовов «Not run: … stopped by a safety classifier»): 1) первой строкой следующего ответа сообщи пользователю, что ответ был остановлен, какие действия не выполнены и какая линия работы затронута; 2) не останавливай фоновые задачи и агентов и не прекращай линию работы по своей инициативе — решение о продолжении, изменении задачи или остановке принимает пользователь."
 
@@ -20,7 +22,7 @@ type Environment569 = {
 let snapshotState569: Environment569 | null = null
 
 // CONSTRAINT: шов стенда отдаёт копию состояния окружения, не его изменяемые latch'и.
-export function __snapshot569(): any {
+export function __snapshot569(): (Omit<Environment569, "diagnosed"> & { diagnosed: string[] }) | null {
   return snapshotState569 == null ? null : { ...snapshotState569, diagnosed: [...snapshotState569.diagnosed] }
 }
 
@@ -29,10 +31,12 @@ function current569(state: Environment569): boolean {
 }
 
 // CONSTRAINT: чтение свойств пойманного значения не бросает: отказ чтения не меняет классификацию.
-function errno569(x: any): string | null {
+function errno569(x: unknown): string | null {
   try {
-    if (typeof x?.code === "string") return /^E[A-Z0-9]{1,15}$/.test(x.code) ? x.code : null
-    const tail = strOf(x?.message ?? x).split(": ").pop() ?? ""
+    const code = (x as { code?: unknown } | null)?.code
+    if (typeof code === "string") return /^E[A-Z0-9]{1,15}$/.test(code) ? code : null
+    const message = (x as { message?: unknown } | null)?.message
+    const tail = strOf(message ?? x).split(": ").pop() ?? ""
     return tail.match(/\b(E[A-Z0-9]{1,15})\s*$/)?.[1] ?? null
   } catch {
     return null
@@ -46,7 +50,7 @@ function escapeUnit569(point: string): string {
   return out
 }
 
-function raw569(value: any): string {
+function raw569(value: unknown): string {
   const points = Array.from(strOf(value))
   const quoted = JSON.stringify(points.slice(0, 80).join(""))
   const escaped = quoted.replace(/[\x7f-\x9f\u{2028}\u{2029}\p{Cf}]/gu, escapeUnit569)
@@ -56,17 +60,18 @@ function raw569(value: any): string {
 // CONSTRAINT: only module-composed diagnostics use this marker; embedded external values are formatted with raw569 first.
 class OwnMessage569 extends Error {}
 
-function error569(x: any): string {
+function error569(x: unknown): string {
   try {
     if (x instanceof OwnMessage569) return x.message
-    return raw569(x?.message ?? x)
+    const message = (x as { message?: unknown } | null)?.message
+    return raw569(message ?? x)
   } catch {
     // CONSTRAINT: бросок чтения чужого исключения — собственный литерал в OwnMessage569, не наружу.
     return new OwnMessage569("<unreadable exception>").message
   }
 }
 
-async function diagnose569($: any, state: Environment569, key: string, text: string, cause?: any, reason = errno569(cause) ?? "error"): Promise<void> {
+async function diagnose569($: EngineInterface, state: Environment569, key: string, text: string, cause?: unknown, reason = errno569(cause) ?? "error"): Promise<void> {
   if (!current569(state)) return
   const prefix = key + ":"
   if (!state.diagnosed.has(prefix + reason) && [...state.diagnosed].filter((entry) => entry.startsWith(prefix) && entry !== prefix + "other").length >= 8) reason = "other"
@@ -85,7 +90,7 @@ async function diagnose569($: any, state: Environment569, key: string, text: str
   }
 }
 
-async function enabled569($: any, state: Environment569): Promise<boolean> {
+async function enabled569($: EngineInterface, state: Environment569): Promise<boolean> {
   try {
     const raw = await $.env.get("CLAUDE_REFUSAL_WATCH")
     if (!current569(state)) return false
@@ -100,11 +105,11 @@ async function enabled569($: any, state: Environment569): Promise<boolean> {
   return false
 }
 
-function absent569(x: any): boolean {
+function absent569(x: unknown): boolean {
   return errno569(x) === "ENOENT"
 }
 
-async function delivery569($: any, state: Environment569, enabled: boolean): Promise<void> {
+async function delivery569($: EngineInterface, state: Environment569, enabled: boolean): Promise<void> {
   if (enabled && state.seatProbeResult === "seated") {
     const uncovered = state.passportCovered ? "нет" : "RULE_TEXT (prompt.context)"
     const covered = state.passportCovered ? "RULE_TEXT" : "нет"
@@ -112,7 +117,7 @@ async function delivery569($: any, state: Environment569, enabled: boolean): Pro
   }
 }
 
-async function passport569($: any, state: Environment569): Promise<void> {
+async function passport569($: EngineInterface, state: Environment569): Promise<void> {
   let version = "?"
   try {
     const info = await $.session.version()
@@ -124,7 +129,7 @@ async function passport569($: any, state: Environment569): Promise<void> {
     if (typeof home !== "string" || !home.startsWith("/")) throw new OwnMessage569("HOME invalid")
     const root = home.replace(/\/$/, "")
     const dir = root + "/.local/share/catalyst-cc/passports/"
-    let entries: any[]
+    let entries!: Awaited<ReturnType<EngineInterface["fs"]["list"]>>
     try {
       entries = await $.fs.list(dir)
     } catch (x) {
@@ -142,13 +147,14 @@ async function passport569($: any, state: Environment569): Promise<void> {
       await diagnose569($, state, "passport-ambiguous", "[569] passport-ambiguous " + raw569(version))
       return
     }
-    const raw = await $.fs.read(dir + names[0])
+    const only = names[0]!
+    const raw = await $.fs.read(dir + only)
     if (!current569(state)) return
     const record = JSON.parse(raw)
-    const platform = names[0].slice(prefix.length, -5)
+    const platform = only.slice(prefix.length, -5)
     if (record?.version !== version || record?.platform !== platform) throw new OwnMessage569("passport version/platform mismatch")
     if (record.step26?.applied !== true || record.step26?.rule_sha256 !== RULE_TEXT_SPLICE_SHA256) return
-    let stat: any
+    let stat!: Awaited<ReturnType<EngineInterface["fs"]["stat"]>>
     try {
       stat = await $.fs.stat(root + "/.local/share/claude/versions/" + version)
     } catch (x) {
@@ -276,10 +282,10 @@ function strOf(v: unknown): string {
 }
 
 // CONSTRAINT: поле объекта хоста читается без броска: отказ геттера — `[false, undefined]` и строка канала event с именем поля; `fieldOf` — то же значение без признака.
-function fieldTry($: any, o: any, name: string): [boolean, any] {
+function fieldTry($: EngineInterface, o: unknown, name: string): [boolean, unknown] {
   if (o == null) return [true, undefined]
   try {
-    return [true, o[name]]
+    return [true, (o as Record<string, unknown>)[name]]
   } catch (x) {
     let why: string
     try {
@@ -292,29 +298,35 @@ function fieldTry($: any, o: any, name: string): [boolean, any] {
   }
 }
 
-function fieldOf($: any, o: any, name: string): any {
+function fieldOf($: EngineInterface, o: unknown, name: string): unknown {
   return fieldTry($, o, name)[1]
 }
 
 // CONSTRAINT: каждое внешнее поле события проходит raw569 до любого вывода интерфейса (toast/log/status).
-export function formatAlert(info: any): string {
-  if (info?.via === "step") {
+export function formatAlert(info: unknown): string {
+  const via = (info as { via?: unknown } | null)?.via
+  const tools = (info as { tools?: unknown } | null)?.tools
+  const model = (info as { model?: unknown } | null)?.model
+  const agentId = (info as { agentId?: unknown } | null)?.agentId
+  const category = (info as { category?: unknown } | null)?.category
+  const taskId = (info as { taskId?: unknown } | null)?.taskId
+  if (via === "step") {
     const names =
-      Array.isArray(info.tools) && info.tools.length > 0 ? info.tools.map(raw569).join(", ") : "вызовов нет"
-    let text = "⚠ Ответ оборван фильтром сервиса · " + raw569(info.model)
-    if (info.agentId) text += " · агент " + raw569(info.agentId)
+      Array.isArray(tools) && tools.length > 0 ? tools.map(raw569).join(", ") : "вызовов нет"
+    let text = "⚠ Ответ оборван фильтром сервиса · " + raw569(model)
+    if (agentId) text += " · агент " + raw569(agentId)
     return text + " · не выполнено: " + names
   }
-  if (info?.via === "complete") {
+  if (via === "complete") {
     let text = "⚠ Ход завершён отказом фильтра без повтора"
-    if (info.category != null) text += " · категория " + raw569(info.category)
-    if (info.agentId) text += " · агент " + raw569(info.agentId)
+    if (category != null) text += " · категория " + raw569(category)
+    if (agentId) text += " · агент " + raw569(agentId)
     return text
   }
   return (
     "⚠ После обрыва фильтром остановлена фоновая задача " +
-    raw569(info.taskId) +
-    (info.agentId ? " (остановил агент " + raw569(info.agentId) + ")" : "") +
+    raw569(taskId) +
+    (agentId ? " (остановил агент " + raw569(agentId) + ")" : "") +
     " — проверь, что это было одобрено"
   )
 }
@@ -327,30 +339,41 @@ function hhmm(now: number): string {
   return hh + ":" + mm
 }
 
-function recordOf(info: any, now: number): any {
-  const text = (v: any) => (v === null ? null : strOf(v))
-  const rec: any = { t: Number.isFinite(now) ? now : null, via: info.via }
-  if (info.model !== undefined) rec.model = text(info.model)
-  if (info.agentId !== undefined) rec.agentId = text(info.agentId)
-  if (info.turnId !== undefined) rec.turnId = text(info.turnId)
-  if (info.step !== undefined) {
-    rec.step =
-      typeof info.step === "number" && Number.isFinite(info.step) ? info.step : strOf(info.step)
+function recordOf(info: unknown, now: number): Record<string, unknown> {
+  const row = info as {
+    via?: unknown
+    model?: unknown
+    agentId?: unknown
+    turnId?: unknown
+    step?: unknown
+    tools?: unknown
+    category?: unknown
+    explanation?: unknown
+    taskId?: unknown
   }
-  if (info.tools !== undefined) {
+  const text = (v: unknown) => (v === null ? null : strOf(v))
+  const rec: Record<string, unknown> = { t: Number.isFinite(now) ? now : null, via: row.via }
+  if (row.model !== undefined) rec.model = text(row.model)
+  if (row.agentId !== undefined) rec.agentId = text(row.agentId)
+  if (row.turnId !== undefined) rec.turnId = text(row.turnId)
+  if (row.step !== undefined) {
+    rec.step =
+      typeof row.step === "number" && Number.isFinite(row.step) ? row.step : strOf(row.step)
+  }
+  if (row.tools !== undefined) {
     try {
-      rec.tools = Array.isArray(info.tools) ? info.tools.map(strOf) : strOf(info.tools)
+      rec.tools = Array.isArray(row.tools) ? row.tools.map((item: unknown) => strOf(item)) : strOf(row.tools)
     } catch {
-      rec.tools = strOf(info.tools)
+      rec.tools = strOf(row.tools)
     }
   }
-  if (info.category !== undefined) rec.category = text(info.category)
-  if (info.explanation !== undefined) rec.explanation = text(info.explanation)
-  if (info.taskId !== undefined) rec.taskId = text(info.taskId)
+  if (row.category !== undefined) rec.category = text(row.category)
+  if (row.explanation !== undefined) rec.explanation = text(row.explanation)
+  if (row.taskId !== undefined) rec.taskId = text(row.taskId)
   return rec
 }
 
-function reportChannelFailure($: any, name: string, x: any): void {
+function reportChannelFailure($: EngineInterface, name: string, x: unknown): void {
   try {
     $.ui.log(
       "catalyst-refusal-watch: канал " + name + " не сработал: " + error569(x),
@@ -363,7 +386,7 @@ function reportChannelFailure($: any, name: string, x: any): void {
 }
 
 // CONSTRAINT: местное время не бросает наружу: отказ или неконечное значение — неизвестное время (NaN); и то и другое названо в debug каналом clock.
-function wallOf($: any): number {
+function wallOf($: EngineInterface): number {
   try {
     const t = wall()
     if (typeof t === "number" && Number.isFinite(t)) return t
@@ -375,7 +398,7 @@ function wallOf($: any): number {
   }
 }
 
-async function nowOf($: any, fallback: () => number = () => wallOf($)): Promise<number> {
+async function nowOf($: EngineInterface, fallback: () => number = () => wallOf($)): Promise<number> {
   try {
     const t = await $.clock.now()
     if (typeof t === "number" && Number.isFinite(t)) return t
@@ -392,25 +415,25 @@ function insideWindow(t: number, until: number): boolean {
 }
 
 // CONSTRAINT: ожидание, начатое для диспатча, кончается вместе с ним (`next.signal`); без сигнала ожидание прежнее. Отказ ожидаемого и отмена дают `onAbort()`; бросок `onAbort` отклоняет результат. На `p` подписка ставится всегда и первой — его поздний отказ не остаётся необработанным, а уже отменённый сигнал решает синхронно, раньше ответа `p`.
-function bounded<T>(p: Promise<T>, signal: any, onAbort: () => T): Promise<T> {
+function bounded<T>(p: Promise<T>, signal: unknown, onAbort: () => T): Promise<T> {
   if (signal == null) return p
   try {
-    if (typeof signal.addEventListener !== "function") return p
+    if (typeof (signal as { addEventListener?: unknown }).addEventListener !== "function") return p
   } catch {
     // CONSTRAINT: нечитаемый сигнал — ожидание без сигнала, как при его отсутствии; исключение не выходит из `alert`.
     return p
   }
   return new Promise<T>((resolve, reject) => {
     let done = false
-    const settle = (ok: boolean, v: any) => {
+    const settle = (ok: boolean, v: unknown) => {
       if (done) return
       done = true
       try {
-        signal.removeEventListener("abort", stop)
+        ;(signal as { removeEventListener: (type: string, fn: () => void) => void }).removeEventListener("abort", stop)
       } catch {
         // CONSTRAINT: отказ отписки не должен удержать уже решённое ожидание.
       }
-      if (ok) resolve(v)
+      if (ok) resolve(v as T)
       else reject(v)
     }
     const stop = () => {
@@ -426,11 +449,11 @@ function bounded<T>(p: Promise<T>, signal: any, onAbort: () => T): Promise<T> {
     }
     p.then((v) => settle(true, v), stop)
     try {
-      if (signal.aborted === true) {
+      if ((signal as { aborted?: unknown }).aborted === true) {
         stop()
         return
       }
-      signal.addEventListener("abort", stop, { once: true })
+      ;(signal as { addEventListener: (type: string, fn: () => void, opts?: { once: boolean }) => void }).addEventListener("abort", stop, { once: true })
     } catch {
       // CONSTRAINT: подписка не удалась — ожидание остаётся прежним, не обрывается.
     }
@@ -442,7 +465,7 @@ function recordKey(now: number): string {
   return "log:" + now + ":" + seq + ":" + Math.random().toString(36).slice(2, 8)
 }
 
-async function trimLog($: any): Promise<void> {
+async function trimLog($: EngineInterface): Promise<void> {
   try {
     const all = await $.store.keys()
     const logKeys: string[] = []
@@ -450,13 +473,13 @@ async function trimLog($: any): Promise<void> {
       if (typeof k === "string" && k.startsWith("log:")) logKeys.push(k)
     }
     const extra = logKeys.length - STORE_MAX
-    for (let i = 0; i < extra; i++) await $.store.delete(logKeys[i])
+    for (let i = 0; i < extra; i++) await $.store.delete(logKeys[i]!)
   } catch (x) {
     reportChannelFailure($, "store", x)
   }
 }
 
-async function writeRecord($: any, rec: any, now: number): Promise<void> {
+async function writeRecord($: EngineInterface, rec: unknown, now: number): Promise<void> {
   try {
     await $.store.set(recordKey(now), rec)
     await trimLog($)
@@ -466,18 +489,18 @@ async function writeRecord($: any, rec: any, now: number): Promise<void> {
 }
 
 // CONSTRAINT: признак отмены читается без броска: `true`, `false` или `null` — сигнал нечитаем.
-function abortedOf(signal: any): boolean | null {
+function abortedOf(signal: unknown): boolean | null {
   if (signal == null) return false
   try {
-    return signal.aborted === true
+    return (signal as { aborted?: unknown }).aborted === true
   } catch {
     return null
   }
 }
 
-async function waitLimit($: any, signal: any): Promise<boolean> {
+async function waitLimit($: EngineInterface, signal: unknown): Promise<boolean> {
   try {
-    await $.clock.sleep(STORE_WAIT_MS, signal != null ? { signal } : undefined)
+    await $.clock.sleep(STORE_WAIT_MS, signal != null ? { signal: signal as AbortSignal } : undefined)
     return true
   } catch (x) {
     // CONSTRAINT: молчит только отказ самой отмены диспатча (её причина или `AbortError`); прочий отказ `sleep` — отказ часов и при отменённом сигнале.
@@ -486,13 +509,13 @@ async function waitLimit($: any, signal: any): Promise<boolean> {
       let reasonRead = true
       let reason: unknown
       try {
-        reason = signal.reason
+        reason = (signal as { reason?: unknown }).reason
       } catch {
         reasonRead = false
       }
       let name: unknown
       try {
-        name = x != null ? (x as any).name : undefined
+        name = x != null ? (x as { name?: unknown }).name : undefined
       } catch {
         name = undefined
       }
@@ -503,7 +526,18 @@ async function waitLimit($: any, signal: any): Promise<boolean> {
   }
 }
 
-async function alert($: any, info: any, born: number, signal?: any): Promise<void> {
+async function alert($: EngineInterface, info: {
+  via?: unknown
+  model?: unknown
+  agentId?: unknown
+  turnId?: unknown
+  keyRead?: unknown
+  step?: unknown
+  tools?: unknown
+  category?: unknown
+  explanation?: unknown
+  taskId?: unknown
+}, born: number, signal?: unknown): Promise<void> {
   const counts = info.via === "step" || info.via === "complete"
   let mark: number | null = null
   try {
@@ -611,61 +645,69 @@ async function alert($: any, info: any, born: number, signal?: any): Promise<voi
 }
 
 // CONSTRAINT: `yield*` один раз берёт `next` при входе, а `throw`/`return` ищет на каждом вызове; из результата читает `done`, затем `value`, по одному разу. Наблюдатель повторяет ровно это: иначе поток, который видит хост, расходится с голым `yield*`. После отсутствующего `throw` хост закрывает нижний итератор через `return` и результат не читает — наблюдатель отдаёт его как есть.
-function observed(inner: any, watch: (chunk: any) => void, onDone: (value: any) => void): any {
-  const nextFn = inner.next
+type ObservedIter = {
+  next(v?: unknown): Promise<unknown>
+  throw(x?: unknown): Promise<unknown>
+  return(v?: unknown): Promise<unknown>
+  [Symbol.asyncIterator](): ObservedIter
+}
+
+function observed(inner: object, watch: (chunk: unknown) => void, onDone: (value: unknown) => void): ObservedIter {
+  const nextFn = (inner as { next: (...args: unknown[]) => Promise<unknown> }).next
   let closing = false
-  const pass = (r: any) => {
+  const pass = (r: unknown): unknown => {
     if (r === null || (typeof r !== "object" && typeof r !== "function")) return r
-    const done = r.done
-    const value = r.value
+    const done = (r as { done?: unknown }).done
+    const value = (r as { value?: unknown }).value
     if (done) onDone(value)
     else watch(value)
     return { done, value }
   }
-  const o: any = {
+  const o = {
     [Symbol.asyncIterator]() {
       return o
     },
-    next: async (v?: any) => pass(await Reflect.apply(nextFn, inner, [v])),
+    next: async (v?: unknown) => pass(await Reflect.apply(nextFn, inner, [v])),
   }
   for (const name of ["throw", "return"]) {
     Object.defineProperty(o, name, {
       get() {
         if (name === "return" && closing) {
           closing = false
-          const f = inner[name]
+          const f = (inner as Record<string, unknown>)[name]
           if (f == null) return undefined
           if (typeof f !== "function") return f
-          return async (...args: any[]) => await Reflect.apply(f, inner, args)
+          return async (...args: unknown[]) => await Reflect.apply(f, inner, args)
         }
-        const f = inner[name]
+        const f = (inner as Record<string, unknown>)[name]
         if (name === "throw" && f == null) {
           closing = true
           return undefined
         }
         if (f == null) return undefined
         if (typeof f !== "function") return f
-        return async (x?: any) => pass(await Reflect.apply(f, inner, [x]))
+        return async (x?: unknown) => pass(await Reflect.apply(f, inner, [x]))
       },
     })
   }
-  return o
+  return o as unknown as ObservedIter
 }
 
-// CONSTRAINT: успех ядра = `result` — запись вывода TaskStop со строковыми `message`, `task_id`, `task_type`, `command` — отсутствует или строка (claude-code.d.ts:12981-12990); хост проверяет схему вывода ПОСЛЕ цепочки tool.call, поэтому подменённый ранним хуком `result` (`[]`, `{}`, неполный объект) успехом не считается; `isError` — только отсутствует или `false`.
-function stoppedOk($: any, r: any): boolean {
+// CONSTRAINT: успех ядра = `result` — запись вывода TaskStop со строковыми `message`, `task_id`, `task_type`, `command` — отсутствует или строка (claude-code-tools/index.d.ts:4852-4861); хост проверяет схему вывода ПОСЛЕ цепочки tool.call, поэтому подменённый ранним хуком `result` (`[]`, `{}`, неполный объект) успехом не считается; `isError` — только отсутствует или `false`.
+function stoppedOk($: EngineInterface, r: unknown): boolean {
   try {
-    if (r == null || typeof r !== "object" || r.deny != null) return false
-    if (!(r.isError === undefined || r.isError === false)) return false
-    const o = r.result
+    if (r == null || typeof r !== "object") return false
+    const rec = r as { deny?: unknown; isError?: unknown; result?: unknown }
+    if (rec.deny != null) return false
+    if (!(rec.isError === undefined || rec.isError === false)) return false
+    const o = rec.result
+    if (o === null || typeof o !== "object" || Array.isArray(o)) return false
+    const row = o as { message?: unknown; task_id?: unknown; task_type?: unknown; command?: unknown }
     return (
-      o !== null &&
-      typeof o === "object" &&
-      !Array.isArray(o) &&
-      typeof o.message === "string" &&
-      typeof o.task_id === "string" &&
-      typeof o.task_type === "string" &&
-      (o.command === undefined || typeof o.command === "string")
+      typeof row.message === "string" &&
+      typeof row.task_id === "string" &&
+      typeof row.task_type === "string" &&
+      (row.command === undefined || typeof row.command === "string")
     )
   } catch (x) {
     reportChannelFailure($, "result", x)
@@ -673,7 +715,7 @@ function stoppedOk($: any, r: any): boolean {
   }
 }
 
-export function register(on: any): void {
+export function register(on: On): void {
   const state: Environment569 = {
     generation: ++moduleGeneration,
     started: false,
@@ -685,12 +727,12 @@ export function register(on: any): void {
   }
   snapshotState569 = state
 
-  on("settings.read", ($: any, e: any, next: any) => {
+  on("settings.read", ($, e, next) => {
     if (current569(state) && state.seatProbePending && next.origin?.plugin === MOD_NAME) state.seatProbeSeen = true
     return next(e)
   })
 
-  on("session.start", async ($: any, e: any, next: any) => {
+  on("session.start", async ($, e, next) => {
     const generation = state.generation
     if (state.started || !current569(state)) return next(e)
     state.started = true
@@ -717,7 +759,7 @@ export function register(on: any): void {
     return next(e)
   })
 
-  on("turn.start", async ($: any, e: any, next: any) => {
+  on("turn.start", async ($, e, next) => {
     if (!current569(state)) return next(e)
     try {
       const enabled = await enabled569($, state)
@@ -732,7 +774,7 @@ export function register(on: any): void {
   // CONSTRAINT: turn.step стримит — обычная async-функция роняет загрузку
   // всего модуля (хост требует async function*). next() бывает генератором
   // или готовым значением; неготовое к итерации возвращается как есть.
-  on("turn.step", async function* ($: any, e: any, next: any) {
+  on("turn.step", async function* ($, e, next) {
     const born = epoch
     const model = fieldOf($, e, "model")
     const [agentRead, agentId] = fieldTry($, e, "agentId")
@@ -741,11 +783,11 @@ export function register(on: any): void {
     const stepIndex = fieldOf($, e, "index")
     const signal = fieldOf($, next, "signal")
     const stream = next(e)
-    if (stream == null || typeof stream[Symbol.asyncIterator] !== "function") return stream
+    if (stream == null || typeof stream[Symbol.asyncIterator] !== "function") return stream as unknown as void | TurnStepResult
     const it = stream[Symbol.asyncIterator]()
     const tools: string[] = []
-    let finalValue: any
-    let result: any
+    let finalValue: unknown
+    let result: unknown
     let alerted: Promise<void> | null = null
     let returned = false
     const fire = () => {
@@ -766,7 +808,7 @@ export function register(on: any): void {
       )
     }
     try {
-      result = yield* observed(
+      result = yield* (observed(
         it,
         (chunk) => {
           if (chunk == null) return
@@ -780,7 +822,7 @@ export function register(on: any): void {
         (value) => {
           finalValue = value
         },
-      )
+      ) as unknown as AsyncGenerator<TurnStepChunk, void | TurnStepResult>)
       returned = true
     } finally {
       // CONSTRAINT: обрыв объявляется в момент распознавания чанка `stop`; `finally` ждёт уже начатое объявление и объявляет обрыв, пришедший только в результате шага, — и при исключении, и при отмене сверху; `alert` не бросает.
@@ -789,10 +831,10 @@ export function register(on: any): void {
       // CONSTRAINT: шаг хода, вернувшийся без обрыва, закрывает прежний обрыв этого хода — следующий `complete` с отказом считается заново.
       if (alerted == null && returned && born === epoch && keyRead) takeTurn(agentId, turnId)
     }
-    return result
+    return result as unknown as void | TurnStepResult
   })
 
-  on("turn.complete", async ($: any, e: any, next: any) => {
+  on("turn.complete", async ($, e, next) => {
     const born = epoch
     const r = await next(e)
     const [reasonRead, reason] = fieldTry($, e, "reason")
@@ -823,7 +865,7 @@ export function register(on: any): void {
     return r
   })
 
-  on("tool.call", { tool: "TaskStop" }, async ($: any, e: any, next: any) => {
+  on("tool.call", { tool: "TaskStop" }, async ($, e, next) => {
     // CONSTRAINT: эпоха, метка открытия, окно и время берутся на входе вызова; время входа — местное время процесса, синхронно: внутри окна — часы не читаются. Без окна местное время решения не даёт. Окно с неизвестным концом (время обрыва не узнано) — внутри, часы не читаются. Иначе чтение часов выдаётся до `next` и дожидается после; окно, открытое во время `next`, исход не решает. Без окна и без метки на входе часы не читаются.
     const born = epoch
     const signal = fieldOf($, next, "signal")
@@ -859,22 +901,29 @@ export function register(on: any): void {
     return r
   })
 
-  on("prompt.context", async ($: any, _e: any, next: any) => {
+  on("prompt.context", async ($, _e, next) => {
     const r = await next(_e)
     try {
       const src = Array.isArray(r?.blocks) ? r.blocks : []
       const enabled = await enabled569($, state)
       if (!current569(state) || !enabled) return r
-      const canonical = src.some((b: any) => typeof b?.text === "string" && b.text.indexOf(RULE_TEXT) !== -1)
+      const canonical = src.some((b: unknown) => {
+        const text = (b as { text?: unknown } | null)?.text
+        return typeof text === "string" && text.indexOf(RULE_TEXT) !== -1
+      })
       const insert = enabled && !state.passportCovered && !canonical
-      const own = src.filter((b: any) => b != null && b.name === "refusalHandling")
-      const kept = own.find((b: any) => typeof b.text === "string" && b.text.indexOf(RULE_TEXT) !== -1) ?? own[0]
-      const blocks: any[] = []
+      const own = src.filter((b: unknown) => b != null && (b as { name?: unknown }).name === "refusalHandling")
+      const kept = own.find((b: unknown) => {
+        const text = (b as { text?: unknown } | null)?.text
+        return typeof text === "string" && text.indexOf(RULE_TEXT) !== -1
+      }) ?? own[0]
+      const blocks: unknown[] = []
       let placed = false
       for (const b of src) {
-        if (b != null && b.name === "refusalHandling") {
+        if (b != null && (b as { name?: unknown }).name === "refusalHandling") {
           if (!placed) {
-            if (insert || (typeof kept?.text === "string" && kept.text.indexOf(RULE_TEXT) !== -1)) blocks.push(insert ? { ...kept, name: "refusalHandling", text: RULE_TEXT } : kept)
+            const keptText = (kept as { text?: unknown } | undefined)?.text
+            if (insert || (typeof keptText === "string" && keptText.indexOf(RULE_TEXT) !== -1)) blocks.push(insert ? { ...(kept as object), name: "refusalHandling", text: RULE_TEXT } : kept)
             placed = true
           }
         } else {
@@ -882,7 +931,7 @@ export function register(on: any): void {
         }
       }
       if (insert && !placed) blocks.push({ name: "refusalHandling", text: RULE_TEXT })
-      return { ...r, blocks }
+      return { ...r, blocks } as PromptContextResult
     } catch (x) {
       reportChannelFailure($, "context", x)
       return r
@@ -890,7 +939,7 @@ export function register(on: any): void {
   })
 
   // CONSTRAINT: `session.start` не приходит на `/clear` (контракт); `session.end` приходит на каждый конец сессии, включая `/clear` и resume.
-  on("session.end", async ($: any, e: any, next: any) => {
+  on("session.end", async ($, e, next) => {
     __reset()
     return next(e)
   })
