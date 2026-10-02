@@ -9,6 +9,96 @@ Companion: kit `docs/probe-core.md`, `docs/probe-registry-spec.md` (vocabulary).
 Live home of this source: `TransmuteLabs/Catalyst` `plugins/catalyst-probes/`.
 The patch kit does not ship the live plugin.
 
+## Form semantics (0.1.55)
+
+The form judge uses the union of zsh and bash semantics, including aliases and
+function bodies from shell snapshots, static assignments, and active glob words.
+Commit and push options and write targets are token-based.
+
+судятся перенаправления, tee и перечисленные писатели; записи внутри интерпретаторов — вне суда
+
+The writers are `cp`, `mv`, `install`, `dd of=`, in-place `sed`/`perl`, `truncate`,
+and symbolic forced `ln`. Without `-e`/`-E`, perl's first operand is its script,
+not a write target. Bash writes are judged from their actual post-state, even
+when execution throws, except for `form-post-skipped-fanout` below.
+`cancel`/`refuse` restores the saved file/link/absent state only when the condemned
+fingerprint still matches. Judgment text and the byte fingerprint come from one
+read; a changed size/mtime or byte length during judgment prevents restoration.
+Targets above 4 MiB use a full-file host SHA-256; a failed or malformed hash
+result prevents restoration. Unreadable post-state is F; metadata-only comparison
+is used only when reading bytes fails but stat succeeds, not for large targets.
+Without a fingerprint, restoration is skipped and named; a changed fingerprint
+also skips restoration. A changed resolved parent path skips restoration; a
+write to a different resolved target without its backup is named as unrestored.
+Restoration copies the backup with preserved attributes into a sibling temporary
+file and replaces the current non-directory object. Directories are skipped and
+named. Rollback warnings are merged into the original record, preserving its
+kind and refusal; their separate journal line refers to that same record.
+Бэкап создаётся, только если хотя бы один класс из набора цели действует
+`cancel`/`refuse`; отказ класса с `log_only` не откатывает никогда, даже при
+существующем бэкапе.
+
+The host provides no file locks. A write between the last comparison and the
+restoration `mv` is replaced; the ordinary-file replacement window is narrowed
+to that `mv`. A new object with the same kind, bytes and mtime is treated as the
+same state.
+
+Referent fingerprints reuse judged bytes only when the resolved target is the
+saved referent and its size/mtime agree. A retargeted link requires an independent
+referent read. Conflicting fingerprints for an overlapping candidate/referent
+path skip restoration; an existing judged entry is never overwritten.
+
+Missing parents are saved as the nearest existing resolved ancestor plus the
+lexical tail. Restoration requires the same ancestor and parent resolution and
+no links in the created tail. Created directories are not removed. Restore temps
+are placed in the checked physical parent and removed in `finally`.
+Linux restoration uses `mv -f -T` and `ln -s -f -T`; Darwin uses `mv -f -h` and
+`ln -s -f -h`. Link replacement is one operation. The restored ordinary-file
+fingerprint or link spelling is checked after replacement; a changed destination
+produces `destination changed during restore` and an error journal entry.
+The five-second SHA-256 command bound applies only to backed-up targets above
+4 MiB and at most 32 MiB; larger backup volume refuses execution.
+
+### Perl option measurements
+
+Measured on usbox with `/usr/bin/perl` v5.40.2, x86_64-linux-thread-multi
+(17 registered patches). Every listed letter consumes an attached cluster tail;
+`i` terminates the cluster and `e`/`E` mark inline scripts.
+
+| Letter | Takes next argument with empty tail | Measured exit | Witness |
+|---|---|---:|---|
+| `0` | no | 0 | script compiled and ran; DATA stayed in argv |
+| `C` | no | 0 | script compiled and ran; DATA stayed in argv |
+| `d` | no, controller decision from perlrun | 2 | debugger unavailable: perl5db.pl missing |
+| `D` | no | 0 | script ran; build lacks DEBUGGING |
+| `e` | yes | 255 | next script path parsed as inline code |
+| `E` | yes | 255 | next script path parsed as inline code |
+| `F` | no | 0 | script compiled; DATA opened as input |
+| `i` | no | 0 | script compiled and ran; DATA stayed in argv |
+| `I` | yes | 2 | DATA became the script operand |
+| `l` | no | 0 | script ran with output newline |
+| `m` | no | 29 | module name required |
+| `M` | no | 29 | module name required |
+| `x` | no | 0 | script compiled and ran; DATA stayed in argv |
+
+perlrun's `-d`/`-dt` description: “Runs the program under the Perl debugger.”
+Debugger modules use the attached `-d:MOD[=bar,baz]` / `-dt:MOD[=bar,baz]`
+forms, not a separate module operand. The `d` row is not claimed as a completed
+runtime demonstration; its rule was adjudicated from perlrun.
+
+Only a complete, non-append stdout write from a quoted heredoc can be judged
+before execution. Caps are 256 candidate paths, 64 expansion variants, and
+8 times the 4 MiB file threshold in backup bytes per call. Candidate overflow
+under `log_only` skips backup/post-judgment, records the skip, and names it in
+model context. Превышение объёма бэкапа отказывает вызов до исполнения,
+independently of class F's action. Missing required canon keys produce F on every
+form call and one module log line per missing key.
+
+The kit keys `git_msg` and `write_redirect` are removed; the target predicate is
+`write_target`. Deliver module 0.1.55 first, then the canon, in one delivery step.
+The new-module/old-canon interval is explicit through missing-key F; do not
+open the old-module/new-canon interval.
+
 ## Arming
 
 ```
@@ -391,6 +481,27 @@ reason (`isCarrierRefusal`), or a throw before any content. A model that
 answered with the text of a refusal, with live usage, gave an answer. The
 ladder does not read the content of an answer, and it does not change the
 model on it.
+
+**Whose plan a refusal mark changes (#514 Р6/Р7).** A carrier-refusal
+mark belongs to one agent: the fan keys its cooldown marks by `agentId`,
+and a step without `agentId` — the main loop — keys them as `main`. A
+refusal received by one agent changes only that agent's plan; the #313
+cross-agent memory is withdrawn. Consultations keep their own process-wide
+map: a judge rung timeout marks the consultation road only, and a fan mark
+of any agent does not remove a judge rung. The main loop carries its own
+set: on a step without `agentId` the ladder is built from `failover.main`,
+else from `failover.default`, plus the terminal, with no class admission
+applied (an unusable admission layer empties the ladder, leaving the
+declared model and the terminal); the bind lives under the key `main`,
+never evicted by the cap, and its map survives a new session like any
+`main` mark. The main bind follows the world on every step, as a waiting
+agent's bind does: a read world that names a ladder or a terminal
+replaces it, an admission layer that became unusable empties the ladder,
+an unread world leaves it as it is. A world that names neither a ladder
+nor a terminal does not store an empty bind, so a ladder named later in
+the same session is taken on the next step. `/catalyst-ladder` names the owner of every cooling row —
+`консультации`, an `agentId`, or `main` — and its filter argument matches
+the model or the owner.
 
 **Who answered.** Every attempt record carries `modelServed`, which is
 `usage.model` of the step result, or `null` without usage. It also carries

@@ -12,7 +12,7 @@ set -u
 # неотличим от зуба, которого никогда не писали. Код 1, а не 3, выбран замером
 # агрегатора: `tests/run-all.sh` считает НЕ ИЗМЕРЕНО отдельной категорией, и
 # дверь приёмки на ней НЕ краснеет -- пин с кодом 3 был бы декоративным.
-EXPECTED_TEETH=263
+EXPECTED_TEETH=362
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -24,7 +24,15 @@ trap 'rm -rf "$WORK"' EXIT
 
 pass=0; fail=0
 check() { # check <name> <expected> <actual>
-  if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL $1: expected [$2], got [$3]"; fi
+  if [ "$2" = "$3" ]; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1))
+    echo "FAIL $1: expected [$2], got [$3]"
+    local body="${4:-${out:-}}"
+    if [ "$#" -lt 4 ] && [ -f "${WORK:-}/last-gate-body" ]; then body=$(cat "$WORK/last-gate-body"); fi
+    printf 'BODY %.4000s\n' "$body"
+  fi
 }
 
 # ---- fixtures ----
@@ -64,8 +72,8 @@ printf -- '---\nname: gpt-sol-critic\ndescription: x\nmodel: gpt-6-sol\neffort: 
 # "REQ <provider>" to PB_LOG — scenarios assert the socket was NOT touched.
 PB_SOCK="$WORK/pb.sock"; PB_SCRIPT="$WORK/pb.json"; PB_LOG="$WORK/pb.log"
 : > "$PB_LOG"; printf '{}' > "$PB_SCRIPT"
-python3 - "$PB_SOCK" "$PB_SCRIPT" "$PB_LOG" <<'EOF' 2>/dev/null &
-import json, os, socket, sys
+python3 - "$PB_SOCK" "$PB_SCRIPT" "$PB_LOG" <<'EOF' 2>>"$WORK/daemon.log" &
+import json, logging, os, socket, sys, threading
 srv_path, script_path, log_path = sys.argv[1:4]
 try:
     os.unlink(srv_path)
@@ -74,8 +82,7 @@ except OSError:
 srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 srv.bind(srv_path)
 srv.listen(16)
-while True:
-    conn, _ = srv.accept()
+def serve_connection(conn):
     conn.settimeout(5)
     try:
         data = b""
@@ -99,13 +106,21 @@ while True:
                                      "accounts": [], "error": None}).encode() + b"\n")
         else:
             conn.sendall(val.encode() + b"\n")
-    except Exception:
-        pass
+    except Exception as error:
+        logging.exception("daemon handler failed")
+        try:
+            conn.sendall(json.dumps({"error": f"{type(error).__name__}: {error}"}).encode() + b"\n")
+        except Exception:
+            logging.exception("daemon error reply failed")
     finally:
         try:
             conn.close()
         except Exception:
-            pass
+            logging.exception("daemon close failed")
+
+while True:
+    conn, _ = srv.accept()
+    threading.Thread(target=serve_connection, args=(conn,), daemon=True).start()
 EOF
 PB_PID=$!
 trap 'kill $PB_PID 2>/dev/null; rm -rf "$WORK"' EXIT
@@ -114,7 +129,7 @@ export POTIONBAR_SOCKET="$PB_SOCK"
 
 pb_table() { # pb_table provider=spec ...; spec: accounts "w,w;w" | NOREPLY | GARBAGE
   python3 - "$PB_SCRIPT" "$@" <<'EOF'
-import json, sys
+import json, os, sys, tempfile
 dst, kvs = sys.argv[1], sys.argv[2:]
 table = {}
 for kv in kvs:
@@ -141,7 +156,17 @@ for kv in kvs:
                          "updated_at": "now", "error": None})
     table[prov] = json.dumps({"result": "provider_usage", "provider": prov,
                               "accounts": accounts})
-json.dump(table, open(dst, "w"))
+with tempfile.NamedTemporaryFile(mode="w", dir=os.path.dirname(dst), delete=False) as handle:
+    try:
+        json.dump(table, handle)
+    except BaseException:
+        os.unlink(handle.name)
+        raise
+try:
+    os.replace(handle.name, dst)
+except BaseException:
+    os.unlink(handle.name)
+    raise
 EOF
 }
 pb_count() { wc -l < "$PB_LOG" | tr -d ' '; }
@@ -181,26 +206,30 @@ EOF
 T="$BASE_TABLE"          # active base table for gate()
 O="$WORK/absent-override.toml"  # absent by default — isolates from the user's real override
 
-gate() { # gate <json> -> deny | allow | other:<out> ; also asserts exit 0
-  local out rc
+gate_capture() {
+  printf "call\n" >> "$WORK/gate-calls"
+  local rc
   out=$(printf '%s' "$1" | env -u CLAUDE_PLUGIN_ROOT -u CURSOR_PLUGIN_ROOT -u COPILOT_CLI \
         HOME="$WORK/home" CATALYST_ROUTING_TABLE="$T" CATALYST_ROUTING_OVERRIDE="$O" \
         CATALYST_ROUTING_PROJECT_OVERRIDE="${P:-$WORK/absent-override.toml}" \
-        CATALYST_AGENT_DIRS="$WORK/agents" python3 "$GATE" 2>/dev/null)
+        CATALYST_AGENT_DIRS="$WORK/agents" python3 "$GATE")
   rc=$?
-  if [ "$rc" -ne 0 ]; then echo "rc=$rc"; return; fi
+  printf '%s' "$out" > "$WORK/last-gate-body"
+  if [ "$rc" -ne 0 ]; then gate_result="rc=$rc"; return; fi
   case "$out" in
-    '') echo allow ;;
-    *'"deny"'*) echo deny ;;
-    *systemMessage*) echo warn ;;    # non-blocking: hatch notice or warn mode
-    *) echo "other:$out" ;;
+    '') gate_result=allow ;;
+    *'"deny"'*) gate_result=deny ;;
+    *systemMessage*) gate_result=warn ;;
+    *) gate_result="other:$out" ;;
   esac
 }
-gate_out() { # raw stdout
-  printf '%s' "$1" | env -u CLAUDE_PLUGIN_ROOT -u CURSOR_PLUGIN_ROOT -u COPILOT_CLI \
-        HOME="$WORK/home" CATALYST_ROUTING_TABLE="$T" CATALYST_ROUTING_OVERRIDE="$O" \
-        CATALYST_ROUTING_PROJECT_OVERRIDE="${P:-$WORK/absent-override.toml}" \
-        CATALYST_AGENT_DIRS="$WORK/agents" python3 "$GATE" 2>/dev/null
+gate() {
+  gate_capture "$1"
+  printf '%s\n' "$gate_result"
+}
+gate_out() {
+  gate_capture "$1"
+  printf '%s' "$out"
 }
 task() { # task <subagent_type> <model> [prompt]
   printf '{"tool_name":"Task","tool_input":{"subagent_type":"%s","model":"%s","prompt":"%s"},"cwd":"%s"}' \
@@ -423,7 +452,7 @@ printf 'schema_version = 1\n[classes.1a]\nlabel = "x"\nallowed = ["fable", "glm-
 found=$(printf '{"tool_name":"Task","tool_input":{"subagent_type":"implementer","model":"fable","prompt":"[dispatch-class:1a] x"},"cwd":"%s"}' "$WORK/rw/deep/deeper" \
   | env -u CLAUDE_PLUGIN_ROOT -u CURSOR_PLUGIN_ROOT -u COPILOT_CLI HOME="$WORK/home" \
     CATALYST_ROUTING_TABLE="$BASE_TABLE" CATALYST_ROUTING_OVERRIDE="$WORK/absent-override.toml" \
-    CATALYST_AGENT_DIRS="$WORK/agents" python3 "$GATE" 2>/dev/null)
+    CATALYST_AGENT_DIRS="$WORK/agents" python3 "$GATE")
 case "$found" in '') check "t11 project config found up the tree" 0 0 ;; *) check "t11 project config found up the tree" 0 1 ;; esac
 rm -rf "$WORK/rw/.claude" "$WORK/rw/deep"
 
@@ -774,8 +803,11 @@ O="$WORK/absent-override.toml"
 # dropping it leaves one generic phrase for an expired token, a provider that
 # stopped reporting limits, and a genuinely empty reply -- three repairs.
 pb_table codex="ERR:codex: token expired (CLI refreshes it while running)"
-check "lim17 account error is fail-open"      warn  "$(gate "$(bashcmd "$lim_codex")")"
-out=$(gate_out "$(bashcmd "$lim_codex")")
+lim17_calls_before=$(wc -l < "$WORK/gate-calls")
+gate_capture "$(bashcmd "$lim_codex")"
+check "lim17 account error is fail-open" warn "$gate_result"
+lim17_calls_after=$(wc -l < "$WORK/gate-calls")
+check "lim17 single gate invocation" 1 "$((lim17_calls_after - lim17_calls_before))"
 case "$out" in *"token expired"*) check "lim17 warn carries the daemon cause" 0 0 ;; *) check "lim17 warn carries the daemon cause" 0 1 ;; esac
 case "$out" in *"no usable windows"*) check "lim17 generic phrase is replaced" 0 1 ;; *) check "lim17 generic phrase is replaced" 0 0 ;; esac
 case "$out" in *"codex: codex:"*) check "lim17 provider named once" 0 1 ;; *) check "lim17 provider named once" 0 0 ;; esac
@@ -896,6 +928,308 @@ O="$WORK/override-selection.toml"
 check "t17 selection layer keeps membership" allow "$(gate "$(task nomodel opus "[dispatch-class:exec-2] x")")"
 check "t17 selection layer keeps sonnet out" deny  "$(gate "$(task sonnetagent sonnet "[dispatch-class:1a] fix")")"
 O="$WORK/absent-override.toml"
+
+command -v timeout >/dev/null || { echo "ПРОВАЛ установки U16: нет timeout" >&2; exit 1; }
+printf -- '---\nname: textonly\nmodel: opus\ndeliverable: text-only\n---\nbody\n' > "$WORK/agents/textonly.md"
+printf -- '---\nname: textonlycomment\nmodel: opus\ndeliverable: text-only # note\n---\nbody\n' > "$WORK/agents/textonlycomment.md"
+printf -- '---\nname: filedeliverable\nmodel: opus\ndeliverable: file\n---\nbody\n' > "$WORK/agents/filedeliverable.md"
+printf -- '---\r\nname: crlfagent\r\nmodel: opus\r\ndeliverable: text-only\r\n---\r\nbody\r\n' > "$WORK/agents/crlfagent.md"
+printf '\xef\xbb\xbf---\nname: bomagent\nmodel: opus\ndeliverable: text-only\n---\nbody\n' > "$WORK/agents/bomagent.md"
+printf -- '---\nname: fmquotedhash\nmodel: opus\ndeliverable: "text-only # not"\n---\nbody\n' > "$WORK/agents/fmquotedhash.md"
+printf -- '---\nname: fmquotedcomment\nmodel: opus\ndeliverable: "text-only" # note\n---\nbody\n' > "$WORK/agents/fmquotedcomment.md"
+printf -- '---\nname: fmquotedmodel\ndescription: x\nmodel: "glm-5.3" # carrier\neffort: max\n---\nbody\n' > "$WORK/agents/fmquotedmodel.md"
+printf -- '---\nname: fmeffortcomment\ndescription: x\nmodel: glm-5.3\neffort: max # pin\n---\nbody\n' > "$WORK/agents/fmeffortcomment.md"
+[ "$(head -c 3 "$WORK/agents/bomagent.md" | od -An -tx1 | tr -d ' \n')" = efbbbf ] || { echo "ПРОВАЛ установки U16: bomagent.md без BOM" >&2; exit 1; }
+printf 'brief without marker\n' > "$WORK/incomplete.md"
+printf 'brief\n<!-- BRIEF COMPLETE -->\n\n' > "$WORK/complete.md"
+printf 'brief\n<!-- BRIEF COMPLETE -->\ntruncated continuation\n' > "$WORK/truncated.md"
+printf 'brief\n <!-- BRIEF COMPLETE -->\n' > "$WORK/indented.md"
+printf 'a\tb\n' > "$WORK/data.tsv"
+printf 'brief\r\n<!-- BRIEF COMPLETE -->\r\n' > "$WORK/crlf.md"
+printf '\xef\xbb\xbf<!-- BRIEF COMPLETE -->\n' > "$WORK/bom.md"
+# CONSTRAINT: Z31 denies a "]" inside the path; the prefix must not exist as a file.
+mkfifo "$WORK/fifo.md" || { echo "ПРОВАЛ установки U16: mkfifo fifo.md" >&2; exit 1; }
+mkdir "$WORK/dir.md" || { echo "ПРОВАЛ установки U16: mkdir dir.md" >&2; exit 1; }
+{ head -c 4194279 /dev/zero | tr '\0' a; printf '\n<!-- BRIEF COMPLETE -->\n'; } > "$WORK/atlimit.md" \
+  || { echo "ПРОВАЛ установки U16: atlimit.md" >&2; exit 1; }
+{ head -c 4194280 /dev/zero | tr '\0' a; printf '\n<!-- BRIEF COMPLETE -->\n'; } > "$WORK/oversize.md" \
+  || { echo "ПРОВАЛ установки U16: oversize.md" >&2; exit 1; }
+u16_at=$(wc -c < "$WORK/atlimit.md" | tr -d ' ')
+u16_over=$(wc -c < "$WORK/oversize.md" | tr -d ' ')
+[ "$u16_at" = 4194304 ] || { echo "ПРОВАЛ установки U16: atlimit.md size=$u16_at" >&2; exit 1; }
+[ "$u16_over" = 4194305 ] || { echo "ПРОВАЛ установки U16: oversize.md size=$u16_over" >&2; exit 1; }
+printf '<!-- BRIEF COMPLETE -->\n' > "$WORK/unreadable.md"
+chmod 000 "$WORK/unreadable.md" || { echo "ПРОВАЛ установки U16: chmod unreadable.md" >&2; exit 1; }
+printf -- '---\nname: unreadableagent\nmodel: opus\n---\nbody\n' > "$WORK/agents/unreadableagent.md"
+chmod 000 "$WORK/agents/unreadableagent.md" || { echo "ПРОВАЛ установки U16: chmod unreadableagent.md" >&2; exit 1; }
+if [ -r "$WORK/unreadable.md" ] || [ -r "$WORK/agents/unreadableagent.md" ]; then
+  echo "ПРОВАЛ установки U16: стенд под root: нечитаемость не измеряется" >&2
+  exit 1
+fi
+sed 's/^class_marker_required = true/class_marker_required = false/' "$BASE_TABLE" > "$WORK/u16-table-no-marker.toml" \
+  || { echo "ПРОВАЛ установки U16: таблица без маркера" >&2; exit 1; }
+
+u16_task() {
+  python3 - "$1" "$2" "$WORK/rw" <<'PY'
+import json, sys
+print(json.dumps({"tool_name": "Task", "tool_input": {
+    "subagent_type": sys.argv[1], "model": "opus", "prompt": sys.argv[2].replace("@@NUL@@", "\x00")},
+    "cwd": sys.argv[3]}))
+PY
+}
+u16_bash() {
+  python3 - "$1" "$WORK/rw" <<'PY'
+import json, sys
+print(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.argv[1].replace("@@NUL@@", "\x00")},
+    "cwd": sys.argv[2]}))
+PY
+}
+u16_gate_out() {
+  printf '%s' "$1" | env -u CLAUDE_PLUGIN_ROOT -u CURSOR_PLUGIN_ROOT -u COPILOT_CLI \
+        HOME="$WORK/home" CATALYST_ROUTING_TABLE="$T" CATALYST_ROUTING_OVERRIDE="$O" \
+        CATALYST_ROUTING_PROJECT_OVERRIDE="${P:-$WORK/absent-override.toml}" \
+        CATALYST_AGENT_DIRS="$WORK/agents" timeout 20 python3 "$GATE"
+}
+u16_check() {
+  local raw actual rc
+  raw=$(u16_gate_out "$(u16_task "$3" "$4")")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    actual="exit=$rc"
+  else
+    case "$raw" in
+      '') actual=allow ;;
+      *'"deny"'*)
+        case "$raw" in *"$5"*) actual=deny ;; *) actual="wrong reason: $raw" ;; esac ;;
+      *) actual="unexpected output: $raw" ;;
+    esac
+  fi
+  printf 'U16 %s: expected=%s actual=%s raw=%s\n' "$1" "$2" "$actual" "$raw"
+  check "U16 $1" "$2" "$actual" "$raw"
+}
+u16_bash_check() {
+  local raw actual rc
+  raw=$(u16_gate_out "$(u16_bash "$3")")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    actual="exit=$rc"
+  else
+    case "$raw" in
+      '') actual=allow ;;
+      *'"deny"'*)
+        case "$raw" in *"$4"*) actual=deny ;; *) actual="wrong reason: $raw" ;; esac ;;
+      *) actual="unexpected output: $raw" ;;
+    esac
+  fi
+  printf 'U16 %s: expected=%s actual=%s raw=%s\n' "$1" "$2" "$actual" "$raw"
+  check "U16 $1" "$2" "$actual" "$raw"
+}
+printf -- '---\nmodel: glm-5.3"\n---\n' > "$WORK/agents/fmbadmodel.md"
+printf -- '---\neffort: max"\n---\n' > "$WORK/agents/fmbadeffort.md"
+printf -- '---\ndeliverable: "text-only\n---\n' > "$WORK/agents/fmbaddeliverable.md"
+printf -- "---\nmodel: \"'glm-5.3'\"\n---\n" > "$WORK/agents/fmonepair.md"
+printf '\xef\xbb\xbf\xef\xbb\xbf---\nmodel: opus\n---\n' > "$WORK/agents/fmdoublebom.md"
+printf -- '---\xef\xbb\xbf\nmodel: opus\n---\n' > "$WORK/agents/fmdelimiterbom.md"
+u16_marker='<!-- BRIEF COMPLETE -->'
+u16_class='[dispatch-class:exec-2]'
+u16_fence='```'
+u16_tick='`'
+u16_check Z1 deny nomodel "$u16_class [brief:$WORK/incomplete.md]
+$u16_marker" "brief input $WORK/incomplete.md is incomplete"
+u16_check Z2 allow nomodel "$u16_class [brief:$WORK/complete.md]
+$u16_marker" ''
+u16_check Z3 deny nomodel "$u16_class [brief:$WORK/complete.md]" 'dispatch prompt is incomplete'
+u16_check Z4 deny nomodel "$u16_class [brief:$WORK/absent.md]
+$u16_marker" "brief input $WORK/absent.md cannot be read"
+u16_check Z5 allow nomodel "$u16_class [data:$WORK/data.tsv]" ''
+u16_check Z6 allow nomodel "$u16_class отчёт текстом" ''
+u16_check Z7 deny textonly "$u16_class положи отчёт в /x/REPORT.md" 'does not declare [deliverable:text]'
+u16_check Z8 allow textonly "$u16_class [deliverable:text] не пиши файл; читай /x/A.md" ''
+u16_check Z9 deny textonly "$u16_class [deliverable:file /x/R.md]" 'orders a file'
+u16_check Z10 allow textonly "$u16_class положи отчёт в /x/R.md [deliverable:text]" ''
+u16_check Z11 allow nomodel "$u16_class [deliverable:file /x/R.md]" ''
+u16_check Z12-relative deny nomodel "$u16_class [brief:relative.md]
+$u16_marker" 'input label path must be absolute:'
+u16_check Z13-unreadable deny nomodel "$u16_class [brief:$WORK/unreadable.md]
+$u16_marker" "brief input $WORK/unreadable.md cannot be read"
+u16_check Z14-tail deny nomodel "$u16_class [brief:$WORK/truncated.md]
+$u16_marker" "brief input $WORK/truncated.md is incomplete"
+u16_check Z15-every-brief deny nomodel "$u16_class [brief:$WORK/complete.md] [brief:$WORK/incomplete.md]
+$u16_marker" "brief input $WORK/incomplete.md is incomplete"
+u16_check Z16-prose-no-marker deny textonly "$u16_class не создавай файл; создай /x/R.md" 'does not declare [deliverable:text]'
+u16_check Z17-read-no-marker deny textonly "$u16_class put the findings from /x/A.md in your answer" 'does not declare [deliverable:text]'
+u16_check Z18-fence deny textonly "$u16_class
+${u16_fence}
+[deliverable:text]
+${u16_fence}" 'does not declare [deliverable:text]'
+u16_check Z19-inline deny textonly "$u16_class see${u16_tick}[deliverable:text]${u16_tick} syntax" 'does not declare [deliverable:text]'
+u16_check Z20-outside-code allow textonly "$u16_class
+${u16_fence}
+x
+${u16_fence}
+[deliverable:text]" ''
+u16_check Z21-explicit-file deny textonly "$u16_class [deliverable:text] [deliverable:file /x/R.md]" 'orders a file'
+u16_check Z22-data-absent allow nomodel "$u16_class [data:$WORK/absent.tsv]" ''
+u16_check Z23-exact-marker deny nomodel "$u16_class [brief:$WORK/indented.md]
+$u16_marker" "brief input $WORK/indented.md is incomplete"
+u16_check Z24-file-in-code deny textonly "$u16_class [deliverable:text]
+${u16_fence}
+[deliverable:file /x/R.md]
+${u16_fence}" 'orders a file'
+u16_check Z25-fifo deny nomodel "$u16_class [brief:$WORK/fifo.md]
+$u16_marker" 'is not a regular file'
+u16_check Z26-device deny nomodel "$u16_class [brief:/dev/null]
+$u16_marker" 'is not a regular file'
+u16_check Z27-oversize deny nomodel "$u16_class [brief:$WORK/oversize.md]
+$u16_marker" 'is larger than 4 MiB'
+u16_check Z27b-at-limit allow nomodel "$u16_class [brief:$WORK/atlimit.md]
+$u16_marker" ''
+u16_check Z28-crlf-file allow nomodel "$u16_class [brief:$WORK/crlf.md]
+$u16_marker" ''
+u16_check Z29-crlf-prompt allow nomodel "$u16_class [brief:$WORK/complete.md]"$'\r\n'"$u16_marker"$'\r\n' ''
+u16_check Z30-bom allow nomodel "$u16_class [brief:$WORK/bom.md]
+$u16_marker" ''
+u16_check Z31-bracket-path deny nomodel "$u16_class [brief:$WORK/a]b.md]
+$u16_marker" 'malformed brief label'
+u16_check Z32-label-punct allow nomodel "$u16_class [brief:$WORK/complete.md].
+$u16_marker" ''
+u16_check Z33-empty-label deny nomodel "$u16_class [brief:]
+$u16_marker" 'input label path must be absolute:'
+T="$WORK/u16-table-no-marker.toml"
+u16_check Z34-no-class deny nomodel "[brief:$WORK/incomplete.md]
+$u16_marker" "brief input $WORK/incomplete.md is incomplete"
+u16_check Z35-no-class-textonly deny textonly "отчёт" 'does not declare [deliverable:text]'
+T="$BASE_TABLE"
+u16_check Z36-fm-comment deny textonlycomment "$u16_class отчёт" 'does not declare [deliverable:text]'
+u16_check Z37-fm-unknown deny filedeliverable "$u16_class отчёт" "declares deliverable: 'file'"
+u16_check Z38-fm-crlf deny crlfagent "$u16_class отчёт" 'does not declare [deliverable:text]'
+u16_check Z39-fm-unreadable deny unreadableagent "$u16_class отчёт" 'exists but cannot be read'
+u16_bash_check Z40-bash-incomplete deny "codex exec --model gpt-6-sol --effort high [brief:$WORK/incomplete.md] [dispatch-class:exec-1n]" "brief input $WORK/incomplete.md is incomplete"
+u16_bash_check Z41-bash-complete allow "codex exec --model gpt-6-sol --effort high [brief:$WORK/complete.md] [dispatch-class:exec-1n]" ''
+u16_bash_check Z42-bash-unrecognized allow "node /p/envoy-companion.mjs status [brief:$WORK/incomplete.md]" ''
+u16_check Z43-dir deny nomodel "$u16_class [brief:$WORK/dir.md]
+$u16_marker" 'is not a regular file'
+u16_check Z44-data-tail deny nomodel "$u16_class [data:$WORK/a]b.tsv]" 'malformed data label'
+u16_check Z45-label-tail-path deny nomodel "$u16_class [brief:$WORK/complete.md].md]
+$u16_marker" 'malformed brief label'
+u16_check Z46-data-tail-path deny nomodel "$u16_class [data:$WORK/data.tsv].tsv]" 'malformed data label'
+u16_check Z47-label-question allow nomodel "$u16_class [brief:$WORK/complete.md]?
+$u16_marker" ''
+u16_check Z48-label-punct-run allow nomodel "$u16_class ([brief:$WORK/complete.md]).
+$u16_marker" ''
+u16_check Z49-inline-double deny textonly "$u16_class see${u16_tick}${u16_tick}[deliverable:text]${u16_tick}${u16_tick} syntax" 'does not declare [deliverable:text]'
+u16_check Z50-fence-four deny textonly "$u16_class
+${u16_fence}${u16_tick}
+${u16_fence}
+[deliverable:text]
+${u16_fence}
+${u16_fence}${u16_tick}" 'does not declare [deliverable:text]'
+u16_check Z51-fence-tilde deny textonly "$u16_class
+~~~
+[deliverable:text]
+~~~" 'does not declare [deliverable:text]'
+u16_check Z52-inline-multiline deny textonly "$u16_class see ${u16_tick}x
+[deliverable:text]
+y${u16_tick} z" 'does not declare [deliverable:text]'
+u16_check Z53-after-tilde allow textonly "$u16_class
+~~~
+x
+~~~
+[deliverable:text]" ''
+u16_check Z54-lone-tick allow textonly "$u16_class it's a ${u16_tick} tick [deliverable:text]" ''
+u16_check Z55-tick-paragraphs allow textonly "$u16_class ${u16_tick}a
+
+[deliverable:text]
+
+b${u16_tick}" ''
+u16_check Z56-fm-bom deny bomagent "$u16_class отчёт" 'does not declare [deliverable:text]'
+u16_check Z57-fm-quoted-hash deny fmquotedhash "$u16_class отчёт" "declares deliverable: 'text-only # not'"
+u16_check Z58-fm-quoted-comment deny fmquotedcomment "$u16_class отчёт" 'does not declare [deliverable:text]'
+check "U16 Z59-fm-quoted-model" allow "$(gate "$(task_nomodel fmquotedmodel "[dispatch-class:1e]")")"
+check "U16 Z60-fm-effort-comment" allow "$(gate "$(task_nomodel fmeffortcomment "[dispatch-class:1e]")")"
+u16_bash_check Z61-bash-plain-label allow "grep '[brief:$WORK/incomplete.md]' notes.md" ''
+u16_check Z62-inline-sentinel deny textonly "$u16_class [deliverable:${u16_tick}${u16_tick}x${u16_tick}${u16_tick}text]" 'does not declare [deliverable:text]'
+u16_check Z63-fence-paragraph allow textonly "$u16_class ${u16_tick}a
+~~~
+x
+~~~
+[deliverable:text] b${u16_tick}" ''
+u16_check Z64-close-tail deny textonly "$u16_class
+${u16_fence}
+x
+${u16_fence} trailing
+[deliverable:text]" 'does not declare [deliverable:text]'
+u16_check Z65-indent-four allow textonly "$u16_class
+    ${u16_fence}
+[deliverable:text]" ''
+u16_check Z66-indent-three deny textonly "$u16_class
+   ${u16_fence}
+[deliverable:text]" 'does not declare [deliverable:text]'
+u16_check Z67-unclosed-tilde deny textonly "$u16_class
+~~~
+[deliverable:text]" 'does not declare [deliverable:text]'
+u16_check Z68-unclosed-tick deny textonly "$u16_class
+${u16_fence}
+[deliverable:text]" 'does not declare [deliverable:text]'
+u16_check Z69-quote-fence deny textonly "$u16_class
+> ~~~
+> [deliverable:text]
+> ~~~" 'does not declare [deliverable:text]'
+u16_check Z70-quote-end allow textonly "$u16_class
+> ~~~
+> x
+[deliverable:text]" ''
+u16_check Z71-list-fence deny textonly "$u16_class
+- ${u16_fence}
+  [deliverable:text]
+  ${u16_fence}" 'does not declare [deliverable:text]'
+u16_check Z72-ordered-fence deny textonly "$u16_class
+1. ${u16_fence}
+   [deliverable:text]
+   ${u16_fence}" 'does not declare [deliverable:text]'
+u16_check Z73-escaped-tick allow textonly "$u16_class \\${u16_tick}[deliverable:text]\\${u16_tick}" ''
+u16_check Z74-tail-comma allow nomodel "$u16_class [brief:$WORK/complete.md],
+$u16_marker" ''
+u16_check Z75-tail-semicolon allow nomodel "$u16_class [brief:$WORK/complete.md];
+$u16_marker" ''
+u16_check Z76-tail-colon allow nomodel "$u16_class [brief:$WORK/complete.md]:
+$u16_marker" ''
+u16_check Z77-tail-exclamation allow nomodel "$u16_class [brief:$WORK/complete.md]!
+$u16_marker" ''
+u16_check Z78-tail-star allow nomodel "$u16_class [brief:$WORK/complete.md]*
+$u16_marker" ''
+u16_check Z79-tail-underscore allow nomodel "$u16_class [brief:$WORK/complete.md]_
+$u16_marker" ''
+u16_check Z80-tail-backtick allow nomodel "$u16_class [brief:$WORK/complete.md]${u16_tick}
+$u16_marker" ''
+u16_check Z81-tail-double-quote allow nomodel "$u16_class [brief:$WORK/complete.md]\"
+$u16_marker" ''
+u16_check Z82-tail-single-quote allow nomodel "$u16_class [brief:$WORK/complete.md]'
+$u16_marker" ''
+u16_check Z83-tail-hyphen deny nomodel "$u16_class [brief:$WORK/complete.md]-
+$u16_marker" 'malformed brief label'
+u16_check Z84-class-first deny nomodel '[brief:broken.md]' 'declares no class'
+u16_check Z85-model-quote deny fmbadmodel "$u16_class [deliverable:text]" "unbalanced quote in model"
+u16_check Z86-effort-quote deny fmbadeffort "$u16_class [deliverable:text]" "unbalanced quote in effort"
+u16_check Z87-deliverable-quote deny fmbaddeliverable "$u16_class [deliverable:text]" "unbalanced quote in deliverable"
+z88_raw=$(u16_gate_out "$(task_nomodel fmonepair '[dispatch-class:1e]')")
+case "$z88_raw" in *'"deny"'*) case "$z88_raw" in *"is not named in any case table"*) z88=deny ;; *) z88="wrong reason: $z88_raw" ;; esac ;; *) z88="not deny: $z88_raw" ;; esac
+check "U16 Z88-one-quote-pair" deny "$z88" "$z88_raw"
+u16_check Z89-double-bom deny fmdoublebom "$u16_class [deliverable:text]" 'unreadable frontmatter'
+u16_check Z90-delimiter-bom deny fmdelimiterbom "$u16_class [deliverable:text]" 'unreadable frontmatter'
+u16_check Z91-data-relative deny nomodel "$u16_class [data:relative]" 'input label path must be absolute: relative'
+u16_check Z92-data-empty deny nomodel "$u16_class [data:]" 'input label path must be absolute: '
+u16_check Z93-brief-relative deny nomodel "$u16_class [brief:relative.md]
+$u16_marker" 'input label path must be absolute: relative.md'
+u16_check Z94-nul-brief-label deny nomodel "$u16_class [brief:$WORK/complete.md@@NUL@@x]
+$u16_marker" 'dispatch input contains U+0000'
+u16_check Z95-nul-text deny textonly "$u16_class [deliverable:text] a@@NUL@@b" 'dispatch input contains U+0000'
+u16_bash_check Z96-nul-bash deny "codex exec --model gpt-6-sol --effort high [brief:$WORK/complete.md@@NUL@@x] [dispatch-class:exec-1n]" 'dispatch input contains U+0000'
+u16_check Z97-list-fence-quote-depth allow textonly "$u16_class
+> - ${u16_fence}
+> > ${u16_fence}
+> [deliverable:text]" ''
+chmod 600 "$WORK/unreadable.md" "$WORK/agents/unreadableagent.md"
 
 echo "test-dispatch-gate: $pass passed, $fail failed, expected $EXPECTED_TEETH"
 if [ "$((pass + fail))" -ne "$EXPECTED_TEETH" ]; then

@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.52")
+  expect(MOD_VERSION).toBe("0.1.60")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -1622,13 +1622,12 @@ const FORM_CFG_335 = [
   'legalize = "zzz-legalize"',
   'git_commit = "zzz-git-commit"',
   'git_commit_ok = "zzz-git-commit-ok"',
-  'git_msg = "zzz-git-msg"',
   'git_push = "zzz-git-push"',
   'git_push_ok = "zzz-git-push-ok"',
   'git_force = "zzz-git-force"',
   'trailer_a = "zzz-trailer-a"',
   'trailer_b = "zzz-trailer-b"',
-  'write_redirect = "zzz-write-redirect"',
+  'write_target = "zzz-write-redirect"',
   'heredoc = "zzz-heredoc"',
 ].join("\n") + "\n"
 
@@ -2868,9 +2867,9 @@ test("catch: стримовая регистрация прогоняет пот
 // CONSTRAINT: зубы веера прогоняют РЕАЛЬНЫЙ обработчик turn.step, снятый с
 // регистрации (catchOfRegister), с настоящей привязкой failoverBindSet:
 // прямой вызов функций памяти проверял бы не тот путь (промах волны #311).
-// Метки читаются из дефолтной карты процесса -- той самой, куда пишет веер;
-// имена моделей уникальны на зуб, карта между зубами не сбрасывается
-// (недоступность модели относится к процессу, не к сессии).
+// Метки читаются из карты СВОЕГО агента (fanMarksOf(aid)) -- той самой, куда
+// пишет веер (#514 Р6: отказ агента A не меняет план агента B); имена моделей
+// уникальны на зуб, карты между зубами не пересекаются.
 const FAN313_NOW = 91_313_000
 
 function fan313$(): any {
@@ -2957,11 +2956,11 @@ test("#313 T1: отказ носителя до содержимого став�
   })
   const out = await fan313Run("f313-t1", "f313-t1-refuse", ["f313-t1-ok"], next)
   expect(out.value && out.value.text).toBe("OK-t1")
-  expect(isModelCooling("f313-t1-refuse", FAN313_NOW + 1)).toBe(true)
-  const row = cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t1-refuse")
+  expect(isModelCooling("f313-t1-refuse", FAN313_NOW + 1, R514.fanMarksOf("f313-t1")), "метка -- на карте агента, которому отказали").toBe(true)
+  const row = cooldownSnapshot(FAN313_NOW + 1, R514.fanMarksOf("f313-t1")).filter((r: any) => r.model === "f313-t1-refuse")
   expect(row.length).toBe(1)
   expect(row[0].reason).toBe("carrier-refusal")
-  expect(isModelCooling("f313-t1-ok", FAN313_NOW + 1)).toBe(false)
+  expect(isModelCooling("f313-t1-ok", FAN313_NOW + 1, R514.fanMarksOf("f313-t1"))).toBe(false)
   failoverBindReset()
 })
 
@@ -2974,8 +2973,8 @@ test("#313 T2: отказ носителя ПОСЛЕ содержимого м�
   const out = await fan313Run("f313-t2", "f313-t2-refuse", ["f313-t2-next"], next)
   expect(out.chunks.length).toBe(1)
   expect(next.seen, "ступень с выданным содержимым состоялась -- перехода нет").toEqual(["f313-t2-refuse"])
-  expect(isModelCooling("f313-t2-refuse", FAN313_NOW + 1)).toBe(false)
-  expect(cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t2-refuse").length).toBe(0)
+  expect(isModelCooling("f313-t2-refuse", FAN313_NOW + 1, R514.fanMarksOf("f313-t2"))).toBe(false)
+  expect(cooldownSnapshot(FAN313_NOW + 1, R514.fanMarksOf("f313-t2")).filter((r: any) => r.model === "f313-t2-refuse").length).toBe(0)
   failoverBindReset()
 })
 
@@ -2990,8 +2989,8 @@ test("#313 T3: бросок ставит метку с причиной carrier-
   })
   const out = await fan313Run("f313-t3", "f313-t3-throw", ["f313-t3-ok"], next)
   expect(out.value && out.value.text).toBe("OK-t3")
-  expect(isModelCooling("f313-t3-throw", FAN313_NOW + 1)).toBe(true)
-  const row = cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t3-throw")
+  expect(isModelCooling("f313-t3-throw", FAN313_NOW + 1, R514.fanMarksOf("f313-t3"))).toBe(true)
+  const row = cooldownSnapshot(FAN313_NOW + 1, R514.fanMarksOf("f313-t3")).filter((r: any) => r.model === "f313-t3-throw")
   expect(row.map((r: any) => [r.reason, r.class])).toEqual([["carrier-throw", "temporary-unknown"]])
   failoverBindReset()
 })
@@ -3001,17 +3000,17 @@ test("#313 T4: удачная попытка метки НЕ ставит", asyn
   const next = fan313Stream({ "f313-t4-ok": () => fan313Ok("t4") })
   const out = await fan313Run("f313-t4", "f313-t4-ok", ["f313-t4-backup"], next)
   expect(next.seen).toEqual(["f313-t4-ok"])
-  expect(isModelCooling("f313-t4-ok", FAN313_NOW + 1)).toBe(false)
+  expect(isModelCooling("f313-t4-ok", FAN313_NOW + 1, R514.fanMarksOf("f313-t4"))).toBe(false)
   failoverBindReset()
 })
 
 test("#313 T5: остывающая модель в плане -- перестановка в хвост, не вырезка", async () => {
   failoverBindReset()
-  noteRungCarrierRefusal("f313-t5-cold", FAN313_NOW - 5000)
+  noteRungCarrierRefusal("f313-t5-cold", FAN313_NOW - 5000, R514.fanMarksOf("f313-t5"))
   // CONSTRAINT: прямой ассерт перестановки идёт ДО веера -- веер этого зуба
   // отказом каждой ступени сам ставит метки всем моделям плана, и после
   // него перестановка стала бы тождественной.
-  const defer = deferCoolingAttemptModels(["f313-t5-h1", "f313-t5-cold", "f313-t5-h2"], FAN313_NOW)
+  const defer = deferCoolingAttemptModels(["f313-t5-h1", "f313-t5-cold", "f313-t5-h2"], FAN313_NOW, R514.fanMarksOf("f313-t5"))
   expect(defer.plan.length).toBe(3)
   expect(defer.plan).toEqual(["f313-t5-h1", "f313-t5-h2", "f313-t5-cold"])
   const next = fan313Stream({
@@ -3028,9 +3027,9 @@ test("#313 T5: остывающая модель в плане -- переста
 
 test("#313 T6: ВСЕ модели плана остывают -- план неизменен и полон", async () => {
   failoverBindReset()
-  noteRungCarrierRefusal("f313-t6-x", FAN313_NOW)
-  noteRungCarrierRefusal("f313-t6-y", FAN313_NOW)
-  noteRungCarrierRefusal("f313-t6-solo", FAN313_NOW)
+  noteRungCarrierRefusal("f313-t6-x", FAN313_NOW, R514.fanMarksOf("f313-t6"))
+  noteRungCarrierRefusal("f313-t6-y", FAN313_NOW, R514.fanMarksOf("f313-t6"))
+  noteRungCarrierRefusal("f313-t6-solo", FAN313_NOW, R514.fanMarksOf("f313-t6-solo"))
   const next = fan313Stream({
     "f313-t6-x": fan313Refuse,
     "f313-t6-y": fan313Refuse,
@@ -3043,14 +3042,14 @@ test("#313 T6: ВСЕ модели плана остывают -- план не�
   const solo = await fan313Run("f313-t6-solo", "f313-t6-solo", ["f313-t6-solo"], nextSolo)
   expect(nextSolo.seen).toEqual(["f313-t6-solo"])
   expect(isCarrierRefusal(solo.value)).toBe(true)
-  expect(deferCoolingAttemptModels(["f313-t6-x", "f313-t6-y"], FAN313_NOW).plan).toEqual(["f313-t6-x", "f313-t6-y"])
-  expect(deferCoolingAttemptModels(["f313-t6-solo"], FAN313_NOW).plan).toEqual(["f313-t6-solo"])
+  expect(deferCoolingAttemptModels(["f313-t6-x", "f313-t6-y"], FAN313_NOW, R514.fanMarksOf("f313-t6")).plan).toEqual(["f313-t6-x", "f313-t6-y"])
+  expect(deferCoolingAttemptModels(["f313-t6-solo"], FAN313_NOW, R514.fanMarksOf("f313-t6-solo")).plan).toEqual(["f313-t6-solo"])
   failoverBindReset()
 })
 
 test("#313 T7: собственная модель агента остывает -- план держит её последней", async () => {
   failoverBindReset()
-  noteRungCarrierRefusal("f313-t7-own", FAN313_NOW)
+  noteRungCarrierRefusal("f313-t7-own", FAN313_NOW, R514.fanMarksOf("f313-t7"))
   const next = fan313Stream({
     "f313-t7-own": () => fan313Ok("t7-own"),
     "f313-t7-step": fan313Refuse,
@@ -3058,7 +3057,7 @@ test("#313 T7: собственная модель агента остывает
   const out = await fan313Run("f313-t7", "f313-t7-own", ["f313-t7-step"], next)
   expect(next.seen, "собственная модель достигается после здоровой ступени").toEqual(["f313-t7-step", "f313-t7-own"])
   expect(out.value && out.value.text).toBe("OK-t7-own")
-  expect(isModelCooling("f313-t7-own", FAN313_NOW + 1), "успех модели снимает её метку (#514 H3)").toBe(false)
+  expect(isModelCooling("f313-t7-own", FAN313_NOW + 1, R514.fanMarksOf("f313-t7")), "успех модели снимает её метку (#514 H3)").toBe(false)
   failoverBindReset()
 })
 
@@ -3115,11 +3114,11 @@ test("#313 T10: один дом предиката -- граница окна у
 
 test("#313 R: дверь сброса меток -- вторая проверка с чистого листа", () => {
   rungCooldownReset()
-  noteRungCarrierRefusal("f313-r-door", 1000)
-  expect(isModelCooling("f313-r-door", 1001)).toBe(true)
+  noteRungCarrierRefusal("f313-r-door", 1000, R514.fanMarksOf("main"))
+  expect(isModelCooling("f313-r-door", 1001, R514.fanMarksOf("main"))).toBe(true)
   rungCooldownReset()
-  expect(isModelCooling("f313-r-door", 1001), "после сброса модель годна").toBe(false)
-  expect(cooldownSnapshot(1001)).toStrictEqual([])
+  expect(isModelCooling("f313-r-door", 1001, R514.fanMarksOf("main")), "после сброса модель годна").toBe(false)
+  expect(cooldownSnapshot(1001, R514.fanMarksOf("main"))).toStrictEqual([])
 })
 
 // CONSTRAINT: семь наблюдательских регистраций не дёргаются решающими
@@ -3284,6 +3283,7 @@ function mod$393(o: {
           throw new Error("EIO: scripted write refusal for " + p)
         }
         writes.push({ path: String(p), text: String(text) })
+        if (String(p).includes('/form/records/')) (o.files || (o.files = {}))[String(p)] = String(text)
       },
     },
     store: {
@@ -3340,7 +3340,7 @@ function mod$393(o: {
       },
     }
   }
-  return { $, writes, storeSets, storeDeletes, store, everyCbs, afterCbs, toasts, setNow: (n: number) => { now = n }, getNow: () => now }
+  return { $, writes, files: o.files || (o.files = {}), storeSets, storeDeletes, store, everyCbs, afterCbs, toasts, setNow: (n: number) => { now = n }, getNow: () => now }
 }
 
 function subs393(): Array<{ ev: string; matcher: any; fn: any }> {
@@ -6028,10 +6028,10 @@ test("#489-B1 Z7 ruleText: нечитаемый text_file не мемоизир�
   expect(String(second.description), "повторное чтение не заморожено пустой строкой").toContain("RULE-Z7")
 })
 
-test("#489-B1 Z8 form: нечитаемый путь Edit и >> не даёт события, отсутствующий >> судит тело", async () => {
+test("#489-B1 Z8 form: Edit не судит нечитаемое тело, Bash даёт F и откат", async () => {
   await drainFold393()
   const formZ8 = FORM_CFG_335
-    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('write_target = "zzz-write-redirect"', () => String.raw`write_target = '\.md$'`)
     .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
   const homeE = "/probes-z8e-b1"
   const editPath = "/z8e-b1/report.md"
@@ -6054,14 +6054,24 @@ test("#489-B1 Z8 form: нечитаемый путь Edit и >> не даёт с
   const bashPath = "/z8b-b1/report.md"
   const cmdU = "cat >> " + bashPath + " <<'EOF'\nzzz-legalize\nEOF"
   const mB = mod$393({
-    files: { [homeB + "/probes.toml"]: formZ8 },
+    files: { [homeB + "/probes.toml"]: formZ8 + '\n[probe.form.act]\nF = "cancel"\n', [bashPath]: "old" },
     env: { CLAUDE_PROBES_DIR: homeB, PWD: "/work-z8b-b1", CLAUDE_FORM: "1" },
     now: 200_080_000,
     fail: { fsReadErr: [bashPath] },
   })
-  await hook393(subs393(), "tool.call")(mB.$, { tool: "Bash", command: cmdU }, async (e: any) => e)
+  const outB = await hook393(subs393(), "tool.call")(mB.$, { tool: "Bash", command: cmdU }, formNext393(mB, { [bashPath]: "zzz-legalize\n" }, "Darwin"))
   const linesB = shards393(mB.writes, "/form/journal.jsonl.shard.")
-  expect(linesB.some((r: any) => r.outcome === "refuse"), ">> нечитаемого файла не судит тело").toBe(false)
+  expect(linesB.some((r: any) => r.outcome === "refuse" && r.cls.includes("F")), "Z8 unreadable post is F").toBe(true)
+  expect(linesB.some((r: any) => Array.isArray(r.cls) && r.cls.includes("C1")), "Z8 unreadable body is not judged").toBe(false)
+  expect(typeof outB.deny, "Z8 unreadable denial").toBe("string")
+  expect(linesB.filter((r: any) => r.outcome === "error" && r.verdict === "rollback failed: " + bashPath).length, "Z8 rollback failure journaled").toBe(1)
+  expect(String(outB.deny), "Z8 model reads form refusal").toContain("Form probe refused")
+  expect(String(outB.deny), "Z8 model reads rollback failure").toContain("rollback failed: " + bashPath)
+  const unreadB = mB.writes.filter(w => w.path.includes("/form/records/")).flatMap(w => JSON.parse(String(w.text)).refuse || []).find(r => r.c === "F")
+  expect(String(unreadB?.q), "Z8 unreadable cause named").toContain("target unreadable after write")
+  expect(String(unreadB?.q), "Z8 EIO retained").toContain("EIO")
+  expect(String(unreadB?.src), "Z8 unreadable path named").toContain(bashPath)
+  expect(mB.files[bashPath], "Z8 readable-stat unreadable-text restored").toBe("old")
   expect(lostN393("form-path-read") + linesB.filter((r: any) => r.lost && r.lost["form-path-read"]).length,
     ">> нечитаемого файла назван").toBeGreaterThanOrEqual(1)
 
@@ -6074,7 +6084,7 @@ test("#489-B1 Z8 form: нечитаемый путь Edit и >> не даёт с
     env: { CLAUDE_PROBES_DIR: homeC, PWD: "/work-z8c-b1", CLAUDE_FORM: "1" },
     now: 200_090_000,
   })
-  await hook393(subs393(), "tool.call")(mC.$, { tool: "Bash", command: cmdC }, async (e: any) => e)
+  await hook393(subs393(), "tool.call")(mC.$, { tool: "Bash", command: cmdC }, formNext393(mC, { [gonePath]: "zzz-legalize\n" }))
   const lines = shards393(mC.writes, "/form/journal.jsonl.shard.")
   expect(lines.some((r: any) => r.outcome === "refuse"), ">> отсутствующего файла судит тело").toBe(true)
 })
@@ -6456,37 +6466,52 @@ test("#455-B1-FIX1 W7 memo: threw пустой строкой присутств
   expect(recs[0].threw).toBe("")
 })
 
-test("#489-B1-FIX1 W9 form: >> нечитаемого файла — warn target-unreadable", async () => {
+test("#489-B1-FIX1 W9 form: нечитаемый post — F с EIO, путь и откат", async () => {
   await drainFold393()
   const formZ8 = FORM_CFG_335
-    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('write_target = "zzz-write-redirect"', () => String.raw`write_target = '\.md$'`)
     .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
   const home = "/probes-w9-b1"
   const fp = "/w9-b1/report.md"
   const m = mod$393({
-    files: { [home + "/probes.toml"]: formZ8 },
+    files: { [home + "/probes.toml"]: formZ8 + '\n[probe.form.act]\nF = "cancel"\n', [fp]: "old" },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-w9-b1", CLAUDE_FORM: "1" },
     now: 210_070_000,
     fail: { fsReadErr: [fp] },
   })
   const cmd = "cat >> " + fp + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [fp]: "zzz-legalize\n" }, "Darwin"))
   const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "warn" && Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0)).toBe(true)
-  const recs = m.writes
-    .filter(w => w.path.indexOf("/form/records/") >= 0)
-    .map(w => JSON.parse(String(w.text)))
-  const warn = recs.length ? (recs[0].warn || []).filter((w: any) => w.c === "target-unreadable") : []
-  expect(warn.length).toBeGreaterThan(0)
-  expect(warn[0].n).toBe(0)
-  expect(typeof warn[0].q).toBe("string")
-  expect(String(warn[0].q).length > 0 && String(warn[0].q).indexOf("EIO") >= 0, "q несёт причину нечитаемости").toBe(true)
-  expect(String(warn[0].src)).toContain(fp)
+  expect(lines.some((r: any) => r.outcome === "refuse" && r.cls.includes("F")), "W9 unreadable post is F").toBe(true)
+  expect(lines.filter((r: any) => r.outcome === "error" && r.verdict === "rollback failed: " + fp).length, "W9 rollback failure journaled").toBe(1)
+  const recs = formRecordsFinal393(m)
+  const refusal = recs.flatMap(r => r.refuse || []).find(r => r.c === "F" && String(r.q).includes("target unreadable after write"))
+  expect(!!refusal, "W9 named unreadable refusal").toBe(true)
+  expect(refusal.n).toBe(0)
+  expect(String(refusal.q), "W9 EIO retained").toContain("EIO")
+  expect(String(refusal.src), "W9 path retained").toContain(fp)
+  expect(typeof out.deny, "W9 F cancel denies").toBe("string")
+  expect(m.files[fp], "W9 bytes restored").toBe("old")
+  expect(lostN393("form-path-read") + lines.filter((r: any) => r.lost && r.lost["form-path-read"]).length, "W9 loss named").toBeGreaterThanOrEqual(1)
 })
+
+function formRecordsFinal393(m: any): any[] {
+  return Object.entries(m.files).filter(([path]) => path.includes('/form/records/')).map(([, text]) => JSON.parse(String(text)))
+}
+function formNext393(m: any, post: Record<string, string>, platform = "Linux"): (e: any) => Promise<any> {
+  const files = m.files
+  m.$.fs.list = async (dir: string) => {
+    const prefix = dir.replace(/\/$/, "") + "/"
+    if (!Object.keys(files).some(p => p.startsWith(prefix))) throw new Error("ENOENT " + dir)
+    return Object.keys(files).filter(p => p.startsWith(prefix) && !p.slice(prefix.length).includes("/")).map(p => ({ name: p.slice(prefix.length), kind: "file" }))
+  }
+  ioFix2_510({ state: {}, platform }).setup(m, files, [], () => false)
+  return async (e: any) => { Object.assign(files, post); return e }
+}
 
 function formRedirect393(): string {
   return FORM_CFG_335
-    .replace('write_redirect = "zzz-write-redirect"', 'write_redirect = ">>\\s+(\\S+)"')
+    .replace('write_target = "zzz-write-redirect"', () => String.raw`write_target = '\.md$'`)
     .replace('heredoc = "zzz-heredoc"', "heredoc = \"(<<'EOF'\\n)([\\s\\S]*?)(\\nEOF)\"")
 }
 
@@ -6536,7 +6561,8 @@ test("#489-B1-FIX2 V2a form: два >> — нечитаемый, затем чи
   const b = "/v2a-fix2/b/report.md"
   const m = mod$393({
     files: {
-      [home + "/probes.toml"]: formRedirect393(),
+      [home + "/probes.toml"]: formRedirect393() + '\n[probe.form.act]\nF = "cancel"\nC1 = "cancel"\n',
+      [a]: "old",
       [b]: "kept\n",
     },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-v2a-fix2", CLAUDE_FORM: "1" },
@@ -6544,10 +6570,12 @@ test("#489-B1-FIX2 V2a form: два >> — нечитаемый, затем чи
     fail: { fsReadErr: [a] },
   })
   const cmd = "cat >> " + a + "\ncat >> " + b + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [a]: "", [b]: "kept\nzzz-legalize\n" }, "Darwin"))
   const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "refuse"), "читаемая цель судится").toBe(true)
-  expect(lines.some((r: any) => Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0), "нечитаемая цель — warn").toBe(true)
+  expect(lines.some((r: any) => r.outcome === "refuse" && r.cls.includes("C1") && r.cls.includes("F")), "V2a body and unreadable classes coexist").toBe(true)
+  expect(typeof out.deny, "V2a denies").toBe("string")
+  expect(m.files[a], "V2a unreadable restored").toBe("old")
+  expect(m.files[b], "V2a body restored").toBe("kept\n")
 })
 
 test("#489-B1-FIX2 V2b form: два >> — читаемый с zzz-legalize, затем нечитаемый", async () => {
@@ -6557,7 +6585,8 @@ test("#489-B1-FIX2 V2b form: два >> — читаемый с zzz-legalize, з�
   const b = "/v2b-fix2/b/report.md"
   const m = mod$393({
     files: {
-      [home + "/probes.toml"]: formRedirect393(),
+      [home + "/probes.toml"]: formRedirect393() + '\n[probe.form.act]\nF = "cancel"\nC1 = "cancel"\n',
+      [a]: "old",
       [b]: "kept\n",
     },
     env: { CLAUDE_PROBES_DIR: home, PWD: "/work-v2b-fix2", CLAUDE_FORM: "1" },
@@ -6565,10 +6594,12 @@ test("#489-B1-FIX2 V2b form: два >> — читаемый с zzz-legalize, з�
     fail: { fsReadErr: [a] },
   })
   const cmd = "cat >> " + b + " <<'EOF'\nzzz-legalize\nEOF\ncat >> " + a
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [a]: "", [b]: "kept\nzzz-legalize\n" }, "Darwin"))
   const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
-  expect(lines.some((r: any) => r.outcome === "refuse")).toBe(true)
-  expect(lines.some((r: any) => Array.isArray(r.cls) && r.cls.indexOf("target-unreadable") >= 0)).toBe(true)
+  expect(lines.some((r: any) => r.outcome === "refuse" && r.cls.includes("C1") && r.cls.includes("F")), "V2b body and unreadable classes coexist").toBe(true)
+  expect(typeof out.deny, "V2b denies").toBe("string")
+  expect(m.files[a], "V2b unreadable restored").toBe("old")
+  expect(m.files[b], "V2b body restored").toBe("kept\n")
 })
 
 test("#489-B1-FIX2 V2c form: одна цель, heredoc до redirect — тело судится", async () => {
@@ -6581,7 +6612,7 @@ test("#489-B1-FIX2 V2c form: одна цель, heredoc до redirect — тел
     now: 220_030_000,
   })
   const cmd = "cat <<'EOF' >> " + f + "\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [f]: "zzz-legalize\n" }))
   const lines = shards393(m.writes, "/form/journal.jsonl.shard.")
   expect(lines.some((r: any) => r.outcome === "refuse"), "буквальная форма <<'EOF' >> file держит тело").toBe(true)
 })
@@ -6816,13 +6847,13 @@ test("#489-B1-FIX3 F1 form: второе тело не прячется за п�
     now: 230_000_000,
   })
   const cmd = "cat >> " + a + " <<'EOF'\nordinary\nEOF\ncat >> " + b + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
-  const recs = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { [a]: "log\nordinary\n", [b]: "kept\nzzz-legalize\n" }))
+  const recs = formRecordsFinal393(m)
   expect(formLines393(m.writes).some((r: any) => r.outcome === "refuse")).toBe(true)
   expect(recs.some((r: any) => (r.refuse || []).some((x: any) => x.c === "C1" && String(x.src).indexOf(b) >= 0)), "C1 по b/report.md").toBe(true)
 })
 
-test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути", async () => {
+test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути (D7c)", async () => {
   await drainFold393()
   const home = "/probes-f2a-fix3"
   const c = "/f2a-fix3/c/report.md"
@@ -6837,15 +6868,15 @@ test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути"
     now: 230_010_000,
   })
   const cmd = "cat >> /f2a-fix3/a/log.txt <<'EOF'\nA\nEOF\ncat >> /f2a-fix3/b/log.txt <<'EOF'\nB\nEOF\ncat >> " + c + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, async (e: any) => e)
+  await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: cmd }, formNext393(m, { "/f2a-fix3/a/log.txt": "a\nA\n", "/f2a-fix3/b/log.txt": "b\nB\n", [c]: "c\nzzz-legalize\n" }))
   expect(formLines393(m.writes).some((r: any) => r.outcome === "refuse"), "тело C судится").toBe(true)
 
   await drainFold393()
   const homeT = "/probes-f2t-fix3"
   const rep = "/f2t-fix3/r/report.md"
   const teeCfg = formCombat393().replace(
-    'write_redirect = ">>\\s+(\\S+)"',
-    'write_redirect = "(?:>>\\s+|tee\\s+-a\\s+)(\\S+)"',
+    String.raw`write_target = '\.md$'`,
+    () => String.raw`write_target = '''\.md$'''`,
   )
   const mt = mod$393({
     files: { [homeT + "/probes.toml"]: teeCfg, [rep]: "old\n", ["/f2t-fix3/x.log"]: "x\n" },
@@ -6853,22 +6884,25 @@ test("#489-B1-FIX3 F2 form: третье тело, tee и повтор пути"
     now: 230_020_000,
   })
   const tee = "cat <<'EOF' | tee -a /f2t-fix3/x.log | tee -a " + rep + "\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(mt.$, { tool: "Bash", command: tee }, async (e: any) => e)
+  await hook393(subs393(), "tool.call")(mt.$, { tool: "Bash", command: tee }, formNext393(mt, { [rep]: "old\nzzz-legalize\n", "/f2t-fix3/x.log": "x\nzzz-legalize\n" }))
   expect(formLines393(mt.writes).some((r: any) => r.outcome === "refuse"), "tee -a судит report").toBe(true)
 
   await drainFold393()
   const homeD = "/probes-f2d-fix3"
   const same = "/f2d-fix3/report.md"
   const md = mod$393({
-    files: { [homeD + "/probes.toml"]: formRedirect393(), [same]: "old\n" },
+    files: { [homeD + "/probes.toml"]: formRedirect393() + '\n[probe.form.act]\nC1 = "cancel"\n', [same]: "old\n" },
     env: { CLAUDE_PROBES_DIR: homeD, PWD: "/work-f2d-fix3", CLAUDE_FORM: "1" },
     now: 230_030_000,
   })
   const twice = "cat >> " + same + " <<'EOF'\nzzz-legalize\nEOF\ncat >> " + same + " <<'EOF'\nzzz-legalize\nEOF"
-  await hook393(subs393(), "tool.call")(md.$, { tool: "Bash", command: twice }, async (e: any) => e)
+  const outD = await hook393(subs393(), "tool.call")(md.$, { tool: "Bash", command: twice }, formNext393(md, { [same]: "old\nzzz-legalize\nzzz-legalize\n" }))
   const recs = md.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
-  const c1 = recs.reduce((n: number, r: any) => n + (r.refuse || []).filter((x: any) => x.c === "C1").length, 0)
-  expect(c1, "один путь дважды — два события").toBe(2)
+  const c1 = recs.reduce((n: number, r: any) => n + (r.refuse || []).filter((x: any) => x.c === "C1" && x.src === "Bash:" + same).length, 0)
+  expect(c1, "D7c: candidate path judged once").toBe(1)
+  expect(recs.flatMap((r: any) => r.refuse || []).some((r: any) => r.c === "C1" && r.src === "Bash:" + same), "D7c: own target refusal").toBe(true)
+  expect(typeof outD.deny, "D7c: model receives denial").toBe("string")
+  expect(md.files[same], "D7c: both appends rolled back").toBe("old\n")
 })
 
 test("#489-B1-FIX3 F5 brief_ref: второй вызов не наследует lastIndex", async () => {
@@ -6886,7 +6920,7 @@ test("#489-B1-FIX3 F5 brief_ref: второй вызов не наследует
   })
   const hook = hook393(subs393(), "tool.call")
   await hook(m.$, { tool: "Agent", prompt: paths.join(" "), subagent_type: "scout" }, async (e: any) => e)
-  const judged = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).flatMap(w => JSON.parse(String(w.text)).refuse || []).filter((r: any) => r.c === "C1").map((r: any) => r.src)
+  const judged = formRecordsFinal393(m).flatMap(r => r.refuse || []).filter((r: any) => r.c === "C1").map((r: any) => r.src)
   expect(judged, "F5 первые четыре пути").toEqual(paths.slice(0, 4).map(p => "Agent:" + p))
   const before = formLines393(m.writes).length
   await hook(m.$, { tool: "Agent", prompt: one, subagent_type: "scout" }, async (e: any) => e)
@@ -6948,7 +6982,7 @@ test("#489-B1-FIX3 F4 form: пустые совпадения и суррога�
   const home = "/probes-f4-fix3"
   const clef = String.fromCodePoint(0x1D11E)
   const cfg = formRedirect393()
-    .replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = "()"')
+    .replace(String.raw`write_target = '\.md$'`, 'write_target = "()"')
     .replace(/heredoc = "[\s\S]*"/, 'heredoc = "()"')
     .replace('brief_ref = "zzz-brief-ref"', 'brief_ref = "x*"')
   const m = mod$393({
@@ -6958,7 +6992,7 @@ test("#489-B1-FIX3 F4 form: пустые совпадения и суррога�
   })
   let thrown = ""
   try {
-    await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: "echo " + clef }, async (e: any) => e)
+    await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command: "echo " + clef }, formNext393(m, {}))
     await hook393(subs393(), "tool.call")(m.$, { tool: "Agent", prompt: clef, subagent_type: "scout" }, async (e: any) => e)
   } catch (x) { thrown = String(x) }
   expect(thrown, "вызов завершается").toBe("")
@@ -6966,20 +7000,14 @@ test("#489-B1-FIX3 F4 form: пустые совпадения и суррога�
 })
 
 async function formFix4(id: string, command: string, cfg = formCombat393(), files: Record<string, string> = {}) {
-  await clear393()
-  await drainFold393()
-  const home = "/probes-fix4-" + id
-  const m = mod$393({
-    files: { [home + "/probes.toml"]: cfg, ...files },
-    env: { CLAUDE_PROBES_DIR: home, PWD: "/fix4", CLAUDE_FORM: "1" },
-    now: 240_000_000,
-  })
-  const reads: string[] = []
-  const orig = m.$.fs.read
-  m.$.fs.read = async (p: string) => { reads.push(p); return orig(p) }
-  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command }, async () => ({ ran: true }))
-  const records = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
-  return { m, reads, out, records, rows: formLines393(m.writes) }
+  const path = "/fix4/r/report.md"
+  const bodies: Record<string, string> = {
+    f15: "ordinary\n", f16b: "zzz-legalize\n", f16c: "zzz-legalize\n",
+    f4b: String.fromCodePoint(0x1D11E) + "\n", f18: "noise\n",
+    f19: (files[path] || "") + "ordinary\n",
+  }
+  const post = id in bodies ? { [path]: bodies[id] } : {}
+  return form510("fix4-" + id, command, { cfg, files, post, cwd: "/fix4" })
 }
 
 test("#489-B1-FIX4 F15 bodies belong to their operator line", async () => {
@@ -7009,9 +7037,10 @@ test("#489-B1-FIX4 F16c continued operator line", async () => {
 // место занимает L18.
 
 test("#489-B1-FIX4 F4b empty matches preserve a later target", async () => {
-  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = ">>\\s*(\\S+\\.md)|(?:)"')
+  const cfg = formCombat393().replace(String.raw`write_target = '\.md$'`, String.raw`write_target = '\.md$|(?:)'`)
   const r = await formFix4("f4b", "echo " + String.fromCodePoint(0x1D11E) + " >> r/report.md <<'EOF'\nzzz-legalize\nEOF", cfg)
-  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F4b later target judged").toBe(true)
+  expect(r.postReads, "F4b later target judged from actual output").toContain("/fix4/r/report.md")
+  expect(r.rows.some((r: any) => r.outcome === "refuse"), "F4b echo does not copy its stdin").toBe(false)
 })
 
 test("#489-B1-FIX4 F17 safeText reads each accessor once", () => {
@@ -7045,7 +7074,7 @@ test("#489-B1-FIX4 F17 model envelope fields read once", () => {
 })
 
 test("#489-B1-FIX4 F18 empty target capture is skipped", async () => {
-  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = ">>\\s*(\\S+\\.md)|noise"')
+  const cfg = formCombat393().replace(String.raw`write_target = '\.md$'`, String.raw`write_target = '\.md$|noise'`)
   const r = await formFix4("f18", "echo noise >> r/report.md <<'EOF'\nzzz-legalize\nEOF", cfg)
   expect(r.reads.filter(p => p === "/fix4/r/report.md").length, "F18 one target read").toBe(1)
   expect(r.reads.some(p => p.endsWith("/undefined")), "F18 no undefined read").toBe(false)
@@ -7055,7 +7084,7 @@ test("#489-B1-FIX4 F18 empty target capture is skipped", async () => {
 })
 
 test("#489-B1-FIX4 F19 tee includes existing target", async () => {
-  const cfg = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"', 'write_redirect = "tee\\s+-a\\s+(\\S+)"')
+  const cfg = formCombat393().replace(String.raw`write_target = '\.md$'`, () => String.raw`write_target = '''\.md$'''`)
   const r = await formFix4("f19", "cat <<'EOF' | tee -a r/report.md\nordinary\nEOF", cfg, { "/fix4/r/report.md": "zzz-legalize\n" })
   expect(r.rows.some((r: any) => r.outcome === "refuse"), "F19 tee reads cur").toBe(true)
 })
@@ -7157,20 +7186,15 @@ function snap5($: any, e: any, site: string): any {
 }
 
 async function formFix5(id: string, command: string, cfg = formCombat393(), files: Record<string, string> = {}) {
-  await clear393()
-  await drainFold393()
-  const home = "/probes-fix5-" + id
-  const m = mod$393({
-    files: { [home + "/probes.toml"]: cfg, ...files },
-    env: { CLAUDE_PROBES_DIR: home, PWD: "/fix5", CLAUDE_FORM: "1" },
-    now: 270_000_000,
-  })
-  const reads: string[] = []
-  const orig = m.$.fs.read
-  m.$.fs.read = async (p: string) => { reads.push(p); return orig(p) }
-  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command }, async () => ({ ran: true }))
-  const records = m.writes.filter(w => w.path.indexOf("/form/records/") >= 0).map(w => JSON.parse(String(w.text)))
-  return { m, reads, out, records, rows: formLines393(m.writes) }
+  const post: Record<string, string> = {}
+  if (["l1", "l2", "l4", "l5", "l12", "l13", "l15", "l16", "l17", "l18", "z16"].includes(id)) post["/fix5/r/report.md"] = (files["/fix5/r/report.md"] || "") + TRIG5 + "\n"
+  if (["l21", "l27", "l28"].includes(id)) {
+    post["/fix5/r/1report.md"] = id === "l21" ? "ok\n" : "hi\n"
+    post["/fix5/r/2report.md"] = TRIG5 + "\n"
+  }
+  if (id === "l3") { post["/fix5/r/report.md"] = "ok \\\n"; post["/fix5/a/notes.md"] = TRIG5 + "\n" }
+  if (id === "w2") post["/fix5/r/report.md"] = (files["/fix5/r/report.md"] || "") + "clean\n"
+  return form510("fix5-" + id, command, { cfg, files, post })
 }
 
 // Hunt-требование волны: refuse обязан прийти ОТ НУЖНОЙ цели, а не от соседней.
@@ -7185,11 +7209,10 @@ function refusedOn5(r: any, target: string): boolean {
 function formGit6(): string {
   const out = formCombat393()
     .replace('git_commit = "zzz-git-commit"', String.raw`git_commit = '(?<![\w.-])git\s+commit(?![\w-])'`)
-    .replace('git_commit_ok = "zzz-git-commit-ok"', String.raw`git_commit_ok = '(?<!\S)--only(?!\S)'`)
-    .replace('git_msg = "zzz-git-msg"', String.raw`git_msg = '''(?<!\S)-m\s*(?:"([^"]*)"|'([^']*)'|(\S+))'''`)
+    .replace('git_commit_ok = "zzz-git-commit-ok"', () => String.raw`git_commit_ok = '^(?:--only|-o)$'`)
     .replace('trailer_a = "zzz-trailer-a"', "trailer_a = '^Session:'")
     .replace('trailer_b = "zzz-trailer-b"', "trailer_b = '^Co-Authored-By:'")
-  for (const stub of ["zzz-git-commit", "zzz-git-msg", "zzz-trailer-a", "zzz-trailer-b"]) {
+  for (const stub of ["zzz-git-commit", "zzz-trailer-a", "zzz-trailer-b"]) {
     if (out.indexOf(stub) >= 0) throw new Error("formGit6: заглушка не заменена: " + stub)
   }
   return out
@@ -7200,11 +7223,10 @@ function gitF6(r: any): string[] {
     .filter((x: any) => x.c === "F").map((x: any) => String(x.q))
 }
 
-// CONSTRAINT (#489-B1-FIX6 F4): write_redirect — дословно канон :172.
+// CONSTRAINT (#489-B1-FIX6 F4): write_target — дословно канон :172.
 function formTee6(): string {
-  const out = formCombat393().replace('write_redirect = ">>\\s+(\\S+)"',
-    String.raw`write_redirect = '''(?:>>?|tee(?:\s+-a)?)\s*["']?([^\s"'<>|;&]+\.md)'''`)
-  if (out.indexOf("tee(?:") < 0) throw new Error("formTee6: заглушка write_redirect не заменена")
+  const out = formCombat393()
+  if (!out.includes(String.raw`write_target = '\.md$'`)) throw new Error("formTee6: канон write_target отсутствует")
   return out
 }
 
@@ -7303,12 +7325,16 @@ test("#489-B1-FIX5 L10: `<<` внутри арифметики -- сдвиг, н
   expect(s.heredocs.length).toBe(0)
 })
 
-test("#489-B1-FIX5 L11: закон Z5 -- все тела строки судятся для каждой цели строки", async () => {
+test("#489-B1-FIX5 L11: закон Z5 -- все тела строки судятся для каждой цели строки (D7a)", async () => {
   const cmd = "cat <<A >> r/report.md ; cat <<B > a/notes.md\nok\nA\n" + TRIG5 + "\nB"
-  const s = scan5(cmd)
-  expect(s.heredocs.length).toBe(2)
-  const r = await formFix5("l11", cmd)
-  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "L11: тело второго heredoc судится и для первой цели").toBe(true)
+  expect(scan5(cmd).heredocs.length).toBe(2)
+  const before = "original\u0000bytes\r\n"
+  const r = await form510("l11", cmd, { cfg: CANCEL510().replace('report_path = "report[.]md$"', 'report_path = "(report|notes)[.]md$"'), files: { "/fix5/r/report.md": before }, materialize: true })
+  expect(refusedOn5(r, "Bash:/fix5/a/notes.md"), "D7a B: own offending target").toBe(true)
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "D7a B: no cross-body refusal").toBe(false)
+  expect(r.files["/fix5/r/report.md"], "D7a B: append survives").toBe(before + "ok\n")
+  expect(r.files["/fix5/a/notes.md"], "D7a B: new offending file removed").toBe(undefined)
+  expect(typeof r.out.deny, "D7a B: result denied").toBe("string")
 })
 
 test("#489-B1-FIX5 L12: `2>&1` между оператором и целью не режет логическую строку", async () => {
@@ -7954,11 +7980,21 @@ test("#489-B1-FIX7c C44: отрицание `!` перед данными", asyn
 
 test("#489-B1-FIX6 W1: голый `tee` усекает цель", async () => {
   const cmd = "cat <<'EOF' | tee r/report.md\nclean\nEOF"
-  const r = await formFix5("w1", cmd, formTee6(), { "/fix5/r/report.md": TRIG5 + "\n" })
-  expect(r.reads).not.toContain("/fix5/r/report.md")
+  const r = await form510("w1", cmd, { cfg: formTee6(), files: { "/fix5/r/report.md": TRIG5 + "\n" }, post: { "/fix5/r/report.md": "clean\n" } })
+  expect(r.preReads, "D7b W1: no old-content read before next").not.toContain("/fix5/r/report.md")
+  expect(r.postReads, "D7b W1: actual-content read after next").toContain("/fix5/r/report.md")
+  expect(r.files["/fix5/r/report.md"], "D7b W1: truncation materialized").toBe("clean\n")
   expect(refusedOn5(r, "Bash:/fix5/r/report.md")).toBe(false)
 })
 
+test("#510 D7b W1-with-backup", async () => {
+  const path = "/fix5/r/report.md"
+  const cmd = "cat <<'EOF' | tee r/report.md\nclean\nEOF"
+  const r = await form510("w1-with-backup", cmd, { cfg: CANCEL510(), files: { [path]: TRIG5 + "\n" }, post: { [path]: "clean\n" } })
+  expect(r.proc.some((argv: string[]) => argv[0] === "/bin/cp" && argv[argv.length - 2] === path && argv[argv.length - 1].includes("/form-backup/")), "D7b with backup: target backup copy witnessed").toBe(true)
+  expect(r.preReads, "D7b with backup: no old-content read before next").not.toContain(path)
+  expect(r.postReads, "D7b with backup: actual-content read after next").toContain(path)
+})
 test("#489-B1-FIX6 W2: `tee -a` дописывает (положительный контроль W1)", async () => {
   const cmd = "cat <<'EOF' | tee -a r/report.md\nclean\nEOF"
   const r = await formFix5("w2", cmd, formTee6(), { "/fix5/r/report.md": TRIG5 + "\n" })
@@ -8281,8 +8317,8 @@ const PROBE10: Array<[string, string, boolean]> = [
 const formGit10 = (): string => {
   const cfg = formGit6()
     .replace('git_push = "zzz-git-push"', String.raw`git_push = '(?<![\w.-])git\s+push(?![\w-])'`)
-    .replace('git_push_ok = "zzz-git-push-ok"', String.raw`git_push_ok = '(?<!\S)origin\s+[\w./-]+:[\w./-]+(?!\S)'`)
-    .replace('git_force = "zzz-git-force"', String.raw`git_force = '(?<!\S)(?:--force(?:-with-lease)?|-f)(?!\S)'`)
+    .replace('git_push_ok = "zzz-git-push-ok"', () => String.raw`git_push_ok = '^origin [\w./-]+:[\w./-]+$'`)
+    .replace('git_force = "zzz-git-force"', () => String.raw`git_force = '^(?:--force(?:-with-lease(?:=.*)?)?|-f)$'`)
   if (cfg.indexOf("zzz-git-push") >= 0 || cfg.indexOf("zzz-git-force") >= 0) throw new Error("push stub not replaced")
   return cfg
 }
@@ -8305,6 +8341,1157 @@ test("#497 Z497 form: мир без ключа `heredoc` -- проба суди�
   const f = gitF6(r)
   expect(f.length > 0, "Z497 push из тела heredoc осуждён").toBe(true)
   expect(r.rows.some((x: any) => x.outcome === "refuse"), "Z497 исход refuse").toBe(true)
+})
+
+// CONSTRAINT: next и cp/rm меняют независимый снимок файлов; проверка отката
+// сравнивает содержимое, а не факт вызова двери.
+async function form510(id: string, command: string, opts: any = {}) {
+  await clear393()
+  await drainFold393()
+  const home = "/probes-510-" + id
+  const files: Record<string, string> = { [home + "/probes.toml"]: opts.cfg || formGit10(), ...(opts.files || {}) }
+  const proc: string[][] = []
+  const dirs = fixtureDirs4_510(opts, files, opts.links), links: any = {}, modes: any = {}, attrs: any = {}
+  const m = mod$393({ files, env: { HOME: "/home510", PWD: opts.cwd || "/fix5", CLAUDE_PROBES_DIR: home, CLAUDE_FORM: "1", ...(opts.env || {}) }, now: 510_000_000 })
+  m.$.fs.list = async (dir: string) => {
+    const prefix = dir.replace(/\/$/, "") + "/"
+    const entries = new Map<string, any>()
+    for (const path of Object.keys(files).filter(p => p.startsWith(prefix))) {
+      const rest = path.slice(prefix.length), name = rest.split("/")[0]
+      if (name) entries.set(name, { name, kind: rest.includes("/") ? "dir" : "file", isLink: false })
+    }
+    if (!entries.size) throw new Error("ENOENT " + dir)
+    return [...entries.values()]
+  }
+  m.$.fs.stat = async (p: string, init: any) => {
+    if (!(p in files)) {
+      if (dirs.includes(p)) return { kind: 'dir', size: 0, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: p } : {}) }
+      throw new Error("ENOENT " + p)
+    }
+    return { kind: "file", size: opts.large === p ? 4 * 1024 * 1024 + 1 : unescape(encodeURIComponent(files[p])).length, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: p } : {}) }
+  }
+  const read = m.$.fs.read
+  const reads: string[] = [], preReads: string[] = [], postReads: string[] = []
+  let afterNext = false
+  m.$.fs.read = async (p: string, init: any) => {
+    reads.push(p)
+    ;(afterNext ? postReads : preReads).push(p)
+    if ((opts.unread || []).includes(p)) throw new Error("EACCES " + p)
+    const text = await read(p)
+    return init?.as === "bytes" ? { base64: bytes510(text) } : text
+  }
+  m.$.process = { run: async (argv: string[]) => {
+    proc.push(argv.slice())
+    const dst = argv.at(-1)!
+    if (argv[0] === '/bin/cp' && ((opts.failBackup && dst.includes('/form-backup/')) || (opts.failRollback && !dst.includes('/form-backup/')))) return { exitCode: 13, stderr: 'EACCES: directory not writable' }
+    if (argv[0] === '/usr/bin/uname') return { exitCode: 0, stdout: 'Linux' }
+    if (argv[0] === '/usr/bin/sha256sum') return { exitCode: 0, stdout: sha256hex(files[dst]) + '  ' + dst + '\n' }
+    const result = commandModel4_510(argv, files, links, dirs, modes, attrs, 'Linux')
+    if (!result) throw new Error('unexpected process command')
+    return result
+  } }
+  let ran = 0
+  opts.state = { files, proc }
+  if (opts.setup) opts.setup(m, files, proc, () => afterNext)
+  const out = await hook393(subs393(), "tool.call")(m.$, { tool: "Bash", command, tool_use_id: id }, async () => {
+    afterNext = true
+    ran++
+    if (opts.materialize) {
+      let cursor = command.indexOf("\n") + 1
+      const line = command.slice(0, cursor)
+      for (const match of line.matchAll(/cat\s+<<([A-Z]+)\s+(>>?)\s+(\S+)/g)) {
+        const end = command.indexOf("\n" + match[1], cursor)
+        if (end < 0) throw new Error("fixture delimiter missing")
+        const body = command.slice(cursor, end + 1)
+        const path = "/fix5/" + match[3]
+        files[path] = (match[2] === ">>" ? files[path] || "" : "") + body
+        // CONSTRAINT: каталог, созданный командой, существует только после next -- регистрация здесь, не при построении фикстуры.
+        const parts = path.split("/").filter(Boolean)
+        for (let i = 0; i < parts.length; i++) {
+          const ancestor = "/" + parts.slice(0, i).join("/")
+          if (!dirs.includes(ancestor)) dirs.push(ancestor)
+        }
+        cursor = end + match[1].length + 2
+      }
+    }
+    Object.assign(files, opts.post || {})
+    if (opts.onNext) opts.onNext(files)
+    if (opts.throwNext) throw new Error("scripted next failure")
+    return { result: { stdout: "done" } }
+  })
+  const records = formRecordsFinal393(m)
+  return { m, reads, preReads, postReads, out, records, rows: formLines393(m.writes), files, proc, ran }
+}
+
+const SNAP510 = "/home510/.claude/shell-snapshots/snapshot-zsh-1.sh"
+const ALIAS510 = [
+  "alias -- g=git", "alias -- gc='git commit --verbose'", "alias -- gpf!='git push --force'",
+  "alias -- gwip='git commit --no-verify --message wip'", "alias -- lead='git '",
+  "alias -- cm=commit", "alias -- cycle=cycle", "alias -- loopa=loopb", "alias -- loopb=loopa",
+  "f510 () {\n git commit -m function\n}",
+].join("\n")
+const CMD510: Array<[string, string, boolean, string?]> = [
+  ["D1-alias-only", "gc --only -m x", false],
+  ["D1-alias-refuse", "gc -m x", true, "git commit: нет "],
+  ["D1-force", "gpf! origin a:b", true, "git push --force"],
+  ["D1-passthrough", "g commit -m x", true, "git commit: нет "],
+  ["D1-wip", "gwip", true, "git commit: нет "],
+  ["D1-trailing", "lead cm -m x", true, "git commit: нет "],
+  ["D1-cycle", "cycle", false],
+  ["D1-mutual-cycle", "loopa", false],
+  ["D1-function", "f510", true, "git commit: нет "],
+  ["D2-static", "A=commit; git $A -m x", true, "git commit: нет "],
+  ["D2-bash-split", "A='commit -m x'; git $A", true, "git commit: нет "],
+  ["D2-unknown", "git $X", true, "subcommand not static"],
+  ["D2-command", "$G commit -m x", true, "git commit: нет "],
+  ["D2-prefix", "A=commit git $A --only -m x; git $A", true, "subcommand not static"],
+  ["D2-subshell", "A=status; (A=commit); git $A", false],
+  ["D2-nested-scope", "A=status; (A=commit; (git $A --only -m x))", false],
+  ["D3-group", "git com(mit|X) -m y", true, "git commit: нет "],
+  ["D3-group-only", "git (commit|nope) --only -m y", false],
+  ["D3-command", "gi? commit -m x", true, "git commit: нет "],
+  ["D3-only-glob", "git commit --onl? -m x", true, "git commit: нет "],
+  ["D4-extglob", "echo @(a|b) ; git commit -m x", true, "git commit: нет "],
+  ["D4-word-group", "echo x(a|b) ; git commit -m x", true, "git commit: нет "],
+  ["D5-message-option", "git commit -m --only", true, "git commit: нет "],
+  ["D5-nested-message", 'bash -c \'git commit -m "x --only"\'', true, "git commit: нет "],
+  ["D5-short", "git commit -o -m x", false],
+  ["D5-cluster", "git commit -ao -m x", false],
+  ["D5-attached-message", "git commit -mo", true, "git commit: нет "],
+  ["D5-end-options", "git commit -m x -- --only", true, "git commit: нет "],
+  ["D5-file-stdin", "git commit --only -F - <<'MSG'\nx\nMSG", false],
+  ["D5-file", "git commit --only -F msg.txt", false],
+  ["D5-reuse", "git commit --only -C HEAD -m x", true, "message undeterminable"],
+  ["D5-file-dynamic", "git commit --only -F $P -m x", true, "message undeterminable"],
+  ["D5-file-unreadable", "git commit --only -F absent.txt -m x", true, "message undeterminable"],
+  ["D5b-cluster", "git push -uf origin a:b", true, "git push -uf"],
+  ["D5b-lease", "git push --force-with-lease=x origin a:b", true, "git push --force-with-lease=x"],
+  ["D5b-pair", "git push origin a:b", false],
+  ["D5b-plus", "git push origin +a:b", true, "git push: нет "],
+  ["D9-row1", "A='commit --only -m x'; git $A", false],
+  ["D9-row9", "=git commit --only -m x", false],
+  ["D9-row10", "git @(commit|X) --only -m x", false],
+]
+for (const [id, cmd, refuse, detail] of CMD510) {
+  test("#510 " + id, async () => {
+    const r = await form510(id, cmd, { files: { [SNAP510]: ALIAS510, "/fix5/msg.txt": "message" } })
+    const f = gitF6(r)
+    expect(f.length > 0, id + ": own F verdict").toBe(refuse)
+    if (detail) expect(f.join("\n"), id + ": own reason").toContain(detail)
+    if (id === "D1-alias-only") expect(r.rows.some((x: any) => x.outcome === "pass"), "D1 alias judged once").toBe(true)
+  })
+}
+
+test("#510 D1-values", async () => {
+  const r = await form510("values", "gc --only -m x", { files: { [SNAP510]: "alias -- gc='git commit'", "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": "alias -- gc='git push --force'" } })
+  expect(gitF6(r).length > 0, "D1 every snapshot value judged").toBe(true)
+})
+test("#510 D1-bash-function-wrapped", async () => {
+  const encoded = "ZmJhc2UgKCkgewogIGdpdCBjb21taXQgLW0geHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4\neHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eAp9Cg=="
+  const snapshot = 'eval "$(echo \'' + encoded + '\' | base64 -d)" > /dev/null 2>&1'
+  const r = await form510("bash-function-wrapped", "fbase", { files: { "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": snapshot } })
+  expect(gitF6(r).length > 0, "D1 wrapped bash function: own F verdict").toBe(true)
+})
+
+test("#510 D1-bash-function-unwrapped", async () => {
+  const encoded = "ZmJhc2UgKCkgewogIGdpdCBjb21taXQgLW0geHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eAp9Cg=="
+  const snapshot = 'eval "$(echo \'' + encoded + '\' | base64 -d)" > /dev/null 2>&1'
+  const r = await form510("bash-function-unwrapped", "fbase", { files: { "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": snapshot } })
+  expect(gitF6(r).length > 0, "D1 unwrapped bash function: own F verdict").toBe(true)
+})
+test("#510 D1-bash-function-crlf", async () => {
+  const encoded = "ZmJhc2UgKCkgewogIGdpdCBjb21taXQgLW0geHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4\r\neHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eAp9Cg=="
+  const snapshot = 'eval "$(echo \'' + encoded + '\' | base64 -d)" > /dev/null 2>&1'
+  const r = await form510("bash-function-crlf", "fbase", { files: { "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": snapshot } })
+  expect(gitF6(r).length > 0, "D1 CRLF bash function: own F verdict").toBe(true)
+})
+test("#510 D1-base64-normalization", () => {
+  const normalize = (registerModule393 as any).formBase64Payload
+  expect(typeof normalize, "D1 base64 normalization helper exists").toBe("function")
+  expect(normalize("QU\r\nJD @\t"), "D1 base64 normalization removes only CR/LF").toBe("QUJD @\t")
+})
+test("#510 D1-bash-function-invalid-symbol", async () => {
+  const snapshot = 'eval "$(echo \'ZmJhc2UgKCkgewogIGdpdCBjb21taXQgLW0geAo@KfQ==\' | base64 -d)" > /dev/null 2>&1'
+  const path = "/home510/.claude/shell-snapshots/snapshot-bash-2.sh"
+  const r = await form510("bash-function-invalid-symbol", "fbase", { files: { [path]: snapshot } })
+  expect(gitF6(r), "D1 invalid symbol: function not taken").toEqual([])
+  const warnings = r.records.flatMap((record: any) => record.warn || []).filter((warning: any) => warning.c === "form-alias-source-unreadable")
+  expect(warnings.length, "D1 invalid symbol: one named warning").toBe(1)
+  expect(warnings[0].q, "D1 invalid symbol: source named").toBe("snapshot-bash-2.sh")
+})
+test("#510 D1-bash-function-decode-failed", async () => {
+  const snapshot = 'eval "$(echo \'/w==\' | base64 -d)" > /dev/null 2>&1'
+  const r = await form510("bash-function-decode-failed", "fbase", { files: { "/home510/.claude/shell-snapshots/snapshot-bash-2.sh": snapshot } })
+  expect(gitF6(r), "D1 decode failure: function not taken").toEqual([])
+  const warnings = r.records.flatMap((record: any) => record.warn || []).filter((warning: any) => warning.c === "form-alias-source-unreadable")
+  expect(warnings.length, "D1 decode failure: one named warning").toBe(1)
+})
+
+test("#510 D1-unreadable", async () => {
+  const r = await form510("unreadable", "true", { files: { [SNAP510]: "unreadable" }, unread: [SNAP510] })
+  expect(r.records.flatMap((x: any) => x.warn || []).some((x: any) => x.c === "form-alias-source-unreadable"), "D1 unreadable snapshot warning").toBe(true)
+})
+test("#510 D1-depth", async () => {
+  const snapshot = Array.from({ length: 10 }, (_, i) => "alias -- a" + i + "=a" + (i + 1)).join("\n")
+  const r = await form510("depth", "a0", { files: { [SNAP510]: snapshot } })
+  expect(gitF6(r).join("\n"), "D1 alias depth is refusal").toContain("alias expansion too deep")
+})
+for (const [id, cmd] of [["D4-segments-ext", "echo @(a|b) ; git commit -m x"], ["D4-segments-group", "echo x(a|b) ; git commit -m x"]]) {
+  test("#510 " + id, () => {
+    const segments = scan5(cmd).segments().filter((x: any) => cmd.slice(x[0], x[1]).trim())
+    expect(segments.length, id + ": two simple commands").toBe(2)
+  })
+}
+const WRITE510: Array<[string, string, string[]]> = [
+  ["D6-tee-ai", "tee -ai r/report.md", ["/fix5/r/report.md"]],
+  ["D6-tee-append", "tee --append -- r/report.md s/report.md", ["/fix5/r/report.md", "/fix5/s/report.md"]],
+  ["D6-tee-p", "tee -p r/report.md", ["/fix5/r/report.md"]],
+  ["D6-clobber", "cat >| r/report.md", ["/fix5/r/report.md"]],
+  ["D6-all-append", "cat &>> r/report.md", ["/fix5/r/report.md"]],
+  ["D6-fd", "cat 2> r/report.md", ["/fix5/r/report.md"]],
+  ["D6-glob", "cat > r/repor*.md", ["/fix5/r/report.md"]],
+  ["D6-cwd", "cd sub && cat > r/report.md", ["/fix5/sub/r/report.md"]],
+]
+for (const [id, cmd, paths] of WRITE510) {
+  test("#510 " + id, async () => {
+    const files: Record<string, string> = {}, post: Record<string, string> = {}
+    for (const p of paths) { files[p] = "before\n"; post[p] = TRIG5 }
+    const r = await form510(id, cmd, { files, post })
+    for (const p of paths) expect(refusedOn5(r, "Bash:" + p), id + ": own target " + p).toBe(true)
+  })
+}
+test("#510 D6-dynamic-cwd", async () => {
+  const r = await form510("dynamic-cwd", "cd $D && cat > r/report.md")
+  expect(r.records.flatMap((x: any) => x.warn || []).some((x: any) => x.c === "form-cwd-unknown"), "D6 unknown cwd warning").toBe(true)
+})
+test("#510 D6-group-target", async () => {
+  const fn = (registerModule393 as any).formTargets
+  expect(typeof fn, "D6 target lexer export").toBe("function")
+  const targets = await fn({ fs: { list: async () => [{ name: "readme.mdN", kind: "file" }] } }, "echo hi > readme.md(N)", "/fix5", "/home510")
+  expect(targets.map((x: any) => x.path), "D6 zsh grouped filename resolved").toContain("/fix5/readme.mdN")
+})
+const CANCEL510 = () => formGit10() + '\n[probe.form.act]\nC1 = "cancel"\nA1 = "cancel"\nF = "cancel"\n'
+for (const created of [false, true]) {
+  test("#510 D7-rollback-" + (created ? "new" : "existing"), async () => {
+    const path = "/fix5/r/report.md", before = "original\u0000bytes\r\n"
+    const r = await form510("rollback-" + created, "cat src > r/report.md", { cfg: CANCEL510(), files: created ? {} : { [path]: before }, post: { [path]: TRIG5 } })
+    expect(typeof r.out.deny, "D7 model reads deny after rollback").toBe("string")
+    expect(r.files[path], "D7 byte-exact old state").toBe(created ? undefined : before)
+    expect(Object.keys(r.files).filter(p => p.includes("/form-backup/")), "D7 copies removed").toEqual([])
+  })
+}
+test("#510 D7-log-only", async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("log-only", "cat src > r/report.md", { files: { [path]: "before" }, post: { [path]: TRIG5 } })
+  expect(r.files[path], "D7 log_only does not roll back").toBe(TRIG5)
+  expect(refusedOn5(r, "Bash:" + path), "D7 actual contents recorded").toBe(true)
+  expect(Object.keys(r.files).filter(p => p.includes("/form-backup/")), "D7 cleanup log_only").toEqual([])
+})
+test("#510 D7-log-only-with-backup", async () => {
+  const path = "/fix5/r/report.md"
+  const command = "cat src > r/report.md"
+  const cfg = formGit10() + '\n[probe.form.act]\nF = "cancel"\n'
+  const r = await form510("log-only-with-backup", command, { cfg, files: { [path]: "before" }, post: { [path]: TRIG5 } })
+  const classes = [...new Set(r.records.flatMap((x: any) => x.refuse || []).filter((x: any) => x.src === "Bash:" + path).map((x: any) => x.c))].sort()
+  expect(classes, "D7 log_only backup refusal classes are exactly C1").toEqual(["C1"])
+  expect(r.files[path], "D7 log_only class does not roll back even with a backup").toBe(TRIG5)
+  expect(refusedOn5(r, "Bash:" + path), "D7 log_only backup actual contents recorded").toBe(true)
+  expect(Object.keys(r.files).filter(p => p.includes("/form-backup/")), "D7 log_only backup copies removed").toEqual([])
+  const cancel = await form510("log-only-with-backup-cancel", command, { cfg: cfg + 'C1 = "cancel"\n', files: { [path]: "before" }, post: { [path]: TRIG5 } })
+  expect(cancel.files[path], "D7 cancel class reaches actual rollback with the same backup input").toBe("before")
+  expect(Object.keys(cancel.files).filter(p => p.includes("/form-backup/")), "D7 cancel backup copies removed").toEqual([])
+})
+test("#510 D7-exact-heredoc", async () => {
+  const r = await form510("exact-heredoc", "cat > r/report.md <<'END'\n" + TRIG5 + "\nEND", { cfg: CANCEL510() })
+  expect(r.ran, "D7 exact heredoc denied before next").toBe(0)
+  expect(typeof r.out.deny, "D7 pre-execution deny").toBe("string")
+})
+test("#510 D7-backup-failed", async () => {
+  const r = await form510("backup-failed", "cat src > r/report.md", { cfg: CANCEL510(), files: { "/fix5/r/report.md": "before" }, failBackup: true })
+  expect(r.ran, "D7 cannot execute without backup").toBe(0)
+  expect(String(r.out.deny), "D7 unwritable backup directory").toContain("form-backup-failed")
+})
+test("#510 D7-rollback-failed", async () => {
+  const r = await form510("rollback-failed", "cat src > r/report.md", { cfg: CANCEL510(), files: { "/fix5/r/report.md": "before" }, post: { "/fix5/r/report.md": TRIG5 }, failRollback: true })
+  expect(String(r.out.deny), "D7 failed restoration is explicit").toContain("rollback failed:")
+})
+test("#510 D7-too-large", async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("too-large", "cat src > r/report.md", { cfg: CANCEL510(), files: { [path]: "before" }, post: { [path]: TRIG5 }, large: path })
+  expect(r.records.flatMap((x: any) => x.refuse || []).map((x: any) => x.q).join("\n"), "D7 actual file size gate").toContain("target too large to judge")
+})
+
+test("#510 D7c F2 mirror: second append reaches actual judgment", async () => {
+  const path = "/fix5/r/report.md"
+  const cmd = "cat <<A >> r/report.md ; cat <<B >> r/report.md\nok\nA\n" + TRIG5 + "\nB"
+  const r = await form510("f2-mirror", cmd, { cfg: CANCEL510(), files: { [path]: "old\n" }, materialize: true })
+  expect(refusedOn5(r, "Bash:" + path), "D7c mirror: second body judged").toBe(true)
+  expect(typeof r.out.deny, "D7c mirror: model receives denial").toBe("string")
+  expect(r.files[path], "D7c mirror: both appends rolled back").toBe("old\n")
+})
+
+test("#510 D7a L11 mirror: append owns its body", async () => {
+  const before = "original\u0000bytes\r\n"
+  const cmd = "cat <<A >> r/report.md ; cat <<B > a/notes.md\n" + TRIG5 + "\nA\nok\nB"
+  const r = await form510("l11-mirror", cmd, { cfg: CANCEL510().replace('report_path = "report[.]md$"', 'report_path = "(report|notes)[.]md$"'), files: { "/fix5/r/report.md": before }, materialize: true })
+  expect(refusedOn5(r, "Bash:/fix5/r/report.md"), "D7a A: own append refusal").toBe(true)
+  expect(refusedOn5(r, "Bash:/fix5/a/notes.md"), "D7a A: no cross-body refusal").toBe(false)
+  expect(r.files["/fix5/r/report.md"], "D7a A: byte-exact rollback").toBe(before)
+  expect(r.files["/fix5/a/notes.md"], "D7a A: ordinary body survives").toBe("ok\n")
+  expect(typeof r.out.deny, "D7a A: result denied").toBe("string")
+})
+test("#510 D7 exception cleanup", async () => {
+  const opts: any = { cfg: CANCEL510(), files: { "/fix5/r/report.md": "before" }, throwNext: true }
+  let thrown = ""
+  try { await form510("exception", "cat src > r/report.md", opts) } catch (x) { thrown = String(x) }
+  expect(thrown, "D7 next exception propagated").toContain("scripted next failure")
+  expect(opts.state.proc.some((argv: string[]) => argv[0] === "/bin/cp"), "D7 exception test had a backup").toBe(true)
+  expect(Object.keys(opts.state.files).filter(p => p.includes("/form-backup/")), "D7 finally removed backup").toEqual([])
+})
+
+const FIX2_COMMAND510: Array<[string, string, boolean, string?]> = [
+  ["F1-u", "git commit -uno -m x", true],
+  ["F1-au", "git commit -auno -m x", true],
+  ["F1-S", "git commit -So -m x", true],
+  ["F1-only-u", "git commit -o -u -m x", false],
+  ["F2-editor", "git commit --only", true, "message undeterminable"],
+  ["F2-e", "git commit -o -e -m x", true, "message undeterminable"],
+  ["F2-t", "git commit -o -t template", true, "message undeterminable"],
+  ["F2-amend", "git commit -o --amend", true, "message undeterminable"],
+  ["F2-fixup", "git commit -o --fixup HEAD -m x", true, "message undeterminable"],
+  ["F2-fixup-eq", "git commit -o --fixup=amend:HEAD -m x", true, "message undeterminable"],
+  ["F2-squash", "git commit -o --squash HEAD -m x", true, "message undeterminable"],
+  ["F2-squash-eq", "git commit -o --squash=HEAD -m x", true, "message undeterminable"],
+  ["F2-amend-static", "git commit -o --amend -m x", false],
+  ["F5-delete-ref", "git push origin a:b :d", true],
+  ["F5-force-ref", "git push origin a:b +c:d", true],
+  ["F5-mirror", "git push --mirror origin", true],
+  ["F5-delete", "git push --delete origin x", true],
+  ["F5-all", "git push --all origin a:b", true],
+  ["F5-tags", "git push --tags origin a:b", true],
+]
+for (const [id, command, refused, reason] of FIX2_COMMAND510) test("#510 FIX2 " + id, async () => {
+  const r = await form510("fix2-" + id, command)
+  expect(gitF6(r).length > 0, id + " own verdict").toBe(refused)
+  if (reason) expect(gitF6(r).join("\n"), id + " own reason").toContain(reason)
+})
+test("#510 FIX2 F6 trailing chain", async () => {
+  const r = await form510("fix2-chain", "lead mid tail -m x", { files: { [SNAP510]: "alias -- lead='git '\nalias -- mid=' '\nalias -- tail=commit" } })
+  expect(gitF6(r).length > 0, "F6 own verdict").toBe(true)
+})
+test("#510 FIX2 F7 config snapshot", async () => {
+  const r = await form510("fix2-config", "custom -m x", { env: { CLAUDE_CONFIG_DIR: "/custom510" }, files: { "/custom510/shell-snapshots/snapshot-zsh-1.sh": "alias -- custom='git commit'" } })
+  expect(gitF6(r).length > 0, "F7 own verdict").toBe(true)
+})
+test("#510 FIX2 F8 git cwd cumulative", async () => {
+  const text = "x\nSession: s\nintervening\nCo-Authored-By: c\n"
+  const r = await form510("fix2-gitcwd", "git -C a -C b commit -o -F msg", { files: { "/fix5/a/b/msg": text, "/fix5/msg": "ordinary" } })
+  expect(gitF6(r).join("\n"), "F8 judged cumulative file").toContain("не соседние")
+})
+for (const op of [">>!", "2>>!", "&>>!", "&>!"]) test("#510 FIX2 F3 " + op, async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("fix2-redirect-" + op, "cat src " + op + " r/report.md", { cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 } })
+  expect(typeof r.out.deny, "F3 own denial " + op).toBe("string")
+  expect(r.files[path], "F3 own restoration " + op).toBe("old")
+})
+for (const option of ["--", "-P", "-L", "-q", "-s"]) test("#510 FIX2 F9 cd " + option, async () => {
+  const path = "/fix5/sub/r/report.md"
+  const r = await form510("fix2-cd-" + option, "cd " + option + " sub; cat src > r/report.md", { cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 } })
+  expect(typeof r.out.deny, "F9 own denial " + option).toBe("string")
+  expect(r.files[path], "F9 own restoration " + option).toBe("old")
+})
+for (const command of ["cd; cat src > r/report.md", "cd -; cat src > r/report.md"]) test("#510 FIX2 F9 unknown " + command, async () => {
+  const r = await form510("fix2-unknown-cd", command)
+  expect(r.records.flatMap((x: any) => x.warn || []).map((x: any) => x.c), "F9 named unknown cwd").toContain("form-cwd-unknown")
+})
+test("#510 FIX2 F4 pipeline isolated", async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("fix2-pipe-base", "cd sub | cat src > r/report.md", { cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 } })
+  expect(r.files[path], "F4 base target restored").toBe("old")
+  expect(typeof r.out.deny, "F4 base refusal").toBe("string")
+})
+test("#510 FIX2 F4 pipeline union", async () => {
+  const a = "/fix5/r/report.md", b = "/fix5/sub/r/report.md"
+  const r = await form510("fix2-pipe-union", "cat x | cd sub; cat src > r/report.md", { cfg: CANCEL510(), files: { [a]: "old-a", [b]: "old-b" }, post: { [a]: TRIG5, [b]: TRIG5 } })
+  expect(r.files[a], "F4 bash candidate restored").toBe("old-a")
+  expect(r.files[b], "F4 zsh candidate restored").toBe("old-b")
+})
+test("#510 FIX2 F10 stderr heredoc", async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("fix2-stderr", "cat 2> r/report.md <<'END'\n" + TRIG5 + "\nEND", { cfg: CANCEL510(), post: { [path]: "" } })
+  expect(r.ran, "F10 next runs").toBe(1)
+  expect(r.files[path], "F10 actual empty target").toBe("")
+  expect(r.out.deny, "F10 no pre-denial").toBe(undefined)
+})
+for (const target of ["$FILE", "`target`", "$(target)"]) test("#510 FIX2 F11 dynamic " + target, async () => {
+  const r = await form510("fix2-dynamic", "cat src > " + target)
+  expect(r.records.flatMap((x: any) => x.warn || []).map((x: any) => x.c), "F11 named dynamic target " + target).toContain("form-target-dynamic")
+})
+for (const [id, command] of [
+  ["cp", "cp src r/report.md"], ["cp-t", "cp -t r src/report.md"], ["cp-long", "cp --target-directory=r src/report.md"],
+  ["mv", "mv -- src r/report.md"], ["install", "install -m 644 src r/report.md"], ["dd", "dd if=src of=r/report.md"],
+  ["sed", "sed -i 's/a/b/' r/report.md"], ["sed-long", "sed --in-place=.bak -e 's/a/b/' -- r/report.md"],
+  ["perl", "perl -i -pe 's/a/b/' r/report.md"], ["truncate", "truncate -s 0 -- r/report.md"], ["ln", "ln -sf src r/report.md"],
+]) test("#510 FIX2 F21 writer " + id, async () => {
+  const path = "/fix5/r/report.md"
+  const r = await form510("fix2-writer-" + id, command, { cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 } })
+  expect(typeof r.out.deny, "F21 own denial " + id).toBe("string")
+  expect(r.files[path], "F21 own restoration " + id).toBe("old")
+})
+test("#510 FIX2 F22 canon missing", async () => {
+  const r = await form510("fix2-canon", "echo x", { cfg: CANCEL510().replace(/^write_target = .*\n/m, "") })
+  expect(r.records.flatMap((x: any) => x.refuse || []).map((x: any) => x.q).join("\n"), "F22 missing key named").toContain("form-canon-key-missing write_target")
+  expect(typeof r.out.deny, "F22 actionable missing canon").toBe("string")
+})
+
+function bytes510(text: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  const bytes = Array.from(unescape(encodeURIComponent(text))).map(c => c.charCodeAt(0))
+  let out = ""
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0)
+    out += alphabet[(n >>> 18) & 63] + alphabet[(n >>> 12) & 63] + (i + 1 < bytes.length ? alphabet[(n >>> 6) & 63] : "=") + (i + 2 < bytes.length ? alphabet[n & 63] : "=")
+  }
+  return out
+}
+function ioFix2_510(opts: any): any {
+  const links = { ...(opts.links || {}) }, attrs = { ...(opts.attrs || {}) }, modes: any = {}
+  opts.io = { links, attrs, modes }
+  opts.setup = (m: any, files: any, proc: any, post: () => boolean) => {
+    const normalize = (path: string) => {
+      const parts: string[] = []
+      for (const part of path.split("/")) { if (part === "..") parts.pop(); else if (part && part !== ".") parts.push(part) }
+      return "/" + parts.join("/")
+    }
+    const referent = (p: string): string => {
+      for (let i = 0; i < 32 && p in links; i++) p = normalize(links[p].startsWith("/") ? links[p] : p.slice(0, p.lastIndexOf("/") + 1) + links[p])
+      return p
+    }
+    const dirs = fixtureDirs4_510(opts, files, links)
+    const oldRead = m.$.fs.read, oldWrite = m.$.fs.write
+    let interleaved = false
+    m.$.fs.read = async (p: string, init: any) => {
+      if (post() && opts.unreadRead && p === "/fix5/r/report.md") throw new Error("EACCES read " + p)
+      const real = referent(p)
+      if (init?.as === "bytes") return { base64: bytes510(await oldRead(real)) }
+      return oldRead(real)
+    }
+    m.$.fs.stat = async (p: string, init: any) => {
+      if (post() && opts.unreadStat && p === "/fix5/r/report.md") throw new Error("EACCES stat " + p)
+      const real = referent(p)
+      if (dirs.includes(real)) return { kind: 'dir', size: 0, mtimeMs: 42, isLink: p in links, ...(init?.resolve ? { realPath: real } : {}) }
+      if (!(real in files) && !(p in links)) throw new Error('ENOENT ' + p)
+      return { kind: real in files ? 'file' : 'other', size: opts.sizes?.[p] || (files[real] ? unescape(encodeURIComponent(files[real])).length : 0), mtimeMs: 42, isLink: p in links, ...(init?.resolve && real in files ? { realPath: real } : {}) }
+    }
+    m.$.fs.write = async (p: string, text: any) => {
+      const result = await oldWrite(p, text)
+      if (post() && p.includes("/form/records/") && opts.interleave && !interleaved) { interleaved = true; opts.interleave(files, links) }
+      return result
+    }
+    if (!m.$.process) m.$.process = {}
+    m.$.process.run = async (argv: string[]) => {
+      proc.push(argv.slice())
+      const dst = argv[argv.length - 1]
+      if (argv[0] === "/usr/bin/uname") return { exitCode: 0, stdout: opts.platform || "Linux" }
+      if (argv[0] === "/usr/bin/readlink") return dst in links ? { exitCode: 0, stdout: links[dst] + "\n" } : { exitCode: 1, stdout: "" }
+      if (argv[0] === '/bin/mkdir' && opts.failMkdir) return { exitCode: 1 }
+      if (argv[0] === '/bin/cp' && opts.failBackup && dst.includes('/form-backup/')) return { exitCode: 13 }
+      if (argv[0] === '/usr/bin/sha256sum' || argv[0] === '/usr/bin/shasum') return { exitCode: 0, stdout: sha256hex(files[referent(dst)]) + '  ' + dst + '\n' }
+      const result = commandModel4_510(argv, files, links, dirs, modes, attrs, opts.platform || 'Linux')
+      if (!result) throw new Error('FIX2 fixture unexpected command ' + argv[0])
+      return result
+    }
+    opts.state.m = m
+  }
+  return opts
+}
+for (const [id, unreadStat, changed, warning] of [
+  ["F12a-a", false, false, ""], ["F12a-b", true, false, "form-rollback-skipped-unfingerprintable"],
+  ["F12a-c", false, true, "form-rollback-skipped-changed"],
+] as Array<[string, boolean, boolean, string]>) test("#510 FIX2 " + id, async () => {
+  const path = "/fix5/r/report.md", opts = ioFix2_510({ cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 }, unreadRead: true, unreadStat,
+    interleave: changed ? (files: any) => { files[path] = "external-size-changed" } : undefined })
+  const r = await form510(id, "cat src > r/report.md", opts)
+  expect(typeof r.out.deny, id + " denies unreadable post").toBe("string")
+  expect(r.files[path], id + " compare restore result").toBe(changed ? "external-size-changed" : unreadStat ? TRIG5 : "old")
+  if (warning) expect(r.rows.map((x: any) => JSON.stringify(x)).join("\n"), id + " named skipped record").toContain(warning)
+})
+test("#510 FIX2 F13 exception restoration", async () => {
+  const path = "/fix5/r/report.md", opts = ioFix2_510({ cfg: CANCEL510(), files: { [path]: "old" }, post: { [path]: TRIG5 }, throwNext: true })
+  let error = ""
+  try { await form510("fix2-exception", "cat src > r/report.md", opts) } catch (x) { error = String(x) }
+  expect(error, "F13 original exception propagated").toContain("scripted next failure")
+  expect(opts.state.files[path], "F13 bytes restored before cleanup").toBe("old")
+})
+for (const fresh of [false, true]) test("#510 FIX2 F15 changed " + (fresh ? "new" : "existing"), async () => {
+  const path = "/fix5/r/report.md", changed = TRIG5.replace("zzz", "xxx")
+  const r = await form510("fix2-change-" + fresh, "cat src > r/report.md", ioFix2_510({ cfg: CANCEL510(), files: fresh ? {} : { [path]: "old" }, post: { [path]: TRIG5 }, interleave: (files: any) => { files[path] = changed } }))
+  expect(typeof r.out.deny, "F15 denial remains").toBe("string")
+  expect(r.files[path], "F15 different bytes same size mtime untouched").toBe(changed)
+  expect(r.rows.map((x: any) => JSON.stringify(x)).join("\n"), "F15 named changed record").toContain("form-rollback-skipped-changed")
+})
+test("#510 FIX2 F14 dangling link", async () => {
+  const path = "/fix5/r/report.md", real = "/fix5/r/original.md", opts = ioFix2_510({ cfg: CANCEL510(), links: { [path]: "original.md" }, post: { [real]: TRIG5 } })
+  const r = await form510("fix2-dangling", "cat src > r/report.md", opts)
+  expect(r.ran, "F14 dangling write actually materialized").toBe(1)
+  expect(typeof r.out.deny, "F14 dangling denial").toBe("string")
+  expect(opts.io.links[path], "F14 original link survives").toBe("original.md")
+  expect(r.files[real], "F14 absent original referent restored").toBe(undefined)
+})
+test("#510 FIX2 F14 retarget link", async () => {
+  const path = "/fix5/r/report.md", real = "/fix5/r/original.md", other = "/fix5/r/other.md"
+  const opts: any = { cfg: CANCEL510(), links: { [path]: "original.md" }, files: { [real]: "original", [other]: "other" }, post: { [other]: TRIG5 } }
+  ioFix2_510(opts)
+  opts.onNext = () => { opts.io.links[path] = "other.md" }
+  const r = await form510("fix2-retarget", "cat src > r/report.md", opts)
+  expect(typeof r.out.deny, "F14 retarget denial").toBe("string")
+  expect(r.proc.some(argv => argv[0] === "/bin/ln" && argv[argv.length - 2] === "original.md" && argv[argv.length - 1] === path), "F14 retarget restore branch").toBe(true)
+  expect(warnings3_510(r), "F14 retarget readable referent").not.toContain("form-rollback-skipped-unfingerprintable")
+  expect(opts.io.links[path], "F14 original link restored").toBe("original.md")
+  expect(r.files[real], "F14 original referent bytes").toBe("original")
+  expect(r.files[other], "F14 no old bytes into different referent").toBe(TRIG5)
+})
+for (const platform of ["Linux", "Darwin"]) test("#510 FIX2 F16 attributes " + platform, async () => {
+  const path = "/fix5/r/report.md", opts = ioFix2_510({ cfg: CANCEL510(), platform, files: { [path]: "old" }, attrs: { [path]: { "user.form510": "old-attribute" } }, post: { [path]: TRIG5 } })
+  opts.onNext = () => { opts.io.attrs[path] = { "user.form510": "new-attribute" } }
+  await form510("fix2-attrs-" + platform, "cat src > r/report.md", opts)
+  expect(opts.io.attrs[path], "F16 attributes restored " + platform).toEqual({ "user.form510": "old-attribute" })
+})
+test("#510 FIX2 F17 private copies", async () => {
+  const path = "/fix5/r/report.md", opts = ioFix2_510({ cfg: CANCEL510(), files: { [path]: "old" } })
+  const r = await form510("fix2-private", "cat src > r/report.md", opts)
+  expect(r.proc.some(argv => argv[0] === "/bin/mkdir" && argv.includes("700")), "F17 directory explicitly private").toBe(true)
+  expect(Object.values(opts.io.modes).every(mode => mode === "700"), "F17 modes private").toBe(true)
+})
+test("#510 FIX2 F17 mkdir failure", async () => {
+  const path = "/fix5/r/report.md", r = await form510("fix2-mkdir", "cat src > r/report.md", ioFix2_510({ cfg: CANCEL510(), files: { [path]: "old" }, failMkdir: true }))
+  expect(r.ran, "F17 checked mkdir status").toBe(0)
+  expect(String(r.out.deny), "F17 mkdir exit named").toContain("mkdir exit")
+  expect(r.proc.some((argv: string[]) => argv[0] === "/bin/chmod"), "F17 no chmod after mkdir failure").toBe(false)
+  expect(String(r.out.deny), "F17 named backup failure").toContain("form-backup-failed")
+})
+test("#510 FIX2 F18 log only no copy", async () => {
+  const path = "/fix5/r/report.md", r = await form510("fix2-logonly", "cat src > r/report.md", ioFix2_510({ files: { [path]: "old" }, post: { [path]: TRIG5 }, failBackup: true }))
+  expect(r.ran, "F18 log only runs despite copy refusal").toBe(1)
+  expect(r.proc.filter(argv => argv[0] === "/bin/cp"), "F18 no copies for log only").toEqual([])
+  expect(refusedOn5(r, "Bash:" + path), "F18 post judgment still observed").toBe(true)
+})
+for (const logOnly of [false, true]) test("#510 FIX2 F20 paths " + logOnly, async () => {
+  const files: any = {}
+  for (let i = 0; i < 257; i++) files["/fix5/r/" + i + "/report.md"] = "old"
+  const r = await form510("fix2-path-cap-" + logOnly, "cat src > r/*/report.md", { cfg: logOnly ? formGit10() : CANCEL510(), files })
+  expect(r.ran, "F20 candidate cap next action").toBe(logOnly ? 1 : 0)
+  expect(gitF6(r).join("\n"), "F20 path cap named").toContain("form-fanout-exceeded")
+})
+test("#510 FIX2 F20 variants", async () => {
+  const files: any = {}
+  for (let i = 0; i < 65; i++) files["/home510/.claude/shell-snapshots/snapshot-zsh-cap" + i + ".sh"] = "alias -- fan='echo " + i + "'"
+  const r = await form510("fix2-variant-cap", "fan", { cfg: CANCEL510(), files })
+  expect(r.ran, "F20 variant cap before next").toBe(0)
+  expect(gitF6(r).join("\n"), "F20 variant cap named").toContain("form-fanout-exceeded")
+})
+test("#510 FIX2 F20 backup volume", async () => {
+  const files: any = {}, sizes: any = {}, commands: string[] = []
+  for (let i = 0; i < 9; i++) { const path = "/fix5/r/" + i + "/report.md"; files[path] = "old"; sizes[path] = 4 * 1024 * 1024; commands.push("cat src > r/" + i + "/report.md") }
+  const r = await form510("fix2-backup-cap", commands.join("; "), ioFix2_510({ cfg: CANCEL510(), files, sizes }))
+  expect(r.ran, "F20 volume cap before next").toBe(0)
+  expect(r.out.deny, "F20 volume cap named").toContain("form-backup-failed")
+  expect(r.out.deny, "F20 volume cap reason").toContain("backup volume exceeded")
+})
+
+test("#510 FIX2 F19 post observer", async () => {
+  const path = "/fix5/r/report.md", calls: any[] = []
+  const opts = ioFix2_510({ cfg: CANCEL510() + '\n[probe.after510]\non = ["PostToolUse"]\nact = "log_only"\nmodels = ["mock510"]\nshow = ["tool"]\n', files: { [path]: "old", "/probes-510-fix2-after/after510/prompt.md": "Observe tool result." }, post: { [path]: TRIG5 } })
+  const setup = opts.setup
+  opts.setup = (...args: any[]) => { setup(...args); args[0].$.model.complete = async (request: any) => { calls.push(request); return "OK: observed" } }
+  const r = await form510("fix2-after", "cat src > r/report.md", opts)
+  await settle393()
+  expect(typeof r.out.deny, "F19 form still denies").toBe("string")
+  expect(calls.length, "F19 other post observer sees result").toBe(1)
+})
+
+test("#510 FIX2 F21 directory operands", async () => {
+  let cfg = CANCEL510()
+  const targetKey = String.raw`write_target = '\.md$'`, reportKey = 'report_path = "report[.]md$"'
+  expect(cfg.split(targetKey).length - 1, "F21 directory write_target anchor exactly once").toBe(1)
+  cfg = cfg.replace(targetKey, () => String.raw`write_target = '/[ab]$'`)
+  expect(cfg.split(reportKey).length - 1, "F21 directory report_path anchor exactly once").toBe(1)
+  cfg = cfg.replace(reportKey, () => String.raw`report_path = '/[ab]$'`)
+  const opts = ioFix2_510({ cfg, files: { "/fix5/r/a": "old", "/fix5/r/b": "old" }, post: { "/fix5/r/a": TRIG5 } })
+  const setup = opts.setup
+  opts.setup = (...args: any[]) => {
+    setup(...args)
+    const stat = args[0].$.fs.stat
+    args[0].$.fs.stat = async (path: string, init: any) => path === "/fix5/r" ? { kind: "dir", size: 0, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: path } : {}) } : stat(path, init)
+  }
+  const r = await form510("fix2-directory", "cp a b r/", opts)
+  expect(r.reads, "F21 directory child a candidate").toContain("/fix5/r/a")
+})
+test("#510 FIX2 F12b absent glob literal", async () => {
+  const r = await form510("fix2-absent-glob", "cat src > r/*/report.md", { cfg: CANCEL510(), files: { "/fix5/r/a/report.md": "ordinary" } })
+  expect(gitF6(r).join("\n"), "F12b absent literal is not unreadable").not.toContain("target unreadable after write")
+  expect(r.out.deny, "F12b unchanged absence has no judgment").toBe(undefined)
+})
+for (const link of [false, true]) test("#510 FIX2 F12b deletion " + (link ? "link" : "file"), async () => {
+  const path = "/fix5/r/report.md", real = link ? "/fix5/r/original.md" : path
+  const opts = ioFix2_510({ cfg: CANCEL510(), files: { [real]: "old" }, links: link ? { [path]: "original.md" } : {} })
+  opts.onNext = (files: any) => { if (link) delete opts.io.links[path]; else delete files[path] }
+  const r = await form510("fix2-deletion-" + link, "cat src > r/report.md", opts)
+  expect(typeof r.out.deny, "F12b deletion denies").toBe("string")
+  expect(gitF6(r).join("\n"), "F12b deletion is not unreadable").not.toContain("target unreadable after write")
+  expect(r.files[real], "F12b deletion restores bytes").toBe("old")
+  if (link) expect(opts.io.links[path], "F12b deletion restores link").toBe("original.md")
+})
+test("#510 FIX2 F22 once per module", async () => {
+  const logs: string[] = []
+  const r = await form510("fix2-canon-once", "echo x", {
+    cfg: CANCEL510().replace(/^trailer_a = .*\n/m, ""),
+    setup: (m: any) => { m.$.ui.log = async (text: string) => { logs.push(text) } },
+  })
+  const second = await hook393(subs393(), "tool.call")(r.m.$, { tool: "Bash", command: "echo y" }, async () => ({}))
+  expect(typeof r.out.deny, "F22 first missing key denies").toBe("string")
+  expect(typeof second.deny, "F22 second missing key denies").toBe("string")
+  expect(logs.filter(text => text === "form-canon-key-missing trailer_a").length, "F22 exactly one module log").toBe(1)
+})
+test("#510 FIX2 F14 two-level link", async () => {
+  const path = "/fix5/r/report.md", middle = "/fix5/r/middle.md", real = "/fix5/r/original.md", other = "/fix5/r/other.md"
+  const opts = ioFix2_510({ cfg: CANCEL510(), links: { [path]: "middle.md", [middle]: "original.md" }, files: { [real]: "old", [other]: "other" }, post: { [other]: TRIG5 } })
+  opts.onNext = () => { opts.io.links[middle] = "other.md" }
+  const r = await form510("fix2-two-level", "cat src > r/report.md", opts)
+  expect(r.ran, "F14 two-level write runs").toBe(1)
+  expect(typeof r.out.deny, "F14 two-level denies actual referent").toBe("string")
+  expect(r.proc.some(argv => argv[0] === "/bin/ln" && argv[argv.length - 2] === "middle.md" && argv[argv.length - 1] === path), "F14 two-level restore branch").toBe(true)
+  expect(warnings3_510(r), "F14 two-level readable referent").not.toContain("form-rollback-skipped-unfingerprintable")
+  expect(opts.io.links[middle], "F14 two-level changed middle remains external").toBe("other.md")
+  expect(opts.io.links[path], "F14 two-level original link spelling").toBe("middle.md")
+  expect(r.files[real], "F14 two-level original terminal bytes").toBe("old")
+  expect(r.files[other], "F14 two-level different referent untouched").toBe(TRIG5)
+})
+
+test("#510 FIX4 F14 equal-size retarget", async () => {
+  const path = "/fix5/r/report.md", real = "/fix5/r/original.md", other = "/fix5/r/other.md", original = "originalABCD"
+  expect(original.length, "F14 equal-size fixture").toBe(TRIG5.length)
+  const opts = ioFix2_510({ cfg: CANCEL510(), links: { [path]: "original.md" }, files: { [real]: original, [other]: "other" }, post: { [other]: TRIG5 } })
+  const setup = opts.setup, independent: string[] = []
+  opts.setup = (...args: any[]) => {
+    setup(...args)
+    const read = args[0].$.fs.read
+    args[0].$.fs.read = async (p: string, init: any) => {
+      if (args[3]() && p === real && init?.as === "bytes") independent.push(p)
+      return read(p, init)
+    }
+  }
+  opts.onNext = () => { opts.io.links[path] = "other.md" }
+  const r = await form510("fix4-equal-retarget", "cat src > r/report.md", opts)
+  expect(typeof r.out.deny, "F14 equal-size denial").toBe("string")
+  expect(independent.length > 0, "F14 equal-size independent referent read").toBe(true)
+  expect(r.proc.some(argv => argv[0] === "/bin/ln" && argv[argv.length - 2] === "original.md" && argv[argv.length - 1] === path), "F14 equal-size restore branch").toBe(true)
+  expect(warnings3_510(r), "F14 equal-size readable referent").not.toContain("form-rollback-skipped-unfingerprintable")
+  expect(opts.io.links[path], "F14 equal-size original link restored").toBe("original.md")
+  expect(r.files[real], "F14 equal-size original bytes").toBe(original)
+  expect(r.files[other], "F14 equal-size other bytes unchanged").toBe(TRIG5)
+})
+
+function ioFix3_510(opts: any): any {
+  ioFix2_510(opts)
+  const setup = opts.setup
+  opts.setup = (m: any, files: any, proc: any, post: () => boolean) => {
+    setup(m, files, proc, post)
+    const stat = m.$.fs.stat, read = m.$.fs.read, run = m.$.process.run, write = m.$.fs.write
+    const map = (p: string) => opts.prefix ? p.replace(/^\/fix5\/d(?=\/|$)/, '/fix5/' + opts.prefix.dir) : p
+    m.$.fs.stat = async (p: string, init: any) => {
+      if (opts.dirs?.includes(p) || Object.keys(files).some(t => t.startsWith(map(p).replace(/\/$/, '') + '/'))) return { kind: 'dir', size: 0, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: map(p + '/').replace(/\/$/, '') } : {}) }
+      const result = await stat(map(p), init)
+      return post() && opts.sizes?.[p] === 4194304 ? { ...result, size: unescape(encodeURIComponent(files[map(p)])).length } : result
+    }
+    m.$.fs.read = (p: string, init: any) => read(map(p), init)
+    m.$.fs.write = async (p: string, text: any) => { files[p] = String(text); return write(p, text) }
+    m.$.process.run = async (argv: string[]) => {
+      const v = argv.map(map), dst = v.at(-1)!, src = v.at(-2)!
+      if (v[0] === '/bin/mv' && opts.failMove) { proc.push(v.slice()); return { exitCode: 1 } }
+      if (v[0] === '/usr/bin/sha256sum' || v[0] === '/usr/bin/shasum') {
+        proc.push(v.slice())
+        if (opts.throwHash) throw new Error('scripted hash command refusal')
+        return { exitCode: opts.failHash ? 1 : 0, stdout: opts.badHash ? 'invalid' : sha256hex(files[dst]) + '  ' + dst + '\n' }
+      }
+      if (v[0] === '/bin/chmod' && opts.failChmod) { proc.push(v.slice()); return { exitCode: 1 } }
+      if (v[0] === '/bin/cp' && opts.failPreserve && (v.includes('--preserve=all') || v.includes('-p'))) { proc.push(v.slice()); return { exitCode: 1 } }
+      if (v[0] === '/bin/cp' && opts.failRestoreCopy && dst.includes('.form-restore.')) { proc.push(v.slice()); files[dst] = 'partial'; return { exitCode: 1 } }
+      return run(v)
+    }
+  }
+  return opts
+}
+const warnings3_510 = (r: any) => r.records.flatMap((x: any) => x.warn || []).map((x: any) => x.q).join('\n')
+const final3_510 = (r: any) => {
+  const path = r.m.writes.filter((w: any) => w.path.includes('/form/records/')).at(-1)?.path
+  return path ? JSON.parse(r.files[path]) : null
+}
+test('#510 FIX3 G1 terminal-link', async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/r/original.md', b = '/fix5/r/other.md'
+  const o = ioFix3_510({ cfg: CANCEL510(), files: { [a]: 'ORIGINAL', [b]: 'OTHER' }, links: { [p]: 'original.md' }, post: { [b]: TRIG5 } })
+  o.onNext = (f: any) => { delete f[a]; o.io.links[a] = 'other.md' }
+  const r = await form510('fix3-terminal', 'cat src > r/report.md', o)
+  expect(o.io.links[a], 'G1 terminal becomes regular file').toBe(undefined)
+  expect(r.files[a], 'G1 terminal bytes restored').toBe('ORIGINAL')
+  expect(r.files[b], 'G1 other bytes not restored through link').toBe(TRIG5)
+  expect(warnings3_510(r), 'G2 terminal unrestored warning').toContain('form-rollback-unrestored ' + b)
+})
+test('#510 FIX3 G2 prefix-retarget', async () => {
+  const a = '/fix5/a/report.md', b = '/fix5/b/report.md', prefix = { dir: 'a' }
+  const o = ioFix3_510({ cfg: CANCEL510(), prefix, files: { [a]: 'ORIGINAL', [b]: 'OTHER' }, post: { [b]: 'OTHER\n' + TRIG5 } })
+  o.onNext = () => { prefix.dir = 'b' }
+  const r = await form510('fix3-prefix', 'cat src > /fix5/d/report.md', o)
+  expect(r.files[b], 'G2 retargeted bytes remain').toBe('OTHER\n' + TRIG5)
+  expect(warnings3_510(r), 'G2 retargeted warning').toContain('form-rollback-skipped-retargeted /fix5/d/report.md')
+})
+test('#510 FIX3 G2 middle-retarget', async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/r/original.md', b = '/fix5/r/other.md', mid = '/fix5/r/middle.md'
+  const o = ioFix3_510({ cfg: CANCEL510(), files: { [a]: 'ORIGINAL', [b]: 'OTHER' }, links: { [p]: 'middle.md', [mid]: 'original.md' }, post: { [b]: TRIG5 } })
+  o.onNext = () => { o.io.links[mid] = 'other.md' }
+  const r = await form510('fix3-middle', 'cat src > r/report.md', o)
+  expect(r.files[b], 'G2 middle other bytes remain').toBe(TRIG5)
+  expect(warnings3_510(r), 'G2 middle unrestored warning').toContain('form-rollback-unrestored ' + b)
+})
+for (const count of [8, 9]) test('#510 FIX3 G3 volume-' + count, async () => {
+  const files: any = {}, sizes: any = {}, post: any = {}, commands: string[] = []
+  for (let i = 0; i < count; i++) { const p = '/fix5/r/' + i + '/report.md'; files[p] = 'old-' + i; sizes[p] = 4194304; post[p] = TRIG5; commands.push('cat src > ' + p) }
+  const r = await form510('fix3-volume-' + count, commands.join('; '), ioFix3_510({ cfg: formGit10() + '\n[probe.form.act]\nF="log_only"\nC1="cancel"\n', files, sizes, post }))
+  expect(r.ran, 'G3 volume execution ' + count).toBe(count === 9 ? 0 : 1)
+  if (count === 9) { expect(r.out.deny, 'G3 volume failure named').toContain('form-backup-failed'); expect(r.out.deny, 'G3 volume reason named').toContain('backup volume exceeded') }
+  for (const p of Object.keys(files)) expect(r.files[p], 'G3 original preserved ' + p).toBe(files[p])
+})
+test('#510 FIX3 G3 file-null-backup', async () => {
+  const p = '/fix5/r/report.md', o = ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 } })
+  const setup = o.setup
+  o.setup = (...args: any[]) => { setup(...args); const run = args[0].$.process.run; args[0].$.process.run = async (v: string[]) => { if (v[0] === '/bin/cp' && v.at(-1)?.includes('/form-backup/')) { return { exitCode: 0 } }; return run(v) } }
+  const post = (registerModule393 as any).formPost
+  expect(typeof post, 'G3 direct rollback entry exists').toBe('function')
+  const r = await form510('fix3-null', 'true', o)
+  const state = { p: { cfg: (registerModule393 as any).parseToml(CANCEL510()).probe.form }, targets: [{ path: p }], backups: [{ path: p, kind: 'file', backup: null, parentReal: '/fix5/r', real: p }], skipped: [], before: new Map([[p, 'file']]), copyFlag: '--preserve=all' }
+  r.files[p] = TRIG5
+  const denial = await post(r.m.$, state, { HOME: '/home510' }, { globalHome: '/probes-510-fix3-null', cwd: '/fix5' }, { tool: 'Bash', tool_use_id: 'null-direct' })
+  expect(String(denial), 'G3 missing backup rollback fails').toContain('rollback failed')
+  expect(r.files[p], 'G3 missing backup leaves file intact').toBe(TRIG5)
+})
+test('#510 FIX3 G4 before-fingerprint', async () => {
+  const p = '/fix5/r/report.md', external = TRIG5.replace('zzz', 'xxx')
+  const o = ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => { setup(m, f, proc, after); const read = m.$.fs.read; let changed = false; m.$.fs.read = async (t: string, init: any) => { const result = await read(t, init); if (after() && t === p && !changed) { changed = true; f[p] = external }; return result } }
+  const r = await form510('fix3-before', 'cat src > r/report.md', o)
+  expect(r.files[p], 'G4 external bytes preserved').toBe(external)
+  expect(warnings3_510(r), 'G4 changed warning').toContain('form-rollback-skipped-changed')
+})
+test('#510 FIX3 G5 final-refuse-record', async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix3-record', 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 }, interleave: (f: any) => { f[p] = TRIG5.replace('zzz', 'xxx') } }))
+  const rec = final3_510(r)
+  expect(rec.kind, 'G5 final kind remains REFUSE').toBe('REFUSE')
+  expect(rec.refuse.some((x: any) => x.c === 'C1'), 'G5 final refusal retained').toBe(true)
+  expect(rec.warn.some((x: any) => x.c === 'form-rollback-skipped-changed'), 'G5 final warning merged').toBe(true)
+})
+for (const platform of ['Linux', 'Darwin']) test('#510 FIX3 G6 large-digest ' + platform, async () => {
+  const p = '/fix5/r/report.md', external = TRIG5.replace('zzz', 'xxx')
+  const r = await form510('fix3-large-' + platform, 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), platform, files: { [p]: 'old' }, sizes: { [p]: 5 * 1024 * 1024 }, post: { [p]: TRIG5 }, interleave: (f: any) => { f[p] = external } }))
+  expect(r.files[p], 'G6 full digest preserves external ' + platform).toBe(external)
+  expect(warnings3_510(r), 'G6 changed warning ' + platform).toContain('form-rollback-skipped-changed')
+})
+for (const failHash of [true, false, 'throw']) test('#510 FIX3 G6 hash-refusal ' + failHash, async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix3-hash-' + failHash, 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), failHash: failHash === true, badHash: failHash === false, throwHash: failHash === 'throw', files: { [p]: 'old' }, sizes: { [p]: 5 * 1024 * 1024 }, post: { [p]: TRIG5 } }))
+  expect(r.files[p], 'G6 hash refusal leaves bytes').toBe(TRIG5)
+  expect(warnings3_510(r), 'G6 hash refusal named').toContain('form-rollback-skipped-unfingerprintable')
+})
+test('#510 FIX3 G7 perl-script', async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix3-perl', 'perl -pi script/report.md r/report.md', ioFix3_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'G7 script is not candidate').toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'G7 data file is candidate').toBe(true)
+})
+for (const kind of ['paths', 'variants']) test('#510 FIX3 G8 boundary-' + kind, async () => {
+  const files: any = {}
+  if (kind === 'paths') for (let i = 0; i < 256; i++) files['/fix5/r/' + i + '/report.md'] = 'ordinary'
+  else for (let i = 0; i < 64; i++) files['/home510/.claude/shell-snapshots/snapshot-zsh-bound' + i + '.sh'] = 'alias -- fan="echo ' + i + '"'
+  const r = await form510('fix3-boundary-' + kind, kind === 'paths' ? Object.keys(files).map(p => 'cat src > ' + p).join('; ') : 'fan', ioFix3_510({ cfg: CANCEL510(), files }))
+  expect(r.ran, 'G8 exact boundary runs ' + kind).toBe(1)
+})
+for (const refusal of ['chmod', 'preserve']) test('#510 FIX3 platform-refusal ' + refusal, async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix3-platform-' + refusal, 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, failChmod: refusal === 'chmod', failPreserve: refusal === 'preserve' }))
+  expect(r.ran, 'platform refusal before next ' + refusal).toBe(0)
+  expect(r.out.deny, 'platform backup failure ' + refusal).toContain('form-backup-failed')
+})
+for (const failure of ['move', 'copy']) test('#510 FIX3 G1 cleanup-' + failure, async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix3-cleanup-' + failure, 'cat src > r/report.md', ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 }, failMove: failure === 'move', failRestoreCopy: failure === 'copy' }))
+  expect(r.out.deny, 'G1 restore failure explicit ' + failure).toContain('rollback failed')
+  expect(Object.keys(r.files).filter(p => p.includes('.form-restore.')), 'G1 restore temp removed ' + failure).toEqual([])
+})
+
+function rawBase64_510(bytes: number[]): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0)
+    out += alphabet[(n >>> 18) & 63] + alphabet[(n >>> 12) & 63] + (i + 1 < bytes.length ? alphabet[(n >>> 6) & 63] : '=') + (i + 2 < bytes.length ? alphabet[n & 63] : '=')
+  }
+  return out
+}
+for (const encoding of ['utf8', 'invalid', 'bom']) test('#510 FIX3 G4 decode-' + encoding, async () => {
+  const p = '/fix5/r/report.md', suffix = encoding === 'utf8' ? ' Ж😀' : encoding === 'invalid' ? '�(�' : '﻿'
+  const text = encoding === 'bom' ? suffix + TRIG5 : TRIG5 + suffix
+  const raw = encoding === 'invalid' ? Array.from(TRIG5).map(c => c.charCodeAt(0)).concat([0xe2, 0x28, 0xa1]) : Array.from(unescape(encodeURIComponent(text))).map(c => c.charCodeAt(0))
+  const o = ioFix3_510({ files: { [p]: 'old' }, post: { [p]: text } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const read = m.$.fs.read, stat = m.$.fs.stat
+    m.$.fs.read = async (t: string, init: any) => after() && t === p ? init?.as === 'bytes' ? { base64: rawBase64_510(raw) } : text : read(t, init)
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return after() && t === p ? { ...s, size: raw.length } : s }
+  }
+  const r = await form510('fix3-decode-' + encoding, 'cat src > r/report.md', o)
+  const readText = await r.m.$.fs.read(p)
+  expect(r.records.flatMap((x: any) => x.refuse || []).find((x: any) => x.c === 'C1')?.q, 'G4 judged text equals readText ' + encoding).toBe(readText)
+})
+test('#510 FIX3 G4 changed-during-read', async () => {
+  const p = '/fix5/r/report.md', o = ioFix3_510({ cfg: CANCEL510(), files: { [p]: 'old' }, post: { [p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const read = m.$.fs.read, stat = m.$.fs.stat
+    let readPost = false
+    m.$.fs.read = async (t: string, init: any) => { const v = await read(t, init); if (after() && t === p) readPost = true; return v }
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return after() && t === p && readPost ? { ...s, mtimeMs: 43 } : s }
+  }
+  const r = await form510('fix3-during', 'cat src > r/report.md', o)
+  expect(gitF6(r).join('\n'), 'G4 changed during judgement named').toContain('target changed during judgement')
+  expect(warnings3_510(r), 'G4 unstable read unfingerprintable').toContain('form-rollback-skipped-unfingerprintable')
+  expect(r.files[p], 'G4 unstable read is not restored').toBe(TRIG5)
+})
+
+const COMMAND_CASES4_510: Array<[string, string[], number]> = [
+  ['cp-dir', ['/bin/cp', '--', '/model/src', '/model/dir'], 0],
+  ['cp-linkdir', ['/bin/cp', '--', '/model/src', '/model/linkdir'], 0],
+  ['cp-missing', ['/bin/cp', '--', '/model/missing', '/model/dst'], 1],
+  ['cp-dangling', ['/bin/cp', '--', '/model/src', '/model/dangling'], 1],
+  ['mv-dir', ['/bin/mv', '-f', '--', '/model/src', '/model/dir'], 0],
+  ['mv-linkdir', ['/bin/mv', '-f', '--', '/model/src', '/model/linkdir'], 0],
+  ['mv-missing', ['/bin/mv', '-f', '--', '/model/missing', '/model/dst'], 1],
+  ['mv-dangling', ['/bin/mv', '-f', '--', '/model/src', '/model/dangling'], 0],
+  ['mv-T-dir', ['/bin/mv', '-f', '-T', '--', '/model/src', '/model/dir'], 1],
+  ['mv-T-linkdir', ['/bin/mv', '-f', '-T', '--', '/model/src', '/model/linkdir'], 0],
+  ['ln-dir', ['/bin/ln', '-s', '-f', '--', 'src', '/model/dir'], 0],
+  ['ln-linkdir', ['/bin/ln', '-s', '-f', '--', 'src', '/model/linkdir'], 0],
+  ['ln-missing', ['/bin/ln', '-s', '-f', '--', 'missing', '/model/dst'], 0],
+  ['ln-dangling', ['/bin/ln', '-s', '-f', '--', 'src', '/model/dangling'], 0],
+  ['ln-T-dir', ['/bin/ln', '-s', '-f', '-T', '--', 'src', '/model/dir'], 1],
+  ['ln-T-linkdir', ['/bin/ln', '-s', '-f', '-T', '--', 'src', '/model/linkdir'], 0],
+  ['mkdir-file', ['/bin/mkdir', '-p', '--', '/model/src'], 1],
+  ['mkdir-dir', ['/bin/mkdir', '-p', '--', '/model/dir'], 0],
+  ['mkdir-dangling', ['/bin/mkdir', '-p', '--', '/model/dangling'], 1],
+  ['rm-dir', ['/bin/rm', '-f', '--', '/model/dir'], 1],
+  ['rm-linkdir', ['/bin/rm', '-f', '--', '/model/linkdir'], 0],
+  ['rm-missing', ['/bin/rm', '-f', '--', '/model/missing'], 0],
+  ['rm-dangling', ['/bin/rm', '-f', '--', '/model/dangling'], 0],
+  ['chmod-dir', ['/bin/chmod', '700', '--', '/model/dir'], 0],
+  ['chmod-linkdir', ['/bin/chmod', '700', '--', '/model/linkdir'], 0],
+  ['chmod-missing', ['/bin/chmod', '700', '--', '/model/missing'], 1],
+  ['chmod-dangling', ['/bin/chmod', '700', '--', '/model/dangling'], 1],
+]
+for (const [name, argv, rc] of COMMAND_CASES4_510) test('#510 FIX4 G20 command-' + name, async () => {
+  const o = ioFix3_510({ files: { '/model/src': 'SOURCE' }, dirs: ['/model', '/model/dir'], links: { '/model/linkdir': 'dir', '/model/dangling': 'missing' } })
+  const r = await form510('g20-' + name, 'true', o)
+  const got = await r.m.$.process.run(argv)
+  expect(got.exitCode, 'G20 command rc ' + name).toBe(rc)
+})
+
+function fixtureDirs4_510(opts: any, files: any, links: any = {}): string[] {
+  const dirs = opts.dirs || (opts.dirs = ['/', '/fix5', '/fix5/r', '/fix5/sub', '/fix5/sub/r'])
+  for (const p of [...Object.keys(files), ...Object.keys(links)]) {
+    let parent = p.slice(0, p.lastIndexOf('/')) || '/'
+    for (;;) {
+      if (!dirs.includes(parent)) dirs.push(parent)
+      if (parent === '/') break
+      parent = parent.slice(0, parent.lastIndexOf('/')) || '/'
+    }
+  }
+  return dirs
+}
+function commandModel4_510(argv: string[], files: any, links: any, dirs: string[], modes: any, attrs: any, platform: string): any {
+  const normalize = (p: string) => {
+    const parts: string[] = []
+    for (const part of p.split('/')) { if (part === '..') parts.pop(); else if (part && part !== '.') parts.push(part) }
+    return '/' + parts.join('/')
+  }
+  const resolve = (p: string): string => {
+    p = normalize(p)
+    for (let n = 0; n < 32; n++) {
+      const pieces = p.split('/'); let changed = false
+      for (let i = 1; i < pieces.length; i++) {
+        const prefix = pieces.slice(0, i + 1).join('/')
+        if (prefix in links) { p = normalize((links[prefix].startsWith('/') ? links[prefix] : prefix.slice(0, prefix.lastIndexOf('/') + 1) + links[prefix]) + '/' + pieces.slice(i + 1).join('/')); changed = true; break }
+      }
+      if (!changed) return p
+    }
+    throw new Error('ELOOP model')
+  }
+  const cmd = argv[0], src = argv.at(-2)!, originalDst = argv.at(-1)!
+  const parent = (p: string) => p.slice(0, p.lastIndexOf('/')) || '/'
+  const path = normalize(originalDst)
+  const exists = (p: string) => p in files || p in links || dirs.includes(p)
+  const force = argv.includes('-f'), noDirectory = argv.includes('-T') || argv.includes('--no-target-directory')
+  const noLinkDirectory = noDirectory || (platform === 'Darwin' && argv.includes('-h'))
+  if (cmd === '/bin/mkdir') {
+    let current = ''
+    for (const part of path.split('/').filter(Boolean)) {
+      current += '/' + part
+      const real = resolve(current)
+      if ((exists(current) || exists(real)) && !dirs.includes(real)) return { exitCode: 1 }
+      if (!dirs.includes(real)) { if (!argv.includes('-p') && current !== path) return { exitCode: 1 }; dirs.push(real) }
+      else if (current === path && !argv.includes('-p')) return { exitCode: 1 }
+    }
+    if (argv.includes('-m')) modes[path] = argv[argv.indexOf('-m') + 1]
+    return { exitCode: 0 }
+  }
+  if (cmd === '/bin/chmod') {
+    const real = resolve(path)
+    if (!(real in files) && !dirs.includes(real)) return { exitCode: 1 }
+    modes[real] = argv[1]; return { exitCode: 0 }
+  }
+  if (cmd === '/bin/rm') {
+    if (dirs.includes(path) && !(path in links)) return { exitCode: 1 }
+    if (!exists(path) && !force) return { exitCode: 1 }
+    delete links[path]; delete files[path]; delete attrs[path]; delete modes[path]
+    return { exitCode: 0 }
+  }
+  if (!['/bin/cp', '/bin/mv', '/bin/ln'].includes(cmd)) return null
+  const source = cmd === '/bin/ln' ? src : cmd === '/bin/cp' ? resolve(src) : normalize(src)
+  if (cmd !== '/bin/ln' && !exists(source)) return { exitCode: 1 }
+  let dest = path
+  if (dirs.includes(path) || (!noLinkDirectory && dirs.includes(resolve(path)))) {
+    if (noDirectory) return { exitCode: 1 }
+    dest = normalize(resolve(path) + '/' + src.split('/').at(-1))
+  }
+  if (!dirs.includes(resolve(parent(dest)))) return { exitCode: 1 }
+  if (cmd === '/bin/ln') {
+    if (!argv.includes('-s')) return { exitCode: 1 }
+    if (dirs.includes(dest) || (exists(dest) && !force)) return { exitCode: 1 }
+    delete files[dest]; delete links[dest]; links[dest] = src
+    return { exitCode: 0 }
+  }
+  if (cmd === '/bin/cp') {
+    if (dest in links && !exists(resolve(dest))) return { exitCode: 1 }
+    dest = resolve(dest)
+    if (dirs.includes(source) || dirs.includes(dest) || source === dest) return { exitCode: 1 }
+    files[dest] = files[source]
+    attrs[dest] = argv.includes('--preserve=all') || (platform === 'Darwin' && argv.includes('-p')) ? attrs[source] : undefined
+    if (argv.includes('--preserve=all') || argv.includes('-p')) modes[dest] = modes[source]
+  } else {
+    if (source === dest) return { exitCode: 0 }
+    if (dirs.includes(dest)) return { exitCode: 1 }
+    delete links[dest]; delete files[dest]
+    if (source in links) { links[dest] = links[source]; delete links[source] } else { files[dest] = files[source]; delete files[source] }
+    attrs[dest] = attrs[source]; delete attrs[source]; modes[dest] = modes[source]; delete modes[source]
+  }
+  return { exitCode: 0 }
+}
+
+function ioFix4_510(opts: any): any {
+  ioFix3_510(opts)
+  const setup = opts.setup
+  opts.dirs = opts.dirs || []
+  opts.setup = (m: any, files: any, proc: any, after: any) => {
+    setup(m, files, proc, after)
+    const stat = m.$.fs.stat
+    m.$.fs.stat = async (p: string, init: any) => {
+      if (opts.dirs.includes(p)) return { kind: 'dir', size: 0, mtimeMs: 42, isLink: false, ...(init?.resolve ? { realPath: p } : {}) }
+      const result = await stat(p, init)
+      if (result.kind === 'dir' && !opts.dirs.includes(p) && p !== '/' && p !== '/fix5' && !Object.keys(files).some(t => t.startsWith(p.replace(/\/$/, '') + '/'))) throw new Error('ENOENT ' + p)
+      return result
+    }
+  }
+  return opts
+}
+for (const order of ['file-first', 'link-first']) test('#510 FIX4 G10 overlap-' + order, async () => {
+  const p = '/fix5/r/report.md', l = '/fix5/alias/report.md', external = TRIG5 + ' B'
+  const o = ioFix4_510({ cfg: CANCEL510(), dirs: ['/fix5/alias'], files: { [p]: 'ORIGINAL' }, links: { [l]: '../r/report.md' }, post: { [p]: TRIG5 + ' A' } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const read = m.$.fs.read; let changed = false
+    m.$.fs.read = async (t: string, init: any) => { const result = await read(t, init); if (after() && t === l && init?.as === 'bytes' && !changed) { changed = true; f[p] = external }; return result }
+  }
+  const paths = order === 'file-first' ? [p, l] : [l, p]
+  const r = await form510('fix4-g10-' + order, paths.map(t => 'cat src > ' + t).join('; '), o)
+  expect(r.files[p], 'G10 external bytes ' + order).toBe(external)
+  expect(warnings3_510(r), 'G10 conflict warning ' + order).toContain('form-rollback-skipped-changed')
+})
+for (const mode of ['mv-linkdir', 'ln-linkdir', 'mv-dir']) test('#510 FIX4 G11 ' + mode, async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/r/original.md', d = '/fix5/foreign'
+  const link = mode.startsWith('ln')
+  const o = ioFix4_510({ cfg: CANCEL510(), files: { [link ? a : p]: 'ORIGINAL' }, dirs: [d], links: link ? { [p]: 'original.md' } : {}, post: { [link ? a : p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const run = m.$.process.run
+    m.$.process.run = async (v: string[]) => {
+      if ((v[0] === '/bin/mv' || v[0] === '/bin/ln') && v.at(-1) === p) {
+        delete f[p]
+        if (mode === 'mv-dir') o.dirs.push(p); else o.io.links[p] = d
+        if (!v.includes('-T') && !v.includes('-h')) {
+          proc.push(v.slice()); const dst = d + '/' + v.at(-2)!.split('/').at(-1)
+          if (v[0] === '/bin/mv') { f[dst] = f[v.at(-2)!]; delete f[v.at(-2)!] } else o.io.links[dst] = v.at(-2)!
+          return { exitCode: 0 }
+        }
+        if (mode === 'mv-dir') { proc.push(v.slice()); return { exitCode: 1 } }
+      }
+      return run(v)
+    }
+  }
+  const r = await form510('fix4-g11-' + mode, 'cat src > ' + p, o)
+  expect(Object.keys(r.files).filter(t => t.startsWith(d + '/')), 'G11 foreign directory untouched ' + mode).toEqual([])
+  expect(Object.keys(r.files).filter(t => t.includes('.form-restore.')), 'G11 no restore temp ' + mode).toEqual([])
+  if (mode === 'mv-dir') expect(r.out.deny, 'G11 directory failure named').toContain('rollback failed')
+  else if (link) expect(o.io.links[p], 'G11 restored link').toBe('original.md')
+  else expect(r.files[p], 'G11 restored regular bytes').toBe('ORIGINAL')
+})
+for (const kind of ['file', 'link']) test('#510 FIX4 G11 post-check-' + kind, async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/r/original.md', isLink = kind === 'link'
+  const o = ioFix4_510({ cfg: CANCEL510(), files: { [isLink ? a : p]: 'ORIGINAL' }, links: isLink ? { [p]: 'original.md' } : {}, post: { [isLink ? a : p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after); const run = m.$.process.run
+    m.$.process.run = async (v: string[]) => {
+      const result = await run(v)
+      if (result.exitCode === 0 && v.at(-1) === p && v[0] === (isLink ? '/bin/ln' : '/bin/mv')) { if (isLink) o.io.links[p] = 'other.md'; else f[p] = 'EXTERNAL' }
+      return result
+    }
+  }
+  const r = await form510('fix4-check-' + kind, 'cat src > ' + p, o)
+  expect(r.out.deny, 'G11 postcheck reason ' + kind).toContain('destination changed during restore')
+  expect(r.rows.some((x: any) => x.level === 'error'), 'G11 postcheck journal ' + kind).toBe(true)
+})
+for (const retarget of [false, true]) test('#510 FIX4 G12 missing-parent-' + retarget, async () => {
+  const p = '/fix5/newdir/report.md', external = '/fix5/foreign/report.md'
+  const o = ioFix4_510({ cfg: CANCEL510(), files: { '/fix5/src': 'src', [external]: 'FOREIGN' } }), setup = o.setup
+  o.onNext = (f: any) => { o.dirs.push('/fix5/newdir'); f[p] = TRIG5 }
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const stat = m.$.fs.stat, write = m.$.fs.write; let changed = false
+    m.$.fs.write = async (t: string, data: any) => { const result = await write(t, data); if (retarget && after() && t.includes('/form/records/')) changed = true; return result }
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return changed && t === '/fix5/newdir' ? { ...s, isLink: true, realPath: '/fix5/foreign' } : s }
+  }
+  const r = await form510('fix4-missing-' + retarget, 'mkdir -p newdir; cat src > newdir/report.md', o)
+  expect(r.ran, 'G12 command runs ' + retarget).toBe(1)
+  expect(o.dirs.includes('/fix5/newdir'), 'G12 directory remains ' + retarget).toBe(true)
+  expect(r.files[external], 'G12 foreign bytes ' + retarget).toBe('FOREIGN')
+  if (retarget) expect(warnings3_510(r), 'G12 retarget warning').toContain('form-rollback-skipped-retargeted')
+  else expect(r.files[p], 'G12 new file removed').toBe(undefined)
+})
+test('#510 FIX4 G13 temp-parent', async () => {
+  const a = '/fix5/a/report.md', b = '/fix5/b/report.md', prefix = { dir: 'a' }
+  const o = ioFix3_510({ cfg: CANCEL510(), prefix, files: { [a]: 'ORIGINAL', [b]: 'FOREIGN' }, post: { [a]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => { setup(m, f, proc, after); const run = m.$.process.run; m.$.process.run = async (v: string[]) => { const result = await run(v); if (v[0] === '/bin/cp' && v.at(-1)?.includes('.form-restore.')) prefix.dir = 'b'; return result } }
+  const r = await form510('fix4-temp', 'cat src > /fix5/d/report.md', o)
+  expect(Object.keys(r.files).filter(t => t.includes('.form-restore.')), 'G13 temp cleaned physical parent').toEqual([])
+  expect(r.files[b], 'G13 foreign unchanged').toBe('FOREIGN')
+})
+test('#510 FIX4 G14 new-file-warning', async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix4-new-warning', 'cat src > ' + p, ioFix4_510({ cfg: CANCEL510(), dirs: ['/fix5/r'], post: { [p]: TRIG5 } }))
+  expect(r.ran, 'G14 command runs').toBe(1)
+  expect(r.files[p], 'G14 new file removed').toBe(undefined)
+  expect(warnings3_510(r), 'G14 no unrestored warning').not.toContain('form-rollback-unrestored')
+})
+for (const arg of ['-mbytes', '-Mstrict', '-Ilib', '-F:', '-x', '-Cexample', '-0e', '-de', '-De', '-le']) test('#510 FIX4 G15 perl-' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix4-perl-' + arg, 'perl -pi ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'G15 script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'G15 data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-lpi', '-0pi', '-pli', '-0777pi', '-l0pi', '-0x1Fpi', '-dpi']) test('#510 FIX6 perl typed ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix6-perl-' + arg, 'perl ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'FIX6 typed script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'FIX6 typed data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-00pi', '-pie', '-l7pi', '-Mstrict -pi', '-0x1F -pi']) test('#510 FIX7 perl must-flag ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix7-perl-' + arg, 'perl ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'FIX7 must-flag script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'FIX7 must-flag data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-0xi', '-0xpi']) test('#510 FIX8 perl hex-empty ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix8-perl-' + arg, 'perl ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'FIX8 hex-empty script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'FIX8 hex-empty data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-i.e -n', '-i.f -n']) test('#510 FIX8 sed in-place suffix ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix8-sed-' + arg, 'sed ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === s), 'FIX8 sed suffix script not candidate ' + arg).toBe(false)
+  expect(r.proc.some(v => v[0] === '/bin/cp' && v.at(-2) === p), 'FIX8 sed suffix data candidate ' + arg).toBe(true)
+})
+for (const arg of ['-Ci', '-Di', '-ei', '-Ei', '-Fi', '-Ii', '-mi', '-Mi', '-xi', '-d:pi']) test('#510 FIX6 perl value ' + arg, async () => {
+  const s = '/fix5/script/report.md', p = '/fix5/r/report.md'
+  const r = await form510('fix6-perlv-' + arg, 'perl ' + arg + ' script/report.md r/report.md', ioFix4_510({ cfg: CANCEL510(), files: { [s]: 'script', [p]: 'old' } }))
+  expect(r.proc.some(v => v[0] === '/bin/cp' && (v.at(-2) === s || v.at(-2) === p)), 'FIX6 value no candidate ' + arg).toBe(false)
+})
+for (const platform of ['Linux', 'Darwin']) test('#510 FIX4 G16 argv-' + platform, async () => {
+  const p = '/fix5/r/report.md'
+  const r = await form510('fix4-hash-' + platform, 'cat src > ' + p, ioFix3_510({ cfg: CANCEL510(), platform, files: { [p]: 'old' }, sizes: { [p]: 5 * 1024 * 1024 }, post: { [p]: TRIG5 } }))
+  const expected = platform === 'Linux' ? ['/usr/bin/sha256sum', '--', p] : ['/usr/bin/shasum', '-a', '256', '--', p]
+  const hashes = r.proc.filter(v => /\/(sha256sum|shasum)$/.test(v[0]))
+  expect(hashes.length >= 2, 'G16 judgement and comparison hash ' + platform).toBe(true)
+  for (const argv of hashes) expect(argv, 'G16 exact argv ' + platform).toEqual(expected)
+})
+for (const size of [8, 30 * 1024 * 1024]) test('#510 FIX4 G18 per-target-' + size, async () => {
+  const b = '/fix5/brief.md', p = '/fix5/r/report.md'
+  const cfg = formGit10().replace('brief_path = "^zzz-brief-path"', () => 'brief_path = "brief[.]md$"') + '\n[probe.form.act]\nF="log_only"\nA1="log_only"\nA2="log_only"\nA3="log_only"\nC1="cancel"\n'
+  const r = await form510('fix4-classes-' + size, 'cat src > ' + b + '; cat src > ' + p, ioFix4_510({ cfg, files: { [b]: 'brief', [p]: 'old' }, sizes: { [b]: size, [p]: 4 * 1024 * 1024 }, post: { [p]: TRIG5 } }))
+  expect(r.ran, 'G18 runs without brief budget ' + size).toBe(1)
+  expect(r.proc.filter(v => v[0] === '/bin/cp' && v.at(-1)?.includes('/form-backup/')).map(v => v.at(-2)), 'G18 only report copied ' + size).toEqual([p])
+})
+for (const branch of ['file', 'link', 'parent']) test('#510 FIX4 G19 ' + branch, async () => {
+  const p = '/fix5/r/report.md', a = '/fix5/a/original.md', linked = branch !== 'file'
+  const o = ioFix4_510({ cfg: CANCEL510(), files: { [linked ? a : p]: 'ORIGINAL' }, links: linked ? { [p]: a } : {}, dirs: ['/fix5/r'], post: { [linked ? a : p]: TRIG5 } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after); const run = m.$.process.run, stat = m.$.fs.stat; let changed = false
+    m.$.process.run = async (v: string[]) => { const result = await run(v); if ((branch === 'file' && v[0] === '/bin/cp' && v.at(-1)?.includes('.form-restore.')) || (linked && v[0] === '/bin/mv' && v.at(-1) === a)) { changed = true; if (branch !== 'parent') { delete f[p]; delete o.io.links[p]; o.dirs.push(p) } }; return result }
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return changed && branch === 'parent' && t === '/fix5/r' && init?.resolve ? { ...s, realPath: '/fix5/foreign' } : s }
+  }
+  const r = await form510('fix4-branch-' + branch, 'cat src > ' + p, o)
+  const code = branch === 'parent' ? 'form-rollback-skipped-retargeted' : 'form-rollback-skipped-nonfile'
+  expect(warnings3_510(r), 'G19 branch warning ' + branch).toContain(code)
+  if (branch !== 'parent') expect(o.dirs.includes(p), 'G19 directory intact ' + branch).toBe(true)
+})
+
+// G17-HOST-DECODE-BEGIN
+const HOST_DECODE_510 = {
+  "hostVersion": "2.1.285",
+  "imageSha256": "33dad1ec615a2e08cc78b494f05c110e49916de2c79d78ec8799ebf46b233d29",
+  "cases": [
+    { "name": "bom", "bytesHex": "efbbbf41", "codePoints": [65279, 65] },
+    { "name": "inv", "bytesHex": "41e228a1", "codePoints": [65, 65533, 40, 65533] },
+    { "name": "over", "bytesHex": "41c0af", "codePoints": [65, 65533, 65533] },
+    { "name": "sur", "bytesHex": "41eda080", "codePoints": [65, 65533, 65533, 65533] },
+    { "name": "max", "bytesHex": "41f4908080", "codePoints": [65, 65533, 65533, 65533, 65533] },
+    { "name": "four", "bytesHex": "41f09f9880", "codePoints": [65, 128512] },
+    { "name": "trunc", "bytesHex": "41e282", "codePoints": [65, 65533] }
+  ]
+}
+// G17-HOST-DECODE-END
+for (const sample of HOST_DECODE_510.cases) test('#510 G17 host-decode-' + sample.name, async () => {
+  const p = '/fix5/r/report.md', expected = String.fromCodePoint(...sample.codePoints)
+  const raw = Array.from(sample.bytesHex.matchAll(/../g), x => parseInt(x[0], 16))
+  const prefix = Array.from(TRIG5).map(c => c.charCodeAt(0))
+  const o = ioFix3_510({ files: { [p]: 'old' }, post: { [p]: TRIG5 + expected } }), setup = o.setup
+  o.setup = (m: any, f: any, proc: any, after: any) => {
+    setup(m, f, proc, after)
+    const read = m.$.fs.read, stat = m.$.fs.stat
+    m.$.fs.read = (t: string, init: any) => after() && t === p && init?.as === 'bytes' ? { base64: rawBase64_510(prefix.concat(raw)) } : read(t, init)
+    m.$.fs.stat = async (t: string, init: any) => { const s = await stat(t, init); return after() && t === p ? { ...s, size: prefix.length + raw.length } : s }
+  }
+  const r = await form510('g17-' + sample.name, 'cat src > r/report.md', o)
+  const judged = r.records.flatMap((x: any) => x.refuse || []).find((x: any) => x.c === 'C1')?.q
+  expect(typeof judged, 'G17 C1 record ' + sample.name).toBe('string')
+  expect(Array.from(judged.slice(TRIG5.length) as string).map(c => c.codePointAt(0)), 'G17 host codepoints ' + sample.name).toEqual(sample.codePoints)
 })
 
 // --- #509: лестница без потолка, терминальная ступень исчерпанной клетки -------
@@ -8430,13 +9617,13 @@ test("#509 (г): остывающая ступень перед терминал
   failoverBindReset()
   const now = 509_400_000
   const m = world509("g", now)
-  noteRungCarrierRefusal("r509g-cold", now - 5000)
+  noteRungCarrierRefusal("r509g-cold", now - 5000, R514.fanMarksOf("ag-509g"))
   failoverBindSet("ag-509g", { ladder: ["r509g-cold", "r509g-live"], terminal: "t509g", rungEffort: effortAll509(["r509g-cold", "r509g-live", "t509g"]), subagentType: "t", class: "", sticky: null })
   const next = next509({ "in509g": refuse509, "r509g-cold": refuse509, "r509g-live": refuse509, "t509g": refuse509 })
   await step509(m, "ag-509g", "in509g", next)
   expect(next.seen, "живая ступень, затем остывающая, терминал последним").toEqual(["in509g", "r509g-live", "r509g-cold", "t509g"])
-  noteRungCarrierRefusal("r509g2-cold", now - 5000)
-  noteRungCarrierRefusal("t509g2", now - 4000)
+  noteRungCarrierRefusal("r509g2-cold", now - 5000, R514.fanMarksOf("ag-509g2"))
+  noteRungCarrierRefusal("t509g2", now - 4000, R514.fanMarksOf("ag-509g2"))
   failoverBindSet("ag-509g2", { ladder: ["r509g2-cold", "r509g2-live"], terminal: "t509g2", rungEffort: effortAll509(["r509g2-cold", "r509g2-live", "t509g2"]), subagentType: "t", class: "", sticky: null })
   const next2 = next509({ "in509g2": refuse509, "r509g2-cold": refuse509, "r509g2-live": refuse509, "t509g2": refuse509 })
   await step509(m, "ag-509g2", "in509g2", next2)
@@ -8553,7 +9740,7 @@ test("#509 (к): терминал на попытке 0 (объявленная 
   failoverBindReset()
   const now = 510_400_000
   const m = world509("k", now)
-  R514.noteModelRefusal("in509k", now - 1000, "permanent-model", 0, "carrier-refusal", "Credit balance is too low")
+  R514.noteModelRefusal("in509k", now - 1000, "permanent-model", 0, "carrier-refusal", "Credit balance is too low", R514.fanMarksOf("ag-509k"))
   failoverBindSet("ag-509k", { ladder: [], terminal: "t509k", rungEffort: effortAll509(["t509k"]), subagentType: "t", class: "", sticky: null })
   const next = next509({ "t509k": ok509("509k") })
   const out = await step509(m, "ag-509k", "in509k", next)
@@ -8673,8 +9860,11 @@ function host514(tag: string, now: number, o: {
   const dir = "/probes-514" + tag
   const state: any = { history: [] as any[], sleeps: [] as number[], procCalls: [] as any[], messagesThrow: false, writeThrow: false, messageArgs: [] as any[], fired: [] as number[] }
   for (const t of o.history || []) state.history.push({ role: "user", text: "q" }, { role: "assistant", text: t })
+  const files = Object.assign({ [dir + "/probes.toml"]: o.probes ?? "[failover]\nenabled = true\n" }, o.files || {})
+  state.files = files
+  state.probesPath = dir + "/probes.toml"
   const m = mod$393({
-    files: Object.assign({ [dir + "/probes.toml"]: o.probes ?? "[failover]\nenabled = true\n" }, o.files || {}),
+    files,
     env: Object.assign({ CLAUDE_PROBES_DIR: dir }, o.env || {}),
     envRefuses: o.envRefuses,
     now,
@@ -8895,13 +10085,13 @@ test("#514 H1 / FIX3 M2: классы отказа по таблице хост�
     ["You've hit your session limit", "temporary-unknown"],
     ["You've hit your session limit · resets soon", "temporary-unknown"],
     ["You've hit your session limit · resets 2:30am (Nowhere/Atlantis)", "temporary-unknown"],
-    ["Not logged in · Please run /login", "permanent-model"],
-    ["Authentication required · Sign in again to continue", "permanent-model"],
-    ["Please run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "permanent-model"],
-    ["Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "permanent-model"],
-    ["OAuth token revoked · Please run /login", "permanent-model"],
-    ["Login expired · Please run /login", "permanent-model"],
-    ["Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator", "permanent-model"],
+    ["Not logged in · Please run /login", "temporary-unknown"],
+    ["Authentication required · Sign in again to continue", "temporary-unknown"],
+    ["Please run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "temporary-unknown"],
+    ["Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", "temporary-unknown"],
+    ["OAuth token revoked · Please run /login", "temporary-unknown"],
+    ["Login expired · Please run /login", "temporary-unknown"],
+    ["Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator", "temporary-unknown"],
     ["Credit balance is too low", "permanent-model"],
     ["Claude Opus is not available with the Claude Pro plan. If you have updated your subscription plan recently, run /logout and /login for the plan to take effect.", "permanent-model"],
   ]
@@ -8930,6 +10120,289 @@ test("#514 H3: backoff неизвестного срока 30/60/120/240/240 с,
   R514.noteModelSuccess("m514b", marks)
   expect(marks.has("m514b")).toBe(false)
   expect(note("m514b", 9000, "temporary-unknown", 0, "carrier-refusal", "t", marks).until).toBe(9000 + 30000)
+})
+
+test("#514 Р8: застрявшая на A привязка берёт B из свежего мира", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 10, 0, 0)
+  let next: any = null
+  const h = host514("r8", T0, {
+    probes: '[failover]\nenabled = true\n\n[failover.class.c514r8]\nmodels = [{model = "a514r8", effort = "max"}, {model = "b514r8", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c514r8]\nallowed = ["a514r8", "b514r8"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (_n, now) => { if (now >= T0 + 244000) next.signal.aborted = true },
+  })
+  failoverBindSet("ag-514r8", { ladder: ["a514r8"], terminal: "", rungEffort: { "a514r8": "max" }, subagentType: "t514r8", class: "c514r8", sticky: null })
+  next = next514(h, {
+    "a514r8": refuseAll514("[1308] Usage limit reached for 5 hour"),
+    "b514r8": () => null,
+  })
+  try {
+    const out = await step514(h, "ag-514r8", "a514r8", next)
+    expect(next.seen, "B вызвана, хотя в привязке спавна была только A").toContain("b514r8")
+    expect(out.value && out.value.text).toBe("OK-b514r8")
+    expect(waits514(h, "ag-514r8", "wait-aborted").length).toBe(0)
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р8-FIX1): срок цели (resets через 2 ч) длиннее пульса --
+// смену мира видит только проба пульса; короткий backoff увёл бы её в wake.
+test("#514 Р8-FIX1: уже ждущий на A агент берёт B, появившуюся в мире посреди ожидания (проба пульса)", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 11, 0, 0)
+  let next: any = null
+  const one = '[failover]\nenabled = true\n\n[failover.class.c514g]\nmodels = [{model = "a514g", effort = "max"}]\n'
+  const two = '[failover]\nenabled = true\n\n[failover.class.c514g]\nmodels = [{model = "a514g", effort = "max"}, {model = "b514g", effort = "max"}]\n'
+  let grownAt = 0
+  const h = host514("r8g", T0, {
+    probes: one,
+    files: { [TABLE514]: '[classes.c514g]\nallowed = ["a514g"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        h.files[h.probesPath] = two
+        h.files[TABLE514] = '[classes.c514g]\nallowed = ["a514g", "b514g"]\n'
+        grownAt = now
+      }
+      if (now >= T0 + 600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514g", { ladder: ["a514g"], terminal: "", rungEffort: { "a514g": "max" }, subagentType: "t514g", class: "c514g", sticky: null })
+  next = next514(h, {
+    "a514g": refuseAll514("You've hit your session limit · resets 1:00pm (UTC)"),
+    "b514g": () => null,
+  })
+  try {
+    const out = await step514(h, "ag-514g", "a514g", next)
+    expect(grownAt, "мир вырос после входа в ожидание").toBeGreaterThan(0)
+    expect(out.value && out.value.text).toBe("OK-b514g")
+    expect(waits514(h, "ag-514g", "wait-aborted").length).toBe(0)
+    const sw = waits514(h, "ag-514g", "wait-plan-refresh")
+    expect(sw.length).toBeGreaterThan(0)
+    expect(sw[0].added).toEqual(["b514g"])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р8-FIX1): B снята только из допуска, в лестнице с эффортом
+// остаётся -- отказ эффорта её не ловит, держит одна смена плана.
+test("#514 Р8-FIX1: ступень, снятая допуском посреди ожидания, не пробуется до своего срока", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 12, 0, 0)
+  let next: any = null
+  const two = '[failover]\nenabled = true\n\n[failover.class.c514d]\nmodels = [{model = "a514d", effort = "max"}, {model = "b514d", effort = "max"}]\n'
+  let cutAt = 0
+  const late: number[] = []
+  const h = host514("r8d", T0, {
+    probes: two,
+    files: { [TABLE514]: '[classes.c514d]\nallowed = ["a514d", "b514d"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        h.files[TABLE514] = '[classes.c514d]\nallowed = ["a514d"]\n'
+        cutAt = now
+      }
+      if (now >= T0 + 600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514d", { ladder: ["a514d", "b514d"], terminal: "", rungEffort: { "a514d": "max", "b514d": "max" }, subagentType: "t514d", class: "c514d", sticky: null })
+  next = next514(h, {
+    "a514d": refuseAll514("Credit balance is too low"),
+    "b514d": (_k: number, t: number) => { if (cutAt && t > cutAt) late.push(t); return "You've hit your session limit · resets 2:00pm (UTC)" },
+  })
+  try {
+    await step514(h, "ag-514d", "a514d", next)
+    expect(cutAt, "мир сузился после входа в ожидание").toBeGreaterThan(0)
+    expect(next.seen.filter((m: string) => m === "b514d").length, "B вызвана до сужения").toBeGreaterThan(0)
+    expect(late, "снятая B пробовалась после сужения мира").toEqual([])
+    const sw = waits514(h, "ag-514d", "wait-plan-refresh")
+    expect(sw.length).toBeGreaterThan(0)
+    expect(sw[0].removed).toEqual(["b514d"])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р9): улика 02.10 -- объявленная gpt-6.1-sol одним «Please run
+// /login · API Error: 403» становилась мёртвой на час, а glm с живой квотой
+// (срок известен) звался первым на каждом шаге.
+test("#514 Р9 (а): 403 «Please run /login» -- учётка, не мёртвая модель: следующий шаг снова зовёт объявленную первой", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 13, 0, 0)
+  const h = host514("r9a", T0)
+  failoverBindSet("ag-514r9a", { ladder: ["g514r9a"], terminal: "claude-t514r9a", rungEffort: { "g514r9a": "max", "claude-t514r9a": "max" }, subagentType: "t514r9a", class: "", sticky: null })
+  const next = next514(h, {
+    "s514r9a": (k: number) => (k === 0 ? "Please run /login · API Error: 403 status 403" : null),
+    "g514r9a": () => null,
+    "claude-t514r9a": () => null,
+  })
+  try {
+    const one = await step514(h, "ag-514r9a", "s514r9a", next)
+    expect(one.value && one.value.text, "шаг 1: переход на ступень").toBe("OK-g514r9a")
+    const cls = attempts514(h, "ag-514r9a").filter(r => r.modelRequested === "s514r9a").map(r => r.refusalClass)
+    expect(cls, "403 учётки -- temporary-unknown").toEqual(["temporary-unknown"])
+    h.m.setNow(T0 + 31000)
+    const seen0 = next.seen.length
+    const two = await step514(h, "ag-514r9a", "s514r9a", next, { index: 1 })
+    expect(next.seen.slice(seen0), "шаг 2: объявленная первой, без пропуска мёртвой").toEqual(["s514r9a"])
+    expect(two.value && two.value.text).toBe("OK-s514r9a")
+    expect(journal514(h).filter(r => r.agentId === "ag-514r9a" && r.outcome === "skipped-dead").length).toBe(0)
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+test("#514 Р9 (б): ступень с живой quota-меткой и известным сроком не вызывается ни в одном первичном проходе до срока", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 14, 0, 0)
+  const h = host514("r9b", T0)
+  failoverBindSet("ag-514r9b", { ladder: ["g514r9b"], terminal: "claude-t514r9b", rungEffort: { "g514r9b": "max", "claude-t514r9b": "max" }, subagentType: "t514r9b", class: "", sticky: null })
+  const quotaLine = "API Error: 503 auth_unavailable: no auth available (providers=claude, model=g514r9b; last upstream error: [1308][Usage limit reached for 5 hour]); 1 candidate(s) blocked: 1 on a spent allowance; soonest recovery in 48m37s"
+  R514.noteModelRefusal("g514r9b", T0, "quota", T0 + 2917000, "carrier-refusal", quotaLine, R514.fanMarksOf("ag-514r9b"))
+  const next = next514(h, {
+    "s514r9b": refuseAll514(ORG_OFF),
+    "g514r9b": refuseAll514(quotaLine),
+    "claude-t514r9b": () => null,
+  })
+  try {
+    for (let i = 0; i < 3; i++) {
+      h.m.setNow(T0 + 1000 + i * 600000)
+      const out = await step514(h, "ag-514r9b", "s514r9b", next, { index: i })
+      expect(out.value && out.value.text, "шаг " + String(i) + ": терминал").toBe("OK-claude-t514r9b")
+    }
+    expect(next.seen.filter((m: string) => m === "g514r9b"), "ступень с известным сроком не вызвана").toEqual([])
+    const sk = journal514(h).filter(r => r.agentId === "ag-514r9b" && r.outcome === "skipped-known-until" && r.model === "g514r9b")
+    expect(sk.length, "пропуск назван в каждом шаге").toBe(3)
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р9-FIX1): слой проб, не назвавший клетке ни лестницы, ни
+// терминала (оборванная запись probes.toml), не сужает привязку ожидающего.
+test("#514 Р9-FIX1: оборванный probes.toml посреди ожидания не снимает ступени привязки", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 12, 0, 0)
+  let next: any = null
+  const two = '[failover]\nenabled = true\n\n[failover.class.c514k]\nmodels = [{model = "a514k", effort = "max"}, {model = "b514k", effort = "max"}]\n'
+  let cutAt = 0
+  const h = host514("r9k", T0, {
+    probes: two,
+    files: { [TABLE514]: '[classes.c514k]\nallowed = ["a514k", "b514k"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        h.files[h.probesPath] = '[failover]\nenabled = true\n'
+        cutAt = now
+      }
+      if (now >= T0 + 3600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514k", { ladder: ["a514k", "b514k"], terminal: "", rungEffort: { "a514k": "max", "b514k": "max" }, subagentType: "t514k", class: "c514k", sticky: null })
+  next = next514(h, {
+    "a514k": refuseAll514("You've hit your session limit · resets 2:00pm (UTC)"),
+    "b514k": (_k: number, t: number) => (t >= T0 + 600000 ? null : "You've hit your session limit · resets 12:10pm (UTC)"),
+  })
+  try {
+    const out = await step514(h, "ag-514k", "a514k", next)
+    expect(cutAt, "запись оборвалась после входа в ожидание").toBeGreaterThan(0)
+    expect(out.value && out.value.text, "B осталась в привязке и ответила по своему сроку").toBe("OK-b514k")
+    const removed = waits514(h, "ag-514k", "wait-plan-refresh").flatMap((r: any) => r.removed || [])
+    expect(removed, "ступени не сняты").toEqual([])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р9-FIX1): срок цели (resets через 2 мин) короче пульса --
+// смену мира видит проба пробуждения; смена состава и там пишется в журнал.
+test("#514 Р9-FIX1: смена состава, увиденная пробой пробуждения, пишется wait-plan-refresh", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 11, 0, 0)
+  let next: any = null
+  const one = '[failover]\nenabled = true\n\n[failover.class.c514w]\nmodels = [{model = "a514w", effort = "max"}]\n'
+  const two = '[failover]\nenabled = true\n\n[failover.class.c514w]\nmodels = [{model = "a514w", effort = "max"}, {model = "b514w", effort = "max"}]\n'
+  let grownAt = 0
+  const h = host514("r9w", T0, {
+    probes: one,
+    files: { [TABLE514]: '[classes.c514w]\nallowed = ["a514w"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        h.files[h.probesPath] = two
+        h.files[TABLE514] = '[classes.c514w]\nallowed = ["a514w", "b514w"]\n'
+        grownAt = now
+      }
+      if (now >= T0 + 600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514w", { ladder: ["a514w"], terminal: "", rungEffort: { "a514w": "max" }, subagentType: "t514w", class: "c514w", sticky: null })
+  next = next514(h, {
+    "a514w": refuseAll514("You've hit your session limit · resets 11:02am (UTC)"),
+    "b514w": () => null,
+  })
+  try {
+    const out = await step514(h, "ag-514w", "a514w", next)
+    expect(grownAt, "мир вырос после входа в ожидание").toBeGreaterThan(0)
+    expect(out.value && out.value.text).toBe("OK-b514w")
+    const wakes = waits514(h, "ag-514w", "wait-probe").filter((r: any) => r.kind === "wake")
+    expect(wakes.length, "смену увидела проба пробуждения").toBeGreaterThan(0)
+    const sw = waits514(h, "ag-514w", "wait-plan-refresh")
+    expect(sw.map((r: any) => r.added), "смена названа").toEqual([["b514w"]])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
+})
+
+// CONSTRAINT (#514 Р9-FIX2): состав и терминал те же, ступень получила метку
+// permanent-model извне во сне -- проход пробуждения идёт по свежему плану и
+// её не зовёт.
+test("#514 Р9-FIX2: метка permanent-model, поставленная во сне при том же составе, снимает ступень с прохода пробуждения", async () => {
+  reset514()
+  const T0 = Date.UTC(2026, 9, 2, 13, 0, 0)
+  let next: any = null
+  const two = '[failover]\nenabled = true\nterminal = {model = "claude-t514d", effort = "high"}\n\n[failover.class.c514d]\nmodels = [{model = "a514d", effort = "max"}, {model = "x514d", effort = "max"}]\n'
+  let markedAt = 0
+  const h = host514("r9d", T0, {
+    probes: two,
+    files: { [TABLE514]: '[classes.c514d]\nallowed = ["a514d", "x514d", "claude-t514d"]\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+    sleepHook: (n, now) => {
+      if (n === 1) {
+        R514.noteModelRefusal("x514d", now, "permanent-model", 0, "carrier-refusal", "Credit balance is too low", R514.fanMarksOf("ag-514d"))
+        markedAt = now
+      }
+      if (now >= T0 + 3600000) next.signal.aborted = true
+    },
+  })
+  failoverBindSet("ag-514d", { ladder: ["a514d", "x514d"], terminal: "claude-t514d", rungEffort: { "a514d": "max", "x514d": "max" }, subagentType: "t514d", class: "c514d", sticky: null })
+  next = next514(h, {
+    "a514d": refuseAll514("You've hit your session limit · resets 2:00pm (UTC)"),
+    "x514d": (k: number) => (k === 0 ? "Service temporarily unavailable" : null),
+    "claude-t514d": (k: number) => (k === 0 ? "Service temporarily unavailable" : null),
+  })
+  try {
+    const out = await step514(h, "ag-514d", "a514d", next)
+    expect(markedAt, "метка поставлена во сне").toBeGreaterThan(0)
+    const wakes = waits514(h, "ag-514d", "wait-probe").filter((r: any) => r.kind === "wake")
+    expect(wakes.length, "ответ дала проба пробуждения").toBeGreaterThan(0)
+    expect(out.value && out.value.text, "ответил терминал").toBe("OK-claude-t514d")
+    expect(next.seen.filter((m: string) => m === "x514d").length, "X не звалась после метки").toBe(1)
+    expect(waits514(h, "ag-514d", "wait-plan-refresh"), "состав не менялся").toEqual([])
+  } finally {
+    rungCooldownReset()
+    reset514()
+  }
 })
 
 test("#514 J5(а): все отказывают со сроком «resets» через 2 мин -- ожидание до readyAt, перепроба, успех", async () => {
@@ -8998,13 +10471,13 @@ test("#514 J5(в): успех модели снимает её метку", asyn
   failoverBindSet("ag-514c", { ladder: [], terminal: "claude-t514c", rungEffort: {}, subagentType: "t", class: "", sticky: null })
   const next = next514(h, { "in514c": (k) => (k === 0 ? "API Error: 429 rate limit" : null), "claude-t514c": () => null })
   await step514(h, "ag-514c", "in514c", next)
-  expect(isModelCooling("in514c", T0 + 1)).toBe(true)
+  expect(isModelCooling("in514c", T0 + 1, R514.fanMarksOf("ag-514c")), "метка отказа -- на карте самого агента").toBe(true)
   h.m.setNow(T0 + 31000)
   await step514(h, "ag-514c", "in514c", next, { index: 1 })
-  expect(isModelCooling("in514c", T0 + 31000)).toBe(false)
-  const snap = cooldownSnapshot(T0 + 31000).filter(r => r.model === "in514c")
+  expect(isModelCooling("in514c", T0 + 31000, R514.fanMarksOf("ag-514c"))).toBe(false)
+  const snap = cooldownSnapshot(T0 + 31000, R514.fanMarksOf("ag-514c")).filter(r => r.model === "in514c")
   expect(snap).toEqual([])
-  const again = R514.noteModelRefusal("in514c", T0 + 32000, "temporary-unknown", 0, "carrier-refusal", "")
+  const again = R514.noteModelRefusal("in514c", T0 + 32000, "temporary-unknown", 0, "carrier-refusal", "", R514.fanMarksOf("ag-514c"))
   expect(again.until - (T0 + 32000), "счёт подряд идущих отказов сброшен успехом").toBe(30000)
   rungCooldownReset()
   failoverBindReset()
@@ -9114,8 +10587,8 @@ test("#514 J5(и): нечитаемый срок -- temporary-unknown с backoff
   await step514(h, "ag-514i", "in514i", next)
   const rec = attempts514(h, "ag-514i")[0]
   expect(rec.refusalClass).toBe("temporary-unknown")
-  expect(isModelCooling("in514i", T0 + 29999)).toBe(true)
-  expect(isModelCooling("in514i", T0 + 30000)).toBe(false)
+  expect(isModelCooling("in514i", T0 + 29999, R514.fanMarksOf("ag-514i"))).toBe(true)
+  expect(isModelCooling("in514i", T0 + 30000, R514.fanMarksOf("ag-514i"))).toBe(false)
   rungCooldownReset()
   failoverBindReset()
 })
@@ -9166,6 +10639,420 @@ test("#514 H8: бросок при прерванном сигнале -- lastRe
   expect(out.value).toBe(null)
   expect(next.seen).toEqual(["in514u"])
   expect(h.sleeps.length).toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// --- #514 W1b Р6/Р7: метка отказа по агенту; главный луп со своим набором ------
+
+test("#514 Р6-а: отказ модели у агента A не меняет план агента B -- B идёт на неё первой", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_100_000
+  const h = host514("r6a", T0, { noProc: true })
+  failoverBindSet("ag-r6a-a", { ladder: [], terminal: "claude-r6a-ta", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextA = next514(h, { "x-r6a": refuseAll514("API Error: 429 rate limit"), "claude-r6a-ta": () => null })
+  await step514(h, "ag-r6a-a", "x-r6a", nextA)
+  expect(nextA.seen).toEqual(["x-r6a", "claude-r6a-ta"])
+  expect(isModelCooling("x-r6a", T0 + 1, R514.fanMarksOf("ag-r6a-a")), "метка -- на карте A").toBe(true)
+  expect(isModelCooling("x-r6a", T0 + 1, R514.fanMarksOf("ag-r6a-b")), "карта B метку A не видит").toBe(false)
+  failoverBindSet("ag-r6a-b", { ladder: [], terminal: "claude-r6a-tb", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextB = next514(h, { "x-r6a": () => null, "claude-r6a-tb": () => null })
+  const outB = await step514(h, "ag-r6a-b", "x-r6a", nextB)
+  expect(outB.value && outB.value.text, "B ушёл на X первой -- ответ от X").toBe("OK-x-r6a")
+  expect(nextB.seen, "X вызвана первой, без пропуска").toEqual(["x-r6a"])
+  const recB = attempts514(h, "ag-r6a-b")
+  expect(recB.length).toBe(1)
+  expect(recB[0].cooldownDeferred, "отсрочки по чужой метке нет").toBeUndefined()
+  expect(journal514(h).filter(r => r.agentId === "ag-r6a-b" && r.outcome === "skipped-known-until").length, "skipped-known по чужой метке нет").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-б: отказ модели у агента A -- его следующий переход пропускает её до срока метки", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_200_000
+  const h = host514("r6b", T0, { noProc: true })
+  failoverBindSet("ag-r6b", { ladder: ["y-r6b"], terminal: "claude-r6b-t", rungEffort: { "y-r6b": "max" }, subagentType: "t", class: "", sticky: null })
+  const next1 = next514(h, { "x-r6b": refuseAll514("API Error: 429 rate limit"), "y-r6b": () => null })
+  const out1 = await step514(h, "ag-r6b", "x-r6b", next1)
+  expect(out1.value && out1.value.text).toBe("OK-y-r6b")
+  expect(isModelCooling("x-r6b", T0 + 1, R514.fanMarksOf("ag-r6b")), "метка своего отказа -- на своей карте").toBe(true)
+  h.m.setNow(T0 + 1000)
+  const next2 = next514(h, { "x-r6b": refuseAll514("API Error: 429 rate limit"), "y-r6b": () => null })
+  const out2 = await step514(h, "ag-r6b", "x-r6b", next2, { index: 1 })
+  expect(out2.value && out2.value.text).toBe("OK-y-r6b")
+  expect(next2.seen, "X отложена меткой до срока -- первой идёт готовая").toEqual(["y-r6b"])
+  h.m.setNow(T0 + 2000)
+  const next3 = next514(h, { "x-r6b": refuseAll514("API Error: 429 rate limit"), "y-r6b": refuseAll514("API Error: 429 rate limit"), "claude-r6b-t": () => null })
+  const out3 = await step514(h, "ag-r6b", "x-r6b", next3, { index: 2 })
+  expect(out3.value && out3.value.text).toBe("OK-claude-r6b-t")
+  expect(next3.seen, "метка откладывает X в хвост, но не вырезает: X достижима после готовых").toEqual(["y-r6b", "x-r6b", "claude-r6b-t"])
+  expect(isModelCooling("x-r6b", T0 + 3000, R514.fanMarksOf("ag-r6b")), "метка жива до срока").toBe(true)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-в: отказ X на главном лупе не трогает план агента, и наоборот", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_300_000
+  const h = host514("r6v", T0, { noProc: true, probes: '[failover]\nenabled = true\nterminal = "claude-r6v-m"\n' })
+  const nextM = next514(h, { "x-r6v": refuseAll514("API Error: 429 rate limit"), "claude-r6v-m": () => null })
+  const outM = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r6v-m", index: 0, model: "x-r6v", messageCount: 1 }, nextM))
+  expect(outM.value && outM.value.text).toBe("OK-claude-r6v-m")
+  expect(isModelCooling("x-r6v", T0 + 1, R514.fanMarksOf("main")), "метка главного лупа -- на карте main").toBe(true)
+  failoverBindSet("ag-r6v", { ladder: [], terminal: "", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextA = next514(h, { "x-r6v": () => null })
+  const outA = await step514(h, "ag-r6v", "x-r6v", nextA)
+  expect(outA.value && outA.value.text, "план агента меткой main не тронут").toBe("OK-x-r6v")
+  expect(nextA.seen).toEqual(["x-r6v"])
+  failoverBindSet("ag-r6v2", { ladder: [], terminal: "claude-r6v-a", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextA2 = next514(h, { "x-r6v": refuseAll514("API Error: 429 rate limit"), "claude-r6v-a": () => null })
+  await step514(h, "ag-r6v2", "x-r6v", nextA2)
+  expect(isModelCooling("x-r6v", T0 + 1, R514.fanMarksOf("ag-r6v2")), "метка агента -- на его карте").toBe(true)
+  const nextM2 = next514(h, { "x-r6v": () => null, "claude-r6v-m": () => null })
+  const outM2 = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r6v-m2", index: 1, model: "x-r6v", messageCount: 1 }, nextM2))
+  expect(outM2.value && outM2.value.text, "главный луп идёт на X первой").toBe("OK-x-r6v")
+  expect(nextM2.seen).toEqual(["x-r6v"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-г: вытеснение привязок уносит карту старшей не-main, карта main с живой меткой переживает", () => {
+  reset514()
+  rungCooldownReset()
+  const T = 518_400_000
+  R514.noteRungCarrierRefusal("m-r6g-main", T, R514.fanMarksOf("main"))
+  R514.noteRungCarrierRefusal("m-r6g-1", T, R514.fanMarksOf("ag-r6g-1"))
+  failoverBindSet("main", { ladder: [], terminal: "", isMain: true, sticky: null })
+  for (let i = 1; i <= FAILOVER_BIND_CAP; i++) {
+    failoverBindSet("ag-r6g-" + String(i), { ladder: [], terminal: "", subagentType: "t", class: "", sticky: null })
+  }
+  expect(failoverBindGet("ag-r6g-1"), "старшая не-main вытеснена").toBeUndefined()
+  expect(failoverBindGet("ag-r6g-2"), "следующая жива").toBeDefined()
+  expect(failoverBindGet("main"), "main не вытеснен").toBeDefined()
+  expect(isModelCooling("m-r6g-1", T + 1, R514.fanMarksOf("ag-r6g-1")), "карта вытесненного удалена").toBe(false)
+  expect(isModelCooling("m-r6g-main", T + 1, R514.fanMarksOf("main")), "карта main с живой меткой пережила вытеснение").toBe(true)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-д: метка consultBg (таймаут ступени) живёт в карте консультаций и план агента не меняет", async () => {
+  await clear393()
+  rungCooldownReset()
+  reset514()
+  const T0 = 518_500_000
+  const toml = '[probe.cr6d]\nkind = "consult"\non = ["Stop"]\nmodels = [{model = "c-r6d", timeout_ms = 100}]\n'
+  const st = p5$("r6d", T0, toml, { idle: "0" })
+  await saStart(st)
+  // ступень молчит: сторож rung-deadline бросает раньше ответа, consultBg ставит
+  // метку таймаута; часы стенда засыпают мгновенно.
+  st.m.$.model.complete = () => new Promise(() => {})
+  st.m.$.clock.sleep = async () => {}
+  await p5Classic(st, "Stop", { stop_hook_active: true }, T0 + 1000)
+  await settle393()
+  expect(isModelCooling("c-r6d", T0 + 2000, R514.consultMarksOf()), "метка таймаута -- в карте консультаций").toBe(true)
+  expect(rungsAfterCooldown([{ model: "c-r6d" }, { model: "ok-r6d" }], T0 + 2000, R514.consultMarksOf()).ladder, "консультация не зовёт ступень до срока").toEqual([{ model: "ok-r6d" }])
+  // метка консультаций не меняет план шага агента
+  const h = host514("r6d2", T0 + 3000, { noProc: true })
+  failoverBindSet("ag-r6d", { ladder: ["c-r6d"], terminal: "claude-r6d-t", rungEffort: { "c-r6d": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in-r6d": refuseAll514("API Error: 429 rate limit"), "c-r6d": () => null })
+  const out = await step514(h, "ag-r6d", "in-r6d", next)
+  expect(next.seen, "ступень с меткой КОНСУЛЬТАЦИЙ в плане агента первая после объявленной").toEqual(["in-r6d", "c-r6d"])
+  expect(out.value && out.value.text).toBe("OK-c-r6d")
+  expect(isModelCooling("c-r6d", T0 + 4000, R514.fanMarksOf("ag-r6d")), "карта агента меткой консультаций не тронута").toBe(false)
+  // метка веера агента не снимает ступень у дороги консультаций
+  noteRungCarrierRefusal("c-r6d", T0 + 4000, R514.fanMarksOf("ag-r6d-fan"))
+  expect(rungsAfterCooldown([{ model: "c-r6d" }], T0 + 5000, R514.consultMarksOf()).ladder, "карта агента дорогу консультаций не судит").toEqual([{ model: "c-r6d" }])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-е: /catalyst-ladder называет владельца -- консультации, agentId, main; фильтр по владельцу", () => {
+  rungCooldownReset()
+  const T = 518_600_000
+  noteRungCarrierRefusal("a-model-r6e", T, R514.fanMarksOf("ag-r6e"))
+  noteRungCarrierRefusal("m-model-r6e", T, R514.fanMarksOf("main"))
+  R514.noteRungTimeout("c-model-r6e", "Error: rung-deadline c-model-r6e 100ms", T, R514.consultMarksOf())
+  const lines = ladderCommandText(T + 1000, "").split("\n").filter(l => l.indexOf(": остывать ещё") >= 0)
+  expect(lines.filter(l => l.indexOf("консультации · c-model-r6e: ") === 0).length).toBe(1)
+  expect(lines.filter(l => l.indexOf("ag-r6e · a-model-r6e: ") === 0).length).toBe(1)
+  expect(lines.filter(l => l.indexOf("main · m-model-r6e: ") === 0).length).toBe(1)
+  expect(ladderCommandText(T + 1000, "ag-r6e").split("\n").filter(l => l.indexOf(": остывать ещё") >= 0), "фильтр по владельцу-агенту").toEqual(lines.filter(l => l.indexOf("ag-r6e · ") === 0))
+  expect(ladderCommandText(T + 1000, "main").split("\n").filter(l => l.indexOf(": остывать ещё") >= 0), "фильтр по владельцу main").toEqual(lines.filter(l => l.indexOf("main · ") === 0))
+  rungCooldownReset()
+})
+
+test("#514 Р6-ж: сброс сессии чистит карты агентов, карта main переживает", async () => {
+  await clear393()
+  reset514()
+  const T = 518_700_000
+  noteRungCarrierRefusal("m-r6j-main", T, R514.fanMarksOf("main"))
+  noteRungCarrierRefusal("m-r6j-ag", T, R514.fanMarksOf("ag-r6j"))
+  failoverBindSet("ag-r6j", { ladder: [], terminal: "", subagentType: "t", class: "", sticky: null })
+  failoverBindSet("main", { ladder: [], terminal: "", isMain: true, sticky: null })
+  await clear393()
+  expect(isModelCooling("m-r6j-ag", T + 1, R514.fanMarksOf("ag-r6j")), "карта агента удалена сбросом сессии").toBe(false)
+  expect(isModelCooling("m-r6j-main", T + 1, R514.fanMarksOf("main")), "карта main пережила сброс").toBe(true)
+  expect(failoverBindGet("ag-r6j"), "привязки снесены").toBeUndefined()
+  expect(failoverBindGet("main"), "привязка main тоже снесена -- выживает только карта").toBeUndefined()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-з: выходы ожидания не срабатывают от чужих меток -- A идёт на Y в том же проходе", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_800_000
+  const h = host514("r6z", T0, { noProc: true })
+  failoverBindSet("ag-r6z-b", { ladder: [], terminal: "claude-r6z-tb", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextB = next514(h, { "y-r6z": refuseAll514("API Error: 429 rate limit"), "claude-r6z-tb": () => null })
+  await step514(h, "ag-r6z-b", "y-r6z", nextB)
+  expect(isModelCooling("y-r6z", T0 + 1, R514.fanMarksOf("ag-r6z-b")), "метка Y -- на карте B").toBe(true)
+  failoverBindSet("ag-r6z-a", { ladder: ["x-r6z", "y-r6z"], terminal: "", rungEffort: { "x-r6z": "max", "y-r6z": "max" }, subagentType: "t", class: "", sticky: null })
+  const nextA = next514(h, { "x-r6z": refuseAll514("API Error: 429 rate limit"), "y-r6z": () => null })
+  const outA = await step514(h, "ag-r6z-a", "x-r6z", nextA)
+  expect(outA.value && outA.value.text, "ответ от Y в том же проходе").toBe("OK-y-r6z")
+  expect(nextA.seen, "чужая метка Y не сняла ступень").toEqual(["x-r6z", "y-r6z"])
+  for (const kind of ["wait-begin", "wait-no-target", "wait-budget-exhausted"]) {
+    expect(waits514(h, "ag-r6z-a", kind).length, kind + " у A нет").toBe(0)
+  }
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-а: шаг без agentId -- набор failover.main, ответ от Y, запись журнала с agentId main", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_900_000
+  const h = host514("r7a", T0, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "y-r7a", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c-r7a]\nallowed = []\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7a": refuseAll514("API Error: 429 rate limit"), "y-r7a": () => null })
+  const out = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r7a", index: 0, model: "in-r7a", messageCount: 1 }, next))
+  expect(out.value && out.value.text).toBe("OK-y-r7a")
+  expect(next.seen, "объявленная отказала -- переход на ступень failover.main").toEqual(["in-r7a", "y-r7a"])
+  const recs = attempts514(h, "main")
+  expect(recs.length).toBe(2)
+  expect(recs[0].agentId).toBe("main")
+  expect(recs[1].modelRequested).toBe("y-r7a")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-б: без main набор главного лупа -- default", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 519_000_000
+  const h = host514("r7b", T0, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\n\n[failover.default]\nmodels = [{model = "z-r7b", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c-r7b]\nallowed = []\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7b": refuseAll514("API Error: 429 rate limit"), "z-r7b": () => null })
+  const out = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r7b", index: 0, model: "in-r7b", messageCount: 1 }, next))
+  expect(out.value && out.value.text).toBe("OK-z-r7b")
+  expect(next.seen).toEqual(["in-r7b", "z-r7b"])
+  expect(attempts514(h, "main").map(r => r.modelRequested)).toEqual(["in-r7b", "z-r7b"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-в: ни main, ни default, ни terminal -- отказ возвращается как есть", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 519_100_000
+  const h = host514("r7v", T0, { noProc: true, probes: "[failover]\nenabled = true\n" })
+  const next = next514(h, { "in-r7v": refuseAll514("API Error: 429 rate limit") })
+  const out = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r7v", index: 0, model: "in-r7v", messageCount: 1 }, next))
+  expect(next.seen, "один вызов -- прямой проход").toEqual(["in-r7v"])
+  expect(isCarrierRefusal(out.value), "отказ возвращён вызывающему").toBe(true)
+  expect(journal514(h).filter(r => r.agentId === "main").length, "записей лестницы нет").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-г: шаг главного лупа с переходом -- без stale-agents, без подсказки, $.session.messages без agentId", async () => {
+  await clear393()
+  reset514()
+  rungCooldownReset()
+  const T0 = 519_200_000
+  const st = sa$("r7g", T0, {
+    idle: "0",
+    files: {
+      "/probes-sa-r7g/probes.toml": "[probe.idle-watch]\n[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = \"y-r7g\", effort = \"max\"}]\n",
+      "/tbl-r7g/routing-table.toml": "[classes.c-r7g]\nallowed = []\n",
+    },
+    env: { CATALYST_ROUTING_TABLE: "/tbl-r7g/routing-table.toml" },
+  })
+  st.agents = []
+  await saStart(st)
+  const before = Object.keys(saSnap()).sort()
+  const hist: any[] = []
+  const msgArgs: any[] = []
+  st.m.$.session.messages = async (arg: any) => { msgArgs.push(arg); return hist.slice() }
+  const seen: string[] = []
+  const next: any = (req: any) => {
+    const model = String(req && req.model)
+    seen.push(model)
+    return (async function* () {
+      if (model === "in-r7g") {
+        hist.push({ role: "assistant", text: "API Error: 429 rate limit" })
+        return { usage: null, stopReason: null }
+      }
+      return { usage: { out: 1 }, stopReason: "end_turn", text: "OK-" + model }
+    })()
+  }
+  next.signal = { aborted: false }
+  next.budget = { ms: 10000, remainingMs: Infinity }
+  const out = await drainStream(hook393(subs393(), "turn.step")(st.m.$, { turnId: "t-r7g", index: 0, model: "in-r7g", messageCount: 1 }, next))
+  await settle393()
+  expect(out.value && out.value.text).toBe("OK-y-r7g")
+  expect(seen, "переход главного лупа на ступень failover.main").toEqual(["in-r7g", "y-r7g"])
+  expect(Object.keys(saSnap()).sort(), "записей stale-agents главный луп не заводит").toEqual(before)
+  expect(st.submits.length, "подсказка «шаг агента обслужила» не ставится").toBe(0)
+  expect(p5Q(""), "очередь главного лупа пуста").toEqual([])
+  expect(msgArgs.length, "история читалась").toBeGreaterThan(0)
+  expect(msgArgs.filter(a => a !== undefined).length, "$.session.messages зовётся без agentId").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-д: допуск клетки не сужает лестницу главного лупа; непригодный допуск -- объявленная и терминал", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 519_300_000
+  const h = host514("r7d1", T0, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\nterminal = "claude-r7d-t"\n\n[failover.main]\nmodels = [{model = "y-r7d", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c-r7d]\nallowed = []\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7d": refuseAll514("API Error: 429 rate limit"), "y-r7d": () => null, "claude-r7d-t": () => null })
+  const out = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r7d", index: 0, model: "in-r7d", messageCount: 1 }, next))
+  expect(out.value && out.value.text, "Y вне допуска клетки -- главный луп всё равно идёт на Y").toBe("OK-y-r7d")
+  expect(next.seen).toEqual(["in-r7d", "y-r7d"])
+  rungCooldownReset()
+  failoverBindReset()
+  reset514()
+  const T1 = 519_400_000
+  const h2 = host514("r7d2", T1, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\nterminal = "claude-r7d-t2"\n\n[failover.main]\nmodels = [{model = "y-r7d2", effort = "max"}]\n',
+  })
+  const next2 = next514(h2, { "in-r7d2": refuseAll514("API Error: 429 rate limit"), "y-r7d2": () => null, "claude-r7d-t2": () => null })
+  const out2 = await drainStream(hook393(subs393(), "turn.step")(h2.m.$, { turnId: "t-r7d2", index: 0, model: "in-r7d2", messageCount: 1 }, next2))
+  expect(out2.value && out2.value.text, "непригодный допуск -- терминал").toBe("OK-claude-r7d-t2")
+  expect(next2.seen, "лестница главного лупа пуста: объявленная и терминал").toEqual(["in-r7d2", "claude-r7d-t2"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-е: failoverOf сливает main проекта поверх глобального", async () => {
+  hostMemoReset()
+  rungCooldownReset()
+  const m = mod$393({
+    files: {
+      "/home-r7e/.claude/probes/probes.toml": '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "g-r7e", effort = "max"}]\n',
+      "/work-r7e/.claude/probes/probes.toml": '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "p-r7e", effort = "max"}]\n',
+    },
+    env: { HOME: "/home-r7e", PWD: "/work-r7e" },
+    now: 519_500_000,
+  })
+  const packed = await worldFor(m.$)
+  const fo = packed.world.failover
+  expect(fo.main.models, "проект заменяет глобальный main целиком").toEqual([{ model: "p-r7e", effort: "max" }])
+  const lb = failoverLadderBind(fo, "", "", true)
+  expect(lb.ladder, "лестница главного лупа -- проектная").toEqual(["p-r7e"])
+  expect(lb.source).toBe("main")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+async function stepMain514(h: any, turnId: string, model: string, next: any): Promise<any> {
+  return await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId, index: 0, model, messageCount: 1 }, next))
+}
+
+function worldMoved514(h: any): void {
+  hostMemoReset()
+  h.m.setNow(h.m.getNow() + 60000)
+}
+
+test("#514 Р7-ж: мир без лестницы не записывает пустую привязку main; лестница, названная позже, берётся", async () => {
+  reset514()
+  rungCooldownReset()
+  failoverBindReset()
+  const h = host514("r7j", 519_600_000, {
+    noProc: true,
+    probes: "[failover]\nenabled = true\n",
+    files: { [TABLE514]: "[classes.c-r7j]\nallowed = []\n" },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7j": refuseAll514("API Error: 429 rate limit"), "in2-r7j": refuseAll514("API Error: 429 rate limit"), "y-r7j": () => null })
+  const out1 = await stepMain514(h, "t-r7j1", "in-r7j", next)
+  expect(next.seen, "без лестницы -- только объявленная").toEqual(["in-r7j"])
+  expect(out1.value && out1.value.text).not.toBe("OK-y-r7j")
+  expect(failoverBindGet("main"), "пустая привязка main не записана").toBe(undefined)
+  h.files[h.probesPath] = '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "y-r7j", effort = "max"}]\n'
+  worldMoved514(h)
+  const out2 = await stepMain514(h, "t-r7j2", "in2-r7j", next)
+  expect(out2.value && out2.value.text, "лестница, названная после первого шага, берётся").toBe("OK-y-r7j")
+  expect(next.seen).toEqual(["in-r7j", "in2-r7j", "y-r7j"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-з: допуск, ставший непригодным посреди сессии, опустошает лестницу main -- объявленная и терминал", async () => {
+  reset514()
+  rungCooldownReset()
+  failoverBindReset()
+  const h = host514("r7z", 519_700_000, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\nterminal = "claude-r7z-t"\n\n[failover.main]\nmodels = [{model = "y-r7z", effort = "max"}]\n',
+    files: { [TABLE514]: "[classes.c-r7z]\nallowed = []\n" },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7z": () => null, "in2-r7z": refuseAll514("API Error: 429 rate limit"), "y-r7z": () => null, "claude-r7z-t": () => null })
+  await stepMain514(h, "t-r7z1", "in-r7z", next)
+  expect(next.seen).toEqual(["in-r7z"])
+  const b1 = failoverBindGet("main")
+  expect(b1 && b1.ladder, "привязка main построена с Y").toEqual(["y-r7z"])
+  delete h.files[TABLE514]
+  worldMoved514(h)
+  const out2 = await stepMain514(h, "t-r7z2", "in2-r7z", next)
+  expect(out2.value && out2.value.text, "непригодный допуск -- терминал, не прежняя Y").toBe("OK-claude-r7z-t")
+  expect(next.seen).toEqual(["in-r7z", "in2-r7z", "claude-r7z-t"])
+  const b2 = failoverBindGet("main")
+  expect(b2 && b2.ladder, "лестница main опустошена").toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-и: лестница main идёт за сменой мира Y -> Z", async () => {
+  reset514()
+  rungCooldownReset()
+  failoverBindReset()
+  const h = host514("r7i", 519_800_000, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "y-r7i", effort = "max"}]\n',
+    files: { [TABLE514]: "[classes.c-r7i]\nallowed = []\n" },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7i": () => null, "in2-r7i": refuseAll514("API Error: 429 rate limit"), "y-r7i": () => null, "z-r7i": () => null })
+  await stepMain514(h, "t-r7i1", "in-r7i", next)
+  const b1 = failoverBindGet("main")
+  expect(b1 && b1.ladder).toEqual(["y-r7i"])
+  h.files[h.probesPath] = '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "z-r7i", effort = "max"}]\n'
+  worldMoved514(h)
+  const out2 = await stepMain514(h, "t-r7i2", "in2-r7i", next)
+  expect(out2.value && out2.value.text, "новая лестница мира").toBe("OK-z-r7i")
+  expect(next.seen).toEqual(["in-r7i", "in2-r7i", "z-r7i"])
   rungCooldownReset()
   failoverBindReset()
 })
@@ -9301,7 +11188,7 @@ test("#514 FIX2b: предел вызовов модели стенда -- ци�
 test("#514 FIX2b H1 / FIX3 M2: префикс таблицы решает по началу строки, не по вхождению", () => {
   const cr = R514.classifyRefusal
   const cases: Array<[string, string]> = [
-    ["Please run /login · API Error: 429 Request rejected (429) · rate limited", "permanent-model"],
+    ["Please run /login · API Error: 429 Request rejected (429) · rate limited", "temporary-unknown"],
     ["API Error: 400 Prompt is too long", "request"],
     ["API Error: 409 Prompt is too long", "temporary-unknown"],
     ["API Error: 402 Credit balance is too low", "quota"],
@@ -9365,7 +11252,7 @@ test("#514 FIX2b H5: все модели прохода permanent-model -- wait-
   failoverBindSet("ag-514pp", { ladder: [], terminal: "claude-t514pp", rungEffort: {}, subagentType: "t", class: "", sticky: null })
   next = next514(h, {
     "in514pp": refuseAll514("Credit balance is too low"),
-    "claude-t514pp": refuseAll514("Not logged in · Please run /login"),
+    "claude-t514pp": refuseAll514("This service is disabled for your org"),
   })
   await step514(h, "ag-514pp", "in514pp", next)
   const begin = waits514(h, "ag-514pp", "wait-begin")
@@ -9730,7 +11617,7 @@ test("#514 FIX3 M1 (а): старая строка 402 в истории, бро
   const recs = attempts514(h, "ag-3m1a")
   expect(recs.length).toBe(1)
   expect(recs[0].refusalClass, "без свежей строки -- hook-error, не класс старой строки").toBe("hook-error")
-  expect(isModelCooling("in3m1a", T0 + 1), "метки на модель нет").toBe(false)
+  expect(isModelCooling("in3m1a", T0 + 1, R514.fanMarksOf("ag-3m1a")), "метки на модель нет").toBe(false)
   expect(journal514(h).filter(r => r.agentId === "ag-3m1a" && String(r.outcome).indexOf("wait-") === 0).length).toBe(0)
   rungCooldownReset()
   failoverBindReset()
@@ -9745,7 +11632,7 @@ test("#514 FIX3 M1 (б): старая строка 402 в истории, отк
   await step514(h, "ag-3m1b", "in3m1b", next)
   const recs = attempts514(h, "ag-3m1b")
   expect({ cls: recs[0].refusalClass, text: recs[0].refusalText }).toEqual({ cls: "temporary-unknown", text: "" })
-  expect(cooldownSnapshot(T0 + 1).filter(r => r.model === "in3m1b").map(r => r.class)).toEqual(["temporary-unknown"])
+  expect(cooldownSnapshot(T0 + 1, R514.fanMarksOf("ag-3m1b")).filter(r => r.model === "in3m1b").map(r => r.class)).toEqual(["temporary-unknown"])
   rungCooldownReset()
   failoverBindReset()
 })
@@ -9858,7 +11745,7 @@ test("#514 FIX3 L2: сердцебиение тем же классом permanen
   failoverBindSet("ag-3l2", { ladder: [], terminal: "claude-t3l2", rungEffort: {}, subagentType: "t", class: "", sticky: null })
   const next = next514(h, {
     "in3l2": (_k, t) => (t >= T0 + 3600000 ? null : "Credit balance is too low"),
-    "claude-t3l2": refuseAll514("Not logged in · Please run /login"),
+    "claude-t3l2": refuseAll514("This service is disabled for your org"),
   })
   const out = await step514(h, "ag-3l2", "in3l2", next)
   expect(out.value && out.value.text).toBe("OK-in3l2")
@@ -9885,7 +11772,7 @@ test("#514 FIX3 AR-5: нижний хук бросает детерминиро�
   expect(h.procCalls, "FIX4 AR-c / FIX5 Р3: одна пауза повторного чтения куском, кусков ожидания нет").toEqual([{ argv: ["/bin/sleep", "4.000"], init: { timeoutMs: 9000 } }])
   expect(attempts514(h, "ag-3ar5")[0].reread, "повторное чтение названо в записи попытки").toBe(true)
   expect(journal514(h).filter(r => r.agentId === "ag-3ar5" && String(r.outcome).indexOf("wait-") === 0).length).toBe(0)
-  expect(isModelCooling("in3ar5", T0 + 1)).toBe(false)
+  expect(isModelCooling("in3ar5", T0 + 1, R514.fanMarksOf("ag-3ar5"))).toBe(false)
   rungCooldownReset()
   failoverBindReset()
 })
@@ -9970,7 +11857,7 @@ test("#509-FIX3 AR-4: терминал канона с [1m] уходит на п
   const next2 = next514(h, { "Claude-Opus-5-5[2m]": refuseAll514(RL429), "claude-opus-5-5": () => null })
   await step514(h, "ag-3ar4b", "Claude-Opus-5-5[2m]", next2)
   expect(next2.seen, "объявленная совпала с терминалом при сравнении").toEqual(["Claude-Opus-5-5[2m]"])
-  expect(isModelCooling("claude-opus-5-5", T0 + 1), "метка -- по нормализованному id").toBe(true)
+  expect(isModelCooling("claude-opus-5-5", T0 + 1, R514.fanMarksOf("ag-3ar4b")), "метка -- по нормализованному id, на карте своего агента").toBe(true)
   rungCooldownReset()
   failoverBindReset()
 })
@@ -10183,7 +12070,7 @@ test("#509-FIX4 F3: все дали request, но у модели плана ж�
   const T0 = Date.UTC(2026, 8, 27, 10, 30, 0)
   const h = host514("4f3m", T0, { noProc: true })
   failoverBindSet("ag-4f3m", { ladder: [], terminal: "claude-t4f3m", rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("claude-t4f3m", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429)
+  R514.noteModelRefusal("claude-t4f3m", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429, R514.fanMarksOf("ag-4f3m"))
   const next = next514(h, { "in4f3m": refuseAll514("Prompt is too long"), "claude-t4f3m": refuseAll514("Prompt is too long") })
   await step514(h, "ag-4f3m", "in4f3m", next)
   expect(next.seen).toEqual(["in4f3m", "claude-t4f3m"])
@@ -10382,7 +12269,7 @@ test("#509-FIX4 AR-5: остывшая объявленная = терминал
   const T0 = Date.UTC(2026, 8, 27, 11, 0, 0)
   const h = host514("4ar5", T0, { noProc: true })
   failoverBindSet("ag-4ar5", { ladder: ["r4ar5-1", "r4ar5-2"], terminal: "claude-opus-5-5", rungEffort: effortAll509(["r4ar5-1", "r4ar5-2"]), subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("claude-opus-5-5", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429)
+  R514.noteModelRefusal("claude-opus-5-5", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429, R514.fanMarksOf("ag-4ar5"))
   const next = next514(h, { "claude-opus-5-5": () => null, "r4ar5-1": refuseAll514(RL429), "r4ar5-2": refuseAll514(RL429) })
   const out = await step514(h, "ag-4ar5", "claude-opus-5-5", next)
   expect(out.value && out.value.text).toBe("OK-claude-opus-5-5")
@@ -10410,7 +12297,8 @@ test("#509-FIX4 AR-5: остывшая объявленная = терминал
 // кладутся прямо в h.history (сессия отдаёт объекты как есть), изменение
 // записи между чтениями -- правкой того же объекта в сценарии попытки.
 
-const NOLOGIN = "Not logged in · Please run /login"
+// CONSTRAINT (#514 Р9): permanent-model -- отказ уровня организации, не учётки.
+const ORG_OFF = "This service is disabled for your org"
 
 test("#509-FIX5 Р1 (а): план [D(request), R(request), P(живая permanent с прошлого шага)] -- выход без ожидания", async () => {
   reset514()
@@ -10418,8 +12306,8 @@ test("#509-FIX5 Р1 (а): план [D(request), R(request), P(живая permane
   let next: any = null
   const h = host514("5p1a", T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
   failoverBindSet("ag-5p1a", { ladder: ["r5p1a", "p5p1a"], terminal: "", rungEffort: effortAll509(["r5p1a", "p5p1a"]), subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("p5p1a", T0 - 1000, "permanent-model", 0, "carrier-refusal", NOLOGIN)
-  next = next514(h, { "in5p1a": refuseAll514("Prompt is too long"), "r5p1a": refuseAll514("Prompt is too long"), "p5p1a": refuseAll514(NOLOGIN) })
+  R514.noteModelRefusal("p5p1a", T0 - 1000, "permanent-model", 0, "carrier-refusal", ORG_OFF, R514.fanMarksOf("ag-5p1a"))
+  next = next514(h, { "in5p1a": refuseAll514("Prompt is too long"), "r5p1a": refuseAll514("Prompt is too long"), "p5p1a": refuseAll514(ORG_OFF) })
   await step514(h, "ag-5p1a", "in5p1a", next)
   expect(next.seen, "permanent-модель не вызвана").toEqual(["in5p1a", "r5p1a"])
   expect(attempts514(h, "ag-5p1a").map(r => r.refusalClass)).toEqual(["request", "request"])
@@ -10436,8 +12324,8 @@ test("#509-FIX5 Р1 (б): [P(permanent), Q(permanent)] без request -- ожи�
   let next: any = null
   const h = host514("5p1b", T0, { sleepHook: (n) => { if (n === 2) next.signal.aborted = true } })
   failoverBindSet("ag-5p1b", { ladder: [], terminal: "claude-q5p1b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("p5p1b", T0 - 1000, "permanent-model", 0, "carrier-refusal", NOLOGIN)
-  next = next514(h, { "p5p1b": refuseAll514(NOLOGIN), "claude-q5p1b": refuseAll514(NOLOGIN) })
+  R514.noteModelRefusal("p5p1b", T0 - 1000, "permanent-model", 0, "carrier-refusal", ORG_OFF, R514.fanMarksOf("ag-5p1b"))
+  next = next514(h, { "p5p1b": refuseAll514(ORG_OFF), "claude-q5p1b": refuseAll514(ORG_OFF) })
   await step514(h, "ag-5p1b", "p5p1b", next)
   expect(next.seen).toEqual(["claude-q5p1b"])
   expect(attempts514(h, "ag-5p1b").map(r => r.refusalClass)).toEqual(["permanent-model"])
@@ -10648,7 +12536,7 @@ test("#509-FIX5 Р5: сердцебиение объявленной = терм�
   const T0 = Date.UTC(2026, 8, 28, 10, 0, 0)
   const h = host514("5p5", T0)
   failoverBindSet("ag-5p5", { ladder: ["r5p5"], terminal: "claude-t5p5", rungEffort: { "r5p5": "max" }, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("claude-t5p5", T0 - 1000, "temporary-known", T0 + 3600000, "carrier-refusal", LIMIT11)
+  R514.noteModelRefusal("claude-t5p5", T0 - 1000, "temporary-known", T0 + 3600000, "carrier-refusal", LIMIT11, R514.fanMarksOf("ag-5p5"))
   const next = next514(h, {
     "claude-t5p5": (_k, t) => (t >= T0 + 240000 ? null : LIMIT11),
     "r5p5": refuseAll514("You've hit your session limit · resets 1pm (UTC)"),
@@ -10937,35 +12825,44 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
     "Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. A file being read or a tool output is likely too large for the context window. Try reading in smaller chunks, or use /clear to start fresh.",
   ]
   const permanent = [
-    "Failed to authenticate: OAuth session expired and could not be refreshed",
-    "Your account does not have access to Claude. Please login again or contact your administrator.",
-    "Invalid API key · Fix external API key",
-    "Invalid auth token · Fix external auth token · 401 token rejected",
+    "AWS authentication failed · enable this model for your account and region in the Amazon Bedrock console, or run /model to pick another model · API Error: 403 denied",
+    "AWS credentials expired or invalid · enable this model for your account and region in the Amazon Bedrock console · API Error: 401 denied",
     "Invalid ANTHROPIC_CUSTOM_HEADERS · Fix the environment variable · header rejected",
     "Invalid request header from the environment · Fix the environment variable · header rejected",
     "Your ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your subscription instead",
     "Your ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable",
-    "Your apiKeyHelper script is failing · This usually means you need to re-authenticate with your provider · Run /status to see the script's error output",
     "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access",
     "Your organization has disabled API key authentication · Unset ANTHROPIC_API_KEY to use your claude.ai account instead",
     "Your organization has disabled API key authentication · Unset ANTHROPIC_API_KEY and run /login to sign in with your claude.ai account",
     "Your organization has disabled API key authentication · Unset the apiKeyHelper setting and run /login to sign in with your claude.ai account",
     "Your organization has disabled API key authentication · Sign in again with your claude.ai account",
     "Your organization has disabled API key authentication · Run /login to sign in with your claude.ai account",
-    "Anthropic profile login expired · Re-authenticate your Anthropic profile",
     "Your account is on hold and can't use Claude Code. View details or appeal: https://claude.ai/account-hold",
     "This service is disabled for your org",
-    "AWS credentials expired or invalid · run `aws sso login` and retry · API Error: 403 security token expired",
-    "AWS authentication failed · credentials are managed by this environment — retry, or contact your administrator · API Error: 403 denied",
-    "Google Cloud credentials expired or invalid · run `gcloud auth application-default login` and retry · API Error: 401 expired",
-    "Google Cloud authentication failed · refresh your Google Cloud credentials (application default sign-in, or the key file in GOOGLE_APPLICATION_CREDENTIALS) and retry · API Error: 401 denied",
-    "Microsoft Foundry authentication failed · credentials are managed by this environment — retry, or contact your administrator · if credentials are current, check access to the Foundry resource · API Error: 401 denied",
     "Gateway refused the request · signing in again won't change this — check with your gateway administrator · API Error: 403 denied",
     "There's an issue with the selected model (claude-opus-5-5[1m]). It may not exist or you may not have access to it. Run /model to pick a different model.",
     "CLAUDE_CODE_NO_MODEL_FALLBACK is set: model substitution is disabled · unset it to allow the swap",
     "The model claude-opus-5-5[1m] is not available on your Bedrock deployment. Try /model to switch to claude-sonnet-5, or ask your admin to enable this model.",
     "The model Opus 5.5 is not available on your Vertex AI deployment. Try switching to Sonnet 5, or ask your admin to enable this model.",
     "The server routed this response to a model that is not in your organization’s availableModels allowlist; the response was discarded.",
+
+  ]
+  // CONSTRAINT (#514 Р9): строки учётки -- temporary-unknown, не permanent-model.
+  const auth = [
+    "Your account does not have access to Claude. Please login again or contact your administrator.",
+    "Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator",
+    "AWS authentication failed · refresh your AWS credentials (SSO sign-in, access keys, API key or proxy token) and retry · if credentials are current, check AWS permissions and model access · API Error: 403 denied",
+    "Google Cloud authentication failed · refresh the gateway token provided via ANTHROPIC_AUTH_TOKEN/ANTHROPIC_CUSTOM_HEADERS and retry · if credentials are current, check GCP IAM permissions and Vertex AI model access · API Error: 403 denied",
+    "Failed to authenticate: OAuth session expired and could not be refreshed",
+    "Invalid API key · Fix external API key",
+    "Invalid auth token · Fix external auth token · 401 token rejected",
+    "Your apiKeyHelper script is failing · This usually means you need to re-authenticate with your provider · Run /status to see the script's error output",
+    "Anthropic profile login expired · Re-authenticate your Anthropic profile",
+    "AWS credentials expired or invalid · run `aws sso login` and retry · API Error: 403 security token expired",
+    "AWS authentication failed · credentials are managed by this environment — retry, or contact your administrator · API Error: 403 denied",
+    "Google Cloud credentials expired or invalid · run `gcloud auth application-default login` and retry · API Error: 401 expired",
+    "Google Cloud authentication failed · refresh your Google Cloud credentials (application default sign-in, or the key file in GOOGLE_APPLICATION_CREDENTIALS) and retry · API Error: 401 denied",
+    "Microsoft Foundry authentication failed · credentials are managed by this environment — retry, or contact your administrator · if credentials are current, check access to the Foundry resource · API Error: 401 denied",
   ]
   const limit = [
     "Fable limit reached · continuing on Opus 5.5 uses usage credits, and the prompt to confirm went unanswered — nothing was sent · answer it where this session is running, or /model to change",
@@ -10987,6 +12884,7 @@ test("#509-FIX6 А3: таблица отказов хоста 2.1.283 -- каж�
   const want: any[] = []
   for (const l of request) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "request" }) }
   for (const l of permanent) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "permanent-model" }) }
+  for (const l of auth) { got.push({ l, c: cr(l, now).class }); want.push({ l, c: "temporary-unknown" }) }
   for (const l of limit) {
     const k = cr(l + TAIL, now)
     got.push({ l, known: known(l), c: k.class, at: k.readyAt })
@@ -11017,6 +12915,7 @@ test("#509-FIX6 А3: префиксы таблиц не перекрывают �
   const groups: Array<[string, string[]]> = [
     ["other", R514.REFUSAL_OTHER_PREFIXES], ["request", R514.REFUSAL_REQUEST_PREFIXES],
     ["permanent", R514.REFUSAL_PERMANENT_PREFIXES], ["limit", R514.REFUSAL_LIMIT_PREFIXES],
+    ["auth", R514.REFUSAL_AUTH_PREFIXES],
   ]
   const cross: string[] = []
   for (const [ga, as] of groups) for (const [gb, bs] of groups) {
@@ -11024,7 +12923,7 @@ test("#509-FIX6 А3: префиксы таблиц не перекрывают �
     for (const a of as) for (const b of bs) if (a.indexOf(b) === 0) cross.push(ga + ":" + a + " <- " + gb + ":" + b)
   }
   expect(cross, "начало префикса одного класса -- префикс другого").toEqual([])
-  const wantOf: { [g: string]: string } = { other: "temporary-unknown", request: "request", permanent: "permanent-model", limit: "temporary-known" }
+  const wantOf: { [g: string]: string } = { other: "temporary-unknown", request: "request", permanent: "permanent-model", limit: "temporary-known", auth: "temporary-unknown" }
   const bad: string[] = []
   for (const [g, ps] of groups) for (const p of ps) {
     const c = cr(p + " · resets 11am (UTC)", now).class
@@ -11111,27 +13010,41 @@ test("#509-FIX7 А-Р3: стенд doorCost -- бросок двери двиг�
   expect({ thrown, spent: h.m.getNow() - T0 }, "запись: 10 + 20").toEqual({ thrown: 3, spent: 630 })
 })
 
-test("#509-FIX7 А-Р5: GBn и HBn -- permanent по общему префиксу «Login expired · »", () => {
+test("#509-FIX7 А-Р5, #514 Р9: GBn и HBn -- учётка (temporary-unknown) по общему префиксу «Login expired · »", () => {
   const cr = R514.classifyRefusal
   const now = Date.parse("2026-10-03T09:00:00Z")
   const rows = [
     "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile",
     "Login expired · Please run /login",
   ]
-  expect(rows.map(l => ({ l, c: cr(l, now).class }))).toEqual(rows.map(l => ({ l, c: "permanent-model" })))
-  expect(R514.REFUSAL_PERMANENT_PREFIXES, "общий префикс в таблице").toContain("Login expired · ")
-  expect(R514.REFUSAL_PERMANENT_PREFIXES.indexOf("Login expired · Please run /login"), "полная форма избыточна").toBe(-1)
+  expect(rows.map(l => ({ l, c: cr(l, now).class }))).toEqual(rows.map(l => ({ l, c: "temporary-unknown" })))
+  expect(R514.REFUSAL_AUTH_PREFIXES, "общий префикс в таблице").toContain("Login expired · ")
+  expect(R514.REFUSAL_AUTH_PREFIXES.indexOf("Login expired · Please run /login"), "полная форма избыточна").toBe(-1)
+  expect(R514.REFUSAL_PERMANENT_PREFIXES.indexOf("Login expired · "), "не в двух таблицах").toBe(-1)
 })
 
-test("#509-FIX7 А-Р6: Hdt -- temporary-unknown раньше префиксов permanent; gateway-строка PJt -- permanent", () => {
+test("#509-FIX7 А-Р6, #514 Р9-FIX1: Hdt и gateway-строка PJt -- temporary-unknown, обе известны", () => {
   const cr = R514.classifyRefusal
   const now = Date.parse("2026-10-03T09:00:00Z")
   const got = [
     "Authentication error · This may be a temporary network issue, please try again",
     "Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator",
   ].map(l => cr(l, now).class)
-  expect(got).toEqual(["temporary-unknown", "permanent-model"])
+  expect(got).toEqual(["temporary-unknown", "temporary-unknown"])
   expect(R514.refusalKnown("Authentication error · This may be a temporary network issue, please try again"), "строка таблицы хоста").toBe(true)
+  expect(R514.refusalKnown("Authentication error · The gateway could not authenticate with its upstream provider — contact your gateway administrator"), "gateway-строка").toBe(true)
+})
+
+// CONSTRAINT (#514 Р9-FIX2): строка сессии хоста 2.1.287 для 403 Bedrock
+// InvokeModel (Cut -> denied) -- permanent-model; соседняя оговорка учётки
+// без фразы IAM остаётся temporary-unknown.
+test("#514 Р9-FIX2: 403 Bedrock InvokeModel под префиксом учётки AWS -- permanent-model", () => {
+  const cr = R514.classifyRefusal
+  const now = Date.parse("2026-10-03T09:00:00Z")
+  const denied = "AWS authentication failed · refresh your AWS credentials (SSO sign-in, access keys, API key or proxy token) and retry · if credentials are current, check AWS permissions and model access · API Error: 403 User: arn:aws:iam::1:user/a is not authorized to perform: bedrock:InvokeModel on resource: arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus"
+  const mixed = "AWS authentication failed · refresh your AWS credentials (SSO sign-in, access keys, API key or proxy token) and retry · if credentials are current, check AWS permissions and model access · API Error: 403 The security token included in the request is invalid."
+  expect({ c: cr(denied, now).class, known: R514.refusalKnown(denied) }).toEqual({ c: "permanent-model", known: true })
+  expect(cr(mixed, now).class, "оговорка учётки без фразы IAM").toBe("temporary-unknown")
 })
 
 test("#509-FIX7 А-Р7: allowlist-маршрутизация организации (110688729) -- permanent", () => {
@@ -11418,6 +13331,9 @@ test("#509-FIX7b AR8: next бросил тело отказа без префи�
     ["b8b", "glm-5.3-t7b8b", "{\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1308\",\"message\":\"[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]\"}}", "quota", "throw"],
     ["b8c", "grok-4.7-t7b8c", "402 All credentials for model grok-4.7 are parked: the upstream refused to bill them", "quota", "throw"],
     ["b8d", "glm-5.3-t7b8d", "Working on it.\n[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]", "quota", "line"],
+    ["b8e", "gpt-6.1-sol-t7b8e", "Please run /login · API Error: 403 status 403", "temporary-unknown", "throw"],
+    ["b8f", "gpt-6.1-sol-t7b8f", "Invalid API key · Fix external API key", "temporary-unknown", "throw"],
+    ["b8g", "gpt-6.1-sol-t7b8g", "AWS authentication failed · enable this model for your account and region in the Amazon Bedrock console · API Error: 403 denied", "permanent-model", "throw"],
   ]
   const got: any[] = []
   const want: any[] = []
@@ -11441,6 +13357,9 @@ test("#509-FIX7b AR8: next бросил тело отказа без префи�
   const z = "[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-28 05:35:51]"
   got.push({ tag: "messages", glm: pick(["Working on it.\n" + z], "glm-5.3"), opus: pick(["Working on it.\n" + z], "claude-opus-5-5") })
   want.push({ tag: "messages", glm: { line: z, known: true }, opus: { line: "Working on it.", known: false } })
+  // CONSTRAINT (#514 Р9-FIX1): новейшая строка учётки решает раньше старшей известной.
+  got.push({ tag: "auth-newest", v: pick(["Credit balance is too low", "Please run /login · API Error: 403 status 403"], "gpt-6.1-sol") })
+  want.push({ tag: "auth-newest", v: { line: "Please run /login · API Error: 403 status 403", known: true } })
   expect(got).toEqual(want)
 })
 
@@ -11966,7 +13885,7 @@ test("#509-FIX8c Р6: проверяющий A ждёт на ступени X, �
 
 // --- #509-FIX8d ------------------------------------------------------------------
 // CONSTRAINT (#509-FIX8d Р1): X уходит из плана по известному сбросу (12:20)
-// только в проходе пробуждения (skipKnown): объявленная сперва отказывает
+// в каждом проходе после своей метки (#514 Р9): объявленная сперва отказывает
 // коротко (30 с) и будит проход, затем квотой (60 мин) -- тогда ближайшая цель
 // ожидания -- X вне плана. Окно зуба -- 10 мин, X за него не остывает.
 async function outOfPlan8d(tag: string, take: "spawn" | "race"): Promise<any> {
@@ -15205,8 +17124,8 @@ test("#509-FIX9 R4: статус обёртки API Error решает клас�
   const rows: Array<[string, string]> = [
     ["API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 250000 tokens > 200000 maximum\"}}", "request"],
     ["API Error: 413 request body Too Long for upstream", "request"],
-    ["API Error: 401 {\"error\":{\"message\":\"invalid x-api-key\"}}", "permanent-model"],
-    ["API Error: 403 {\"error\":{\"type\":\"permission_error\",\"message\":\"content policy\"}}", "permanent-model"],
+    ["API Error: 401 {\"error\":{\"message\":\"invalid x-api-key\"}}", "temporary-unknown"],
+    ["API Error: 403 {\"error\":{\"type\":\"permission_error\",\"message\":\"content policy\"}}", "temporary-unknown"],
     ["API Error: 404 {\"error\":{\"message\":\"route not found\"}}", "permanent-model"],
     ["API Error: 402 Payment Required", "quota"],
     ["API Error: 400 {\"error\":\"unknown provider grok-4.6\"}", "permanent-model"],
@@ -15240,7 +17159,7 @@ async function fix9Term(tag: string, cls: string): Promise<any> {
   const rM = "r9r2" + tag
   const tM = "claude-t9r2" + tag
   failoverBindSet(aid, { ladder: [rM], terminal: tM, rungEffort: { [rM]: "max" }, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls)
+  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls, R514.fanMarksOf(aid))
   const script = { [inM]: refuseAll514(RL429), [rM]: refuseAll514(RL429), [tM]: () => null }
   next = next514(h, script)
   const out1 = await step514(h, aid, inM, next)
@@ -15392,7 +17311,7 @@ async function fix10TermDecl(tag: string, cls: string): Promise<any> {
   const tM = "claude-t10f1" + tag
   const rM = "r10f1" + tag
   failoverBindSet(aid, { ladder: [rM], terminal: tM, rungEffort: { [rM]: "max" }, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls)
+  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls, R514.fanMarksOf(aid))
   const script: any = { [rM]: refuseAll514(RL429), [tM]: (_k: number, t: number) => (t >= T0 + 3600000 + 1000 ? null : RL429) }
   next = next514(h, script)
   const out1 = await step514(h, aid, tM, next)
@@ -15429,7 +17348,7 @@ test("#509-FIX11 B2: объявленная = терминал без ступе
   const aid = "ag-11e"
   const h = host514("11e", T0)
   failoverBindSet(aid, { ladder: [], terminal: tM, rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota")
+  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota", R514.fanMarksOf(aid))
   const at: number[] = []
   const next = next514(h, {
     [tM]: (_k: number, t: number) => { at.push(t); return t >= T0 + 600000 ? null : "API Error: 503 auth_unavailable (model=claude-t11e; last upstream error: quota); soonest recovery in 10m" },
@@ -15455,7 +17374,7 @@ test("#509-FIX11 B2: то же ожидание, прерванное на пе�
   let next: any = null
   const h = host514("11eb", T0, { sleepHook: (n: number) => { if (n === 1) next.signal.aborted = true } })
   failoverBindSet(aid, { ladder: [], terminal: tM, rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota")
+  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota", R514.fanMarksOf(aid))
   next = next514(h, { [tM]: refuseAll514(RL429) })
   await step514(h, aid, tM, next)
   expect(next.seen, "до срока модель не зовётся -- прямого вызова нет").toEqual([])
@@ -15528,7 +17447,7 @@ async function fix10F2Row(tag: string, firstLine: string, beatLine: string): Pro
   const at: number[] = []
   const next = next514(h, {
     [inM]: (k: number, t: number) => { at.push(t); return k === 0 ? firstLine : (t >= T0 + 1800000 ? null : beatLine) },
-    [tM]: refuseAll514("Not logged in · Please run /login"),
+    [tM]: refuseAll514(ORG_OFF),
   })
   const out = await step514(h, aid, inM, next)
   const kinds = waits514(h, aid, "wait-probe").map(r => r.kind)
@@ -15566,7 +17485,7 @@ test("#509-FIX10 F2: отказ сердцебиения temporary-known не д
 // CONSTRAINT: ряды идут фактическим путём turn.step → attemptOne → markRefusal /
 // failoverStepPlan; часы движет только подставной /bin/sleep стенда.
 
-test("#509-FIX11 B1: wake-проход снимает живую quota-метку ступени -- Q не вызывается до её срока, после срока вызывается; первичный проход никого не пропускает", async () => {
+test("#509-FIX11 B1, #514 Р9: любой проход снимает живую quota-метку ступени -- Q не вызывается до её срока, после срока вызывается", async () => {
   reset514()
   const T0 = Date.UTC(2026, 9, 9, 10, 0, 0)
   const inM = "in11w"
@@ -15576,27 +17495,27 @@ test("#509-FIX11 B1: wake-проход снимает живую quota-метк�
   const aid = "ag-11w"
   const h = host514("11w", T0)
   failoverBindSet(aid, { ladder: [bM, qM], terminal: tM, rungEffort: { [bM]: "high", [qM]: "high" }, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(qM, T0, "quota", T0 + 3600000, "carrier-refusal", "pre-quota")
+  R514.noteModelRefusal(qM, T0, "quota", T0 + 3600000, "carrier-refusal", "pre-quota", R514.fanMarksOf(aid))
   const atQ: number[] = []
   const next = next514(h, {
     [inM]: (k: number, _t: number) => (k === 0 ? "You've hit your session limit · resets 10:30am (UTC)" : RL429),
     [bM]: (_k: number, t: number) => (t >= T0 + 600000 ? RL429 : "You've hit your session limit · resets 10:10am (UTC)"),
-    [qM]: (k: number, t: number) => {
+    [qM]: (_k: number, t: number) => {
       atQ.push(t)
-      return k === 0 || t < T0 + 3600000
+      return t < T0 + 3600000
         ? "API Error: 503 auth_unavailable (model=r11wq; last upstream error: quota); soonest recovery in 1h"
         : null
     },
-    [tM]: refuseAll514("Not logged in · Please run /login"),
+    [tM]: refuseAll514(ORG_OFF),
   })
   const out = await step514(h, aid, inM, next)
   expect(out.value && out.value.text, "шаг завершён вызовом Q после её срока").toBe("OK-" + qM)
-  expect(next.seen.slice(0, 4), "первичный проход: объявленная, обе ступени и терминал -- никого не пропустили").toEqual([inM, bM, qM, tM])
-  expect(atQ.length, "Q вызвана ровно дважды: первичный проход и срок").toBe(2)
-  expect(atQ[0] - T0, "не-пропуск Q на первичном проходе").toBeLessThan(60000)
-  expect(atQ[1] - T0, "второй вызов Q -- после срока квоты").toBeGreaterThanOrEqual(3600000)
+  expect(next.seen.slice(0, 3), "первичный проход: объявленная, B и терминал; Q с живой quota снята").toEqual([inM, bM, tM])
+  expect(atQ.length, "Q вызвана ровно один раз -- после срока").toBe(1)
+  expect(atQ[0] - T0, "единственный вызов Q -- после срока квоты").toBeGreaterThanOrEqual(3600000)
   const skippedQ = waits514(h, aid, "skipped-known-until").filter(r => r.model === qM)
-  expect(skippedQ.length, "wake-проходы снимают живую quota-метку в skippedKnown").toBeGreaterThan(0)
+  expect(skippedQ.filter(r => r.pass === 1).length, "первичный проход называет пропуск Q").toBe(1)
+  expect(skippedQ.length, "проходы до срока снимают живую quota-метку в skippedKnown").toBeGreaterThan(1)
   rungCooldownReset()
   failoverBindReset()
 })
@@ -15617,7 +17536,7 @@ test("#509-FIX11 B3: проба с более ранним достоверны�
         ? "You've hit your session limit · resets 11am (UTC)"
         : (t >= T0 + 540000 ? null : "API Error: 503 auth_unavailable (model=in11s; last upstream error: quota); soonest recovery in 5m")
     },
-    [tM]: refuseAll514("Not logged in · Please run /login"),
+    [tM]: refuseAll514(ORG_OFF),
   })
   const out = await step514(h, aid, inM, next)
   const kinds = waits514(h, aid, "wait-probe").map(r => r.kind)
@@ -16044,8 +17963,8 @@ test("#509-FIX21 P9: двойное отрицание be, самостояте�
     ["API Error: 400 the prompt didn't take timeout, the payload is too long", "request"],
     ["API Error: 400 the request didn't take entire the payload too long, the payload is too long", "request"],
     ["API Error: 413 the prompt wouldn't be too long", "request"],
-    ["API Error: 401 the prompt wouldn't be too long", "permanent-model"],
-    ["API Error: 403 the prompt wouldn't be too long", "permanent-model"],
+    ["API Error: 401 the prompt wouldn't be too long", "temporary-unknown"],
+    ["API Error: 403 the prompt wouldn't be too long", "temporary-unknown"],
     ["API Error: 404 the prompt wouldn't be too long", "permanent-model"],
     ["API Error: 402 the prompt wouldn't be too long", "quota"],
   ]

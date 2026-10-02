@@ -30,7 +30,7 @@
 set -u
 
 # CONSTRAINT: неизвестный аргумент отвергается ДО любой работы (форма
-# test-judge-serves.sh / test-effort-layers.sh).
+# test-judge-serves.sh).
 if [ "$#" -ne 0 ]; then
   printf 'ОТКАЗ ПРИБОРА: неизвестный аргумент: %s; стенд принимает только запуск без аргументов\n' "$1" >&2
   exit 2

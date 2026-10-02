@@ -32,7 +32,7 @@
 set -u
 export LC_ALL=C
 
-EXPECTED_STANDS=17
+EXPECTED_STANDS=16
 
 refuse() {   # <причина>: отказ ПРИБОРА до единого запуска
   printf 'run-all: ОТКАЗ SCOPE: %s\n' "$1"

@@ -15,7 +15,7 @@ export LC_ALL=C
 # CONSTRAINT: ожидаемое число зубов объявлено ЗДЕСЬ и больше нигде; расхождение
 # в любую сторону -- КРАСНЫЙ (зуб, тихо выпавший из прогона, неотличим от зуба,
 # которого никогда не писали).
-EXPECTED_TEETH=98
+EXPECTED_TEETH=106
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TESTS="$(cd "$HERE/.." && pwd)"
@@ -428,7 +428,7 @@ rmap_against() {   # <каталог дерева> -> 0 зелёно; причи
   local map_out map_rc want_names got_names reach_ok f b
   map_out=$(bash "$dir/tests/stand-scope.sh" --paths "$pf" 2>"$WORK/.rmap-err")
   map_rc=$?
-  want_names="$(printf 'dispatch-gate\ndispatch-stats\neffort-layers\njudge-bridge\njudge-ladder-live\njudge-serves\nladder-policy\nmod-event-names\nmod-units\nplugin-freshness\nplugin-gate\nplugin-ship\nrender-tree\nrun-all\nrun-hook-forwarding\nscripts\nswe-request\nlint\n' | sort)"
+  want_names="$(printf 'dispatch-gate\ndispatch-stats\nform-host-parity\njudge-bridge\njudge-ladder-live\njudge-serves\nmod-event-names\nmod-units\nplugin-freshness\nplugin-gate\nplugin-ship\nrender-tree\nrun-all\nrun-hook-forwarding\nscripts\nswe-request\nlint\n' | sort)"
   got_names="$(printf '%s' "$map_out" | tr ',' '\n' | sort)"
   reach_ok=1
   for f in "$dir"/tests/scripts/test-*.sh; do
@@ -1651,6 +1651,152 @@ else
   else
     bad "R98) пустой массив стендов: --scope foo rc=$r98a out=[$o98a]; --list rc=$r98b out=[$o98b]"
   fi
+fi
+
+# --- R99. удалённый файл вместе со своей строкой карты -- покрыт картой HEAD -------
+W99=$(mk_world w99)
+printf 'tests/stand-map.tsv\t-\n' >> "$W99/tests/stand-map.tsv"
+git -C "$W99" add tests/stand-map.tsv
+git -C "$W99" commit -qm mapself
+git -C "$W99" rm -q beta/exact.txt
+grep -v '^beta/exact.txt	' "$W99/tests/stand-map.tsv" > "$W99/map.new" && mv "$W99/map.new" "$W99/tests/stand-map.tsv"
+git -C "$W99" add tests/stand-map.tsv
+fx99=""
+grep -q '^beta/exact.txt	' "$W99/tests/stand-map.tsv" && fx99="строка beta/exact.txt осталась в карте"
+git -C "$W99" show HEAD:tests/stand-map.tsv | grep -q '^beta/exact.txt	b$' || fx99="${fx99:+$fx99; }в HEAD-карте нет строки beta/exact.txt"
+if [ -n "$fx99" ]; then
+  bad "R99) фикстура: $fx99"
+else
+  run_ss_staged "$W99"
+  o99h=$(cd "$W99" && bash tests/stand-scope.sh --staged --map-rev HEAD --skip-uncovered 2>/dev/null); r99h=$?
+  if [ "$SSS_RC" = 0 ] && [ -z "$SSS_OUT" ] && [[ "$SSS_ERR" != *"НЕ ПОКРЫТ"* ]] \
+     && [ "$r99h" = 0 ] && [ "$o99h" = "b" ]; then
+    ok "R99) git rm beta/exact.txt + снятая строка карты -- индексный проход rc 0 без «НЕ ПОКРЫТ», HEAD-проход даёт b"
+  else
+    bad "R99) удалённый картированный путь: rc=$SSS_RC out=[$SSS_OUT] err=[$SSS_ERR] head rc=$r99h out=[$o99h]"
+  fi
+fi
+
+# --- R100. контроль R99: удалённый путь, не покрытый и картой HEAD -- НЕ ПОКРЫТ -----
+W100=$(mk_world w100)
+mkdir -p "$W100/nowhere"
+printf 'x\n' > "$W100/nowhere/y"
+git -C "$W100" add nowhere/y
+git -C "$W100" commit -qm unmapped
+git -C "$W100" rm -q nowhere/y
+run_ss_staged "$W100"
+if [ "$SSS_RC" = 2 ] && [[ "$SSS_ERR" == *"stand-scope: НЕ ПОКРЫТ nowhere/y"* ]]; then
+  ok "R100) git rm nowhere/y без строки ни в индексной, ни в HEAD-карте -- rc 2 НЕ ПОКРЫТ"
+else
+  bad "R100) удалённый непокрытый путь: rc=$SSS_RC out=[$SSS_OUT] err=[$SSS_ERR]"
+fi
+
+# --- R101. отказ git при чтении карты HEAD для удалённого пути -- rc 3 ОТКАЗ ПРИБОР ----
+W101=$(mk_world w101)
+git -C "$W101" rm -q beta/exact.txt
+grep -v '^beta/exact.txt	' "$W101/tests/stand-map.tsv" > "$W101/map.new" && mv "$W101/map.new" "$W101/tests/stand-map.tsv"
+printf 'tests/stand-map.tsv\t-\n' >> "$W101/tests/stand-map.tsv"
+git -C "$W101" add tests/stand-map.tsv
+mkdir -p "$WORK/gbin101"
+cat > "$WORK/gbin101/git" <<EOF2
+#!/usr/bin/env bash
+if [ "\$1" = rev-parse ] && [ "\${2:-}" = -q ] && [ "\${3:-}" = --verify ] && [ "\${4:-}" = HEAD:tests/stand-map.tsv ]; then
+  printf 'FAIL %s\n' "\$*" >> "$WORK/stub-git101.log"
+  exit 128
+fi
+exec "$REALGIT" "\$@"
+EOF2
+chmod +x "$WORK/gbin101/git"
+o101=$(cd "$W101" && env PATH="$WORK/gbin101:$PATH" bash tests/stand-scope.sh --staged 2>"$W101/.err"); r101=$?
+e101=$(cat "$W101/.err")
+if [ "$r101" = 3 ] && [ -z "$o101" ] && [ -s "$WORK/stub-git101.log" ] \
+   && [[ "$e101" == *"stand-scope: ОТКАЗ ПРИБОР: git rev-parse HEAD:tests/stand-map.tsv отказ (rc=128)"* ]]; then
+  ok "R101) заглушка git rc=128 на карте HEAD для удалённого пути -- rc 3 ОТКАЗ ПРИБОР, не НЕ ПОКРЫТ"
+else
+  bad "R101) отказ чтения карты HEAD: rc=$r101 out=[$o101] err=[$e101] журнал=[$(cat "$WORK/stub-git101.log" 2>/dev/null)]"
+fi
+
+# --- R102..R106. #594: scope со стендом mod-units везёт кит ------------------------
+# CONSTRAINT: кит -- git-репо с refs/remotes/origin/main; рабочее дерево кита
+# отличается от origin/main, чтобы различить блоб и рабочую копию.
+mk_kit() {   # <имя> <строка origin/main> -> путь кита
+  local k="$WORK/$1"
+  mkdir -p "$k"
+  git -C "$k" init -q
+  git -C "$k" config user.email t@t
+  git -C "$k" config user.name t
+  printf '%s\n' "$2" > "$k/tweakcc-patch.js"
+  git -C "$k" add tweakcc-patch.js
+  git -C "$k" commit -qm kit
+  git -C "$k" update-ref refs/remotes/origin/main HEAD
+  printf 'KIT-WORKING\n' > "$k/tweakcc-patch.js"
+  printf '%s' "$k"
+}
+
+W102=$(mk_world w102)
+K102=$(mk_kit kit102 KIT-ORIGIN-MAIN)
+KO102=$(git -C "$K102" rev-parse 'origin/main:tweakcc-patch.js')
+TH102=$(git -C "$W102" rev-parse 'HEAD^{tree}')
+STUB_LOG="$WORK/stub-r102.log"; STUB_RSYNC_REC="$WORK/rsync-r102"; rm -f "$STUB_LOG"; rm -rf "$STUB_RSYNC_REC"
+RW_OUT=$(cd "$W102" && env PATH="$BIN:$PATH" CATALYST_PATCH_KIT="$K102" bash tests/run-witness.sh --tree "$TH102" --scope a,mod-units 2>&1); RW_RC=$?
+if [ "$RW_RC" = 0 ] && [ -f "$W102/.git/catalyst-witness/$TH102" ] \
+   && [ "$(cat "$STUB_RSYNC_REC/tweakcc-patch.js" 2>/dev/null)" = "KIT-ORIGIN-MAIN" ] \
+   && grep -q "rsync -a --no-xattrs --delete .*catalyst-witness/$TH102.kit/" "$STUB_LOG" \
+   && grep -qF "env -u CATALYST_STANDS CATALYST_PATCH_KIT=\$HOME/scratch/catalyst-witness/$TH102.kit systemd-run" "$STUB_LOG" \
+   && grep -qF "rm -rf ~/scratch/catalyst-witness/$TH102 ~/scratch/catalyst-witness/$TH102.kit" "$STUB_LOG" \
+   && grep -qF "run-witness: кит origin/main:tweakcc-patch.js $KO102" "$W102/.git/catalyst-witness/$TH102.log" \
+   && [[ "$RW_OUT" == *"origin/main:tweakcc-patch.js $KO102"* ]]; then
+  ok "R102) scope с mod-units: кит origin/main едет в <T>.kit, CATALYST_PATCH_KIT в команде, уборка обоих, oid в журнале"
+else
+  bad "R102) кит: rc=$RW_RC rec=[$(cat "$STUB_RSYNC_REC/tweakcc-patch.js" 2>/dev/null)] out=[$RW_OUT] stub=[$(cat "$STUB_LOG" 2>/dev/null)]"
+fi
+
+W103=$(mk_world w103)
+TH103=$(git -C "$W103" rev-parse 'HEAD^{tree}')
+STUB_LOG="$WORK/stub-r103.log"; rm -f "$STUB_LOG"
+RW_OUT=$(cd "$W103" && env PATH="$BIN:$PATH" CATALYST_PATCH_KIT="$WORK/nokit103" bash tests/run-witness.sh --tree "$TH103" --scope mod-units 2>&1); RW_RC=$?
+if [ "$RW_RC" = 2 ] && [[ "$RW_OUT" == *"run-witness: ОТКАЗ КИТ: в $WORK/nokit103 нет origin/main:tweakcc-patch.js"* ]] \
+   && [ ! -e "$STUB_LOG" ] && [ ! -e "$W103/.git/catalyst-witness/$TH103" ]; then
+  ok "R103) scope с mod-units, кита нет -- rc 2 ОТКАЗ КИТ до первого удалённого действия"
+else
+  bad "R103) нет кита: rc=$RW_RC out=[$RW_OUT] stub=[$(cat "$STUB_LOG" 2>/dev/null)]"
+fi
+
+W104=$(mk_world w104)
+K104=$(mk_kit kit104 KIT-104)
+git -C "$K104" update-ref -d refs/remotes/origin/main
+TH104=$(git -C "$W104" rev-parse 'HEAD^{tree}')
+STUB_LOG="$WORK/stub-r104.log"; rm -f "$STUB_LOG"
+RW_OUT=$(cd "$W104" && env PATH="$BIN:$PATH" CATALYST_PATCH_KIT="$K104" bash tests/run-witness.sh --tree "$TH104" --scope mod-units 2>&1); RW_RC=$?
+if [ "$RW_RC" = 2 ] && [[ "$RW_OUT" == *"run-witness: ОТКАЗ КИТ: в $K104 нет origin/main:tweakcc-patch.js"* ]] \
+   && [ ! -e "$STUB_LOG" ]; then
+  ok "R104) кит без origin/main -- rc 2 ОТКАЗ КИТ, рабочая копия кита не подставляется"
+else
+  bad "R104) кит без origin/main: rc=$RW_RC out=[$RW_OUT] stub=[$(cat "$STUB_LOG" 2>/dev/null)]"
+fi
+
+W105=$(mk_world w105)
+TH105=$(git -C "$W105" rev-parse 'HEAD^{tree}')
+STUB_LOG="$WORK/stub-r105.log"; STUB_RSYNC_REC="$WORK/rsync-r105"; rm -f "$STUB_LOG"; rm -rf "$STUB_RSYNC_REC"
+RW_OUT=$(cd "$W105" && env PATH="$BIN:$PATH" CATALYST_PATCH_KIT="$WORK/nokit105" bash tests/run-witness.sh --tree "$TH105" --scope a 2>&1); RW_RC=$?
+if [ "$RW_RC" = 0 ] && [ -f "$W105/.git/catalyst-witness/$TH105" ] \
+   && ! grep -q 'CATALYST_PATCH_KIT' "$STUB_LOG" && ! grep -q '\.kit/' "$STUB_LOG" \
+   && [[ "$RW_OUT" != *"run-witness: кит "* ]]; then
+  ok "R105) scope без mod-units -- кит не читается и не едет, команда без CATALYST_PATCH_KIT"
+else
+  bad "R105) без mod-units: rc=$RW_RC out=[$RW_OUT] stub=[$(cat "$STUB_LOG" 2>/dev/null)]"
+fi
+
+W106=$(mk_world w106)
+K106=$(mk_kit Catalyst-CC-Patch KIT-DEFAULT)
+TH106=$(git -C "$W106" rev-parse 'HEAD^{tree}')
+STUB_LOG="$WORK/stub-r106.log"; STUB_RSYNC_REC="$WORK/rsync-r106"; rm -f "$STUB_LOG"; rm -rf "$STUB_RSYNC_REC"
+RW_OUT=$(cd "$W106" && env -u CATALYST_PATCH_KIT PATH="$BIN:$PATH" bash tests/run-witness.sh --tree "$TH106" --scope mod-units 2>&1); RW_RC=$?
+if [ "$RW_RC" = 0 ] && [ "$(cat "$STUB_RSYNC_REC/tweakcc-patch.js" 2>/dev/null)" = "KIT-DEFAULT" ] \
+   && [[ "$RW_OUT" == *"/Catalyst-CC-Patch origin/main:tweakcc-patch.js $(git -C "$K106" rev-parse 'origin/main:tweakcc-patch.js')"* ]]; then
+  ok "R106) CATALYST_PATCH_KIT не задана -- кит берётся рядом с главным чекаутом"
+else
+  bad "R106) умолчание кита: rc=$RW_RC rec=[$(cat "$STUB_RSYNC_REC/tweakcc-patch.js" 2>/dev/null)] out=[$RW_OUT]"
 fi
 
 printf '\nRUN-ALL-TEETH PASS=%d FAILED=%d\n' "$PASS" "$FAIL"

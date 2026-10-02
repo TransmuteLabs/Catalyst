@@ -1295,7 +1295,8 @@ describe("failover: agent.spawn + turn.step", () => {
     // есть отказ по общему пути (класс temporary-unknown, метка). Ложный бросок
     // при этом всё так же НЕ успех: шаг проходит все ступени и возвращает
     // последний ответ (здесь ответа не было ни одного -- null), не «OK».
-    // busy-model бросила в первой половине и остывает -- отложена в хвост.
+    // CONSTRAINT (#514 Р6): метка броска busy-model стоит на карте ПЕРВОГО
+    // агента; второй агент начинает с чистой карты, и busy-model не отложена.
     const seenAll: string[] = []
     const allFalsy = (req: any) => (async function* () {
       seenAll.push(String(req.model))
@@ -1318,9 +1319,13 @@ describe("failover: agent.spawn + turn.step", () => {
       }, allFalsy))
     } catch (x) { caught = x }
 
-    expect(seenAll, "пройдены все ступени лестницы").toEqual(["glm-5.3", "grok-4.6", "busy-model"])
+    expect(seenAll, "пройдены все ступени лестницы; своя карта чиста -- объявленная первой").toEqual(["busy-model", "glm-5.3", "grok-4.6"])
     expect(caught, "исчерпанный проход не бросает (#514 H8)").toBe("НЕ БРОСИЛО")
     expect(returned, "ложный бросок не выдан за успех: ответа нет").toBe(null)
+    // ПРЯМАЯ улика Р6: метка жива на карте агента, которому бросили.
+    const own = (registerBehavior509 as any).fanMarksOf("ag-unit-falsy")
+    const ownMark = own.get("busy-model")
+    expect(ownMark && ownMark.reason, "метка броска -- на карте первого агента").toBe("carrier-throw")
   })
 
   // CONSTRAINT: кусок обязан пройти СКВОЗЬ движок до делегации мода (граница
@@ -1488,8 +1493,9 @@ describe("failover: agent.spawn + turn.step", () => {
 // отказаны («its hooks module does not call it» -- измерено 2026-09-16), журнала
 // у него нет. Модульное состояние (накопитель моделей исполнителей) переживает
 // тесты файла, поэтому каждый зуб начинает с sessionExecutorsReset() и
-// rungCooldownReset(): метки остывания -- та же процессная память, и без сброса
-// зуб, чья модель отказала соседу, молча меняет смысл (#313).
+// rungCooldownReset(): метки остывания -- по агенту (#514 Р6: отказ агента A
+// не меняет план агента B; главный луп -- ключ "main"), дверь стенда чистит
+// обе карты -- консультаций и веера.
 describe("failover: проверяющий не уезжает на модель исполнителя (#226)", () => {
   function failover226Toml(critModels: string[]): string {
     return [
@@ -1850,17 +1856,17 @@ describe("failover: проверяющий не уезжает на модель
     expect(all.filter(r => r.outcome === "nudge_dropped").map(r => r.by), "подсказка о подмене снята сменой сессии").toEqual(["session-reset"])
     const lines = all.filter(r => r.outcome !== "nudge_dropped")
     // ПРЯМАЯ улика предмета зуба -- накопитель: после /clear фильтровать нечем.
-    expect(lines.length).toBe(3)
+    // CONSTRAINT (#514 Р6): /clear уносит и карту меток агента -- перезаведённый
+    // проверяющий начинает с чистой карты: busy-model не отложена и зовётся
+    // первой; карту через новую сессию переживает только "main".
+    expect(lines.length).toBe(4)
     expect(lines[1].rungsFiltered, "до /clear одна ступень отфильтрована").toBe(1)
     expect(lines[2].rungsFiltered, "после /clear фильтровать нечем").toBe(0)
-    expect(lines[2].modelRequested).toBe("glm-5.3")
-    // ПРЯМАЯ улика взаимодействия с отсрочкой (#313): busy-model остывает от
-    // отказа шага 1 -- она в плане, но отложена, а не вычеркнута.
-    expect(lines[2].cooldownDeferred).toEqual(["busy-model"])
-    expect(lines[2]["cooldownReason_busy-model"]).toBe("carrier-refusal")
-    // Порядок попыток -- ВСПОМОГАТЕЛЬНАЯ проверка: отсрочка уводит busy-model
-    // в хвост, glm-5.3 отвечает первой попыткой.
-    expect(seen, "полная история обеих шагов").toEqual(["busy-model", "grok-4.6", "glm-5.3"])
+    expect(lines[3].rungsFiltered, "после /clear фильтровать нечем").toBe(0)
+    expect(lines[2].modelRequested, "чистая карта -- объявленная без отсрочки").toBe("busy-model")
+    expect(lines[3].modelRequested).toBe("glm-5.3")
+    expect(lines[3].cooldownDeferred, "карта агента после /clear пуста -- отсрочки нет").toBeUndefined()
+    expect(seen, "полная история обеих шагов").toEqual(["busy-model", "grok-4.6", "busy-model", "glm-5.3"])
   })
 
   test("#226 зуб 6: липкость не ставится на ступень-совпадение", async ($, on) => {
@@ -2006,11 +2012,13 @@ describe("failover: проверяющий не уезжает на модель
   // исполнителя ДО построения плана, отсрочка переставляет готовый план --
   // значит остывающая модель исполнителя не может вернуться в план хвостом.
   // Оба механизма правильны ПО ОТДЕЛЬНОСТИ; этот зуб пинит именно стык.
+  // CONSTRAINT (#514 Р6): отказ -- в шаге САМОГО проверяющего: метка glm-5.3
+  // стоит на его карте, а не на карте исполнителя.
   // CONSTRAINT: движок грузит модуль плагина ОТДЕЛЬНО от импорта теста,
   // поэтому накопитель и метки наполняются ПОВЕДЕНИЕМ хуков, а не ручным
-  // вызовом: стартовая модель исполнителя ложится в накопитель его spawn'ом,
-  // метка остывания glm-5.3 -- отказом носителя в его же шаге.
-  test("#313 стык: план после отсрочки не содержит моделей сессионного исполнителя", async ($, on) => {
+  // вызовом: модель исполнителя ложится в накопитель его spawn'ом, метка
+  // остывания glm-5.3 -- отказом носителя в шаге самого проверяющего.
+  test("#313 стык: после СОБСТВЕННОГО отказа glm-5.3 план проверяющего не содержит моделей сессионного исполнителя", async ($, on) => {
     sessionExecutorsReset()
     rungCooldownReset()
     const kept = wired(on, 180_000_000, {}, {
@@ -2039,30 +2047,9 @@ describe("failover: проверяющий не уезжает на модель
       }
     }))
 
-    // Предыстория стыка: исполнитель стартует на glm-5.3 (spawn кладёт её в
-    // накопитель), и glm-5.3 отказывает носителем в его шаге (веер ставит
-    // метку остывания) -- модель исполнителя ЕЩЁ и остывает.
-    const exec = await $.agent.spawn({
-      tool_use_id: "tu-313-x-exec",
-      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
-      description: "exec",
-      subagentType: "glm-executor",
-      provider: { plugin: "engine", tier: "core" },
-      parentModel: "claude-sonnet-5",
-      permissionMode: "default",
-      background: false,
-      fork: false,
-      model: "glm-5.3",
-    })
-    expect(exec.agentId).toBe("ag-313-x-exec")
-    const execStep = await settleStep($.turn.step({
-      turnId: "turn-313-x-exec", index: 0, model: "glm-5.3", messageCount: 1,
-      agentId: exec.agentId,
-    }))
-    expect(seen, "шаг исполнителя: glm-5.3 отказала, grok-4.6 ответил").toEqual(["glm-5.3", "grok-4.6"])
-    expect(execStep && execStep.answer).toBe("from-grok-4.6")
-
-    seen.length = 0
+    // Стык строится двумя шагами одного проверяющего: сперва ЕГО СОБСТВЕННЫЙ
+    // отказ glm-5.3 (метка на карте проверяющего), затем spawn исполнителя на
+    // glm-5.3 кладёт её в накопитель сессии.
     const crit = await $.agent.spawn({
       tool_use_id: "tu-313-x-crit",
       prompt: "[dispatch-class:crit-mech] проверить работу исполнителя",
@@ -2077,25 +2064,55 @@ describe("failover: проверяющий не уезжает на модель
     })
     expect(crit.agentId).toBe("ag-313-x-crit")
 
-    const out = await settleStep($.turn.step({
-      turnId: "turn-313-x-crit", index: 0, model: "busy-model", messageCount: 1,
+    const first = await settleStep($.turn.step({
+      turnId: "turn-313-x-crit-a", index: 0, model: "busy-model", messageCount: 1,
       agentId: crit.agentId,
     }))
-    // busy-model и qwen отказали; план кончился отказом -- но НЕ моделью
-    // исполнителя: glm-5.3 не звалась ни разу, хотя она и в накопителе, и в
-    // остывании: фильтр вычеркнул её ДО плана, отсрочка не вернула хвостом.
-    expect(seen, "glm-5.3 не звалась: вычеркнута до плана, отсрочка её не вернула").toEqual(["busy-model", "qwen3.8-flash"])
+    // накопитель ещё пуст: обе ступени в плане; glm-5.3 отказала САМОМУ
+    // проверяющему -- метка на его карте.
+    expect(seen, "первый шаг: объявленная, glm-5.3, qwen3.8-flash -- все отказали").toEqual(["busy-model", "glm-5.3", "qwen3.8-flash"])
+    expect(first && first.answer, "шаг кончился отказом").toBe("")
+
+    const exec = await $.agent.spawn({
+      tool_use_id: "tu-313-x-exec",
+      prompt: "[dispatch-class:exec-0p] исполнитель отработал на glm-5.3",
+      description: "exec",
+      subagentType: "glm-executor",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-sonnet-5",
+      permissionMode: "default",
+      background: false,
+      fork: false,
+      model: "glm-5.3",
+    })
+    expect(exec.agentId).toBe("ag-313-x-exec")
+
+    seen.length = 0
+    await settleStep($.turn.step({
+      turnId: "turn-313-x-crit-b", index: 0, model: "busy-model", messageCount: 1,
+      agentId: crit.agentId,
+    }))
+    // glm-5.3 теперь и в накопителе, и в остывании НА КАРТЕ ПРОВЕРЯЮЩЕГО --
+    // и всё равно не в плане: фильтр вычеркнул её ДО плана, отсрочка своей
+    // метки не вернула её хвостом.
+    expect(seen, "glm-5.3 не звалась: вычеркнута до плана, своя метка её не вернула").toEqual(["busy-model", "qwen3.8-flash"])
     const lines = failoverLines(kept)
     // CONSTRAINT (#514 H5): исчерпанный шаг пишет и названную запись выхода из
     // ожидания (стенд без двери паузы -- wait-unavailable); предмет зуба --
     // записи ПОПЫТОК.
-    const critLines = lines.filter((r: any) => String(r.rec).indexOf("turn-313-x-crit") >= 0 && r.attempt !== undefined)
+    const critLines = lines.filter((r: any) => String(r.rec).indexOf("turn-313-x-crit-b") >= 0 && r.attempt !== undefined)
     expect(critLines.length).toBe(2)
     for (const rec of critLines) {
       expect(rec.modelRequested, "план после отсрочки без моделей исполнителя").not.toBe("glm-5.3")
-      expect(rec.cooldownDeferred, "остывающий исполнитель не вернулся в план хвостом").toBeUndefined()
+      expect((rec.cooldownDeferred || []).indexOf("glm-5.3"), "остывающий исполнитель не вернулся в план хвостом").toBe(-1)
     }
     expect(critLines[0].rungsFiltered, "glm-5.3 вычеркнута фильтром исполнителей").toBe(1)
+    // Собственные отказы проверяющего живы на ЕГО карте и откладывают его план
+    // (busy-model, qwen3.8-flash в отсрочке) -- метка glm-5.3 при этом тоже
+    // стоит у него (шаг 1 звала её), но хвостом её возвращает только отсрочка,
+    // а фильтр снимает ДО плана: стык и есть предмет зуба.
+    expect((critLines[0].cooldownDeferred || []).indexOf("busy-model"), "метки СОБСТВЕННЫХ отказов проверяющего откладывают его план").toBeGreaterThanOrEqual(0)
+    expect((critLines[0].cooldownDeferred || []).indexOf("qwen3.8-flash"), "вторая собственная метка тоже в отсрочке").toBeGreaterThanOrEqual(0)
   })
 })
 
