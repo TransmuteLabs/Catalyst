@@ -20,7 +20,7 @@ const VERDICT_TTL_MS_DEFAULT = 120000
 // раннеру официального харнеса манифест недоступен (JSON-импорт парсится как
 // JS, node:fs запрещён), поэтому units.test.ts пинит литерал, а расхождение
 // трёх домов ловит tests/scripts/test-mod-units.sh (ВЕРСИЯ_МОДА_РАЗОШЛАСЬ).
-export const MOD_VERSION = "0.1.59"
+export const MOD_VERSION = "0.1.60"
 // CONSTRAINT: пятичасовой лимит провайдера не должен запирать восстановившуюся
 // ступень на пять часов; окно 15 минут допускает четыре повторные пробы в час.
 export const RUNG_COOLDOWN_MS = 900000
@@ -170,15 +170,24 @@ export function classesOf(prompt: string): string[] {
   return set
 }
 
-export function failoverLadderBind(fo: any, subagentType: string, classId: string): {
+export function failoverLadderBind(fo: any, subagentType: string, classId: string, isMain: boolean = false): {
   ladder: string[]
   rungEffort: { [k: string]: string }
   effortBad: { [k: string]: string }
   rungsDropped: number
-  source: "agent" | "class" | "default" | "none"
+  source: "agent" | "class" | "default" | "main" | "none"
 } {
   const empty = { ladder: [] as string[], rungEffort: {} as { [k: string]: string }, effortBad: {} as { [k: string]: string }, rungsDropped: 0, source: "none" as const }
   if (fo && typeof fo === "object") {
+    // CONSTRAINT (#514 Р7): набор главного лупа -- failover.main, при его
+    // отсутствии default; ветки agent и class к главному лупу не применяются.
+    if (isMain) {
+      const fromMain = tableRungs(fo.main)
+      if (fromMain.models.length) return { ladder: fromMain.models, rungEffort: fromMain.rungEffort, effortBad: fromMain.effortBad, rungsDropped: fromMain.dropped, source: "main" }
+      const fromMainDefault = tableRungs(fo.default)
+      if (fromMainDefault.models.length) return { ladder: fromMainDefault.models, rungEffort: fromMainDefault.rungEffort, effortBad: fromMainDefault.effortBad, rungsDropped: fromMainDefault.dropped, source: "default" }
+      return empty
+    }
     const fromAgent = tableRungs(fo.agent && subagentType ? fo.agent[subagentType] : null)
     if (fromAgent.models.length) return { ladder: fromAgent.models, rungEffort: fromAgent.rungEffort, effortBad: fromAgent.effortBad, rungsDropped: fromAgent.dropped, source: "agent" }
     const fromClass = tableRungs(fo.class && classId ? fo.class[classId] : null)
@@ -1277,7 +1286,7 @@ export function failoverAttemptModels(incoming: string, sticky: string | null, l
 // живой меткой temporary-known ИЛИ quota (#509-FIX11 B1: живая quota не менее
 // известна -- ответ до срока известен заранее): вызов до срока -- заведомый
 // отказ на каждом шаге, видимый в сессии. Длина плана не ограничена счётом (H9).
-export function failoverStepPlan(incoming: string, sticky: string | null, ladder: string[], terminal: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks): { plan: string[]; all: string[]; dead: string[]; evidence: { [k: string]: any }; termAt: number; skippedKnown: string[] } {
+export function failoverStepPlan(incoming: string, sticky: string | null, ladder: string[], terminal: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark>): { plan: string[]; all: string[]; dead: string[]; evidence: { [k: string]: any }; termAt: number; skippedKnown: string[] } {
   const base = failoverAttemptModels(incoming, sticky, ladder)
   const term = String(terminal || "")
   const termN = term ? normModelId(term) : ""
@@ -2680,20 +2689,44 @@ const capMirror = new Map<string, number[]>()
 const lastMirror = new Map<string, number>()
 
 const failoverBinds = new Map<string, any>()
-// CONSTRAINT: недоступность модели относится к процессу, а не к сессии;
-// newSession не сбрасывает метки. Ключи — модели лестниц консультаций И
-// модели веера turn.step (#313). Метка несёт ПРИЧИНУ: читатели засчитывают
-// РАЗНЫЕ наборы причин, и без причины в метке дорога консультаций молча
-// расширила бы то, что она судит.
-// CONSTRAINT (#514 H3): метка веера несёт СРОК (until) и КЛАСС отказа; окно
+// CONSTRAINT (#514 Р6): отказ, полученный агентом, меняет план ТОЛЬКО этого
+// агента (слово юзера 01.10, ADJUDICATION-514-PAIR Р6; гарантия #313 между
+// агентами снята); главный луп — ключ "main"; консультации — своя процессная
+// карта; newSession не сбрасывает метки "main" и консультаций.
+// CONSTRAINT (#514 H3): метка несёт СРОК (until) и КЛАСС отказа; окно
 // RUNG_COOLDOWN_MS судит только метки без срока (дорога консультаций,
-// rung-timeout).
+// rung-timeout). Метка несёт ПРИЧИНУ: читатели засчитывают РАЗНЫЕ наборы
+// причин, и без причины в метке дорога консультаций молча расширила бы то,
+// что она судит.
 export type RungCooldownMark = { at: number; reason: string; until?: number; class?: string; n?: number; text?: string }
 export const RUNG_COOLDOWN_REASON_TIMEOUT = "rung-timeout"
 export const RUNG_COOLDOWN_REASON_CARRIER = "carrier-refusal"
 export const RUNG_COOLDOWN_REASON_THROW = "carrier-throw"
 export const RUNG_COOLDOWN_REASONS_ALL = [RUNG_COOLDOWN_REASON_TIMEOUT, RUNG_COOLDOWN_REASON_CARRIER, RUNG_COOLDOWN_REASON_THROW]
-const rungCooldownMarks = new Map<string, RungCooldownMark>()
+// CONSTRAINT (#514 Р6): карта консультаций процессная -- судья один на
+// процесс; веер к ней не обращается.
+const consultCooldownMarks = new Map<string, RungCooldownMark>()
+export function consultMarksOf(): Map<string, RungCooldownMark> {
+  return consultCooldownMarks
+}
+// CONSTRAINT (#514 Р6): метки веера ключуются агентом (внешний ключ:
+// String(agentId) или "main") и нормализованной моделью (внутренний).
+const fanCooldownMarks = new Map<string, Map<string, RungCooldownMark>>()
+export function fanMarksOf(agentKey: string): Map<string, RungCooldownMark> {
+  const key = String(agentKey)
+  let m = fanCooldownMarks.get(key)
+  if (!m) {
+    m = new Map()
+    fanCooldownMarks.set(key, m)
+  }
+  return m
+}
+// CONSTRAINT (#514 Р6): "main" не удаляется -- главный луп один и живёт дольше
+// любой привязки агента.
+export function fanMarksDrop(agentKey: string): void {
+  if (agentKey === "main") return
+  fanCooldownMarks.delete(agentKey)
+}
 
 // CONSTRAINT (#514 H3): backoff неизвестного срока по n подряд идущих отказов
 // модели: 30, 60, 120, 240 с, далее 240 с; отказ по модели -- час.
@@ -2710,7 +2743,7 @@ export function refusalBackoffMs(n: number): number {
 // одном окне; до #313 два дома держались только комментарием.
 // CONSTRAINT (#509-FIX3 AR-4): ключ метки -- нормализованный id; строка как
 // написана в ключ не идёт, иначе «X[1m]» и «x» остывали бы порознь.
-export function isModelCooling(model: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): boolean {
+export function isModelCooling(model: string, atMs: number, marks: ReadonlyMap<string, RungCooldownMark>, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): boolean {
   const mark = marks.get(normModelId(model))
   if (mark === undefined || reasons.indexOf(mark.reason) < 0) return false
   if (typeof mark.until === "number") return atMs < mark.until
@@ -2725,7 +2758,7 @@ export function isModelCooling(model: string, atMs: number, marks: ReadonlyMap<s
 // «soonest recovery in» (readyAt > 0), заменяет QUOTA_COOLDOWN_MS.
 // Срок temporary-known, не лежащий в будущем, читается как неизвестный --
 // иначе перепроба шла бы без паузы.
-export function noteModelRefusal(model: string, atMs: number, cls: string, readyAt: number, reason: string, text: string, marks: Map<string, RungCooldownMark> = rungCooldownMarks): RungCooldownMark | null {
+export function noteModelRefusal(model: string, atMs: number, cls: string, readyAt: number, reason: string, text: string, marks: Map<string, RungCooldownMark>): RungCooldownMark | null {
   if (cls === "request") return null
   const key = normModelId(model)
   const prev = marks.get(key)
@@ -2743,11 +2776,11 @@ export function noteModelRefusal(model: string, atMs: number, cls: string, ready
 
 // CONSTRAINT (#514 H3, З6): успех модели снимает её метку целиком, вместе со
 // счётом подряд идущих отказов.
-export function noteModelSuccess(model: string, marks: Map<string, RungCooldownMark> = rungCooldownMarks): void {
+export function noteModelSuccess(model: string, marks: Map<string, RungCooldownMark>): void {
   marks.delete(normModelId(model))
 }
 
-export function noteRungTimeout(model: string, errText: string, atMs: number, marks: Map<string, RungCooldownMark> = rungCooldownMarks, budgetClipped: boolean = false): boolean {
+export function noteRungTimeout(model: string, errText: string, atMs: number, marks: Map<string, RungCooldownMark>, budgetClipped: boolean = false): boolean {
   if (errText.indexOf("rung-deadline") < 0) return false
   // CONSTRAINT: урезанный общим пределом бюджет доказывает таймаут,
   // но не недоступность модели; существующая метка тоже не продлевается.
@@ -2760,21 +2793,31 @@ export function noteRungTimeout(model: string, errText: string, atMs: number, ma
 // #239); ступень, выдавшая содержимое, состоялась. Обе вырезки — прямые
 // аналоги budgetClipped у noteRungTimeout: метится только то, что доказывает
 // недоступность МОДЕЛИ.
-export function noteRungCarrierRefusal(model: string, atMs: number, marks: Map<string, RungCooldownMark> = rungCooldownMarks): void {
+export function noteRungCarrierRefusal(model: string, atMs: number, marks: Map<string, RungCooldownMark>): void {
   noteModelRefusal(model, atMs, "temporary-unknown", 0, RUNG_COOLDOWN_REASON_CARRIER, "", marks)
 }
 
 // CONSTRAINT: дверь сброса — для ТЕСТОВОГО стенда и будущих ручек; продовое
-// поведение её не зовёт: недоступность модели относится к процессу и переживает
-// newSession (CONSTRAINT у карты выше). Без двери соседний зуб, чья модель
-// отказала в предыдущем, молча меняет смысл.
+// поведение её не зовёт: метка агента живёт на его карте, newSession переживают
+// только карта "main" и консультации. Чистит обе карты — консультаций и веера
+// всех агентов. Без двери соседний зуб, чья модель отказала в предыдущем,
+// молча меняет смысл.
 export function rungCooldownReset(): void {
-  rungCooldownMarks.clear()
+  consultCooldownMarks.clear()
+  // CONSTRAINT (#514 FIX2 Д3): внешняя карта чистится и заполняется обратно
+  // теми же ОПУСТОШЕННЫМИ картами: шаг в полёте держит ссылку на свою карту,
+  // и чистый clear() внешней карты отцеплял бы её -- следующие сбросы не
+  // доходили бы до вида шага, и его метки переживали бы сброс. "main"
+  // опустошается наравне со всеми.
+  const emptied: Array<[string, Map<string, RungCooldownMark>]> = []
+  fanCooldownMarks.forEach((m: Map<string, RungCooldownMark>, k: string) => { m.clear(); emptied.push([k, m]) })
+  fanCooldownMarks.clear()
+  for (let i = 0; i < emptied.length; i++) fanCooldownMarks.set(emptied[i][0], emptied[i][1])
 }
 
 // CONSTRAINT: набор причин дороги консультаций — ТОЛЬКО отказ по времени:
 // расширение набора молча изменило бы то, что судья пропускает.
-export function rungsAfterCooldown<T extends { model: string }>(ladder: T[], atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = [RUNG_COOLDOWN_REASON_TIMEOUT]): { ladder: T[]; evidence: { [k: string]: any } } {
+export function rungsAfterCooldown<T extends { model: string }>(ladder: T[], atMs: number, marks: ReadonlyMap<string, RungCooldownMark>, reasons: readonly string[] = [RUNG_COOLDOWN_REASON_TIMEOUT]): { ladder: T[]; evidence: { [k: string]: any } } {
   const keep: T[] = []
   const skipped: string[] = []
   const ages: { [k: string]: number } = {}
@@ -2821,7 +2864,7 @@ export function clipLadderArg(arg: string): string {
 // об одном окне.
 // CONSTRAINT: дверь наблюдения засчитывает ОБЕ причины метки и называет
 // причину в выводе — дверь, скрывающая половину меток, хуже отсутствующей.
-export function cooldownSnapshot(atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): Array<{ model: string; leftMs: number; reason: string; class?: string }> {
+export function cooldownSnapshot(atMs: number, marks: ReadonlyMap<string, RungCooldownMark>, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): Array<{ model: string; leftMs: number; reason: string; class?: string }> {
   const out: Array<{ model: string; leftMs: number; reason: string; class?: string }> = []
   marks.forEach((mark: RungCooldownMark, model: string) => {
     if (isModelCooling(model, atMs, marks, reasons)) {
@@ -2835,17 +2878,35 @@ export function cooldownSnapshot(atMs: number, marks: ReadonlyMap<string, RungCo
 // CONSTRAINT: пустая карта и отфильтрованная в ноль -- РАЗНЫЕ явные строки:
 // пустой вывод неотличим от молчания команды, а молчание наблюдатель принял бы
 // за ноль (ПУСТО != НОЛЬ).
-export function ladderCommandText(atMs: number, argRaw: string, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks): string {
+// CONSTRAINT (#514 Р6): строка называет ВЛАДЕЛЬЦА метки (консультации, agentId,
+// main) -- при картах по агентам вывод без владельца молча приписал бы метку
+// одного агента другому. Фильтр принимает строку по модели ИЛИ по владельцу.
+export function ladderCommandText(atMs: number, argRaw: string, consult: ReadonlyMap<string, RungCooldownMark> = consultCooldownMarks, fan: ReadonlyMap<string, ReadonlyMap<string, RungCooldownMark>> = fanCooldownMarks): string {
   const arg = clipLadderArg(argRaw)
-  const snap = cooldownSnapshot(atMs, marks)
-  const rows = snap.filter((r) => !arg || r.model.indexOf(arg) >= 0)
+  const owners: Array<{ owner: string; snap: Array<{ model: string; leftMs: number; reason: string; class?: string }> }> = [
+    { owner: "консультации", snap: cooldownSnapshot(atMs, consult) },
+  ]
+  fan.forEach((marks: ReadonlyMap<string, RungCooldownMark>, key: string) => {
+    owners.push({ owner: key, snap: cooldownSnapshot(atMs, marks) })
+  })
+  let live = 0
+  const rows: string[] = []
+  for (let i = 0; i < owners.length; i++) {
+    const o = owners[i]
+    live += o.snap.length
+    for (let j = 0; j < o.snap.length; j++) {
+      const r = o.snap[j]
+      if (arg && r.model.indexOf(arg) < 0 && o.owner.indexOf(arg) < 0) continue
+      rows.push(o.owner + " · " + r.model + ": остывать ещё " + Math.ceil(r.leftMs / 1000) + " с (" + r.reason + (r.class ? ", " + r.class : "") + ")")
+    }
+  }
   const lines = ["catalyst-ladder " + MOD_VERSION + ": окно остывания " + (RUNG_COOLDOWN_MS / 60000) + " мин"]
-  if (!snap.length) {
+  if (!live) {
     lines.push("остывающих ступеней нет")
   } else if (!rows.length) {
     lines.push("под фильтр не попала ни одна ступень")
   } else {
-    for (const r of rows) lines.push(r.model + ": остывать ещё " + Math.ceil(r.leftMs / 1000) + " с (" + r.reason + (r.class ? ", " + r.class : "") + ")")
+    for (let i = 0; i < rows.length; i++) lines.push(rows[i])
   }
   return lines.join("\n")
 }
@@ -2858,7 +2919,7 @@ export function ladderCommandText(atMs: number, argRaw: string, marks: ReadonlyM
 // назначенная модель агента исчезала из плана, и агент возвращал отказ, ни
 // разу её не вызвав. Ложная или протухшая метка обязана стоить лишнего круга
 // веера, а не отказа при живой модели. Длина плана до и после совпадает.
-export function deferCoolingAttemptModels(plan: string[], atMs: number, marks: ReadonlyMap<string, RungCooldownMark> = rungCooldownMarks, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): { plan: string[]; evidence: { [k: string]: any } } {
+export function deferCoolingAttemptModels(plan: string[], atMs: number, marks: ReadonlyMap<string, RungCooldownMark>, reasons: readonly string[] = RUNG_COOLDOWN_REASONS_ALL): { plan: string[]; evidence: { [k: string]: any } } {
   const ready: string[] = []
   const deferred: string[] = []
   for (let i = 0; i < plan.length; i++) {
@@ -2878,8 +2939,14 @@ export function deferCoolingAttemptModels(plan: string[], atMs: number, marks: R
   return { plan: ready.concat(deferred), evidence }
 }
 
+// CONSTRAINT (#514 Р6): сброс сессии чистит привязки и карты АГЕНТОВ; карта
+// "main" переживает новую сессию -- это тот же процесс и тот же главный луп
+// (CONSTRAINT у карты выше: newSession не сбрасывает метки "main").
 export function failoverBindReset(): void {
   failoverBinds.clear()
+  const mainMarks = fanCooldownMarks.get("main")
+  fanCooldownMarks.clear()
+  if (mainMarks) fanCooldownMarks.set("main", mainMarks)
 }
 
 export function failoverBindSet(agentId: string, rec: any): void {
@@ -2887,10 +2954,18 @@ export function failoverBindSet(agentId: string, rec: any): void {
   if (!id || !rec) return
   if (failoverBinds.has(id)) failoverBinds.delete(id)
   failoverBinds.set(id, rec)
+  // CONSTRAINT (#514 Р7): ключ "main" не вытесняется -- привязка главного лупа
+  // живёт дольше любых агентов; вместе с вытесненной привязкой уходит и карта
+  // меток этого агента.
   while (failoverBinds.size > FAILOVER_BIND_CAP) {
-    const oldest = failoverBinds.keys().next().value
+    const it = failoverBinds.keys()
+    let oldest: string | undefined = undefined
+    for (let k = it.next(); !k.done; k = it.next()) {
+      if (k.value !== "main") { oldest = k.value; break }
+    }
     if (oldest === undefined) break
     failoverBinds.delete(oldest)
+    fanMarksDrop(oldest)
   }
 }
 
@@ -2901,9 +2976,30 @@ export function failoverBindGet(agentId: string): any {
 // CONSTRAINT (#514 Р8): ожидающий агент берёт лестницу, эффорты ступеней и
 // терминал из мира момента пробы, не спавна: привязка спавна замораживала
 // клетку с одной ступенью, и агент вечно ждал её окна. Отказавшие модели
-// отсеивают метки rungCooldownMarks, а не перечень привязки.
+// отсеивают метки агента (fanMarksOf), а не перечень привязки.
 export function failoverBindRefresh(bind: any, world: any): void {
   if (!bind || !world || !world.failover) return
+  // CONSTRAINT (#514 Р7): у главного лупа нет класса -- admitLadder не
+  // применяется: допуск клетки его лестницу не сужает.
+  // Непригодный допуск опустошает лестницу, как на первом построении.
+  if (bind.isMain) {
+    const infoM = failoverLadderBind(world.failover, "", "", true)
+    const termM = failoverTerminal(world.failover)
+    if (world.probesUnread) return
+    if (!infoM.ladder.length && !termM.model) return
+    let rungEffortM = infoM.rungEffort
+    let effortBadM = infoM.effortBad
+    if (termM.effort && modelKeyed(rungEffortM, termM.model) === undefined) rungEffortM = Object.assign({}, rungEffortM, { [termM.model]: termM.effort })
+    if (termM.effortBad && modelKeyed(effortBadM, termM.model) === undefined) effortBadM = Object.assign({}, effortBadM, { [termM.model]: termM.effortBad })
+    bind.ladder = admissionUsable(world) ? infoM.ladder : []
+    bind.rungEffort = rungEffortM
+    bind.effortBad = effortBadM
+    bind.rungsDropped = infoM.rungsDropped
+    bind.source = infoM.source
+    bind.allowedSrc = world.allowedSrc
+    bind.terminal = termM.model
+    return
+  }
   const info = failoverLadderBind(world.failover, bind.subagentType, bind.class)
   const term = failoverTerminal(world.failover)
   const adm = admitLadder(info.ladder, bind.class, world.allowedByClass, admissionUsable(world))
@@ -4084,6 +4180,7 @@ function failoverOf(gParsed: any, pParsed: any): any {
   const p = (pParsed && pParsed.failover) || {}
   return {
     enabled: p.enabled !== undefined ? p.enabled : g.enabled,
+    main: shallowMerge(g.main || {}, p.main || {}),
     default: shallowMerge(g.default || {}, p.default || {}),
     class: shallowMerge(g.class || {}, p.class || {}),
     agent: shallowMerge(g.agent || {}, p.agent || {}),
@@ -4348,8 +4445,10 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
       return (sys ? sys + "\n\n" : "") + user
     }
     const modelEnv = p.id === "judge" ? env.JUDGE_MODEL : ""
+    // CONSTRAINT (#514 Р6): дорога консультаций судит ТОЛЬКО свою процессную
+    // карту -- метки веера агентов её ступеней не снимают.
     let ladder = rungsOf(cfg, modelEnv)
-    const cooldown = rungsAfterCooldown(ladder, await nowMs($))
+    const cooldown = rungsAfterCooldown(ladder, await nowMs($), consultCooldownMarks)
     ladder = cooldown.ladder
     Object.assign(rec, cooldown.evidence)
     rec.ladder = ladder.map((r: any) => r.model)
@@ -4479,7 +4578,7 @@ async function consultBg($: any, p: any, env: any, world: any, ev: any, ctx: any
         // Смешать их значит потерять различие между «ступень отказала» и
         // «ступень не ответила»: первое -- вердикт о канале, второе -- о
         // приборе, и исход у них РАЗНЫЙ (block_no_verdict против skip).
-        if (noteRungTimeout(used, es, await nowMs($), undefined, rungBudgetClipped)) {
+        if (noteRungTimeout(used, es, await nowMs($), consultCooldownMarks, rungBudgetClipped)) {
           rec.rungTimeouts = num(rec.rungTimeouts, 0, 0) + 1
           if (rungBudgetClipped) rec["rungDeadlineClipped_" + used] = true
         }
@@ -8474,20 +8573,59 @@ export function register(on: any) {
         staleRecOf(String(aid)).touched = true
       } catch (x) { noteLost("stale-agents-track", x, $) }
     }
-    if (aid == null || aid === "") {
-      return yield* driveNext(next(e))
+    // CONSTRAINT (#514 Р7): шаг без agentId -- главный луп; его ключ "main",
+    // своя привязка (failover.main, иначе default, терминал) и свои метки.
+    const isMain = aid == null || aid === ""
+    const aidKey = isMain ? "main" : String(aid)
+    let bind = failoverBindGet(aidKey)
+    // CONSTRAINT (#514 Р7): привязка главного лупа идёт за миром КАЖДОГО шага
+    // (сессия живёт дольше любого агента): есть -- обновляется, как у
+    // ожидающего (Р8); нет -- строится. Пустая не записывается: иначе она
+    // замораживала бы «нет лестницы» до конца сессии. Нечитаемый мир
+    // привязку не трогает.
+    if (isMain) {
+      let worldMain: any = null
+      try {
+        const wm = await worldFor($)
+        worldMain = wm && wm.world
+      } catch (x) { worldMain = null; noteLost("failover-main-world", x, $) }
+      const wf = worldMain && worldMain.failover
+      if (wf && !bl3(wf.enabled, true)) return yield* driveNext(next(e))
+      if (wf && bind) failoverBindRefresh(bind, worldMain)
+      else if (wf) {
+        const info = failoverLadderBind(wf, "", "", true)
+        const term = failoverTerminal(wf)
+        // CONSTRAINT (#514 Р7): фильтр допуска по классу к главному лупу не
+        // применяется -- класса нет; непригодный допуск опустошает лестницу.
+        const ladder = admissionUsable(worldMain) ? info.ladder : []
+        let rungEffort = info.rungEffort
+        let effortBad = info.effortBad
+        if (term.effort && modelKeyed(rungEffort, term.model) === undefined) rungEffort = Object.assign({}, rungEffort, { [term.model]: term.effort })
+        if (term.effortBad && modelKeyed(effortBad, term.model) === undefined) effortBad = Object.assign({}, effortBad, { [term.model]: term.effortBad })
+        if (ladder.length || term.model) {
+          failoverBindSet("main", {
+            ladder, subagentType: undefined, class: undefined, isMain: true, sticky: null,
+            rungEffort, effortBad, rungsDropped: info.rungsDropped,
+            source: info.source, allowedSrc: worldMain.allowedSrc, terminal: term.model,
+          })
+          bind = failoverBindGet("main")
+        }
+      }
     }
-    const bind = failoverBindGet(String(aid))
     if (!bind || ((!bind.ladder || !bind.ladder.length) && !bind.terminal)) {
-      return yield* driveNext(next(e), undefined, String(aid))
+      return yield* driveNext(next(e), undefined, isMain ? undefined : aidKey)
     }
+    // CONSTRAINT (#514 Р6): метки шага -- карта ЭТОГО ключа (агент или "main");
+    // ни один путь шага не читает чужую карту.
+    const fanKey = aidKey
+    const myMarks = fanMarksOf(fanKey)
     let world: any = null
     try {
       const w = await worldFor($)
       world = w && w.world
     } catch (x) { world = null; noteLost("failover-step-world", x, $) }
     if (world && world.failover && !bl3(world.failover.enabled, true)) {
-      return yield* driveNext(next(e), undefined, String(aid))
+      return yield* driveNext(next(e), undefined, isMain ? undefined : aidKey)
     }
     const original = String(ev.model || "")
     // CONSTRAINT (#226): проверяющего (crit-/audit-) нельзя переводить на модель,
@@ -8519,7 +8657,7 @@ export function register(on: any) {
       // CONSTRAINT (#509-FIX7 Р13): из ступеней проверяющего вычитаются модели,
       // обслуживающие ДРУГИХ проверяющих сессии не дольше REVIEWER_LIVE_MS;
       // объявленная модель самого агента этим фильтром не снимается.
-      others = sessionReviewersServedByOthers(String(aid), await nowMs($))
+      others = sessionReviewersServedByOthers(aidKey, await nowMs($))
       const keepR: string[] = []
       for (let i = 0; i < keep.length; i++) {
         const k = normModelId(keep[i])
@@ -8578,11 +8716,11 @@ export function register(on: any) {
       }
     }
     filterTerminal()
-    const firstPlan = failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($))
+    const firstPlan = failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($), myMarks)
     // CONSTRAINT (#509-FIX11 B2): прямой проход -- только для ДЕЙСТВИТЕЛЬНО
     // пустого плана; план, опустевший от снятых живых меток, уходит в штатное
     // ожидание (wake по сроку, пробы живости), а не в прямой вызов мимо метки.
-    if (!firstPlan.plan.length && !firstPlan.dead.length && firstPlan.skippedKnown.length === 0) return yield* driveNext(next(e), undefined, String(aid))
+    if (!firstPlan.plan.length && !firstPlan.dead.length && firstPlan.skippedKnown.length === 0) return yield* driveNext(next(e), undefined, isMain ? undefined : aidKey)
     // CONSTRAINT (#509-FIX3 M5, #509-FIX4 F4, #509-FIX5 Р3): сторож сбрасывает
     // только поток агента, в том числе запись отказа next; сердцебиение, кусок
     // и предел двери паузы -- из waitPaceOf по переменной сторожа, прочитанной
@@ -8616,7 +8754,7 @@ export function register(on: any) {
     if (bind.source) journalBase.source = bind.source
     if (bind.allowedSrc) journalBase.allowedSrc = bind.allowedSrc
     let jpath = world && world.globalHome ? world.globalHome + "/failover/journal.jsonl" : ""
-    const recHead = String(aid) + "-" + String(ev.turnId || "") + "-" + String(ev.index)
+    const recHead = aidKey + "-" + String(ev.turnId || "") + "-" + String(ev.index)
     let lastRes: any = null
     let lastClass = ""
     let lastText = ""
@@ -8697,7 +8835,7 @@ export function register(on: any) {
         return Number.isNaN(v) ? Infinity : v
       } catch (x) { noteLost("failover-budget", x, $); return Infinity }
     }
-    const markOf = (m: string): any => rungCooldownMarks.get(normModelId(m))
+    const markOf = (m: string): any => myMarks.get(normModelId(m))
     // CONSTRAINT (#509-FIX6 А1): конец последнего неудачного вызова next --
     // первым await после его окончания, до журнала, чтения истории и паузы
     // перечитывания; 0 -- неудачного вызова в шаге не было.
@@ -8743,7 +8881,7 @@ export function register(on: any) {
         t: isoOf(tW), sid: sidStep,
         rec: recHead + "-" + kind + "-" + String(waitN++),
         outcome: kind,
-        agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+        agentId: aidKey, subagentType: bind.subagentType, class: bind.class,
         turnId: ev.turnId, index: ev.index,
       }, journalBase, fields), "journal-" + kind, raced)
     }
@@ -8760,7 +8898,10 @@ export function register(on: any) {
     const readHistory = async (): Promise<{ rows: any[] | null; why: any }> => {
       let got: any = null
       try {
-        got = await $.session.messages({ agentId: String(aid) })
+        // CONSTRAINT (#514 Р7): главный луп читает ГЛАВНЫЙ разговор -- без
+        // agentId (контракт claude-code.d.ts: $.session.messages() stays the
+        // main conversation).
+        got = isMain ? await $.session.messages() : await $.session.messages({ agentId: aidKey })
         if (Array.isArray(got)) {
           const rows: any[] = []
           const idsOf = (xs: any): any[] => historyIds(xs).map(id => ({ tool_use_id: id }))
@@ -8834,7 +8975,7 @@ export function register(on: any) {
           t: isoOf(await nowMs($)),
           sid: sidStep,
           rec: recHead + "-" + String(attempt) + "-rung-effort-refused",
-          agentId: String(aid),
+          agentId: aidKey,
           subagentType: bind.subagentType,
           class: bind.class,
           turnId: ev.turnId,
@@ -8871,7 +9012,7 @@ export function register(on: any) {
       let reserved: ReviewerServedRec | null = null
       let reservedEvicted: Array<[string, ReviewerServedRec]> = []
       if (reviewer) {
-        const takenBy = sessionReviewersServedByOthers(String(aid), t0)
+        const takenBy = sessionReviewersServedByOthers(aidKey, t0)
         const busy = (m: string): boolean => takenBy.indexOf(normModelId(m)) >= 0
         let freeAhead = false
         if (ahead) {
@@ -8884,7 +9025,7 @@ export function register(on: any) {
             t: isoOf(t0),
             sid: sidStep,
             rec: recHead + "-" + String(attempt) + "-reviewer-taken",
-            agentId: String(aid),
+            agentId: aidKey,
             subagentType: bind.subagentType,
             class: bind.class,
             turnId: ev.turnId,
@@ -8898,8 +9039,8 @@ export function register(on: any) {
           }, "journal-reviewer-taken")
           return { final: false, res: null, taken: true }
         }
-        reservedEvicted = sessionReviewerServedSet(String(aid), model, t0, { reserve: true })
-        reserved = sessionReviewerServedGet(String(aid)) || null
+        reservedEvicted = sessionReviewerServedSet(aidKey, model, t0, { reserve: true })
+        reserved = sessionReviewerServedGet(aidKey) || null
       }
       // CONSTRAINT: кусок, уже ушедший наружу, находится у сессии -- отмены
       // нет. Ступень, выдавшая хотя бы один кусок С СОДЕРЖИМЫМ, СОСТОЯЛАСЬ:
@@ -8915,7 +9056,7 @@ export function register(on: any) {
       if (reserved) {
         const rsv = reserved
         const onAbort = (): void => {
-          if (!reserveSettled && emitted.content === 0) { sessionReviewerServedRestore(String(aid), rsv, reservedEvicted); reserveSettled = true }
+          if (!reserveSettled && emitted.content === 0) { sessionReviewerServedRestore(aidKey, rsv, reservedEvicted); reserveSettled = true }
         }
         let sig: any = null
         try { sig = next.signal } catch (x) { noteLost("failover-signal", x, $) }
@@ -8956,7 +9097,7 @@ export function register(on: any) {
         // залипла на ней и вернула null вызывающему.
         let didThrow = false
         try {
-          res = yield* driveNext(next(req), emitted, String(aid))
+          res = yield* driveNext(next(req), emitted, isMain ? undefined : aidKey)
         } catch (x) { threw = x; didThrow = true }
         // CONSTRAINT (#489-B1-FIX5 Z13.4): refusal -- ЕДИНСТВЕННОЕ чтение полей
         // ответа на попытку; outcome, sticky и метка остывания берут его.
@@ -8973,7 +9114,7 @@ export function register(on: any) {
           : (refusal ? (afterEmit ? "empty_after_emit" : "empty") : "ok")
         const failed = (didThrow || refusal) && !afterEmit
         if (failed) callEndAt = t1
-        if (failed && reserved) { sessionReviewerServedRestore(String(aid), reserved, reservedEvicted); reserveSettled = true }
+        if (failed && reserved) { sessionReviewerServedRestore(aidKey, reserved, reservedEvicted); reserveSettled = true }
         let stopNow = failed && aborted()
         let cls = ""
         let clsText = ""
@@ -9101,7 +9242,7 @@ export function register(on: any) {
               t: isoOf(t1),
               sid: sidStep,
               rec: recHead + "-" + String(attempt),
-              agentId: String(aid),
+              agentId: aidKey,
               subagentType: bind.subagentType,
               class: bind.class,
               turnId: ev.turnId,
@@ -9138,7 +9279,7 @@ export function register(on: any) {
             const boring = failoverAttemptIsBoring(rec, stickyChanged)
             await byD(async () => {
               if (boring) {
-                await failoverFoldObserve($, world, t1, String(bind.sticky || model || ""), sidStep, String(aid))
+                await failoverFoldObserve($, world, t1, String(bind.sticky || model || ""), sidStep, aidKey)
               } else {
                 await failoverFoldFlush($, world)
                 await appendJournal($, jpath, rec)
@@ -9153,14 +9294,14 @@ export function register(on: any) {
             t: isoOf(t1), sid: sidStep,
             rec: recHead + "-" + String(attempt) + "-refusal-unread",
             outcome: "refusal-unread",
-            agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+            agentId: aidKey, subagentType: bind.subagentType, class: bind.class,
             turnId: ev.turnId, index: ev.index,
             forAttempt: attempt, pass: passN, modelRequested: model,
             reason: why,
           }, "journal-refusal-unread")
           if (!unreadToasted) {
             unreadToasted = true
-            await toastByD("агент " + String(bind.subagentType || aid) + ": текст отказа не прочитан (" + why + ")", "failover-unread-toast")
+            await toastByD((isMain ? "главный луп" : "агент " + String(bind.subagentType || aid)) + ": текст отказа не прочитан (" + why + ")", "failover-unread-toast")
           }
         }
         // CONSTRAINT (#509-FIX3 L2, #509-FIX10 F2, #509-FIX11 B3): отказ ПРОБЫ
@@ -9177,11 +9318,11 @@ export function register(on: any) {
           if (!cls) return
           const mk = heartbeat ? markOf(model) : null
           const pair = (c: string): boolean => c === "temporary-known" || c === "quota"
-          const pairLive = !!(mk && pair(mk.class) && pair(cls) && isModelCooling(model, t1))
-          if (mk && (mk.class === cls || (pair(mk.class) && pair(cls))) && isModelCooling(model, t1)) {
+          const pairLive = !!(mk && pair(mk.class) && pair(cls) && isModelCooling(model, t1, myMarks))
+          if (mk && (mk.class === cls || (pair(mk.class) && pair(cls))) && isModelCooling(model, t1, myMarks)) {
             if (!(pairLive && typeof readyAt === "number" && readyAt > 0 && readyAt < mk.until)) return
           }
-          noteModelRefusal(model, t1, cls, readyAt, reason, clsText)
+          noteModelRefusal(model, t1, cls, readyAt, reason, clsText, myMarks)
         }
         if (didThrow) {
           // CONSTRAINT: выдавшая ступень бросает ту же дисциплину независимо от
@@ -9201,11 +9342,11 @@ export function register(on: any) {
           if (stepGenOk && executor) sessionExecutorModelAdd(model)
           if (reviewer) {
             if (reserved) reserved.prevRec = undefined
-            if (stepGenOk) sessionReviewerServedSet(String(aid), model, t1)
+            if (stepGenOk) sessionReviewerServedSet(aidKey, model, t1)
             reserveSettled = true
           }
           if (failoverWouldSetSticky(false, refusal, reviewer, model, terminalAttempt)) bind.sticky = model
-          noteModelSuccess(model)
+          noteModelSuccess(model, myMarks)
           // CONSTRAINT (#509-FIX7 Р12, #509-FIX8 Р10): шаг, обслуженный не
           // объявленной моделью, -- подсказка главному лупу ставится не больше
           // одного раза на (агент, модель ступени) за сессию: постановка
@@ -9217,13 +9358,15 @@ export function register(on: any) {
           // ставится (очередь уже новой сессии).
           // CONSTRAINT (#509-FIX9 R5): каждый ok-шаг учитывается моделью ступени
           // для записи served-summary при завершении агента (ladderAgentsListed).
-          if (epoch === epStep) ladderServedTallyAdd(String(aid), original, model, jpath, sidStep, bind.subagentType, bind.class, $)
-          if (model !== original && epoch === epStep) {
-            const said = String(aid) + "\0" + normModelId(model)
+          // CONSTRAINT (#514 Р7): смена модели главного лупа видна в журнале;
+          // подсказка и учёт обслуженных -- предмет агентов, не главного лупа.
+          if (!isMain && epoch === epStep) ladderServedTallyAdd(aidKey, original, model, jpath, sidStep, bind.subagentType, bind.class, $)
+          if (!isMain && model !== original && epoch === epStep) {
+            const said = aidKey + "\0" + normModelId(model)
             if (!ladderServedSaid.has(said)) {
               ladderServedSaid.add(said)
               void nudgeEnqueue($, "", {
-                text: "агент " + String(aid) + " (" + String(bind.subagentType || "") + "): шаг агента обслужила " + model + " (объявлена " + original + ")",
+                text: "агент " + aidKey + " (" + String(bind.subagentType || "") + "): шаг агента обслужила " + model + " (объявлена " + original + ")",
                 probe: "failover", t: t1, jpath, sid: sidStep,
               }).catch(x => noteLost("failover-served-nudge", x, $))
             }
@@ -9236,12 +9379,12 @@ export function register(on: any) {
         // хвост. До первой выдачи отказ ведёт на следующую ступень.
         if (afterEmit) return { final: true, res }
         // CONSTRAINT (#313): метка -- ТОЛЬКО на отказ ДО первого содержимого;
-        // метка процессная и переживает newSession.
+        // метка ложится на карту агента шага (#514 Р6).
         markRefusal(RUNG_COOLDOWN_REASON_CARRIER)
         return { final: stopNow, res, paused: pausedOk }
       } finally {
         // CONSTRAINT (#509-FIX8b): любой иной выход из попытки, в том числе брошенный потребителем генератор (.return() на yield* driveNext), снимает резерв правилом отказа: без содержимого у сессии ступень не состоялась.
-        if (reserved && !reserveSettled && emitted.content === 0) sessionReviewerServedRestore(String(aid), reserved, reservedEvicted)
+        if (reserved && !reserveSettled && emitted.content === 0) sessionReviewerServedRestore(aidKey, reserved, reservedEvicted)
         if (reserved && !reserveSettled && emitted.content > 0) reserved.prevRec = undefined
         if (reserveUnsub) { try { reserveUnsub() } catch (x) { noteLost("failover-reserve-abort", x, $) } }
       }
@@ -9270,9 +9413,9 @@ export function register(on: any) {
         keys.push(k)
         if (inNorm(stepEffortRefused, k)) continue
         const pm = markOf(m)
-        if (pm && pm.class === "permanent-model" && isModelCooling(m, atMs)) continue
+        if (pm && pm.class === "permanent-model" && isModelCooling(m, atMs, myMarks)) continue
         if (!inNorm(stepRequest, k)) return false
-        if (isModelCooling(m, atMs)) return false
+        if (isModelCooling(m, atMs, myMarks)) return false
         n++
       }
       return n > 0
@@ -9289,7 +9432,7 @@ export function register(on: any) {
           t: isoOf(tP), sid: sidStep,
           rec: recHead + "-skipped-dead-" + String(attemptN) + "-" + String(i),
           outcome: "skipped-dead",
-          agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+          agentId: aidKey, subagentType: bind.subagentType, class: bind.class,
           turnId: ev.turnId, index: ev.index, pass: passN,
           model: m, until: mk && typeof mk.until === "number" ? isoOf(mk.until) : "",
           refusalText: mk ? String(mk.text || "") : "",
@@ -9304,7 +9447,7 @@ export function register(on: any) {
           t: isoOf(tP), sid: sidStep,
           rec: recHead + "-skipped-known-" + String(passN) + "-" + String(i),
           outcome: "skipped-known-until",
-          agentId: String(aid), subagentType: bind.subagentType, class: bind.class,
+          agentId: aidKey, subagentType: bind.subagentType, class: bind.class,
           turnId: ev.turnId, index: ev.index, pass: passN,
           model: m, until: mk && typeof mk.until === "number" ? isoOf(mk.until) : "",
           refusalText: mk ? String(mk.text || "") : "",
@@ -9344,7 +9487,7 @@ export function register(on: any) {
     // метка крутила бы проходы без паузы. Модель без метки готова сейчас.
     // CONSTRAINT (#509-FIX8d Р1): у проверяющего кандидат цели -- не модель, обслуживающая другого проверяющего (sessionReviewersServedByOthers на atMs); объявленная модель самого агента и терминал не вычитаются -- то же правило, что у плана (Р13) и у пропуска попытки (терминал свободен). Кандидатов нет -- null, выход «нет цели».
     const wakeTarget = (atMs: number, built: any): { wakeAt: number; model: string; permanentOnly: boolean } | null => {
-      const takenW = reviewer ? sessionReviewersServedByOthers(String(aid), atMs) : []
+      const takenW = reviewer ? sessionReviewersServedByOthers(aidKey, atMs) : []
       const takenOut = (m: string): boolean => {
         const k = normModelId(m)
         return k !== origN && k !== planTermN && takenW.indexOf(k) >= 0
@@ -9400,10 +9543,10 @@ export function register(on: any) {
         permanentOnly: target.permanentOnly, marks: marksView(built),
       })
       // CONSTRAINT (#514 H7): один тост на агента на эпизод ожидания.
-      await toastByD("агент " + String(bind.subagentType || aid) + " ждёт сброса лимита: " + target.model + " до " + isoOf(target.wakeAt), "failover-wait-toast")
+      await toastByD((isMain ? "главный луп" : "агент " + String(bind.subagentType || aid)) + " ждёт сброса лимита: " + target.model + " до " + isoOf(target.wakeAt), "failover-wait-toast")
     }
     await refreshForWait()
-    await swapPlan(failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($), rungCooldownMarks))
+    await swapPlan(failoverStepPlan(original, planSticky, planLadder, planTerminal, await nowMs($), myMarks))
     waiting = true
     for (;;) {
       if (aborted()) { await waitRec("wait-aborted", {}, false); return lastRes }
@@ -9421,7 +9564,7 @@ export function register(on: any) {
         // CONSTRAINT (#514 Р9-FIX1): проход пробуждения идёт по свежему плану и
         // при том же составе -- метки dead/known сдвигают plan, не all; проба
         // сердцебиения держит план прохода: reviewer-taken ведёт по нему.
-        const fresh = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks)
+        const fresh = failoverStepPlan(original, planSticky, planLadder, planTerminal, now, myMarks)
         await swapPlan(fresh)
         built = fresh
         builtTermN = planTermN
@@ -9443,7 +9586,7 @@ export function register(on: any) {
         // проходом пробуждения следующего витка, а не ждёт пробы старой цели;
         // снятая -- выпадает из цели до пробы (swapPlan).
         await refreshForWait()
-        if (await swapPlan(failoverStepPlan(original, planSticky, planLadder, planTerminal, now, rungCooldownMarks))) continue
+        if (await swapPlan(failoverStepPlan(original, planSticky, planLadder, planTerminal, now, myMarks))) continue
         await begin(target)
         await waitRec("wait-probe", { kind: heartbeatDue ? "heartbeat" : "deadline", model: target.model })
         lastProbeAt = now
@@ -9505,7 +9648,9 @@ export function register(on: any) {
         return lastRes
       }
       // CONSTRAINT: агент, ждущий окна лимита, жив -- засчитанная пауза ставит пометку; незасчитанная выходит выше без неё.
-      try { staleRecOf(String(aid)).touched = true } catch (x) { noteLost("stale-agents-track", x) }
+      // CONSTRAINT (#514 Р7): запись stale-agents -- предмет агента; главный
+      // луп жив, пока жив его шаг.
+      if (!isMain) { try { staleRecOf(aidKey).touched = true } catch (x) { noteLost("stale-agents-track", x) } }
       pausedSinceCall = true
       await begin(target)
     }

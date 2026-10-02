@@ -482,6 +482,27 @@ answered with the text of a refusal, with live usage, gave an answer. The
 ladder does not read the content of an answer, and it does not change the
 model on it.
 
+**Whose plan a refusal mark changes (#514 Р6/Р7).** A carrier-refusal
+mark belongs to one agent: the fan keys its cooldown marks by `agentId`,
+and a step without `agentId` — the main loop — keys them as `main`. A
+refusal received by one agent changes only that agent's plan; the #313
+cross-agent memory is withdrawn. Consultations keep their own process-wide
+map: a judge rung timeout marks the consultation road only, and a fan mark
+of any agent does not remove a judge rung. The main loop carries its own
+set: on a step without `agentId` the ladder is built from `failover.main`,
+else from `failover.default`, plus the terminal, with no class admission
+applied (an unusable admission layer empties the ladder, leaving the
+declared model and the terminal); the bind lives under the key `main`,
+never evicted by the cap, and its map survives a new session like any
+`main` mark. The main bind follows the world on every step, as a waiting
+agent's bind does: a read world that names a ladder or a terminal
+replaces it, an admission layer that became unusable empties the ladder,
+an unread world leaves it as it is. A world that names neither a ladder
+nor a terminal does not store an empty bind, so a ladder named later in
+the same session is taken on the next step. `/catalyst-ladder` names the owner of every cooling row —
+`консультации`, an `agentId`, or `main` — and its filter argument matches
+the model or the owner.
+
 **Who answered.** Every attempt record carries `modelServed`, which is
 `usage.model` of the step result, or `null` without usage. It also carries
 `declared`, the agent's declared model. A matching name is not taken as

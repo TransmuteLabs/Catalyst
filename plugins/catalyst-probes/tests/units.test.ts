@@ -876,7 +876,7 @@ test("chunkCarriesContent: одиннадцать служебных куско�
 // манифеста HEAD; сверка константы с САМИМ файлом манифеста живёт вне
 // официального харнеса (волна #200, отчёт).
 test("MOD_VERSION: пин версии манифеста plugin.json (файл в раннере нечитаем)", () => {
-  expect(MOD_VERSION).toBe("0.1.59")
+  expect(MOD_VERSION).toBe("0.1.60")
 })
 
 // --- COACHING: побайтовый паритет со сплайсом шага 26 --------------------------
@@ -2867,9 +2867,9 @@ test("catch: стримовая регистрация прогоняет пот
 // CONSTRAINT: зубы веера прогоняют РЕАЛЬНЫЙ обработчик turn.step, снятый с
 // регистрации (catchOfRegister), с настоящей привязкой failoverBindSet:
 // прямой вызов функций памяти проверял бы не тот путь (промах волны #311).
-// Метки читаются из дефолтной карты процесса -- той самой, куда пишет веер;
-// имена моделей уникальны на зуб, карта между зубами не сбрасывается
-// (недоступность модели относится к процессу, не к сессии).
+// Метки читаются из карты СВОЕГО агента (fanMarksOf(aid)) -- той самой, куда
+// пишет веер (#514 Р6: отказ агента A не меняет план агента B); имена моделей
+// уникальны на зуб, карты между зубами не пересекаются.
 const FAN313_NOW = 91_313_000
 
 function fan313$(): any {
@@ -2956,11 +2956,11 @@ test("#313 T1: отказ носителя до содержимого став�
   })
   const out = await fan313Run("f313-t1", "f313-t1-refuse", ["f313-t1-ok"], next)
   expect(out.value && out.value.text).toBe("OK-t1")
-  expect(isModelCooling("f313-t1-refuse", FAN313_NOW + 1)).toBe(true)
-  const row = cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t1-refuse")
+  expect(isModelCooling("f313-t1-refuse", FAN313_NOW + 1, R514.fanMarksOf("f313-t1")), "метка -- на карте агента, которому отказали").toBe(true)
+  const row = cooldownSnapshot(FAN313_NOW + 1, R514.fanMarksOf("f313-t1")).filter((r: any) => r.model === "f313-t1-refuse")
   expect(row.length).toBe(1)
   expect(row[0].reason).toBe("carrier-refusal")
-  expect(isModelCooling("f313-t1-ok", FAN313_NOW + 1)).toBe(false)
+  expect(isModelCooling("f313-t1-ok", FAN313_NOW + 1, R514.fanMarksOf("f313-t1"))).toBe(false)
   failoverBindReset()
 })
 
@@ -2973,8 +2973,8 @@ test("#313 T2: отказ носителя ПОСЛЕ содержимого м�
   const out = await fan313Run("f313-t2", "f313-t2-refuse", ["f313-t2-next"], next)
   expect(out.chunks.length).toBe(1)
   expect(next.seen, "ступень с выданным содержимым состоялась -- перехода нет").toEqual(["f313-t2-refuse"])
-  expect(isModelCooling("f313-t2-refuse", FAN313_NOW + 1)).toBe(false)
-  expect(cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t2-refuse").length).toBe(0)
+  expect(isModelCooling("f313-t2-refuse", FAN313_NOW + 1, R514.fanMarksOf("f313-t2"))).toBe(false)
+  expect(cooldownSnapshot(FAN313_NOW + 1, R514.fanMarksOf("f313-t2")).filter((r: any) => r.model === "f313-t2-refuse").length).toBe(0)
   failoverBindReset()
 })
 
@@ -2989,8 +2989,8 @@ test("#313 T3: бросок ставит метку с причиной carrier-
   })
   const out = await fan313Run("f313-t3", "f313-t3-throw", ["f313-t3-ok"], next)
   expect(out.value && out.value.text).toBe("OK-t3")
-  expect(isModelCooling("f313-t3-throw", FAN313_NOW + 1)).toBe(true)
-  const row = cooldownSnapshot(FAN313_NOW + 1).filter((r: any) => r.model === "f313-t3-throw")
+  expect(isModelCooling("f313-t3-throw", FAN313_NOW + 1, R514.fanMarksOf("f313-t3"))).toBe(true)
+  const row = cooldownSnapshot(FAN313_NOW + 1, R514.fanMarksOf("f313-t3")).filter((r: any) => r.model === "f313-t3-throw")
   expect(row.map((r: any) => [r.reason, r.class])).toEqual([["carrier-throw", "temporary-unknown"]])
   failoverBindReset()
 })
@@ -3000,17 +3000,17 @@ test("#313 T4: удачная попытка метки НЕ ставит", asyn
   const next = fan313Stream({ "f313-t4-ok": () => fan313Ok("t4") })
   const out = await fan313Run("f313-t4", "f313-t4-ok", ["f313-t4-backup"], next)
   expect(next.seen).toEqual(["f313-t4-ok"])
-  expect(isModelCooling("f313-t4-ok", FAN313_NOW + 1)).toBe(false)
+  expect(isModelCooling("f313-t4-ok", FAN313_NOW + 1, R514.fanMarksOf("f313-t4"))).toBe(false)
   failoverBindReset()
 })
 
 test("#313 T5: остывающая модель в плане -- перестановка в хвост, не вырезка", async () => {
   failoverBindReset()
-  noteRungCarrierRefusal("f313-t5-cold", FAN313_NOW - 5000)
+  noteRungCarrierRefusal("f313-t5-cold", FAN313_NOW - 5000, R514.fanMarksOf("f313-t5"))
   // CONSTRAINT: прямой ассерт перестановки идёт ДО веера -- веер этого зуба
   // отказом каждой ступени сам ставит метки всем моделям плана, и после
   // него перестановка стала бы тождественной.
-  const defer = deferCoolingAttemptModels(["f313-t5-h1", "f313-t5-cold", "f313-t5-h2"], FAN313_NOW)
+  const defer = deferCoolingAttemptModels(["f313-t5-h1", "f313-t5-cold", "f313-t5-h2"], FAN313_NOW, R514.fanMarksOf("f313-t5"))
   expect(defer.plan.length).toBe(3)
   expect(defer.plan).toEqual(["f313-t5-h1", "f313-t5-h2", "f313-t5-cold"])
   const next = fan313Stream({
@@ -3027,9 +3027,9 @@ test("#313 T5: остывающая модель в плане -- переста
 
 test("#313 T6: ВСЕ модели плана остывают -- план неизменен и полон", async () => {
   failoverBindReset()
-  noteRungCarrierRefusal("f313-t6-x", FAN313_NOW)
-  noteRungCarrierRefusal("f313-t6-y", FAN313_NOW)
-  noteRungCarrierRefusal("f313-t6-solo", FAN313_NOW)
+  noteRungCarrierRefusal("f313-t6-x", FAN313_NOW, R514.fanMarksOf("f313-t6"))
+  noteRungCarrierRefusal("f313-t6-y", FAN313_NOW, R514.fanMarksOf("f313-t6"))
+  noteRungCarrierRefusal("f313-t6-solo", FAN313_NOW, R514.fanMarksOf("f313-t6-solo"))
   const next = fan313Stream({
     "f313-t6-x": fan313Refuse,
     "f313-t6-y": fan313Refuse,
@@ -3042,14 +3042,14 @@ test("#313 T6: ВСЕ модели плана остывают -- план не�
   const solo = await fan313Run("f313-t6-solo", "f313-t6-solo", ["f313-t6-solo"], nextSolo)
   expect(nextSolo.seen).toEqual(["f313-t6-solo"])
   expect(isCarrierRefusal(solo.value)).toBe(true)
-  expect(deferCoolingAttemptModels(["f313-t6-x", "f313-t6-y"], FAN313_NOW).plan).toEqual(["f313-t6-x", "f313-t6-y"])
-  expect(deferCoolingAttemptModels(["f313-t6-solo"], FAN313_NOW).plan).toEqual(["f313-t6-solo"])
+  expect(deferCoolingAttemptModels(["f313-t6-x", "f313-t6-y"], FAN313_NOW, R514.fanMarksOf("f313-t6")).plan).toEqual(["f313-t6-x", "f313-t6-y"])
+  expect(deferCoolingAttemptModels(["f313-t6-solo"], FAN313_NOW, R514.fanMarksOf("f313-t6-solo")).plan).toEqual(["f313-t6-solo"])
   failoverBindReset()
 })
 
 test("#313 T7: собственная модель агента остывает -- план держит её последней", async () => {
   failoverBindReset()
-  noteRungCarrierRefusal("f313-t7-own", FAN313_NOW)
+  noteRungCarrierRefusal("f313-t7-own", FAN313_NOW, R514.fanMarksOf("f313-t7"))
   const next = fan313Stream({
     "f313-t7-own": () => fan313Ok("t7-own"),
     "f313-t7-step": fan313Refuse,
@@ -3057,7 +3057,7 @@ test("#313 T7: собственная модель агента остывает
   const out = await fan313Run("f313-t7", "f313-t7-own", ["f313-t7-step"], next)
   expect(next.seen, "собственная модель достигается после здоровой ступени").toEqual(["f313-t7-step", "f313-t7-own"])
   expect(out.value && out.value.text).toBe("OK-t7-own")
-  expect(isModelCooling("f313-t7-own", FAN313_NOW + 1), "успех модели снимает её метку (#514 H3)").toBe(false)
+  expect(isModelCooling("f313-t7-own", FAN313_NOW + 1, R514.fanMarksOf("f313-t7")), "успех модели снимает её метку (#514 H3)").toBe(false)
   failoverBindReset()
 })
 
@@ -3114,11 +3114,11 @@ test("#313 T10: один дом предиката -- граница окна у
 
 test("#313 R: дверь сброса меток -- вторая проверка с чистого листа", () => {
   rungCooldownReset()
-  noteRungCarrierRefusal("f313-r-door", 1000)
-  expect(isModelCooling("f313-r-door", 1001)).toBe(true)
+  noteRungCarrierRefusal("f313-r-door", 1000, R514.fanMarksOf("main"))
+  expect(isModelCooling("f313-r-door", 1001, R514.fanMarksOf("main"))).toBe(true)
   rungCooldownReset()
-  expect(isModelCooling("f313-r-door", 1001), "после сброса модель годна").toBe(false)
-  expect(cooldownSnapshot(1001)).toStrictEqual([])
+  expect(isModelCooling("f313-r-door", 1001, R514.fanMarksOf("main")), "после сброса модель годна").toBe(false)
+  expect(cooldownSnapshot(1001, R514.fanMarksOf("main"))).toStrictEqual([])
 })
 
 // CONSTRAINT: семь наблюдательских регистраций не дёргаются решающими
@@ -9617,13 +9617,13 @@ test("#509 (г): остывающая ступень перед терминал
   failoverBindReset()
   const now = 509_400_000
   const m = world509("g", now)
-  noteRungCarrierRefusal("r509g-cold", now - 5000)
+  noteRungCarrierRefusal("r509g-cold", now - 5000, R514.fanMarksOf("ag-509g"))
   failoverBindSet("ag-509g", { ladder: ["r509g-cold", "r509g-live"], terminal: "t509g", rungEffort: effortAll509(["r509g-cold", "r509g-live", "t509g"]), subagentType: "t", class: "", sticky: null })
   const next = next509({ "in509g": refuse509, "r509g-cold": refuse509, "r509g-live": refuse509, "t509g": refuse509 })
   await step509(m, "ag-509g", "in509g", next)
   expect(next.seen, "живая ступень, затем остывающая, терминал последним").toEqual(["in509g", "r509g-live", "r509g-cold", "t509g"])
-  noteRungCarrierRefusal("r509g2-cold", now - 5000)
-  noteRungCarrierRefusal("t509g2", now - 4000)
+  noteRungCarrierRefusal("r509g2-cold", now - 5000, R514.fanMarksOf("ag-509g2"))
+  noteRungCarrierRefusal("t509g2", now - 4000, R514.fanMarksOf("ag-509g2"))
   failoverBindSet("ag-509g2", { ladder: ["r509g2-cold", "r509g2-live"], terminal: "t509g2", rungEffort: effortAll509(["r509g2-cold", "r509g2-live", "t509g2"]), subagentType: "t", class: "", sticky: null })
   const next2 = next509({ "in509g2": refuse509, "r509g2-cold": refuse509, "r509g2-live": refuse509, "t509g2": refuse509 })
   await step509(m, "ag-509g2", "in509g2", next2)
@@ -9740,7 +9740,7 @@ test("#509 (к): терминал на попытке 0 (объявленная 
   failoverBindReset()
   const now = 510_400_000
   const m = world509("k", now)
-  R514.noteModelRefusal("in509k", now - 1000, "permanent-model", 0, "carrier-refusal", "Credit balance is too low")
+  R514.noteModelRefusal("in509k", now - 1000, "permanent-model", 0, "carrier-refusal", "Credit balance is too low", R514.fanMarksOf("ag-509k"))
   failoverBindSet("ag-509k", { ladder: [], terminal: "t509k", rungEffort: effortAll509(["t509k"]), subagentType: "t", class: "", sticky: null })
   const next = next509({ "t509k": ok509("509k") })
   const out = await step509(m, "ag-509k", "in509k", next)
@@ -10265,7 +10265,7 @@ test("#514 Р9 (б): ступень с живой quota-меткой и изве
   const h = host514("r9b", T0)
   failoverBindSet("ag-514r9b", { ladder: ["g514r9b"], terminal: "claude-t514r9b", rungEffort: { "g514r9b": "max", "claude-t514r9b": "max" }, subagentType: "t514r9b", class: "", sticky: null })
   const quotaLine = "API Error: 503 auth_unavailable: no auth available (providers=claude, model=g514r9b; last upstream error: [1308][Usage limit reached for 5 hour]); 1 candidate(s) blocked: 1 on a spent allowance; soonest recovery in 48m37s"
-  R514.noteModelRefusal("g514r9b", T0, "quota", T0 + 2917000, "carrier-refusal", quotaLine)
+  R514.noteModelRefusal("g514r9b", T0, "quota", T0 + 2917000, "carrier-refusal", quotaLine, R514.fanMarksOf("ag-514r9b"))
   const next = next514(h, {
     "s514r9b": refuseAll514(ORG_OFF),
     "g514r9b": refuseAll514(quotaLine),
@@ -10379,7 +10379,7 @@ test("#514 Р9-FIX2: метка permanent-model, поставленная во �
     env: { CATALYST_ROUTING_TABLE: TABLE514 },
     sleepHook: (n, now) => {
       if (n === 1) {
-        R514.noteModelRefusal("x514d", now, "permanent-model", 0, "carrier-refusal", "Credit balance is too low")
+        R514.noteModelRefusal("x514d", now, "permanent-model", 0, "carrier-refusal", "Credit balance is too low", R514.fanMarksOf("ag-514d"))
         markedAt = now
       }
       if (now >= T0 + 3600000) next.signal.aborted = true
@@ -10471,13 +10471,13 @@ test("#514 J5(в): успех модели снимает её метку", asyn
   failoverBindSet("ag-514c", { ladder: [], terminal: "claude-t514c", rungEffort: {}, subagentType: "t", class: "", sticky: null })
   const next = next514(h, { "in514c": (k) => (k === 0 ? "API Error: 429 rate limit" : null), "claude-t514c": () => null })
   await step514(h, "ag-514c", "in514c", next)
-  expect(isModelCooling("in514c", T0 + 1)).toBe(true)
+  expect(isModelCooling("in514c", T0 + 1, R514.fanMarksOf("ag-514c")), "метка отказа -- на карте самого агента").toBe(true)
   h.m.setNow(T0 + 31000)
   await step514(h, "ag-514c", "in514c", next, { index: 1 })
-  expect(isModelCooling("in514c", T0 + 31000)).toBe(false)
-  const snap = cooldownSnapshot(T0 + 31000).filter(r => r.model === "in514c")
+  expect(isModelCooling("in514c", T0 + 31000, R514.fanMarksOf("ag-514c"))).toBe(false)
+  const snap = cooldownSnapshot(T0 + 31000, R514.fanMarksOf("ag-514c")).filter(r => r.model === "in514c")
   expect(snap).toEqual([])
-  const again = R514.noteModelRefusal("in514c", T0 + 32000, "temporary-unknown", 0, "carrier-refusal", "")
+  const again = R514.noteModelRefusal("in514c", T0 + 32000, "temporary-unknown", 0, "carrier-refusal", "", R514.fanMarksOf("ag-514c"))
   expect(again.until - (T0 + 32000), "счёт подряд идущих отказов сброшен успехом").toBe(30000)
   rungCooldownReset()
   failoverBindReset()
@@ -10587,8 +10587,8 @@ test("#514 J5(и): нечитаемый срок -- temporary-unknown с backoff
   await step514(h, "ag-514i", "in514i", next)
   const rec = attempts514(h, "ag-514i")[0]
   expect(rec.refusalClass).toBe("temporary-unknown")
-  expect(isModelCooling("in514i", T0 + 29999)).toBe(true)
-  expect(isModelCooling("in514i", T0 + 30000)).toBe(false)
+  expect(isModelCooling("in514i", T0 + 29999, R514.fanMarksOf("ag-514i"))).toBe(true)
+  expect(isModelCooling("in514i", T0 + 30000, R514.fanMarksOf("ag-514i"))).toBe(false)
   rungCooldownReset()
   failoverBindReset()
 })
@@ -10639,6 +10639,420 @@ test("#514 H8: бросок при прерванном сигнале -- lastRe
   expect(out.value).toBe(null)
   expect(next.seen).toEqual(["in514u"])
   expect(h.sleeps.length).toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+// --- #514 W1b Р6/Р7: метка отказа по агенту; главный луп со своим набором ------
+
+test("#514 Р6-а: отказ модели у агента A не меняет план агента B -- B идёт на неё первой", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_100_000
+  const h = host514("r6a", T0, { noProc: true })
+  failoverBindSet("ag-r6a-a", { ladder: [], terminal: "claude-r6a-ta", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextA = next514(h, { "x-r6a": refuseAll514("API Error: 429 rate limit"), "claude-r6a-ta": () => null })
+  await step514(h, "ag-r6a-a", "x-r6a", nextA)
+  expect(nextA.seen).toEqual(["x-r6a", "claude-r6a-ta"])
+  expect(isModelCooling("x-r6a", T0 + 1, R514.fanMarksOf("ag-r6a-a")), "метка -- на карте A").toBe(true)
+  expect(isModelCooling("x-r6a", T0 + 1, R514.fanMarksOf("ag-r6a-b")), "карта B метку A не видит").toBe(false)
+  failoverBindSet("ag-r6a-b", { ladder: [], terminal: "claude-r6a-tb", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextB = next514(h, { "x-r6a": () => null, "claude-r6a-tb": () => null })
+  const outB = await step514(h, "ag-r6a-b", "x-r6a", nextB)
+  expect(outB.value && outB.value.text, "B ушёл на X первой -- ответ от X").toBe("OK-x-r6a")
+  expect(nextB.seen, "X вызвана первой, без пропуска").toEqual(["x-r6a"])
+  const recB = attempts514(h, "ag-r6a-b")
+  expect(recB.length).toBe(1)
+  expect(recB[0].cooldownDeferred, "отсрочки по чужой метке нет").toBeUndefined()
+  expect(journal514(h).filter(r => r.agentId === "ag-r6a-b" && r.outcome === "skipped-known-until").length, "skipped-known по чужой метке нет").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-б: отказ модели у агента A -- его следующий переход пропускает её до срока метки", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_200_000
+  const h = host514("r6b", T0, { noProc: true })
+  failoverBindSet("ag-r6b", { ladder: ["y-r6b"], terminal: "claude-r6b-t", rungEffort: { "y-r6b": "max" }, subagentType: "t", class: "", sticky: null })
+  const next1 = next514(h, { "x-r6b": refuseAll514("API Error: 429 rate limit"), "y-r6b": () => null })
+  const out1 = await step514(h, "ag-r6b", "x-r6b", next1)
+  expect(out1.value && out1.value.text).toBe("OK-y-r6b")
+  expect(isModelCooling("x-r6b", T0 + 1, R514.fanMarksOf("ag-r6b")), "метка своего отказа -- на своей карте").toBe(true)
+  h.m.setNow(T0 + 1000)
+  const next2 = next514(h, { "x-r6b": refuseAll514("API Error: 429 rate limit"), "y-r6b": () => null })
+  const out2 = await step514(h, "ag-r6b", "x-r6b", next2, { index: 1 })
+  expect(out2.value && out2.value.text).toBe("OK-y-r6b")
+  expect(next2.seen, "X отложена меткой до срока -- первой идёт готовая").toEqual(["y-r6b"])
+  h.m.setNow(T0 + 2000)
+  const next3 = next514(h, { "x-r6b": refuseAll514("API Error: 429 rate limit"), "y-r6b": refuseAll514("API Error: 429 rate limit"), "claude-r6b-t": () => null })
+  const out3 = await step514(h, "ag-r6b", "x-r6b", next3, { index: 2 })
+  expect(out3.value && out3.value.text).toBe("OK-claude-r6b-t")
+  expect(next3.seen, "метка откладывает X в хвост, но не вырезает: X достижима после готовых").toEqual(["y-r6b", "x-r6b", "claude-r6b-t"])
+  expect(isModelCooling("x-r6b", T0 + 3000, R514.fanMarksOf("ag-r6b")), "метка жива до срока").toBe(true)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-в: отказ X на главном лупе не трогает план агента, и наоборот", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_300_000
+  const h = host514("r6v", T0, { noProc: true, probes: '[failover]\nenabled = true\nterminal = "claude-r6v-m"\n' })
+  const nextM = next514(h, { "x-r6v": refuseAll514("API Error: 429 rate limit"), "claude-r6v-m": () => null })
+  const outM = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r6v-m", index: 0, model: "x-r6v", messageCount: 1 }, nextM))
+  expect(outM.value && outM.value.text).toBe("OK-claude-r6v-m")
+  expect(isModelCooling("x-r6v", T0 + 1, R514.fanMarksOf("main")), "метка главного лупа -- на карте main").toBe(true)
+  failoverBindSet("ag-r6v", { ladder: [], terminal: "", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextA = next514(h, { "x-r6v": () => null })
+  const outA = await step514(h, "ag-r6v", "x-r6v", nextA)
+  expect(outA.value && outA.value.text, "план агента меткой main не тронут").toBe("OK-x-r6v")
+  expect(nextA.seen).toEqual(["x-r6v"])
+  failoverBindSet("ag-r6v2", { ladder: [], terminal: "claude-r6v-a", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextA2 = next514(h, { "x-r6v": refuseAll514("API Error: 429 rate limit"), "claude-r6v-a": () => null })
+  await step514(h, "ag-r6v2", "x-r6v", nextA2)
+  expect(isModelCooling("x-r6v", T0 + 1, R514.fanMarksOf("ag-r6v2")), "метка агента -- на его карте").toBe(true)
+  const nextM2 = next514(h, { "x-r6v": () => null, "claude-r6v-m": () => null })
+  const outM2 = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r6v-m2", index: 1, model: "x-r6v", messageCount: 1 }, nextM2))
+  expect(outM2.value && outM2.value.text, "главный луп идёт на X первой").toBe("OK-x-r6v")
+  expect(nextM2.seen).toEqual(["x-r6v"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-г: вытеснение привязок уносит карту старшей не-main, карта main с живой меткой переживает", () => {
+  reset514()
+  rungCooldownReset()
+  const T = 518_400_000
+  R514.noteRungCarrierRefusal("m-r6g-main", T, R514.fanMarksOf("main"))
+  R514.noteRungCarrierRefusal("m-r6g-1", T, R514.fanMarksOf("ag-r6g-1"))
+  failoverBindSet("main", { ladder: [], terminal: "", isMain: true, sticky: null })
+  for (let i = 1; i <= FAILOVER_BIND_CAP; i++) {
+    failoverBindSet("ag-r6g-" + String(i), { ladder: [], terminal: "", subagentType: "t", class: "", sticky: null })
+  }
+  expect(failoverBindGet("ag-r6g-1"), "старшая не-main вытеснена").toBeUndefined()
+  expect(failoverBindGet("ag-r6g-2"), "следующая жива").toBeDefined()
+  expect(failoverBindGet("main"), "main не вытеснен").toBeDefined()
+  expect(isModelCooling("m-r6g-1", T + 1, R514.fanMarksOf("ag-r6g-1")), "карта вытесненного удалена").toBe(false)
+  expect(isModelCooling("m-r6g-main", T + 1, R514.fanMarksOf("main")), "карта main с живой меткой пережила вытеснение").toBe(true)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-д: метка consultBg (таймаут ступени) живёт в карте консультаций и план агента не меняет", async () => {
+  await clear393()
+  rungCooldownReset()
+  reset514()
+  const T0 = 518_500_000
+  const toml = '[probe.cr6d]\nkind = "consult"\non = ["Stop"]\nmodels = [{model = "c-r6d", timeout_ms = 100}]\n'
+  const st = p5$("r6d", T0, toml, { idle: "0" })
+  await saStart(st)
+  // ступень молчит: сторож rung-deadline бросает раньше ответа, consultBg ставит
+  // метку таймаута; часы стенда засыпают мгновенно.
+  st.m.$.model.complete = () => new Promise(() => {})
+  st.m.$.clock.sleep = async () => {}
+  await p5Classic(st, "Stop", { stop_hook_active: true }, T0 + 1000)
+  await settle393()
+  expect(isModelCooling("c-r6d", T0 + 2000, R514.consultMarksOf()), "метка таймаута -- в карте консультаций").toBe(true)
+  expect(rungsAfterCooldown([{ model: "c-r6d" }, { model: "ok-r6d" }], T0 + 2000, R514.consultMarksOf()).ladder, "консультация не зовёт ступень до срока").toEqual([{ model: "ok-r6d" }])
+  // метка консультаций не меняет план шага агента
+  const h = host514("r6d2", T0 + 3000, { noProc: true })
+  failoverBindSet("ag-r6d", { ladder: ["c-r6d"], terminal: "claude-r6d-t", rungEffort: { "c-r6d": "max" }, subagentType: "t", class: "", sticky: null })
+  const next = next514(h, { "in-r6d": refuseAll514("API Error: 429 rate limit"), "c-r6d": () => null })
+  const out = await step514(h, "ag-r6d", "in-r6d", next)
+  expect(next.seen, "ступень с меткой КОНСУЛЬТАЦИЙ в плане агента первая после объявленной").toEqual(["in-r6d", "c-r6d"])
+  expect(out.value && out.value.text).toBe("OK-c-r6d")
+  expect(isModelCooling("c-r6d", T0 + 4000, R514.fanMarksOf("ag-r6d")), "карта агента меткой консультаций не тронута").toBe(false)
+  // метка веера агента не снимает ступень у дороги консультаций
+  noteRungCarrierRefusal("c-r6d", T0 + 4000, R514.fanMarksOf("ag-r6d-fan"))
+  expect(rungsAfterCooldown([{ model: "c-r6d" }], T0 + 5000, R514.consultMarksOf()).ladder, "карта агента дорогу консультаций не судит").toEqual([{ model: "c-r6d" }])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-е: /catalyst-ladder называет владельца -- консультации, agentId, main; фильтр по владельцу", () => {
+  rungCooldownReset()
+  const T = 518_600_000
+  noteRungCarrierRefusal("a-model-r6e", T, R514.fanMarksOf("ag-r6e"))
+  noteRungCarrierRefusal("m-model-r6e", T, R514.fanMarksOf("main"))
+  R514.noteRungTimeout("c-model-r6e", "Error: rung-deadline c-model-r6e 100ms", T, R514.consultMarksOf())
+  const lines = ladderCommandText(T + 1000, "").split("\n").filter(l => l.indexOf(": остывать ещё") >= 0)
+  expect(lines.filter(l => l.indexOf("консультации · c-model-r6e: ") === 0).length).toBe(1)
+  expect(lines.filter(l => l.indexOf("ag-r6e · a-model-r6e: ") === 0).length).toBe(1)
+  expect(lines.filter(l => l.indexOf("main · m-model-r6e: ") === 0).length).toBe(1)
+  expect(ladderCommandText(T + 1000, "ag-r6e").split("\n").filter(l => l.indexOf(": остывать ещё") >= 0), "фильтр по владельцу-агенту").toEqual(lines.filter(l => l.indexOf("ag-r6e · ") === 0))
+  expect(ladderCommandText(T + 1000, "main").split("\n").filter(l => l.indexOf(": остывать ещё") >= 0), "фильтр по владельцу main").toEqual(lines.filter(l => l.indexOf("main · ") === 0))
+  rungCooldownReset()
+})
+
+test("#514 Р6-ж: сброс сессии чистит карты агентов, карта main переживает", async () => {
+  await clear393()
+  reset514()
+  const T = 518_700_000
+  noteRungCarrierRefusal("m-r6j-main", T, R514.fanMarksOf("main"))
+  noteRungCarrierRefusal("m-r6j-ag", T, R514.fanMarksOf("ag-r6j"))
+  failoverBindSet("ag-r6j", { ladder: [], terminal: "", subagentType: "t", class: "", sticky: null })
+  failoverBindSet("main", { ladder: [], terminal: "", isMain: true, sticky: null })
+  await clear393()
+  expect(isModelCooling("m-r6j-ag", T + 1, R514.fanMarksOf("ag-r6j")), "карта агента удалена сбросом сессии").toBe(false)
+  expect(isModelCooling("m-r6j-main", T + 1, R514.fanMarksOf("main")), "карта main пережила сброс").toBe(true)
+  expect(failoverBindGet("ag-r6j"), "привязки снесены").toBeUndefined()
+  expect(failoverBindGet("main"), "привязка main тоже снесена -- выживает только карта").toBeUndefined()
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р6-з: выходы ожидания не срабатывают от чужих меток -- A идёт на Y в том же проходе", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_800_000
+  const h = host514("r6z", T0, { noProc: true })
+  failoverBindSet("ag-r6z-b", { ladder: [], terminal: "claude-r6z-tb", rungEffort: {}, subagentType: "t", class: "", sticky: null })
+  const nextB = next514(h, { "y-r6z": refuseAll514("API Error: 429 rate limit"), "claude-r6z-tb": () => null })
+  await step514(h, "ag-r6z-b", "y-r6z", nextB)
+  expect(isModelCooling("y-r6z", T0 + 1, R514.fanMarksOf("ag-r6z-b")), "метка Y -- на карте B").toBe(true)
+  failoverBindSet("ag-r6z-a", { ladder: ["x-r6z", "y-r6z"], terminal: "", rungEffort: { "x-r6z": "max", "y-r6z": "max" }, subagentType: "t", class: "", sticky: null })
+  const nextA = next514(h, { "x-r6z": refuseAll514("API Error: 429 rate limit"), "y-r6z": () => null })
+  const outA = await step514(h, "ag-r6z-a", "x-r6z", nextA)
+  expect(outA.value && outA.value.text, "ответ от Y в том же проходе").toBe("OK-y-r6z")
+  expect(nextA.seen, "чужая метка Y не сняла ступень").toEqual(["x-r6z", "y-r6z"])
+  for (const kind of ["wait-begin", "wait-no-target", "wait-budget-exhausted"]) {
+    expect(waits514(h, "ag-r6z-a", kind).length, kind + " у A нет").toBe(0)
+  }
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-а: шаг без agentId -- набор failover.main, ответ от Y, запись журнала с agentId main", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 518_900_000
+  const h = host514("r7a", T0, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "y-r7a", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c-r7a]\nallowed = []\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7a": refuseAll514("API Error: 429 rate limit"), "y-r7a": () => null })
+  const out = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r7a", index: 0, model: "in-r7a", messageCount: 1 }, next))
+  expect(out.value && out.value.text).toBe("OK-y-r7a")
+  expect(next.seen, "объявленная отказала -- переход на ступень failover.main").toEqual(["in-r7a", "y-r7a"])
+  const recs = attempts514(h, "main")
+  expect(recs.length).toBe(2)
+  expect(recs[0].agentId).toBe("main")
+  expect(recs[1].modelRequested).toBe("y-r7a")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-б: без main набор главного лупа -- default", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 519_000_000
+  const h = host514("r7b", T0, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\n\n[failover.default]\nmodels = [{model = "z-r7b", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c-r7b]\nallowed = []\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7b": refuseAll514("API Error: 429 rate limit"), "z-r7b": () => null })
+  const out = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r7b", index: 0, model: "in-r7b", messageCount: 1 }, next))
+  expect(out.value && out.value.text).toBe("OK-z-r7b")
+  expect(next.seen).toEqual(["in-r7b", "z-r7b"])
+  expect(attempts514(h, "main").map(r => r.modelRequested)).toEqual(["in-r7b", "z-r7b"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-в: ни main, ни default, ни terminal -- отказ возвращается как есть", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 519_100_000
+  const h = host514("r7v", T0, { noProc: true, probes: "[failover]\nenabled = true\n" })
+  const next = next514(h, { "in-r7v": refuseAll514("API Error: 429 rate limit") })
+  const out = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r7v", index: 0, model: "in-r7v", messageCount: 1 }, next))
+  expect(next.seen, "один вызов -- прямой проход").toEqual(["in-r7v"])
+  expect(isCarrierRefusal(out.value), "отказ возвращён вызывающему").toBe(true)
+  expect(journal514(h).filter(r => r.agentId === "main").length, "записей лестницы нет").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-г: шаг главного лупа с переходом -- без stale-agents, без подсказки, $.session.messages без agentId", async () => {
+  await clear393()
+  reset514()
+  rungCooldownReset()
+  const T0 = 519_200_000
+  const st = sa$("r7g", T0, {
+    idle: "0",
+    files: {
+      "/probes-sa-r7g/probes.toml": "[probe.idle-watch]\n[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = \"y-r7g\", effort = \"max\"}]\n",
+      "/tbl-r7g/routing-table.toml": "[classes.c-r7g]\nallowed = []\n",
+    },
+    env: { CATALYST_ROUTING_TABLE: "/tbl-r7g/routing-table.toml" },
+  })
+  st.agents = []
+  await saStart(st)
+  const before = Object.keys(saSnap()).sort()
+  const hist: any[] = []
+  const msgArgs: any[] = []
+  st.m.$.session.messages = async (arg: any) => { msgArgs.push(arg); return hist.slice() }
+  const seen: string[] = []
+  const next: any = (req: any) => {
+    const model = String(req && req.model)
+    seen.push(model)
+    return (async function* () {
+      if (model === "in-r7g") {
+        hist.push({ role: "assistant", text: "API Error: 429 rate limit" })
+        return { usage: null, stopReason: null }
+      }
+      return { usage: { out: 1 }, stopReason: "end_turn", text: "OK-" + model }
+    })()
+  }
+  next.signal = { aborted: false }
+  next.budget = { ms: 10000, remainingMs: Infinity }
+  const out = await drainStream(hook393(subs393(), "turn.step")(st.m.$, { turnId: "t-r7g", index: 0, model: "in-r7g", messageCount: 1 }, next))
+  await settle393()
+  expect(out.value && out.value.text).toBe("OK-y-r7g")
+  expect(seen, "переход главного лупа на ступень failover.main").toEqual(["in-r7g", "y-r7g"])
+  expect(Object.keys(saSnap()).sort(), "записей stale-agents главный луп не заводит").toEqual(before)
+  expect(st.submits.length, "подсказка «шаг агента обслужила» не ставится").toBe(0)
+  expect(p5Q(""), "очередь главного лупа пуста").toEqual([])
+  expect(msgArgs.length, "история читалась").toBeGreaterThan(0)
+  expect(msgArgs.filter(a => a !== undefined).length, "$.session.messages зовётся без agentId").toBe(0)
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-д: допуск клетки не сужает лестницу главного лупа; непригодный допуск -- объявленная и терминал", async () => {
+  reset514()
+  rungCooldownReset()
+  const T0 = 519_300_000
+  const h = host514("r7d1", T0, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\nterminal = "claude-r7d-t"\n\n[failover.main]\nmodels = [{model = "y-r7d", effort = "max"}]\n',
+    files: { [TABLE514]: '[classes.c-r7d]\nallowed = []\n' },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7d": refuseAll514("API Error: 429 rate limit"), "y-r7d": () => null, "claude-r7d-t": () => null })
+  const out = await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId: "t-r7d", index: 0, model: "in-r7d", messageCount: 1 }, next))
+  expect(out.value && out.value.text, "Y вне допуска клетки -- главный луп всё равно идёт на Y").toBe("OK-y-r7d")
+  expect(next.seen).toEqual(["in-r7d", "y-r7d"])
+  rungCooldownReset()
+  failoverBindReset()
+  reset514()
+  const T1 = 519_400_000
+  const h2 = host514("r7d2", T1, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\nterminal = "claude-r7d-t2"\n\n[failover.main]\nmodels = [{model = "y-r7d2", effort = "max"}]\n',
+  })
+  const next2 = next514(h2, { "in-r7d2": refuseAll514("API Error: 429 rate limit"), "y-r7d2": () => null, "claude-r7d-t2": () => null })
+  const out2 = await drainStream(hook393(subs393(), "turn.step")(h2.m.$, { turnId: "t-r7d2", index: 0, model: "in-r7d2", messageCount: 1 }, next2))
+  expect(out2.value && out2.value.text, "непригодный допуск -- терминал").toBe("OK-claude-r7d-t2")
+  expect(next2.seen, "лестница главного лупа пуста: объявленная и терминал").toEqual(["in-r7d2", "claude-r7d-t2"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-е: failoverOf сливает main проекта поверх глобального", async () => {
+  hostMemoReset()
+  rungCooldownReset()
+  const m = mod$393({
+    files: {
+      "/home-r7e/.claude/probes/probes.toml": '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "g-r7e", effort = "max"}]\n',
+      "/work-r7e/.claude/probes/probes.toml": '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "p-r7e", effort = "max"}]\n',
+    },
+    env: { HOME: "/home-r7e", PWD: "/work-r7e" },
+    now: 519_500_000,
+  })
+  const packed = await worldFor(m.$)
+  const fo = packed.world.failover
+  expect(fo.main.models, "проект заменяет глобальный main целиком").toEqual([{ model: "p-r7e", effort: "max" }])
+  const lb = failoverLadderBind(fo, "", "", true)
+  expect(lb.ladder, "лестница главного лупа -- проектная").toEqual(["p-r7e"])
+  expect(lb.source).toBe("main")
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+async function stepMain514(h: any, turnId: string, model: string, next: any): Promise<any> {
+  return await drainStream(hook393(subs393(), "turn.step")(h.m.$, { turnId, index: 0, model, messageCount: 1 }, next))
+}
+
+function worldMoved514(h: any): void {
+  hostMemoReset()
+  h.m.setNow(h.m.getNow() + 60000)
+}
+
+test("#514 Р7-ж: мир без лестницы не записывает пустую привязку main; лестница, названная позже, берётся", async () => {
+  reset514()
+  rungCooldownReset()
+  failoverBindReset()
+  const h = host514("r7j", 519_600_000, {
+    noProc: true,
+    probes: "[failover]\nenabled = true\n",
+    files: { [TABLE514]: "[classes.c-r7j]\nallowed = []\n" },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7j": refuseAll514("API Error: 429 rate limit"), "in2-r7j": refuseAll514("API Error: 429 rate limit"), "y-r7j": () => null })
+  const out1 = await stepMain514(h, "t-r7j1", "in-r7j", next)
+  expect(next.seen, "без лестницы -- только объявленная").toEqual(["in-r7j"])
+  expect(out1.value && out1.value.text).not.toBe("OK-y-r7j")
+  expect(failoverBindGet("main"), "пустая привязка main не записана").toBe(undefined)
+  h.files[h.probesPath] = '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "y-r7j", effort = "max"}]\n'
+  worldMoved514(h)
+  const out2 = await stepMain514(h, "t-r7j2", "in2-r7j", next)
+  expect(out2.value && out2.value.text, "лестница, названная после первого шага, берётся").toBe("OK-y-r7j")
+  expect(next.seen).toEqual(["in-r7j", "in2-r7j", "y-r7j"])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-з: допуск, ставший непригодным посреди сессии, опустошает лестницу main -- объявленная и терминал", async () => {
+  reset514()
+  rungCooldownReset()
+  failoverBindReset()
+  const h = host514("r7z", 519_700_000, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\nterminal = "claude-r7z-t"\n\n[failover.main]\nmodels = [{model = "y-r7z", effort = "max"}]\n',
+    files: { [TABLE514]: "[classes.c-r7z]\nallowed = []\n" },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7z": () => null, "in2-r7z": refuseAll514("API Error: 429 rate limit"), "y-r7z": () => null, "claude-r7z-t": () => null })
+  await stepMain514(h, "t-r7z1", "in-r7z", next)
+  expect(next.seen).toEqual(["in-r7z"])
+  const b1 = failoverBindGet("main")
+  expect(b1 && b1.ladder, "привязка main построена с Y").toEqual(["y-r7z"])
+  delete h.files[TABLE514]
+  worldMoved514(h)
+  const out2 = await stepMain514(h, "t-r7z2", "in2-r7z", next)
+  expect(out2.value && out2.value.text, "непригодный допуск -- терминал, не прежняя Y").toBe("OK-claude-r7z-t")
+  expect(next.seen).toEqual(["in-r7z", "in2-r7z", "claude-r7z-t"])
+  const b2 = failoverBindGet("main")
+  expect(b2 && b2.ladder, "лестница main опустошена").toEqual([])
+  rungCooldownReset()
+  failoverBindReset()
+})
+
+test("#514 Р7-и: лестница main идёт за сменой мира Y -> Z", async () => {
+  reset514()
+  rungCooldownReset()
+  failoverBindReset()
+  const h = host514("r7i", 519_800_000, {
+    noProc: true,
+    probes: '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "y-r7i", effort = "max"}]\n',
+    files: { [TABLE514]: "[classes.c-r7i]\nallowed = []\n" },
+    env: { CATALYST_ROUTING_TABLE: TABLE514 },
+  })
+  const next = next514(h, { "in-r7i": () => null, "in2-r7i": refuseAll514("API Error: 429 rate limit"), "y-r7i": () => null, "z-r7i": () => null })
+  await stepMain514(h, "t-r7i1", "in-r7i", next)
+  const b1 = failoverBindGet("main")
+  expect(b1 && b1.ladder).toEqual(["y-r7i"])
+  h.files[h.probesPath] = '[failover]\nenabled = true\n\n[failover.main]\nmodels = [{model = "z-r7i", effort = "max"}]\n'
+  worldMoved514(h)
+  const out2 = await stepMain514(h, "t-r7i2", "in2-r7i", next)
+  expect(out2.value && out2.value.text, "новая лестница мира").toBe("OK-z-r7i")
+  expect(next.seen).toEqual(["in-r7i", "in2-r7i", "z-r7i"])
   rungCooldownReset()
   failoverBindReset()
 })
@@ -11203,7 +11617,7 @@ test("#514 FIX3 M1 (а): старая строка 402 в истории, бро
   const recs = attempts514(h, "ag-3m1a")
   expect(recs.length).toBe(1)
   expect(recs[0].refusalClass, "без свежей строки -- hook-error, не класс старой строки").toBe("hook-error")
-  expect(isModelCooling("in3m1a", T0 + 1), "метки на модель нет").toBe(false)
+  expect(isModelCooling("in3m1a", T0 + 1, R514.fanMarksOf("ag-3m1a")), "метки на модель нет").toBe(false)
   expect(journal514(h).filter(r => r.agentId === "ag-3m1a" && String(r.outcome).indexOf("wait-") === 0).length).toBe(0)
   rungCooldownReset()
   failoverBindReset()
@@ -11218,7 +11632,7 @@ test("#514 FIX3 M1 (б): старая строка 402 в истории, отк
   await step514(h, "ag-3m1b", "in3m1b", next)
   const recs = attempts514(h, "ag-3m1b")
   expect({ cls: recs[0].refusalClass, text: recs[0].refusalText }).toEqual({ cls: "temporary-unknown", text: "" })
-  expect(cooldownSnapshot(T0 + 1).filter(r => r.model === "in3m1b").map(r => r.class)).toEqual(["temporary-unknown"])
+  expect(cooldownSnapshot(T0 + 1, R514.fanMarksOf("ag-3m1b")).filter(r => r.model === "in3m1b").map(r => r.class)).toEqual(["temporary-unknown"])
   rungCooldownReset()
   failoverBindReset()
 })
@@ -11358,7 +11772,7 @@ test("#514 FIX3 AR-5: нижний хук бросает детерминиро�
   expect(h.procCalls, "FIX4 AR-c / FIX5 Р3: одна пауза повторного чтения куском, кусков ожидания нет").toEqual([{ argv: ["/bin/sleep", "4.000"], init: { timeoutMs: 9000 } }])
   expect(attempts514(h, "ag-3ar5")[0].reread, "повторное чтение названо в записи попытки").toBe(true)
   expect(journal514(h).filter(r => r.agentId === "ag-3ar5" && String(r.outcome).indexOf("wait-") === 0).length).toBe(0)
-  expect(isModelCooling("in3ar5", T0 + 1)).toBe(false)
+  expect(isModelCooling("in3ar5", T0 + 1, R514.fanMarksOf("ag-3ar5"))).toBe(false)
   rungCooldownReset()
   failoverBindReset()
 })
@@ -11443,7 +11857,7 @@ test("#509-FIX3 AR-4: терминал канона с [1m] уходит на п
   const next2 = next514(h, { "Claude-Opus-5-5[2m]": refuseAll514(RL429), "claude-opus-5-5": () => null })
   await step514(h, "ag-3ar4b", "Claude-Opus-5-5[2m]", next2)
   expect(next2.seen, "объявленная совпала с терминалом при сравнении").toEqual(["Claude-Opus-5-5[2m]"])
-  expect(isModelCooling("claude-opus-5-5", T0 + 1), "метка -- по нормализованному id").toBe(true)
+  expect(isModelCooling("claude-opus-5-5", T0 + 1, R514.fanMarksOf("ag-3ar4b")), "метка -- по нормализованному id, на карте своего агента").toBe(true)
   rungCooldownReset()
   failoverBindReset()
 })
@@ -11656,7 +12070,7 @@ test("#509-FIX4 F3: все дали request, но у модели плана ж�
   const T0 = Date.UTC(2026, 8, 27, 10, 30, 0)
   const h = host514("4f3m", T0, { noProc: true })
   failoverBindSet("ag-4f3m", { ladder: [], terminal: "claude-t4f3m", rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("claude-t4f3m", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429)
+  R514.noteModelRefusal("claude-t4f3m", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429, R514.fanMarksOf("ag-4f3m"))
   const next = next514(h, { "in4f3m": refuseAll514("Prompt is too long"), "claude-t4f3m": refuseAll514("Prompt is too long") })
   await step514(h, "ag-4f3m", "in4f3m", next)
   expect(next.seen).toEqual(["in4f3m", "claude-t4f3m"])
@@ -11855,7 +12269,7 @@ test("#509-FIX4 AR-5: остывшая объявленная = терминал
   const T0 = Date.UTC(2026, 8, 27, 11, 0, 0)
   const h = host514("4ar5", T0, { noProc: true })
   failoverBindSet("ag-4ar5", { ladder: ["r4ar5-1", "r4ar5-2"], terminal: "claude-opus-5-5", rungEffort: effortAll509(["r4ar5-1", "r4ar5-2"]), subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("claude-opus-5-5", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429)
+  R514.noteModelRefusal("claude-opus-5-5", T0 - 1000, "temporary-unknown", 0, "carrier-refusal", RL429, R514.fanMarksOf("ag-4ar5"))
   const next = next514(h, { "claude-opus-5-5": () => null, "r4ar5-1": refuseAll514(RL429), "r4ar5-2": refuseAll514(RL429) })
   const out = await step514(h, "ag-4ar5", "claude-opus-5-5", next)
   expect(out.value && out.value.text).toBe("OK-claude-opus-5-5")
@@ -11892,7 +12306,7 @@ test("#509-FIX5 Р1 (а): план [D(request), R(request), P(живая permane
   let next: any = null
   const h = host514("5p1a", T0, { sleepHook: (n) => { if (n === 1) next.signal.aborted = true } })
   failoverBindSet("ag-5p1a", { ladder: ["r5p1a", "p5p1a"], terminal: "", rungEffort: effortAll509(["r5p1a", "p5p1a"]), subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("p5p1a", T0 - 1000, "permanent-model", 0, "carrier-refusal", ORG_OFF)
+  R514.noteModelRefusal("p5p1a", T0 - 1000, "permanent-model", 0, "carrier-refusal", ORG_OFF, R514.fanMarksOf("ag-5p1a"))
   next = next514(h, { "in5p1a": refuseAll514("Prompt is too long"), "r5p1a": refuseAll514("Prompt is too long"), "p5p1a": refuseAll514(ORG_OFF) })
   await step514(h, "ag-5p1a", "in5p1a", next)
   expect(next.seen, "permanent-модель не вызвана").toEqual(["in5p1a", "r5p1a"])
@@ -11910,7 +12324,7 @@ test("#509-FIX5 Р1 (б): [P(permanent), Q(permanent)] без request -- ожи�
   let next: any = null
   const h = host514("5p1b", T0, { sleepHook: (n) => { if (n === 2) next.signal.aborted = true } })
   failoverBindSet("ag-5p1b", { ladder: [], terminal: "claude-q5p1b", rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("p5p1b", T0 - 1000, "permanent-model", 0, "carrier-refusal", ORG_OFF)
+  R514.noteModelRefusal("p5p1b", T0 - 1000, "permanent-model", 0, "carrier-refusal", ORG_OFF, R514.fanMarksOf("ag-5p1b"))
   next = next514(h, { "p5p1b": refuseAll514(ORG_OFF), "claude-q5p1b": refuseAll514(ORG_OFF) })
   await step514(h, "ag-5p1b", "p5p1b", next)
   expect(next.seen).toEqual(["claude-q5p1b"])
@@ -12122,7 +12536,7 @@ test("#509-FIX5 Р5: сердцебиение объявленной = терм�
   const T0 = Date.UTC(2026, 8, 28, 10, 0, 0)
   const h = host514("5p5", T0)
   failoverBindSet("ag-5p5", { ladder: ["r5p5"], terminal: "claude-t5p5", rungEffort: { "r5p5": "max" }, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal("claude-t5p5", T0 - 1000, "temporary-known", T0 + 3600000, "carrier-refusal", LIMIT11)
+  R514.noteModelRefusal("claude-t5p5", T0 - 1000, "temporary-known", T0 + 3600000, "carrier-refusal", LIMIT11, R514.fanMarksOf("ag-5p5"))
   const next = next514(h, {
     "claude-t5p5": (_k, t) => (t >= T0 + 240000 ? null : LIMIT11),
     "r5p5": refuseAll514("You've hit your session limit · resets 1pm (UTC)"),
@@ -16745,7 +17159,7 @@ async function fix9Term(tag: string, cls: string): Promise<any> {
   const rM = "r9r2" + tag
   const tM = "claude-t9r2" + tag
   failoverBindSet(aid, { ladder: [rM], terminal: tM, rungEffort: { [rM]: "max" }, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls)
+  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls, R514.fanMarksOf(aid))
   const script = { [inM]: refuseAll514(RL429), [rM]: refuseAll514(RL429), [tM]: () => null }
   next = next514(h, script)
   const out1 = await step514(h, aid, inM, next)
@@ -16897,7 +17311,7 @@ async function fix10TermDecl(tag: string, cls: string): Promise<any> {
   const tM = "claude-t10f1" + tag
   const rM = "r10f1" + tag
   failoverBindSet(aid, { ladder: [rM], terminal: tM, rungEffort: { [rM]: "max" }, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls)
+  R514.noteModelRefusal(tM, T0, cls, cls === "temporary-known" ? T0 + 3600000 : 0, "carrier-refusal", "pre-" + cls, R514.fanMarksOf(aid))
   const script: any = { [rM]: refuseAll514(RL429), [tM]: (_k: number, t: number) => (t >= T0 + 3600000 + 1000 ? null : RL429) }
   next = next514(h, script)
   const out1 = await step514(h, aid, tM, next)
@@ -16934,7 +17348,7 @@ test("#509-FIX11 B2: объявленная = терминал без ступе
   const aid = "ag-11e"
   const h = host514("11e", T0)
   failoverBindSet(aid, { ladder: [], terminal: tM, rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota")
+  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota", R514.fanMarksOf(aid))
   const at: number[] = []
   const next = next514(h, {
     [tM]: (_k: number, t: number) => { at.push(t); return t >= T0 + 600000 ? null : "API Error: 503 auth_unavailable (model=claude-t11e; last upstream error: quota); soonest recovery in 10m" },
@@ -16960,7 +17374,7 @@ test("#509-FIX11 B2: то же ожидание, прерванное на пе�
   let next: any = null
   const h = host514("11eb", T0, { sleepHook: (n: number) => { if (n === 1) next.signal.aborted = true } })
   failoverBindSet(aid, { ladder: [], terminal: tM, rungEffort: {}, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota")
+  R514.noteModelRefusal(tM, T0, "quota", T0 + 600000, "carrier-refusal", "pre-quota", R514.fanMarksOf(aid))
   next = next514(h, { [tM]: refuseAll514(RL429) })
   await step514(h, aid, tM, next)
   expect(next.seen, "до срока модель не зовётся -- прямого вызова нет").toEqual([])
@@ -17081,7 +17495,7 @@ test("#509-FIX11 B1, #514 Р9: любой проход снимает живую
   const aid = "ag-11w"
   const h = host514("11w", T0)
   failoverBindSet(aid, { ladder: [bM, qM], terminal: tM, rungEffort: { [bM]: "high", [qM]: "high" }, subagentType: "t", class: "", sticky: null })
-  R514.noteModelRefusal(qM, T0, "quota", T0 + 3600000, "carrier-refusal", "pre-quota")
+  R514.noteModelRefusal(qM, T0, "quota", T0 + 3600000, "carrier-refusal", "pre-quota", R514.fanMarksOf(aid))
   const atQ: number[] = []
   const next = next514(h, {
     [inM]: (k: number, _t: number) => (k === 0 ? "You've hit your session limit · resets 10:30am (UTC)" : RL429),

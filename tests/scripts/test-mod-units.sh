@@ -93,7 +93,7 @@ UNITS="$TESTS_DIR/units.test.ts"
 
 # Пин числа зубов: молча выпавший тест обязан быть виден. Поднимается ВМЕСТЕ с
 # добавлением тестов, в этой же строке -- другого дома у числа нет.
-EXPECTED_TESTS=1272
+EXPECTED_TESTS=1298
 
 # --- прибор ------------------------------------------------------------------
 
@@ -144,7 +144,7 @@ try:
     wiring = source[build:record]
     expected = (
         r"^    let ladder = rungsOf\(cfg, modelEnv\)\n"
-        r"    const cooldown = rungsAfterCooldown\(ladder, await nowMs\(\$\)\)\n"
+        r"    const cooldown = rungsAfterCooldown\(ladder, await nowMs\(\$\), consultCooldownMarks\)\n"
         r"    ladder = cooldown\.ladder\n"
         r"    Object\.assign\(rec, cooldown\.evidence\)\n$"
     )
@@ -154,7 +154,7 @@ try:
     assert "let rungBudgetClipped = false\n      try {" in body, "признак урезания недоступен в catch"
     assert "rungBudgetClipped = tmo !== rungTmo" in body, "урезание не измерено по бюджету ступени"
     timeout_branch = (
-        "if (noteRungTimeout(used, es, await nowMs($), undefined, rungBudgetClipped)) {\n"
+        "if (noteRungTimeout(used, es, await nowMs($), consultCooldownMarks, rungBudgetClipped)) {\n"
         "          rec.rungTimeouts = num(rec.rungTimeouts, 0, 0) + 1\n"
         '          if (rungBudgetClipped) rec["rungDeadlineClipped_" + used] = true\n'
         "        }"
