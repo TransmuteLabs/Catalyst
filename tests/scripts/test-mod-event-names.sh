@@ -17,7 +17,7 @@ set -u
 # CONSTRAINT: оба числа объявлены ЗДЕСЬ и больше нигде; расхождение в ЛЮБУЮ
 # сторону -- КРАСНЫЙ (#292). Потерянная подписка и подписка, которой никогда не
 # было, неразличимы по нулю провалов.
-EXPECTED_TEETH=16
+EXPECTED_TEETH=17
 EXPECTED_EVENTS=39
 # CONSTRAINT: пин числа проверок самопроверки (--self-check): меньше пина --
 # отказ прибора, а не зелень; каждая проверка сходится или краснеет именной
@@ -39,7 +39,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 # пути.
 MOD="${CATALYST_MOD_FILE:-$ROOT/plugins/catalyst-probes/hooks/register.ts}"
 # CONSTRAINT: пин головной версии; имя двери -- в форме адресации (#336).
-DOORS="${CATALYST_DOORS_PIN:-$ROOT/tests/data/host-doors-2.1.285.txt}"
+DOORS="${CATALYST_DOORS_PIN:-$ROOT/tests/data/host-doors-2.1.288.txt}"
 # CONSTRAINT: прибор ценза дверей -- часть репо (тесты его не исполняют,
 # пин уже снят; стенд гоняет прибор только на синтетическом входе зуба 11).
 DOORS_TOOL="${CATALYST_DOORS_TOOL:-$ROOT/tests/tools/host-doors.py}"
@@ -215,7 +215,7 @@ fi
 # образов разные по площадкам (darwin/linux), а стенд гоняется на любой из них.
 # Привязку пина к образу держит перезамер host-doors.py с побайтовым cmp.
 class_counts="$(awk -F'\t' 'NF==3{c[$2]++} END{printf "%d/%d/%d/%d",c["event"],c["classic"],c["method"],c["sweep"]}' "$DOORS")"
-if [ "$n_doors" -eq 152 ] && [ "$ver" = "2.1.285" ] && printf '%s' "$sha" | grep -Eqx '[0-9a-f]{64}' && [ "$class_counts" = "118/33/1/0" ]; then
+if [ "$n_doors" -eq 154 ] && [ "$ver" = "2.1.288" ] && printf '%s' "$sha" | grep -Eqx '[0-9a-f]{64}' && [ "$class_counts" = "120/33/1/0" ]; then
   ok "2 список дверей цел: doors_total=$n_doors, классы=$class_counts, версия $ver, IMAGE_SHA256=${sha:0:12}"
 else
   bad "2 список дверей/паспорт: doors_total=$n_doors классы=$class_counts версия=[$ver] IMAGE_SHA256=[$sha]"
@@ -530,6 +530,35 @@ if [ "$lists_fail" -eq 0 ] && [ "$lists_rows" -eq 3 ]; then
   ok "16 списки: 3/0"
 else
   bad "16 списки: провалов=$lists_fail строк=$lists_rows/3"
+fi
+
+# 17. CONSTRAINT: строка двери в пине сверяется целиком (имя, TAB, класс,
+# TAB, столбец таблицы). Совпадение одного поля строку не закрывает.
+# Ошибка чтения -- не успех.
+pin17_missing=""
+pin17_read_fail=0
+pin17_line_ok() {
+  local want rc=0
+  want="$1"
+  grep -qxF "$want" "$DOORS" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pin17_read_fail=1
+    pin17_missing="${pin17_missing} ${want%%$'\t'*}"
+  elif [ "$rc" -ne 0 ]; then
+    pin17_missing="${pin17_missing} ${want%%$'\t'*}"
+  fi
+}
+pin17_line_ok $'prompt.compose\tevent\tда'
+pin17_line_ok $'ui.selection\tevent\tда'
+pin17_line_ok $'ui.ask\tmethod\tда'
+pin17_line_ok $'flag.value\tevent\tнет'
+pin17_line_ok $'process.spawn\tevent\tда'
+pin17_line_ok $'session.send\tevent\tда'
+pin17_line_ok $'ui.copy\tevent\tда'
+if [ "$pin17_read_fail" -eq 0 ] && [ -z "$pin17_missing" ]; then
+  ok "17 пин 288: полные строки дверей"
+else
+  bad "17 пин 288: полные строки дверей:${pin17_missing}"
 fi
 
 printf '\nmod-event-names teeth: прошло=%d провалов=%d ожидалось=%d\n' "$PASS" "$FAIL" "$EXPECTED_TEETH"

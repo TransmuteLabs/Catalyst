@@ -1,0 +1,170 @@
+# Двери хоста, ИЗМЕРЕННЫЕ присутствующими в ПРИСТИННОМ образе головной версии.
+# CONSTRAINT: источник -- ценз tests/tools/host-doors.py на образе VERSION ниже;
+# пополняется ТОЛЬКО перезамером на новой головной версии, не правкой списка.
+# CONSTRAINT: имя записывается в ТОЙ форме, в которой дверь адресуется
+# потребителем; классик-семейство -- в форме classic.<хвост>, одной формой
+# на дверь (#361, #356). Голых имён (без пространства имён) в наборе не
+# бывает: сверка стенда идёт ПОЛНЫМ именем (#336).
+# CONSTRAINT: классик-литерал встречается в образе 2 раз(а) ПОБАЙТОВО равными
+# копиями (питают разные механизмы): имя считается ОДИН раз (#356).
+# CONSTRAINT: формат строки: <имя><TAB><класс event|method|classic><TAB><в таблице плагинов: да|нет|—>; класс method -- дверь-метод $-ноуна БЕЗ собственного события; «в таблице плагинов» -- ноун двери прошёл фильтр таблицы ноунов плагина хоста, «—» -- дверь вне ноун-таблицы (фильтр не про неё).
+# CONSTRAINT: api_retry и error_status -- контроли метода ценза, НЕ двери;
+# выведены из набора имён в ключи CONTROL= (ключевая форма, как VERSION=).
+VERSION=2.1.288
+IMAGE_SHA256=0298068b686e7fdbaf9402a7a587bb7f49c0b0e084de09f69145a0719207640c
+CONTROL=api_retry
+CONTROL=error_status
+agent.list	event	да
+agent.offer	event	да
+agent.register	event	да
+agent.spawn	event	да
+attribution.text	event	—
+audio.play	event	да
+audio.speak	event	да
+classic.ConfigChange	classic	—
+classic.CwdChanged	classic	—
+classic.DirectoryAdded	classic	—
+classic.Elicitation	classic	—
+classic.ElicitationResult	classic	—
+classic.FileChanged	classic	—
+classic.InstructionsLoaded	classic	—
+classic.MessageDisplay	classic	—
+classic.Notification	classic	—
+classic.PermissionDenied	classic	—
+classic.PermissionRequest	classic	—
+classic.PostCompact	classic	—
+classic.PostModelSwitch	classic	—
+classic.PostToolBatch	classic	—
+classic.PostToolUse	classic	—
+classic.PostToolUseFailure	classic	—
+classic.PreCompact	classic	—
+classic.PreModelSwitch	classic	—
+classic.PreToolUse	classic	—
+classic.SessionEnd	classic	—
+classic.SessionStart	classic	—
+classic.Setup	classic	—
+classic.Stop	classic	—
+classic.StopFailure	classic	—
+classic.SubagentStart	classic	—
+classic.SubagentStop	classic	—
+classic.TaskCompleted	classic	—
+classic.TaskCreated	classic	—
+classic.TeammateIdle	classic	—
+classic.UserPromptExpansion	classic	—
+classic.UserPromptSubmit	classic	—
+classic.WorktreeCreate	classic	—
+classic.WorktreeRemove	classic	—
+clock.after	event	да
+clock.every	event	да
+clock.now	event	да
+clock.sleep	event	да
+command.describe	event	да
+command.list	event	да
+command.register	event	да
+command.run	event	да
+config.describe	event	да
+config.list	event	да
+config.set	event	да
+engine.create	event	—
+env.get	event	да
+env.set	event	да
+flag.value	event	нет
+fs.ancestors	event	да
+fs.exists	event	да
+fs.list	event	да
+fs.read	event	да
+fs.stat	event	да
+fs.write	event	да
+http.fetch	event	да
+mcp.call	event	да
+mcp.connect	event	да
+model.classify	event	да
+model.complete	event	да
+model.fork	event	да
+plugin.register	event	—
+process.run	event	да
+process.spawn	event	да
+prompt.attachment	event	да
+prompt.compose	event	да
+prompt.context	event	да
+prompt.edit	event	да
+prompt.fill	event	да
+prompt.read	event	да
+prompt.section	event	да
+prompt.submit	event	да
+prompt.suggest	event	да
+session.append	event	да
+session.attach	event	да
+session.authorize	event	да
+session.compact	event	да
+session.cwd	event	да
+session.deleted	event	да
+session.detach	event	да
+session.end	event	да
+session.error	event	да
+session.id	event	да
+session.measure	event	да
+session.messages	event	да
+session.mint	event	да
+session.model	event	да
+session.receive	event	да
+session.refresh	event	да
+session.repo	event	да
+session.root	event	да
+session.send	event	да
+session.start	event	да
+session.status_idle	event	да
+session.status_rescheduled	event	да
+session.status_running	event	да
+session.status_terminated	event	да
+session.surface	event	да
+session.surfaces	event	да
+session.thread_created	event	да
+session.thread_status_created	event	да
+session.thread_status_idle	event	да
+session.thread_status_rescheduled	event	да
+session.thread_status_running	event	да
+session.thread_status_terminated	event	да
+session.turns	event	да
+session.updated	event	да
+session.usage	event	да
+session.version	event	да
+settings.read	event	да
+skill.prompt	event	—
+state.get	event	да
+state.set	event	да
+store.delete	event	да
+store.get	event	да
+store.keys	event	да
+store.set	event	да
+telemetry.log	event	да
+telemetry.mark	event	да
+tool.call	event	да
+tool.check	event	да
+tool.describe	event	да
+tool.list	event	да
+tool.register	event	да
+turn.abort	event	да
+turn.complete	event	да
+turn.start	event	да
+turn.step	event	да
+ui.ask	method	да
+ui.blit	event	да
+ui.close	event	да
+ui.copy	event	да
+ui.focus	event	да
+ui.input	event	да
+ui.invalidate	event	да
+ui.log	event	да
+ui.message	event	да
+ui.notice	event	да
+ui.open	event	да
+ui.panes	event	да
+ui.press	event	да
+ui.render	event	да
+ui.resolve	event	да
+ui.scroll	event	да
+ui.select	event	да
+ui.selection	event	да
+ui.status	event	да
+ui.toast	event	да
